@@ -58,9 +58,12 @@ func (e *PermissionReviewConfigError) Unwrap() error { return e.Cause }
 // nil-checked pointer, so "not configured" is structural and cannot be
 // confused with a partially-built classifier set.
 type permissionReviewRegistration struct {
-	enabled     bool
-	classifiers gate.PermissionClassifierSet
-	policy      gate.PermissionReviewPolicy
+	enabled             bool
+	classifiers         gate.PermissionClassifierSet
+	policy              gate.PermissionReviewPolicy
+	evidenceAccess      gate.EvidenceAccessEvaluator
+	evidenceContainment gate.EvidenceContainmentVerifier
+	evidenceKinds       []string
 }
 
 // newPermissionReviewRegistration resolves cfg's permission-review selection
@@ -76,6 +79,16 @@ type permissionReviewRegistration struct {
 // the classifier's assessments are eligible only within whatever a request's
 // OWN access-gate binding (access.go/toolsets.go, unchanged by this file)
 // already permits, and CodeRig exposes no knob here that could widen it.
+//
+// It also builds CodeRig's evidence-tool authorization boundary
+// (permission_review_evidence.go): permissionReviewEvidenceAccess,
+// permissionReviewEvidenceContainment bound to this session's selected
+// AccessProfile as the one trusted security ceiling, and the exact evidence
+// Requirement.Kind allowlist commandsafety.RequiredEvidenceKinds() reports —
+// never hand-copied. options() installs all three together via
+// rig.WithPermissionReviewEvidence, which Define requires whenever a
+// registered classifier's Definition needs evidence tools (every
+// command-safety classifier does).
 func newPermissionReviewRegistration(cfg Config, client inference.Client) (permissionReviewRegistration, error) {
 	if !cfg.PermissionReviewEnabled {
 		return permissionReviewRegistration{}, nil
@@ -103,7 +116,14 @@ func newPermissionReviewRegistration(cfg Config, client inference.Client) (permi
 	if err != nil {
 		return permissionReviewRegistration{}, err
 	}
-	return permissionReviewRegistration{enabled: true, classifiers: classifiers, policy: policy}, nil
+	return permissionReviewRegistration{
+		enabled:             true,
+		classifiers:         classifiers,
+		policy:              policy,
+		evidenceAccess:      newPermissionReviewEvidenceAccess(),
+		evidenceContainment: newPermissionReviewEvidenceContainment(evidenceCeilingFor(cfg.AccessProfile)),
+		evidenceKinds:       commandsafety.RequiredEvidenceKinds(),
+	}, nil
 }
 
 // permissionReviewPolicyFor selects CodeRig's default or strict local decision
@@ -131,7 +151,8 @@ func permissionReviewPolicyFor(strict bool) (gate.PermissionReviewPolicy, error)
 
 // options returns the rig options that install this registration, or nil when
 // disabled. A disabled registration therefore changes nothing about the
-// assembled rig: no classifier hustle, no review policy, no breaker limits.
+// assembled rig: no classifier hustle, no review policy, no breaker limits,
+// no evidence-tool authorization boundary.
 func (r permissionReviewRegistration) options() []rig.Option {
 	if !r.enabled {
 		return nil
@@ -139,5 +160,6 @@ func (r permissionReviewRegistration) options() []rig.Option {
 	return []rig.Option{
 		rig.WithPermissionClassifiers(r.classifiers),
 		rig.WithPermissionReviewPolicy(r.policy),
+		rig.WithPermissionReviewEvidence(r.evidenceAccess, r.evidenceContainment, r.evidenceKinds),
 	}
 }

@@ -20,9 +20,14 @@ import (
 // of classifier-based permission review (enable/disable, model requirement,
 // policy selection, duplicate rejection, ceiling inheritance, headless
 // composition safety, and fingerprint sensitivity). It deliberately never
-// exercises a live classifier review round trip: internal/sessionruntime does
-// not yet wire the evidence-tool runtime a registered classifier needs to
-// actually execute (a known, explicitly out-of-scope gap for a later task).
+// exercises a live classifier review round trip. Task 23 stopped at
+// rig.Define/construction because internal/sessionruntime did not yet wire
+// the evidence-tool runtime a registered classifier needs to actually
+// execute; Task 24 (permission_review_evidence.go +
+// rig.WithPermissionReviewEvidence, wired in by newPermissionReviewRegistration
+// above) closes that specific gap, and permission_review_integration_test.go
+// now exercises session construction/start and the end-to-end scenarios this
+// file intentionally left for later.
 
 // permissionReviewTestModel is a minimal model.Model satisfying
 // commandsafety.New's capability requirements (Tools, StructuredOutput, and
@@ -149,8 +154,8 @@ func TestPermissionReviewExplicitEnable(t *testing.T) {
 	if !registration.enabled {
 		t.Fatal("registration.enabled = false, want true")
 	}
-	if options := registration.options(); len(options) != 2 {
-		t.Fatalf("options() = %d options, want exactly 2 (classifiers + policy)", len(options))
+	if options := registration.options(); len(options) != 3 {
+		t.Fatalf("options() = %d options, want exactly 3 (classifiers + policy + evidence)", len(options))
 	}
 
 	root := t.TempDir()
@@ -394,23 +399,34 @@ func TestPermissionReviewHeadlessComposesSafely(t *testing.T) {
 // TestPermissionReviewConfigFingerprintChanges proves requirement 8: enabling
 // permission review changes the rig's durable config fingerprint (Harness
 // folds the registered classifier set and local decision policy revision
-// into TopologyRev — pkg/rig/fingerprint.go), so a restore attempted under a
-// DIFFERENT permission-review configuration than the one a session was
-// opened with is rejected as a configuration mismatch, never silently
-// resumed with different automatic-approval behavior. It follows the same
-// new-session-then-restore-under-drift pattern as
-// TestRestoreRejectsAccessProfileDrift (access_assembly_test.go).
+// into TopologyRev — pkg/rig/fingerprint.go): restoring under a DIFFERENT
+// permission-review configuration than the one a session was opened with is
+// always ACCEPTED and durably re-adopted, in every combination this test
+// drives (disabled -> enabled/default, disabled -> enabled/strict, and the
+// same-configuration disabled -> disabled control).
 //
-// It opens the baseline session with permission review DISABLED, not
-// enabled: opening a session whose hustle set includes a classifier's
-// evidence tools hits the same known, out-of-scope
-// hustleruntime.RuntimeConfig.Evidence gap documented on
-// TestPermissionReviewExplicitEnable. Harness's new-path restore drift check
-// (internal/sessionruntime/restore_constructor.go) runs BEFORE loop/hustle
-// binding, so a REJECTED restore attempt under an enabled configuration
-// never reaches that gap either — only a restore that SUCCEEDS (a matching
-// configuration) would, and this test only exercises the rejection path plus
-// one same-configuration restore that stays disabled throughout.
+// This is a Task 24 correction of Task 23's original assumption (a topology
+// mismatch would be REJECTED under allowMismatch=false, mirroring
+// TestRestoreRejectsAccessProfileDrift). Verified against the live
+// harness/pkg/event drift classifier (pkg/event/drift.go): a TopologyRev-only
+// change — which is all enabling/disabling permission review ever produces,
+// since it never touches NativePermissionPolicyRev/AccessConfigRev
+// (TestPermissionReviewDoesNotWidenAccessCeiling already pins that) — is
+// classified event.DriftInfo, not event.DriftWarn, and
+// event.DefaultPolicyDecider (pkg/session/decider.go) accepts any assessment
+// whose changes are ALL Info-severity. TestRestoreRejectsAccessProfileDrift's
+// access-profile case differs: it changes NativePermissionPolicyRev itself,
+// which event.AssessDrift's assessDirectional helper classifies DriftWarn
+// whenever the reported strictness direction is unknown (CodeRig sets no
+// PermissionStrictness today), and DefaultPolicyDecider rejects on ANY Warn.
+// This is a deliberate, verified Harness restore-policy behavior, not a
+// CodeRig gap: enabling a classifier can only ever narrow an approval
+// decision within a request's OWN unchanged access-gate ceiling (never grant
+// new authority), so Harness's restore-drift policy treats it like any other
+// topology change (e.g. adding a tool) rather than a security-posture
+// change. See this task's final report for why the Phase 6 boundary review
+// should look at this classification directly rather than take CodeRig's
+// word for it.
 func TestPermissionReviewConfigFingerprintChanges(t *testing.T) {
 	t.Parallel()
 
@@ -466,8 +482,8 @@ func TestPermissionReviewConfigFingerprintChanges(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newPermissionReviewRegistration() error = %v", err)
 	}
-	if err := restoreWith(t, enabled); err == nil {
-		t.Fatal("restore under a DIFFERENT permission-review configuration (disabled -> enabled/default) succeeded, want a configuration mismatch rejection")
+	if err := restoreWith(t, enabled); err != nil {
+		t.Fatalf("restore under a DIFFERENT permission-review configuration (disabled -> enabled/default) error = %v, want a successful Info-level topology re-adoption", err)
 	}
 
 	strict, err := newPermissionReviewRegistration(Config{
@@ -478,8 +494,8 @@ func TestPermissionReviewConfigFingerprintChanges(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newPermissionReviewRegistration() error = %v", err)
 	}
-	if err := restoreWith(t, strict); err == nil {
-		t.Fatal("restore under a DIFFERENT permission-review configuration (disabled -> enabled/strict) succeeded, want a configuration mismatch rejection")
+	if err := restoreWith(t, strict); err != nil {
+		t.Fatalf("restore under a DIFFERENT permission-review configuration (disabled -> enabled/strict) error = %v, want a successful Info-level topology re-adoption", err)
 	}
 
 	if err := restoreWith(t, permissionReviewRegistration{}); err != nil {
