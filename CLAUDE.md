@@ -52,6 +52,12 @@ make lint
 make secure
 ```
 
+`make test-integration` runs the `//go:build integration`-tagged suite,
+including process/filesystem/network/durable-storage-boundary tests and the
+live permission-review end-to-end tests. It is not run by `make test` or CI
+by default; run it before any release touching permission review, restore,
+or access-profile behavior.
+
 The binary and command are both named `coderig`.
 
 ## Dependencies

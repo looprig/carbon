@@ -1,4 +1,4 @@
-.PHONY: build run test fmt fmt-check lint vuln secure fuzz
+.PHONY: build run test test-integration fmt fmt-check lint vuln secure fuzz
 
 # This module's own package dirs (go list stops at module boundaries, skips deps).
 GO_DIRS := $(shell go list -f '{{.Dir}}' ./...)
@@ -15,6 +15,12 @@ run:
 
 test:
 	go test -race ./...
+
+# Integration-tagged suite (process/filesystem/network/durable-storage-boundary
+# tests, plus the live permission-review end-to-end tests). Not run by `test`
+# or CI; run before any release touching those boundaries.
+test-integration:
+	go test -tags integration -race ./...
 
 # Format this module's Go files in place.
 fmt:
