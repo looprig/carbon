@@ -28,6 +28,7 @@ func compactionFingerprintFor(t *testing.T, root string, client *fakeLLM, policy
 	assembly, err := buildRigWithRegistration(
 		definitions, stores, root, cfg, false,
 		rig.DelegationLimits{Depth: operatorSpawnDepth, Quota: operatorSpawnQuota}, registration,
+		permissionReviewRegistration{},
 	)
 	if err != nil {
 		t.Fatalf("buildRigWithRegistration() error = %v", err)

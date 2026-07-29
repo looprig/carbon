@@ -96,6 +96,7 @@ func TestInvalidCompactionCompositionDoesNotOpenSession(t *testing.T) {
 					definitions, stores, t.TempDir(), Config{}, false,
 					rig.DelegationLimits{Depth: operatorSpawnDepth, Quota: operatorSpawnQuota},
 					conversationHustleRegistration{limits: conversationHustleLimits()},
+					permissionReviewRegistration{},
 				)
 				return err
 			},

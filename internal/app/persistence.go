@@ -125,26 +125,36 @@ func accessAppFields(profile AccessProfile) map[string]string {
 // facades, placing root as the session's EXCLUSIVE workspace (edit-the-open-checkout). The
 // rig owns snapshots-on-idle, delegation limits, the config fingerprint, the per-session
 // security limit, and offload-blob GC. allowMismatch opts a resume into proceeding despite a config
-// fingerprint change (never set for a new session).
+// fingerprint change (never set for a new session). It always assembles with permission review
+// DISABLED (the zero permissionReviewRegistration): the two session-opening paths that can
+// actually enable it (openSessionWithDefinitions, called from swarm.go, where the inference
+// Client the classifier needs is available) call buildRigForDelegationCaps directly with an
+// explicit registration instead. buildRig stays the plain default-composition path most
+// existing callers (production's delegation defaults, and every test unconcerned with
+// permission review) use unchanged.
 func buildRig(definitions []loop.Definition, stores *swarmStores, root string, cfg Config, allowMismatch bool) (*rig.Rig, error) {
-	return buildRigForDelegationCaps(definitions, stores, root, cfg, allowMismatch, rig.DelegationLimits{Depth: operatorSpawnDepth, Quota: operatorSpawnQuota})
+	return buildRigForDelegationCaps(definitions, stores, root, cfg, allowMismatch, rig.DelegationLimits{Depth: operatorSpawnDepth, Quota: operatorSpawnQuota}, permissionReviewRegistration{})
 }
 
-// buildRigForDelegationCaps is the common assembly path with explicit delegation caps. Production
-// callers use buildRig's CodeRig defaults; focused topology tests vary only these limits while
+// buildRigForDelegationCaps is the common assembly path with explicit delegation caps and an
+// explicit permission-review registration. Production callers use buildRig's CodeRig delegation
+// defaults paired with the real registration built from the live inference Client
+// (openSessionWithDefinitions); focused topology tests vary only the delegation limits while
 // retaining the exact production definitions, stores, workspace, and policy wiring.
-func buildRigForDelegationCaps(definitions []loop.Definition, stores *swarmStores, root string, cfg Config, allowMismatch bool, limits rig.DelegationLimits) (*rig.Rig, error) {
+func buildRigForDelegationCaps(definitions []loop.Definition, stores *swarmStores, root string, cfg Config, allowMismatch bool, limits rig.DelegationLimits, permissionReview permissionReviewRegistration) (*rig.Rig, error) {
 	registration, err := newConversationHustleRegistration()
 	if err != nil {
 		return nil, err
 	}
-	return buildRigWithRegistration(definitions, stores, root, cfg, allowMismatch, limits, registration)
+	return buildRigWithRegistration(definitions, stores, root, cfg, allowMismatch, limits, registration, permissionReview)
 }
 
 // buildRigWithRegistration is the common immutable rig assembly. Production
-// supplies exactly one reviewed registration; focused tests can vary its public
-// descriptor and limits to prove fingerprint sensitivity.
-func buildRigWithRegistration(definitions []loop.Definition, stores *swarmStores, root string, cfg Config, allowMismatch bool, limits rig.DelegationLimits, registration conversationHustleRegistration) (*rig.Rig, error) {
+// supplies exactly one reviewed hustle registration and one permission-review
+// registration; focused tests can vary either's public descriptor/limits to
+// prove fingerprint sensitivity. permissionReview's disabled zero value adds
+// no options, so passing it changes nothing about the assembled rig.
+func buildRigWithRegistration(definitions []loop.Definition, stores *swarmStores, root string, cfg Config, allowMismatch bool, limits rig.DelegationLimits, registration conversationHustleRegistration, permissionReview permissionReviewRegistration) (*rig.Rig, error) {
 	options := []rig.Option{
 		rig.WithLoops(definitions...),
 		rig.WithPrimers(string(operatorPrimaryName)),
@@ -157,6 +167,7 @@ func buildRigWithRegistration(definitions []loop.Definition, stores *swarmStores
 		rig.WithOffloadGC(rig.OffloadGCPolicy{Interval: offloadGCInterval, Timeout: offloadGCTimeout}),
 	}
 	options = append(options, registration.options()...)
+	options = append(options, permissionReview.options()...)
 	if allowMismatch {
 		options = append(options, rig.WithAllowConfigMismatch())
 	}

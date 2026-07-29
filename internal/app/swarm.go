@@ -18,6 +18,7 @@ import (
 	"github.com/looprig/coderig/internal/catalog/reviewer"
 	"github.com/looprig/harness/pkg/identity"
 	"github.com/looprig/harness/pkg/loop"
+	"github.com/looprig/harness/pkg/rig"
 	"github.com/looprig/harness/pkg/tool"
 	"github.com/looprig/inference"
 	model "github.com/looprig/inference/model"
@@ -304,12 +305,17 @@ func newWithClientUsingStores(ctx context.Context, client inference.Client, fact
 		_ = access.Close()
 		return nil, err
 	}
+	permissionReview, err := newPermissionReviewRegistration(cfg, client)
+	if err != nil {
+		_ = access.Close()
+		return nil, err
+	}
 	stores, err := storesProvider()
 	if err != nil {
 		_ = access.Close()
 		return nil, err
 	}
-	adapter, err := openSessionWithDefinitions(ctx, definitions, cfg, stores, root, SessionSelector{})
+	adapter, err := openSessionWithDefinitions(ctx, definitions, cfg, stores, root, SessionSelector{}, permissionReview)
 	if err != nil {
 		_ = access.Close()
 		return nil, err
@@ -347,7 +353,12 @@ func openRuntimeAgent(ctx context.Context, client inference.Client, factory Mode
 		_ = access.Close()
 		return nil, err
 	}
-	adapter, err := openSessionWithDefinitions(ctx, definitions, cfg, stores, root, selector)
+	permissionReview, err := newPermissionReviewRegistration(cfg, client)
+	if err != nil {
+		_ = access.Close()
+		return nil, err
+	}
+	adapter, err := openSessionWithDefinitions(ctx, definitions, cfg, stores, root, selector, permissionReview)
 	if err != nil {
 		_ = access.Close()
 		return nil, err
@@ -357,8 +368,12 @@ func openRuntimeAgent(ctx context.Context, client inference.Client, factory Mode
 
 // openSessionWithDefinitions is CodeRig's single new-or-restore assembly path.
 // Production and tests differ only in the injected stores, workspace, and selector.
-func openSessionWithDefinitions(ctx context.Context, definitions []loop.Definition, cfg Config, stores *swarmStores, root string, selector SessionSelector) (*sessionadapter.Adapter, error) {
-	assembly, err := buildRig(definitions, stores, root, cfg, selector.AllowConfigMismatch)
+// permissionReview is the caller-constructed classifier registration (built where
+// the live inference Client is available); its disabled zero value adds no rig
+// options, so every existing caller that never sets cfg.PermissionReviewEnabled
+// sees no behavior change.
+func openSessionWithDefinitions(ctx context.Context, definitions []loop.Definition, cfg Config, stores *swarmStores, root string, selector SessionSelector, permissionReview permissionReviewRegistration) (*sessionadapter.Adapter, error) {
+	assembly, err := buildRigForDelegationCaps(definitions, stores, root, cfg, selector.AllowConfigMismatch, rig.DelegationLimits{Depth: operatorSpawnDepth, Quota: operatorSpawnQuota}, permissionReview)
 	if err != nil {
 		return nil, err
 	}
