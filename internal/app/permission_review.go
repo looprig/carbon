@@ -64,6 +64,14 @@ type permissionReviewRegistration struct {
 	evidenceAccess      gate.EvidenceAccessEvaluator
 	evidenceContainment gate.EvidenceContainmentVerifier
 	evidenceKinds       []string
+	// securityCeiling is CodeRig's consumer-supplied effective security
+	// posture (rig.WithPermissionReviewSecurityCeiling), installed into
+	// every registered classifier's ReviewContext/ReviewBasis and every
+	// evidence-tool containment check. It is derived from the EXACT SAME
+	// evidenceCeilingFor call newPermissionReviewRegistration uses to build
+	// evidenceContainment below, so the two can never independently drift
+	// (permission_review_evidence.go's evidenceCeilingFor doc comment).
+	securityCeiling string
 }
 
 // newPermissionReviewRegistration resolves cfg's permission-review selection
@@ -116,13 +124,15 @@ func newPermissionReviewRegistration(cfg Config, client inference.Client) (permi
 	if err != nil {
 		return permissionReviewRegistration{}, err
 	}
+	ceiling := evidenceCeilingFor(cfg.AccessProfile)
 	return permissionReviewRegistration{
 		enabled:             true,
 		classifiers:         classifiers,
 		policy:              policy,
 		evidenceAccess:      newPermissionReviewEvidenceAccess(),
-		evidenceContainment: newPermissionReviewEvidenceContainment(evidenceCeilingFor(cfg.AccessProfile)),
+		evidenceContainment: newPermissionReviewEvidenceContainment(ceiling),
 		evidenceKinds:       commandsafety.RequiredEvidenceKinds(),
+		securityCeiling:     ceiling,
 	}, nil
 }
 
@@ -161,5 +171,6 @@ func (r permissionReviewRegistration) options() []rig.Option {
 		rig.WithPermissionClassifiers(r.classifiers),
 		rig.WithPermissionReviewPolicy(r.policy),
 		rig.WithPermissionReviewEvidence(r.evidenceAccess, r.evidenceContainment, r.evidenceKinds),
+		rig.WithPermissionReviewSecurityCeiling(r.securityCeiling),
 	}
 }

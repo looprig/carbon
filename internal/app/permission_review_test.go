@@ -7,10 +7,12 @@ import (
 
 	"github.com/looprig/classifiers/pkg/commandsafety"
 	"github.com/looprig/core/uuid"
+	"github.com/looprig/harness/pkg/event"
 	"github.com/looprig/harness/pkg/gate"
 	"github.com/looprig/harness/pkg/identity"
 	"github.com/looprig/harness/pkg/loop"
 	"github.com/looprig/harness/pkg/rig"
+	"github.com/looprig/harness/pkg/session"
 	"github.com/looprig/harness/pkg/tool"
 	model "github.com/looprig/inference/model"
 	"github.com/looprig/storage/memstore"
@@ -154,8 +156,8 @@ func TestPermissionReviewExplicitEnable(t *testing.T) {
 	if !registration.enabled {
 		t.Fatal("registration.enabled = false, want true")
 	}
-	if options := registration.options(); len(options) != 3 {
-		t.Fatalf("options() = %d options, want exactly 3 (classifiers + policy + evidence)", len(options))
+	if options := registration.options(); len(options) != 4 {
+		t.Fatalf("options() = %d options, want exactly 4 (classifiers + policy + evidence + security ceiling)", len(options))
 	}
 
 	root := t.TempDir()
@@ -170,6 +172,92 @@ func TestPermissionReviewExplicitEnable(t *testing.T) {
 		rig.DelegationLimits{Depth: operatorSpawnDepth, Quota: operatorSpawnQuota}, registration,
 	); err != nil {
 		t.Fatalf("buildRigForDelegationCaps() error = %v", err)
+	}
+}
+
+// TestPermissionReviewSecurityCeilingOptionInstalled proves the Phase 6
+// spec-compliance review's Finding 2 fix (Harness commit bed51463): an
+// enabled registration installs rig.WithPermissionReviewSecurityCeiling
+// alongside the classifier set. Before this fix, options() omitted it
+// entirely, and rig.Define — which now REQUIRES a security ceiling whenever
+// any permission classifier is registered — rejected every classifier
+// registration outright with
+// DefinitionMissingPermissionReviewSecurityCeiling (verified as the RED
+// state this test's fix resolves: TestPermissionReviewExplicitEnable and
+// TestPermissionReviewHeadlessComposesSafely both failed with exactly that
+// error until this option was wired). Successful construction here is
+// therefore direct proof the option is present and non-empty, not just that
+// registration.options() grew by one.
+func TestPermissionReviewSecurityCeilingOptionInstalled(t *testing.T) {
+	t.Parallel()
+
+	registration, err := newPermissionReviewRegistration(Config{
+		PermissionReviewEnabled: true,
+		PermissionReviewModel:   permissionReviewTestModel(),
+	}, &fakeLLM{})
+	if err != nil {
+		t.Fatalf("newPermissionReviewRegistration() error = %v", err)
+	}
+	if registration.securityCeiling == "" {
+		t.Fatal("registration.securityCeiling is empty, want a non-empty consumer-supplied ceiling")
+	}
+
+	root := t.TempDir()
+	access, sessionCfg := headlessTestAccess(t, Config{
+		PermissionReviewEnabled: true,
+		PermissionReviewModel:   permissionReviewTestModel(),
+	}, root)
+	definitions, err := swarmDefinitions(&fakeLLM{}, testModel(), sessionCfg, access)
+	if err != nil {
+		t.Fatalf("swarmDefinitions() error = %v", err)
+	}
+	stores := mustHeadlessTestStores(t)
+	if _, err := buildRigForDelegationCaps(
+		definitions, stores, root, sessionCfg, false,
+		rig.DelegationLimits{Depth: operatorSpawnDepth, Quota: operatorSpawnQuota}, registration,
+	); err != nil {
+		t.Fatalf("buildRigForDelegationCaps() error = %v, want success now that WithPermissionReviewSecurityCeiling is wired", err)
+	}
+}
+
+// TestPermissionReviewSecurityCeilingMatchesEvidenceContainment proves the
+// task brief's single-source-of-truth requirement directly: the ceiling value
+// installed via rig.WithPermissionReviewSecurityCeiling (registration.securityCeiling)
+// is byte-for-byte the SAME value permissionReviewEvidenceContainment
+// independently compares every evidence-tool containment check against
+// (registration.evidenceContainment.ceiling — the unexported field is
+// directly readable here since this test lives in the same package). Both
+// are derived from the one evidenceCeilingFor(cfg.AccessProfile) call in
+// newPermissionReviewRegistration, so they can never silently drift apart —
+// this test is a consistency proof, not merely a presence check, for every
+// named access profile.
+func TestPermissionReviewSecurityCeilingMatchesEvidenceContainment(t *testing.T) {
+	t.Parallel()
+
+	for _, profile := range []AccessProfile{AccessReadOnly, AccessTrusted, AccessUnconfined, ""} {
+		t.Run(string(profile)+"/empty-means-default", func(t *testing.T) {
+			t.Parallel()
+			registration, err := newPermissionReviewRegistration(Config{
+				PermissionReviewEnabled: true,
+				PermissionReviewModel:   permissionReviewTestModel(),
+				AccessProfile:           profile,
+			}, &fakeLLM{})
+			if err != nil {
+				t.Fatalf("newPermissionReviewRegistration() error = %v", err)
+			}
+			containment, ok := registration.evidenceContainment.(permissionReviewEvidenceContainment)
+			if !ok {
+				t.Fatalf("registration.evidenceContainment = %T, want permissionReviewEvidenceContainment", registration.evidenceContainment)
+			}
+			if registration.securityCeiling != containment.ceiling {
+				t.Fatalf("registration.securityCeiling = %q, evidenceContainment.ceiling = %q, want identical (single source of truth)",
+					registration.securityCeiling, containment.ceiling)
+			}
+			if registration.securityCeiling != evidenceCeilingFor(profile) {
+				t.Fatalf("registration.securityCeiling = %q, want evidenceCeilingFor(%q) = %q",
+					registration.securityCeiling, profile, evidenceCeilingFor(profile))
+			}
+		})
 	}
 }
 
@@ -396,65 +484,79 @@ func TestPermissionReviewHeadlessComposesSafely(t *testing.T) {
 	}
 }
 
-// TestPermissionReviewConfigFingerprintChanges proves requirement 8: enabling
-// permission review changes the rig's durable config fingerprint (Harness
-// folds the registered classifier set and local decision policy revision
-// into TopologyRev — pkg/rig/fingerprint.go): restoring under a DIFFERENT
-// permission-review configuration than the one a session was opened with is
-// always ACCEPTED and durably re-adopted, in every combination this test
-// drives (disabled -> enabled/default, disabled -> enabled/strict, and the
-// same-configuration disabled -> disabled control).
+// TestPermissionReviewConfigFingerprintChanges proves requirement 8, UPDATED
+// for the Phase 6 spec-compliance review's Finding 3 fix (Harness commit
+// 0186a2df): restoring a session under a DIFFERENT permission-review
+// configuration than the one it was opened with is REJECTED, closed, exactly
+// when that change WIDENS review coverage (disabled -> enabled, either
+// policy) — never silently re-adopted — unless the caller explicitly opts in
+// via CodeRig's OWN existing config-mismatch-acceptance mechanism
+// (SessionSelector.AllowConfigMismatch -> rig.WithAllowConfigMismatch(),
+// persistence.go). Narrowing (a hypothetical enabled -> disabled restore) and
+// the no-change control still restore cleanly with no override needed.
 //
-// This is a Task 24 correction of Task 23's original assumption (a topology
-// mismatch would be REJECTED under allowMismatch=false, mirroring
-// TestRestoreRejectsAccessProfileDrift). Verified against the live
-// harness/pkg/event drift classifier (pkg/event/drift.go): a TopologyRev-only
-// change — which is all enabling/disabling permission review ever produces,
-// since it never touches NativePermissionPolicyRev/AccessConfigRev
-// (TestPermissionReviewDoesNotWidenAccessCeiling already pins that) — is
-// classified event.DriftInfo, not event.DriftWarn, and
-// event.DefaultPolicyDecider (pkg/session/decider.go) accepts any assessment
-// whose changes are ALL Info-severity. TestRestoreRejectsAccessProfileDrift's
-// access-profile case differs: it changes NativePermissionPolicyRev itself,
-// which event.AssessDrift's assessDirectional helper classifies DriftWarn
-// whenever the reported strictness direction is unknown (CodeRig sets no
-// PermissionStrictness today), and DefaultPolicyDecider rejects on ANY Warn.
-// This is a deliberate, verified Harness restore-policy behavior, not a
-// CodeRig gap: enabling a classifier can only ever narrow an approval
-// decision within a request's OWN unchanged access-gate ceiling (never grant
-// new authority), so Harness's restore-drift policy treats it like any other
-// topology change (e.g. adding a tool) rather than a security-posture
-// change. See this task's final report for why the Phase 6 boundary review
-// should look at this classification directly rather than take CodeRig's
-// word for it.
+// This SUPERSEDES this test's own prior assumption (a Task 24 correction
+// that a topology-only permission-review change always classified
+// event.DriftInfo and so always auto-accepted under
+// event.DefaultPolicyDecider). Harness's pkg/event/drift.go now carries a
+// dedicated ConfigManifest.PermissionReviewConfigured signal, compared
+// DIRECTIONALLY: disabled -> enabled is event.DriftWarn ("design §21: never
+// silently resumes with a different reviewer" — exactly the bug this fix
+// closes), enabled -> disabled stays event.DriftInfo (strictly narrower, more
+// human control). event.DefaultPolicyDecider (pkg/session/decider.go, the
+// Harness default CodeRig never overrides with a custom RestoreDecider)
+// rejects on ANY Warn change, so RestoreSession now returns a typed
+// *session.RestoreRejectedError for the widening case.
+//
+// Reasoning for why CodeRig does NOT auto-accept this drift on the caller's
+// behalf: per CLAUDE.md's "fail closed when access, permission, identity, or
+// durable policy state is uncertain," and because TestRestoreRejectsAccessProfileDrift
+// already establishes CodeRig's existing convention for every other kind of
+// rejected restore drift (access-profile change) — surface the plain
+// rejection error to the caller and require the SAME explicit,
+// caller-supplied SessionSelector.AllowConfigMismatch an operator would use
+// for any other deliberate config change, rather than inventing a
+// permission-review-specific auto-accept path. This test proves both halves:
+// the default (no override) rejects, and the existing override still works
+// unchanged.
 func TestPermissionReviewConfigFingerprintChanges(t *testing.T) {
 	t.Parallel()
 
-	stores, err := openStores(memstore.New())
-	if err != nil {
-		t.Fatalf("openStores() error = %v", err)
+	// newDisabledBaseline opens and shuts down a FRESH session (its own store
+	// and workspace) with permission review disabled, so each scenario below
+	// restores against a clean, unmutated "disabled" baseline: a successful
+	// restore durably re-adopts its configuration, so reusing one baseline
+	// session across an accepted-override scenario and a later reject-by-default
+	// scenario would silently change what the second scenario is actually
+	// comparing against.
+	newDisabledBaseline := func(t *testing.T) (stores *swarmStores, root string, sid uuid.UUID) {
+		t.Helper()
+		stores, err := openStores(memstore.New())
+		if err != nil {
+			t.Fatalf("openStores() error = %v", err)
+		}
+		root = t.TempDir()
+		access, cfg := headlessTestAccess(t, Config{}, root)
+		definitions, err := swarmDefinitions(&fakeLLM{}, testModel(), cfg, access)
+		if err != nil {
+			t.Fatalf("swarmDefinitions() error = %v", err)
+		}
+		assembly, err := buildRig(definitions, stores, root, cfg, false)
+		if err != nil {
+			t.Fatalf("buildRig() error = %v", err)
+		}
+		controller, err := assembly.NewSession(context.Background())
+		if err != nil {
+			t.Fatalf("NewSession() error = %v", err)
+		}
+		sid = controller.SessionID()
+		if err := controller.Shutdown(context.Background()); err != nil {
+			t.Fatalf("Shutdown() error = %v", err)
+		}
+		return stores, root, sid
 	}
-	root := t.TempDir()
 
-	access, cfg := headlessTestAccess(t, Config{}, root)
-	definitions, err := swarmDefinitions(&fakeLLM{}, testModel(), cfg, access)
-	if err != nil {
-		t.Fatalf("swarmDefinitions() error = %v", err)
-	}
-	assembly, err := buildRig(definitions, stores, root, cfg, false)
-	if err != nil {
-		t.Fatalf("buildRig() error = %v", err)
-	}
-	controller, err := assembly.NewSession(context.Background())
-	if err != nil {
-		t.Fatalf("NewSession() error = %v", err)
-	}
-	sid := controller.SessionID()
-	if err := controller.Shutdown(context.Background()); err != nil {
-		t.Fatalf("Shutdown() error = %v", err)
-	}
-
-	restoreWith := func(t *testing.T, permissionReview permissionReviewRegistration) error {
+	restoreWith := func(t *testing.T, stores *swarmStores, root string, sid uuid.UUID, permissionReview permissionReviewRegistration, allowMismatch bool) error {
 		t.Helper()
 		racc, rcfg := headlessTestAccess(t, Config{}, root)
 		rdefs, err := swarmDefinitions(&fakeLLM{}, testModel(), rcfg, racc)
@@ -462,7 +564,7 @@ func TestPermissionReviewConfigFingerprintChanges(t *testing.T) {
 			t.Fatalf("swarmDefinitions() error = %v", err)
 		}
 		rasm, err := buildRigForDelegationCaps(
-			rdefs, stores, root, rcfg, false,
+			rdefs, stores, root, rcfg, allowMismatch,
 			rig.DelegationLimits{Depth: operatorSpawnDepth, Quota: operatorSpawnQuota}, permissionReview,
 		)
 		if err != nil {
@@ -482,10 +584,6 @@ func TestPermissionReviewConfigFingerprintChanges(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newPermissionReviewRegistration() error = %v", err)
 	}
-	if err := restoreWith(t, enabled); err != nil {
-		t.Fatalf("restore under a DIFFERENT permission-review configuration (disabled -> enabled/default) error = %v, want a successful Info-level topology re-adoption", err)
-	}
-
 	strict, err := newPermissionReviewRegistration(Config{
 		PermissionReviewEnabled:      true,
 		PermissionReviewModel:        permissionReviewTestModel(),
@@ -494,11 +592,64 @@ func TestPermissionReviewConfigFingerprintChanges(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newPermissionReviewRegistration() error = %v", err)
 	}
-	if err := restoreWith(t, strict); err != nil {
-		t.Fatalf("restore under a DIFFERENT permission-review configuration (disabled -> enabled/strict) error = %v, want a successful Info-level topology re-adoption", err)
-	}
 
-	if err := restoreWith(t, permissionReviewRegistration{}); err != nil {
-		t.Fatalf("restore under the SAME (disabled) permission-review configuration failed: %v", err)
-	}
+	t.Run("disabled to enabled/default rejected by default", func(t *testing.T) {
+		t.Parallel()
+		stores, root, sid := newDisabledBaseline(t)
+		err := restoreWith(t, stores, root, sid, enabled, false)
+		var rejected *session.RestoreRejectedError
+		if !errors.As(err, &rejected) {
+			t.Fatalf("restore under a DIFFERENT permission-review configuration (disabled -> enabled/default) error = %T %v, want *session.RestoreRejectedError", err, err)
+		}
+		if !rejected.Assessment.AnyWarn() {
+			t.Fatalf("rejected.Assessment = %+v, want at least one Warn change", rejected.Assessment)
+		}
+		foundPermissionWarn := false
+		for _, change := range rejected.Assessment.Changes {
+			if change.Category == event.DriftPermission && change.Severity == event.DriftWarn {
+				foundPermissionWarn = true
+			}
+		}
+		if !foundPermissionWarn {
+			t.Fatalf("rejected.Assessment.Changes = %+v, want a DriftWarn change in category %q", rejected.Assessment.Changes, event.DriftPermission)
+		}
+	})
+
+	t.Run("disabled to enabled/default accepted with explicit override", func(t *testing.T) {
+		t.Parallel()
+		stores, root, sid := newDisabledBaseline(t)
+		// The existing, pre-established mechanism (SessionSelector.AllowConfigMismatch
+		// -> rig.WithAllowConfigMismatch): the SAME widening restore now succeeds
+		// when the caller opts in exactly as TestRestoreRejectsAccessProfileDrift's
+		// own access-profile case would.
+		if err := restoreWith(t, stores, root, sid, enabled, true); err != nil {
+			t.Fatalf("restore under a DIFFERENT permission-review configuration WITH AllowConfigMismatch error = %v, want success", err)
+		}
+	})
+
+	t.Run("disabled to enabled/strict rejected by default", func(t *testing.T) {
+		t.Parallel()
+		stores, root, sid := newDisabledBaseline(t)
+		err := restoreWith(t, stores, root, sid, strict, false)
+		var rejected *session.RestoreRejectedError
+		if !errors.As(err, &rejected) {
+			t.Fatalf("restore under a DIFFERENT permission-review configuration (disabled -> enabled/strict) error = %T %v, want *session.RestoreRejectedError", err, err)
+		}
+	})
+
+	t.Run("disabled to enabled/strict accepted with explicit override", func(t *testing.T) {
+		t.Parallel()
+		stores, root, sid := newDisabledBaseline(t)
+		if err := restoreWith(t, stores, root, sid, strict, true); err != nil {
+			t.Fatalf("restore under a DIFFERENT permission-review configuration (disabled -> enabled/strict) WITH AllowConfigMismatch error = %v, want success", err)
+		}
+	})
+
+	t.Run("disabled to disabled needs no override", func(t *testing.T) {
+		t.Parallel()
+		stores, root, sid := newDisabledBaseline(t)
+		if err := restoreWith(t, stores, root, sid, permissionReviewRegistration{}, false); err != nil {
+			t.Fatalf("restore under the SAME (disabled) permission-review configuration failed: %v", err)
+		}
+	})
 }

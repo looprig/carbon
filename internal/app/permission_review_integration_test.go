@@ -27,52 +27,49 @@ import (
 )
 
 // permission_review_integration_test.go is Task 24's end-to-end permission
-// review coverage. It builds real CodeRig sessions (real toolsets.go
-// access/gate wiring, a real confined sh -c executor, a real Bash tool call)
-// with a real classifier registration built through
-// newPermissionReviewRegistration — the exact composition production uses —
-// and drives them through the sessionadapter.Adapter public API (Submit,
-// Subscribe, RespondGate) exactly as the CLI/TUI does.
+// review coverage, upgraded by the Phase 6 spec-compliance review's follow-up
+// task once all THREE cross-cutting Harness blockers it found were fixed. It
+// builds real CodeRig sessions (real toolsets.go access/gate wiring, a real
+// confined sh -c executor, a real Bash tool call) with a real classifier
+// registration built through newPermissionReviewRegistration — the exact
+// composition production uses — and drives them through the
+// sessionadapter.Adapter public API (Submit, Subscribe, RespondGate) exactly
+// as the CLI/TUI does.
 //
-// IMPORTANT SCOPE NOTE, read before extending this file: at the time this
-// task was implemented, Harness's per-turn permission-REVIEW-CONTEXT capture
-// (internal/loopruntime/turn.go's turnConfig.reviewContext) is never
-// populated by any production code path in
-// github.com/looprig/harness-permission-classifier — confirmed by exhaustive
-// repo-wide search, and independently re-verified. That field gates whether
-// internal/sessionruntime.Session.StartPermissionReview ever calls into a
-// registered classifier at all; with it unset, StartPermissionReview
-// deliberately no-ops ("nothing to review" — internal/sessionruntime/
-// review_adapter.go). This is a DIFFERENT, separate gap from the two
-// documented addenda this task's brief describes (rig.WithPermissionReviewEvidence
-// + pkg/gate/evidence.go), which only fixed the CONSTRUCTION-time blocker
-// (a classifier-registered session previously failed 100% of the time at
-// NewSession). No Harness test anywhere (including internal/sessionruntime's
-// own "session-runtime layer" tests) exercises a real classifier inference
-// round trip triggered by a genuine Submit() either — they all hand-build a
-// gate.ReviewBasis and call the PRIVATE sessionruntime.Session.respondFromClassifier
-// directly, a seam CodeRig cannot reach (unexported, on an unexported type).
+// HISTORY, kept for context: at the time Task 24 was originally implemented,
+// Harness's per-turn permission-review-context capture
+// (internal/loopruntime/turn.go's turnConfig.reviewContext) was never
+// populated by any production code path, so a live classifier round trip
+// could not be triggered through CodeRig's public composition at all — every
+// scenario that would ideally prove "the classifier said X and CodeRig
+// auto-approved" had to fall back to a weaker proxy (a hand-built
+// gate.PermissionReviewSubject fed straight to gate.EvaluatePermissionAssessment,
+// or the real human RespondGate path standing in for the classifier path). All
+// three gaps that made that necessary are now closed:
+//   - Submit()-reachability: review-context capture is wired to production
+//     (github.com/looprig/harness-permission-classifier commits e3190b5f/8586b98b), so a
+//     registered classifier is genuinely invoked by a real Submit() ->
+//     Session.StartPermissionReview -> permissionReviewAdapter.review flow.
+//   - audit-publish (Phase 6 Finding 1, commit 9eae9681): PermissionReviewStarted/
+//     Completed now durably publish through Hub.PublishInternalEventChecked
+//     instead of unconditionally failing and faulting the session.
+//   - security ceiling (Phase 6 Finding 2, commit bed51463): CodeRig now
+//     supplies its OWN AccessProfile-derived ceiling via
+//     rig.WithPermissionReviewSecurityCeiling (wired in
+//     newPermissionReviewRegistration/permission_review.go's options()),
+//     instead of Harness stamping a fixed sentinel every real
+//     EvidenceContainmentVerifier check could never match.
 //
-// Consequently, a live classifier round trip literally cannot be triggered
-// through CodeRig's public composition today. Every test below that would
-// ideally prove "the classifier said X and CodeRig auto-approved" instead
-// proves the CLOSEST fully-real equivalent CodeRig's public API allows:
-//   - real session construction/start with a registered classifier + real
-//     evidence wiring (the actual thing the two documented addenda unblock);
-//   - CodeRig's OWN registered decision policy (via
-//     gate.EvaluatePermissionAssessment, fed a real subject/assessment pair,
-//     exactly Task 23's own permission_review_test.go pattern) correctly
-//     computing eligible/ineligible for each required assessment shape;
-//   - the REAL human-approval path (gate open -> RespondGate -> execution),
-//     which is the SAME gate.Evaluator.Resolve/grant-mint path a classifier
-//     response would also reach (harness's own
-//     TestRespondFromClassifierMintsGrantsThroughEvaluatorLikeHuman proves
-//     the classifier path and the human path converge on that one path) —
-//     so proving CodeRig's composition reaches it via the human path also
-//     proves the classifier path would, once wired.
-//
-// See this task's final report for a fuller account; this note exists so a
-// future reader is not left to rediscover the gap independently.
+// The scenarios below marked "LIVE" drive a real classifier round trip end
+// to end: a real command-safety Hustle, a scripted-but-wire-faithful
+// inference.Client standing in for the model, real evidence-tool execution
+// through the real classifiers/internal/evidence filesystem tools, and a
+// real gate.ResponseFromClassifier resolution — with no RespondGate call and
+// no hand-built subject/assessment shortcut anywhere in the scenario. The
+// remaining scenarios still use the policy-evaluation/human-path proxies
+// where a live round trip is not what that scenario is actually about (e.g.
+// "the strict policy rejects a medium-risk assessment" is a pure policy
+// question, not a review-context question).
 
 // ---- fixtures: fake operator inference client (drives a real Bash call) --
 
@@ -223,6 +220,22 @@ func newScriptedClassifierClient() *scriptedClassifierClient {
 // headless posture).
 func permissionReviewIntegrationAgent(t *testing.T, cfg Config, client inference.Client, interactive bool) *RuntimeAgent {
 	t.Helper()
+	return permissionReviewIntegrationAgentWithClassifier(t, cfg, client, client, interactive)
+}
+
+// permissionReviewIntegrationAgentWithClassifier is permissionReviewIntegrationAgent
+// generalized to accept a SEPARATE classifier inference client from the
+// operator's own inference client. permissionReviewIntegrationAgent (above)
+// reuses the SAME client for both roles — fine for every scenario that never
+// drives the classifier to a genuine terminal outcome (its Hustle either
+// never runs at all under the old construction-only scope, or errors out
+// harmlessly and leaves the gate for a human) — but a LIVE scenario that
+// asserts a real classifier verdict needs the classifier's OWN scripted
+// wire-contract client (scriptedClassifierClient or a purpose-built
+// variant), distinct from the operator's Bash-driving script, since the two
+// see structurally different request/response shapes.
+func permissionReviewIntegrationAgentWithClassifier(t *testing.T, cfg Config, operatorClient, classifierClient inference.Client, interactive bool) *RuntimeAgent {
+	t.Helper()
 	root := t.TempDir()
 	access, err := buildSessionAccess(cfg, root, interactive)
 	if err != nil {
@@ -231,11 +244,11 @@ func permissionReviewIntegrationAgent(t *testing.T, cfg Config, client inference
 	t.Cleanup(func() { _ = access.Close() })
 	cfg.AccessConfigRev = access.configRev
 
-	definitions, err := swarmDefinitions(client, testModel(), cfg, access)
+	definitions, err := swarmDefinitions(operatorClient, testModel(), cfg, access)
 	if err != nil {
 		t.Fatalf("swarmDefinitions() error = %v", err)
 	}
-	permissionReview, err := newPermissionReviewRegistration(cfg, client)
+	permissionReview, err := newPermissionReviewRegistration(cfg, classifierClient)
 	if err != nil {
 		t.Fatalf("newPermissionReviewRegistration() error = %v", err)
 	}
@@ -313,6 +326,35 @@ func noGateResolvedWithin(t *testing.T, sub event.Subscription, gateID gate.ID, 
 			}
 		case <-deadline:
 			return
+		}
+	}
+}
+
+// waitForClassifierGateResolution watches sub for the GateResolved event
+// covering gateID and asserts it carries gate.ResponseFromClassifier
+// provenance — never gate.ResponseFromUser — proving a real auto-approval
+// happened with no human RespondGate call anywhere in the scenario. It fails
+// (returns a non-nil error, since callers want a t.Fatalf with their own
+// context) if the gate instead resolves through a human, or does not resolve
+// within timeout at all.
+func waitForClassifierGateResolution(t *testing.T, ctx context.Context, sub event.Subscription, gateID gate.ID, timeout time.Duration) error {
+	t.Helper()
+	deadline := time.After(timeout)
+	for {
+		select {
+		case delivery := <-sub.Events():
+			resolved, ok := delivery.Event.(event.GateResolved)
+			if !ok || resolved.GateID != gateID {
+				continue
+			}
+			if resolved.Source.Kind != gate.ResponseFromClassifier {
+				return fmt.Errorf("gate %v resolved with source %+v, want Kind=%q (no human RespondGate was ever called in this scenario)", gateID, resolved.Source, gate.ResponseFromClassifier)
+			}
+			return nil
+		case <-deadline:
+			return fmt.Errorf("gate %v did not resolve within %v", gateID, timeout)
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 	}
 }
@@ -455,6 +497,205 @@ func TestPermissionReviewSafeCommandExecutesExactlyOnceOnApproval(t *testing.T) 
 	mustTurnDone(t, drainToTurnTerminal(t, ctx, sub))
 
 	mustExecutedExactlyOnce(t, client)
+}
+
+// TestPermissionReviewSafeCommandAutoApprovedEndToEnd is the LIVE upgrade of
+// this scenario, and the single most important test in this file: it is the
+// first place anywhere in this multi-phase feature that design's Acceptance
+// Criterion #1 ("a configured safe command is auto-approved once") is
+// verified genuinely end to end, with NO proxy, shortcut, or hand-built
+// subject/assessment anywhere in the path. A REAL command-safety classifier,
+// backed by a scripted inference.Client that speaks the classifier's exact
+// wire contract (scriptedClassifierClient/echoingClassifierAllowResponse —
+// Task 24's own fixtures, built for exactly this wire shape but never before
+// driven live), reviews a genuinely Gated Bash call through a real Submit(),
+// reports a low-risk allow verdict, and the resulting gate resolves with
+// gate.ResponseFromClassifier provenance — WITHOUT any test code ever
+// calling RespondGate. This single scenario exercises all three Phase 6
+// fixes together: the classifier is genuinely reachable from Submit() at
+// all; its ReviewContext now carries CodeRig's real security ceiling
+// instead of Harness's dead sentinel (Finding 2 — TestPermissionReviewEvidenceLookupLiveClassifierCallSucceeds
+// below is the one that actually exercises an evidence-tool call against
+// that ceiling); and the PermissionReviewCompleted audit event this review
+// produces durably publishes without faulting the session (Finding 1) —
+// proved here by a second, ordinary auto-approved turn succeeding
+// immediately afterward on the exact same session.
+func TestPermissionReviewSafeCommandAutoApprovedEndToEnd(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	const marker = "auto-approved-marker-7f3c1a"
+	operatorClient := &bashScript{command: "echo " + marker, marker: marker}
+	classifierClient := newScriptedClassifierClient()
+	cfg := readOnlyReviewConfig(true, false)
+	agent := permissionReviewIntegrationAgentWithClassifier(t, cfg, operatorClient, classifierClient, true)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	sub, err := agent.Subscribe(event.EventFilter{Enduring: event.LoopScope{All: true}})
+	if err != nil {
+		t.Fatalf("Subscribe() error = %v", err)
+	}
+	defer func() { _ = sub.Close() }()
+
+	runAutoApprovedTurn := func(t *testing.T, prompt string) {
+		t.Helper()
+		if _, err := agent.Submit(ctx, []content.Block{&content.TextBlock{Text: prompt}}); err != nil {
+			t.Fatalf("Submit() error = %v", err)
+		}
+		gateID, _ := permissionGateWait(t, ctx, sub, 10*time.Second)
+		if err := waitForClassifierGateResolution(t, ctx, sub, gateID, 10*time.Second); err != nil {
+			t.Fatalf("gate did not auto-resolve through the classifier: %v", err)
+		}
+		mustTurnDone(t, drainToTurnTerminal(t, ctx, sub))
+		mustExecutedExactlyOnce(t, operatorClient)
+	}
+
+	runAutoApprovedTurn(t, "run the safe command")
+
+	// Bug #1 regression check: a session that faulted while durably
+	// publishing the first review's audit trail would never reach a second,
+	// ordinary auto-approved turn. Reset the operator script's observation
+	// state (mustExecutedExactlyOnce compares against THIS turn's own call
+	// count/observed text, mirroring TestPermissionReviewApprovalNeverPersistsAutoAlwaysRule's
+	// reset-between-submits pattern) and drive a second turn on the SAME
+	// session to prove it.
+	operatorClient.mu.Lock()
+	operatorClient.calls = 0
+	operatorClient.observedToolText = ""
+	operatorClient.mu.Unlock()
+	runAutoApprovedTurn(t, "run the safe command again")
+}
+
+// ---- fixtures: evidence-lookup live classifier round trip ----------------
+
+// evidenceLookupClassifierClient is a fake inference.Client shaped exactly
+// like scriptedClassifierClient, but scripted to drive a REAL two-round
+// command-safety Hustle turn instead of an immediate final verdict: round 1
+// requests the real evidence_filesystem_stat evidence tool (proving the
+// tool loop, evidence access/containment authorization, and the real
+// *os.Root-confined filesystem read all execute for real — this is the
+// exact call that failed closed unconditionally before the Phase 6 Finding 2
+// SecurityCeiling fix); round 2 observes the tool's REAL result text
+// (captured via lastToolText, the same helper managed_delegation_test.go's
+// bashScript-driven scenarios use for the operator's own tool results) and
+// echoes the classifier's basis back into a low-risk allow verdict, reusing
+// echoingClassifierAllowResponse unchanged.
+type evidenceLookupClassifierClient struct {
+	mu                 sync.Mutex
+	statPath           string
+	calls              int
+	observedStatResult string
+}
+
+func (c *evidenceLookupClassifierClient) Invoke(_ context.Context, req inference.Request) (*inference.Response, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls++
+	if c.calls == 1 {
+		args, err := json.Marshal(struct {
+			Path string `json:"path"`
+		}{Path: c.statPath})
+		if err != nil {
+			return nil, err
+		}
+		return &inference.Response{
+			Message: &content.AIMessage{Message: content.Message{
+				Role: content.RoleAssistant,
+				Blocks: []content.Block{&content.ToolUseBlock{
+					ID: "evidence-stat-call-1", Name: "evidence_filesystem_stat", Input: json.RawMessage(args),
+				}},
+			}},
+			FinishReason: stream.FinishReasonToolUse,
+		}, nil
+	}
+	c.observedStatResult = lastToolText(req)
+	if len(req.Messages) == 0 {
+		return nil, errors.New("evidenceLookupClassifierClient: no input message")
+	}
+	user, ok := req.Messages[0].(*content.UserMessage)
+	if !ok || len(user.Blocks) == 0 {
+		return nil, errors.New("evidenceLookupClassifierClient: malformed input message")
+	}
+	text, ok := user.Blocks[0].(*content.TextBlock)
+	if !ok {
+		return nil, errors.New("evidenceLookupClassifierClient: input is not text")
+	}
+	out, err := echoingClassifierAllowResponse(text.Text)
+	if err != nil {
+		return nil, err
+	}
+	return &inference.Response{
+		Message:      &content.AIMessage{Message: content.Message{Role: content.RoleAssistant, Blocks: []content.Block{&content.TextBlock{Text: out}}}},
+		Usage:        &content.Usage{},
+		FinishReason: stream.FinishReasonStop,
+	}, nil
+}
+
+func (c *evidenceLookupClassifierClient) Stream(context.Context, inference.Request) (*stream.StreamReader[content.Chunk], error) {
+	return nil, errors.New("evidenceLookupClassifierClient.Stream not used (hustleruntime calls Invoke only)")
+}
+
+// TestPermissionReviewEvidenceLookupLiveClassifierCallSucceeds is the LIVE
+// upgrade of the evidence-lookup scenario, and the Phase 6 spec-compliance
+// review's Finding 2 regression proof driven for the first time through a
+// REAL classifier evidence-tool call rather than
+// TestPermissionReviewEvidenceLookupAccessAndContainmentApproveRealTargets's
+// hand-built gate.EvidenceContainmentPolicy. Before the SecurityCeiling fix
+// (commit bed51463), EVERY real evidence-tool call failed closed
+// unconditionally, because Harness stamped a fixed sentinel into
+// ReviewContext.SecurityCeiling that could never equal CodeRig's own
+// AccessProfile-derived ceiling. This test drives a real command-safety
+// classifier's Hustle to genuinely call the real evidence_filesystem_stat
+// tool — through the real hustleruntime evidence runner, the real
+// permissionReviewEvidenceAccess/permissionReviewEvidenceContainment CodeRig
+// wires via rig.WithPermissionReviewEvidence, and the real *os.Root-confined
+// filesystem tool implementation from
+// github.com/looprig/classifiers/internal/evidence — and asserts the REAL
+// stat result (not an error, not a synthetic fixture) reached the
+// classifier's second inference call, then that the whole review still
+// resolves the gate through the classifier, proving the ceiling fix
+// produces a genuinely USABLE review, not merely one that stops erroring.
+func TestPermissionReviewEvidenceLookupLiveClassifierCallSucceeds(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	const relPath = "config/legacy.yaml"
+	const fileBody = "old: true"
+
+	operatorClient := &bashScript{command: "echo evidence-lookup-exec-marker", marker: "evidence-lookup-exec-marker"}
+	classifierClient := &evidenceLookupClassifierClient{statPath: relPath}
+	cfg := readOnlyReviewConfig(true, false)
+	agent := permissionReviewIntegrationAgentWithClassifier(t, cfg, operatorClient, classifierClient, true)
+	writeEvidenceFile(t, agent.root, relPath, fileBody)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	sub, err := agent.Subscribe(event.EventFilter{Enduring: event.LoopScope{All: true}})
+	if err != nil {
+		t.Fatalf("Subscribe() error = %v", err)
+	}
+	defer func() { _ = sub.Close() }()
+
+	if _, err := agent.Submit(ctx, []content.Block{&content.TextBlock{Text: "run the command that needs an evidence check first"}}); err != nil {
+		t.Fatalf("Submit() error = %v", err)
+	}
+	gateID, _ := permissionGateWait(t, ctx, sub, 10*time.Second)
+	if err := waitForClassifierGateResolution(t, ctx, sub, gateID, 10*time.Second); err != nil {
+		t.Fatalf("gate did not auto-resolve through the classifier: %v", err)
+	}
+	mustTurnDone(t, drainToTurnTerminal(t, ctx, sub))
+	mustExecutedExactlyOnce(t, operatorClient)
+
+	classifierClient.mu.Lock()
+	calls := classifierClient.calls
+	observed := classifierClient.observedStatResult
+	classifierClient.mu.Unlock()
+	if calls != 2 {
+		t.Fatalf("classifier inference calls = %d, want exactly 2 (one evidence_filesystem_stat call, one final verdict)", calls)
+	}
+	if !strings.Contains(observed, "path: "+relPath) || !strings.Contains(observed, "exists: true") {
+		t.Fatalf("observed evidence-tool result = %q, want REAL stat output for %q (path/exists: true) — before the Phase 6 SecurityCeiling fix this call failed closed unconditionally", observed, relPath)
+	}
+	if strings.Contains(observed, "error") {
+		t.Fatalf("observed evidence-tool result = %q contains an error — the evidence-tool containment/access check failed", observed)
+	}
 }
 
 // permissionReviewSubjectFixtureForCommand is permissionReviewSubjectFixture
