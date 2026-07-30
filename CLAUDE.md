@@ -17,6 +17,72 @@ CodeRig is the reference coding Rig built from looprig modules. This repository 
 
 Do not add a generic agent registry or model tier catalog. The roster is a small fixed set of Loop definitions. Runtime choices belong in Loop modes and model effort. Do not reintroduce a confinement bridge, a security-limit ordinal, or any in-session authority-mutation surface.
 
+## Permission review
+
+CodeRig can optionally enable classifier-based automatic permission review
+(`internal/app/permission_review.go`, design doc
+`docs/plans/2026-07-27-permission-classifier-hustle-design.md` in the
+`harness` repository §19-20). It composes exactly one
+`github.com/looprig/classifiers/pkg/commandsafety` classifier over CodeRig's
+shared inference client and registers it with `harness/pkg/rig` via
+`rig.WithPermissionClassifiers`; harness/pkg/gate and pkg/hustle own the
+actual review mechanism and neutral domain (see that module's own
+`pkg/gate/README.md#permission-review` for the full story). CodeRig never
+duplicates ceiling-comparison/eligibility logic locally.
+
+- **Enable/disable** — `Config.PermissionReviewEnabled` (default `false`, so
+  a zero `Config` never auto-approves anything). There is no CLI flag for it
+  today; a caller embedding `coderig.Config` sets the field directly. When
+  disabled, `newPermissionReviewRegistration` returns the zero
+  (`enabled: false`) registration and `options()` returns `nil` — the
+  assembled rig is byte-for-byte the same as if permission review did not
+  exist.
+- **Model capability requirements** — `Config.PermissionReviewModel` is
+  required whenever `PermissionReviewEnabled` is true (rejected at
+  construction with `*PermissionReviewConfigError` otherwise). CodeRig never
+  reuses an operator Loop's current model for this; the classifier needs an
+  explicitly named model that supports tool use and structured output
+  together (`commandsafety.New` enforces this and fails construction if the
+  named model doesn't qualify).
+- **Evidence boundaries** — `permission_review_evidence.go` builds CodeRig's
+  own `gate.EvidenceAccessEvaluator`/`gate.EvidenceContainmentVerifier`,
+  bound to the session's selected `AccessProfile` as the one trusted
+  security ceiling (`evidenceCeilingFor`), and passes
+  `commandsafety.RequiredEvidenceKinds()` — never a hand-copied list — as the
+  allowlist. All three install together via `rig.WithPermissionReviewEvidence`.
+- **Human fallback** — every non-`allowed` classifier outcome (including any
+  construction or capability error) leaves CodeRig's ordinary interactive or
+  headless permission gate exactly as open as it is with review disabled.
+  Permission review can only ever narrow to one auto-approval; it cannot
+  deny, persist a rule, or widen the selected access profile.
+- **Audit/privacy** — CodeRig adds no permission-review-specific logging or
+  audit path of its own; the durable trail is entirely harness's internal,
+  secret-free `PermissionReviewStarted`/`PermissionReviewCompleted` events.
+  Never log secrets or raw command/evidence content in CodeRig's own code
+  paths that touch this feature, matching the existing "Security" rules
+  above.
+- **Policy tuning** — `Config.PermissionReviewStrictPolicy` selects between
+  two local decision policies (`permissionReviewPolicyFor`): the
+  Codex-compatible default (`gate.DefaultPermissionReviewPolicy`) or a
+  strictly tighter alternative that can only ever lower `MaximumAutoRisk`
+  and raise per-risk minimum authorization floors, never loosen either.
+  Ignored when `PermissionReviewEnabled` is false.
+- **Restore behavior** — permission review's identity (classifier
+  name/revision, policy revision, evidence catalog, security ceiling) is
+  part of the rig's configuration fingerprint. Restoring a session that was
+  opened with review disabled into a build where it is now enabled is a
+  rejected drift (harness's `pkg/gate/README.md#restore-behavior`) unless
+  the caller opts in via `SessionSelector.AllowConfigMismatch` on that
+  specific resume (`internal/app/persistence.go`'s `buildRigWithRegistration`
+  then passes Harness's blanket `rig.WithAllowConfigMismatch()`) — the same
+  existing mechanism CodeRig already uses for every other rejected-drift
+  case, not a new permission-review-specific path. Enabled→disabled and
+  same-configuration restores are unaffected.
+
+`make test-integration` (see "Commands" below) is the suite that actually
+proves this feature works end to end against a real classifier call; run it
+before any release touching permission review.
+
 ## Placement
 
 Keep behavior here when it is specific to a coding Rig, such as prompts, role tool selection, coding modes, model defaults, and product flags.
