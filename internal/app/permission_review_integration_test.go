@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -696,6 +698,188 @@ func TestPermissionReviewEvidenceLookupLiveClassifierCallSucceeds(t *testing.T) 
 	if strings.Contains(observed, "error") {
 		t.Fatalf("observed evidence-tool result = %q contains an error — the evidence-tool containment/access check failed", observed)
 	}
+}
+
+// ---- fixtures: TOCTOU symlink-swap live classifier round trip ------------
+
+// symlinkSwapClassifierClient is evidenceLookupClassifierClient's TOCTOU
+// twin: round 1 requests the real evidence_filesystem_stat tool against
+// statPath exactly like evidenceLookupClassifierClient does (the real
+// filesystem tool executes for real, and — this is what Addendum 4 adds —
+// its ObservedRequirement is recorded into this run's ObservationCollector
+// BEFORE this client is ever invoked again). Round 2, immediately before
+// producing the final low-risk allow verdict, physically swaps the SAME
+// on-disk target for a symlink pointing at different content — the exact
+// attack design §13.4's own worked example describes: the evidence a
+// classifier reasoned about is no longer the target the eventual
+// auto-approval would apply to. root MUST be set (t.Cleanup-safe: the
+// fixture's own field, set by the caller right after construction) before
+// the first Submit() that would reach round 2.
+type symlinkSwapClassifierClient struct {
+	mu       sync.Mutex
+	root     string
+	statPath string
+	calls    int
+	swapErr  error
+}
+
+func (c *symlinkSwapClassifierClient) Invoke(_ context.Context, req inference.Request) (*inference.Response, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls++
+	if c.calls == 1 {
+		args, err := json.Marshal(struct {
+			Path string `json:"path"`
+		}{Path: c.statPath})
+		if err != nil {
+			return nil, err
+		}
+		return &inference.Response{
+			Message: &content.AIMessage{Message: content.Message{
+				Role: content.RoleAssistant,
+				Blocks: []content.Block{&content.ToolUseBlock{
+					ID: "evidence-stat-call-1", Name: "evidence_filesystem_stat", Input: json.RawMessage(args),
+				}},
+			}},
+			FinishReason: stream.FinishReasonToolUse,
+		}, nil
+	}
+
+	// Round 2: the real evidence_filesystem_stat call above has ALREADY
+	// executed and its observation has ALREADY been recorded
+	// (hustleruntime.recordEvidenceObservation runs synchronously right after
+	// the tool call succeeds, several turns before this second Invoke is ever
+	// reached). Swap the observed file for a symlink RIGHT NOW: this is the
+	// TOCTOU window design §13.4 exists to close, reproduced for real between
+	// evidence-gathering and the classifier's own eventual verdict.
+	full := filepath.Join(c.root, c.statPath)
+	if err := os.Remove(full); err != nil {
+		c.swapErr = fmt.Errorf("symlinkSwapClassifierClient: remove original target: %w", err)
+		return nil, c.swapErr
+	}
+	elsewhere := filepath.Join(c.root, "elsewhere-swapped-in.txt")
+	if err := os.WriteFile(elsewhere, []byte("different contents entirely"), 0o600); err != nil {
+		c.swapErr = fmt.Errorf("symlinkSwapClassifierClient: write swap target: %w", err)
+		return nil, c.swapErr
+	}
+	if err := os.Symlink(elsewhere, full); err != nil {
+		c.swapErr = fmt.Errorf("symlinkSwapClassifierClient: symlink swap: %w", err)
+		return nil, c.swapErr
+	}
+
+	if len(req.Messages) == 0 {
+		return nil, errors.New("symlinkSwapClassifierClient: no input message")
+	}
+	user, ok := req.Messages[0].(*content.UserMessage)
+	if !ok || len(user.Blocks) == 0 {
+		return nil, errors.New("symlinkSwapClassifierClient: malformed input message")
+	}
+	text, ok := user.Blocks[0].(*content.TextBlock)
+	if !ok {
+		return nil, errors.New("symlinkSwapClassifierClient: input is not text")
+	}
+	out, err := echoingClassifierAllowResponse(text.Text)
+	if err != nil {
+		return nil, err
+	}
+	return &inference.Response{
+		Message:      &content.AIMessage{Message: content.Message{Role: content.RoleAssistant, Blocks: []content.Block{&content.TextBlock{Text: out}}}},
+		Usage:        &content.Usage{},
+		FinishReason: stream.FinishReasonStop,
+	}, nil
+}
+
+func (c *symlinkSwapClassifierClient) Stream(context.Context, inference.Request) (*stream.StreamReader[content.Chunk], error) {
+	return nil, errors.New("symlinkSwapClassifierClient.Stream not used (hustleruntime calls Invoke only)")
+}
+
+// TestPermissionReviewObservationSymlinkSwapBlocksAutoApprovalEndToEnd is
+// Addendum 4's own single most important test in this whole multi-phase
+// feature: the first and only place anywhere in this codebase that proves
+// design §13.4's TOCTOU gap is actually closed END TO END, not merely that
+// the pieces (permissionReviewEvidenceObservation's fingerprint formula,
+// its VerifyEvidenceObservations method) work in isolation.
+//
+// A REAL command-safety classifier gathers evidence via the REAL, real
+// *os.Root-confined evidence_filesystem_stat tool
+// (github.com/looprig/classifiers/internal/evidence) against a real file;
+// that tool's real ObservedRequirement records a real
+// gate.ObservationRequirement into the run's ObservationCollector
+// (Harness's own internal/hustleruntime, already verified). BEFORE the
+// classifier's own low-risk allow verdict ever reaches
+// respondFromClassifier, the test (standing in for an attacker who won a
+// real race) swaps the exact file the classifier reasoned about for a
+// symlink pointing at different content — physically, on the real
+// filesystem, through the fixture's own Invoke call, not a mocked
+// short-circuit.
+//
+// Before this addendum, verifyPermissionReviewObservations either did not
+// exist (no observation was ever recorded, so nothing was ever rechecked)
+// or CodeRig had not yet wired rig.WithPermissionReviewObservations (an
+// observation recorded with no verifier configured ALSO fails closed per
+// gates.go's own doc comment — but only once a consumer's verifier exists
+// to be missing). Either way, the swap above would have been invisible: the
+// classifier's allow recommendation would have auto-approved the gate
+// regardless of what the target actually was by the time of approval —
+// exactly the vulnerability design §13.4 describes. This test proves
+// CodeRig's real permissionReviewEvidenceObservation (wired through
+// newPermissionReviewRegistration/permission_review.go's options(), exactly
+// as production assembles it) now catches it: the gate does NOT resolve
+// through the classifier, stays open, and is still perfectly answerable by
+// a human afterward with no fault or corruption.
+func TestPermissionReviewObservationSymlinkSwapBlocksAutoApprovalEndToEnd(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	const relPath = "config/legacy.yaml"
+	const fileBody = "old: true"
+
+	operatorClient := &bashScript{command: "echo toctou-swap-marker", marker: "toctou-swap-marker"}
+	classifierClient := &symlinkSwapClassifierClient{statPath: relPath}
+	cfg := readOnlyReviewConfig(true, false)
+	agent := permissionReviewIntegrationAgentWithClassifier(t, cfg, operatorClient, classifierClient, true)
+	classifierClient.root = agent.root
+	writeEvidenceFile(t, agent.root, relPath, fileBody)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	sub, err := agent.Subscribe(event.EventFilter{Enduring: event.LoopScope{All: true}})
+	if err != nil {
+		t.Fatalf("Subscribe() error = %v", err)
+	}
+	defer func() { _ = sub.Close() }()
+
+	if _, err := agent.Submit(ctx, []content.Block{&content.TextBlock{Text: "run the command that needs an evidence check first"}}); err != nil {
+		t.Fatalf("Submit() error = %v", err)
+	}
+	gateID, _ := permissionGateWait(t, ctx, sub, 10*time.Second)
+
+	// The classifier still reaches and reports a low-risk allow verdict (the
+	// swap in symlinkSwapClassifierClient.Invoke never returns an error to the
+	// Hustle loop on the happy path) -- the assertion here is that the TOCTOU
+	// recheck silently drops that classifier-originated response rather than
+	// letting it claim the gate.
+	if err := waitForClassifierGateResolution(t, ctx, sub, gateID, 5*time.Second); err == nil {
+		t.Fatal("gate resolved through the classifier despite its observed evidence target being swapped for a symlink before the verdict reached respondFromClassifier -- the TOCTOU recheck failed to block it")
+	}
+	noGateResolvedWithin(t, sub, gateID, 1500*time.Millisecond)
+
+	classifierClient.mu.Lock()
+	swapErr := classifierClient.swapErr
+	calls := classifierClient.calls
+	classifierClient.mu.Unlock()
+	if swapErr != nil {
+		t.Fatalf("test fixture's own filesystem swap failed: %v (test setup broken, not a real TOCTOU-recheck result)", swapErr)
+	}
+	if calls != 2 {
+		t.Fatalf("classifier inference calls = %d, want exactly 2 (one evidence_filesystem_stat call, one final verdict)", calls)
+	}
+
+	// The gate must still be perfectly answerable by a human afterward --
+	// proving the blocked auto-approval left it open, not faulted/corrupted.
+	if err := respondApprove(t, ctx, agent, gateID); err != nil {
+		t.Fatalf("RespondGate() after the blocked classifier auto-approval error = %v, want a normal human resolution", err)
+	}
+	mustTurnDone(t, drainToTurnTerminal(t, ctx, sub))
+	mustExecutedExactlyOnce(t, operatorClient)
 }
 
 // permissionReviewSubjectFixtureForCommand is permissionReviewSubjectFixture

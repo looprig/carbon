@@ -63,6 +63,15 @@ type permissionReviewRegistration struct {
 	policy              gate.PermissionReviewPolicy
 	evidenceAccess      gate.EvidenceAccessEvaluator
 	evidenceContainment gate.EvidenceContainmentVerifier
+	// evidenceObservation is CodeRig's gate.EvidenceObservationVerifier
+	// (design §13.4, TOCTOU — Addendum 4, permission_review_observation.go),
+	// bound to the SAME ceiling value evidenceContainment uses. It independently
+	// rechecks every observation a target-sensitive evidence tool recorded
+	// during a review's evidence gathering, immediately before a
+	// classifier-originated auto-approval claims the gate, and installs via
+	// rig.WithPermissionReviewObservations alongside the other two evidence
+	// seams.
+	evidenceObservation gate.EvidenceObservationVerifier
 	evidenceKinds       []string
 	// securityCeiling is CodeRig's consumer-supplied effective security
 	// posture (rig.WithPermissionReviewSecurityCeiling), installed into
@@ -97,6 +106,11 @@ type permissionReviewRegistration struct {
 // rig.WithPermissionReviewEvidence, which Define requires whenever a
 // registered classifier's Definition needs evidence tools (every
 // command-safety classifier does).
+//
+// Finally, it builds permissionReviewEvidenceObservation
+// (permission_review_observation.go) bound to the EXACT SAME ceiling value
+// evidenceContainment uses — the TOCTOU recheck seam design §13.4 adds
+// (Addendum 4), installed via rig.WithPermissionReviewObservations.
 func newPermissionReviewRegistration(cfg Config, client inference.Client) (permissionReviewRegistration, error) {
 	if !cfg.PermissionReviewEnabled {
 		return permissionReviewRegistration{}, nil
@@ -131,6 +145,7 @@ func newPermissionReviewRegistration(cfg Config, client inference.Client) (permi
 		policy:              policy,
 		evidenceAccess:      newPermissionReviewEvidenceAccess(),
 		evidenceContainment: newPermissionReviewEvidenceContainment(ceiling),
+		evidenceObservation: newPermissionReviewEvidenceObservation(ceiling),
 		evidenceKinds:       commandsafety.RequiredEvidenceKinds(),
 		securityCeiling:     ceiling,
 	}, nil
@@ -171,6 +186,7 @@ func (r permissionReviewRegistration) options() []rig.Option {
 		rig.WithPermissionClassifiers(r.classifiers),
 		rig.WithPermissionReviewPolicy(r.policy),
 		rig.WithPermissionReviewEvidence(r.evidenceAccess, r.evidenceContainment, r.evidenceKinds),
+		rig.WithPermissionReviewObservations(r.evidenceObservation),
 		rig.WithPermissionReviewSecurityCeiling(r.securityCeiling),
 	}
 }

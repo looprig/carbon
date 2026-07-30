@@ -156,8 +156,8 @@ func TestPermissionReviewExplicitEnable(t *testing.T) {
 	if !registration.enabled {
 		t.Fatal("registration.enabled = false, want true")
 	}
-	if options := registration.options(); len(options) != 4 {
-		t.Fatalf("options() = %d options, want exactly 4 (classifiers + policy + evidence + security ceiling)", len(options))
+	if options := registration.options(); len(options) != 5 {
+		t.Fatalf("options() = %d options, want exactly 5 (classifiers + policy + evidence + observations + security ceiling)", len(options))
 	}
 
 	root := t.TempDir()

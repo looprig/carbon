@@ -127,16 +127,12 @@ func (v permissionReviewEvidenceContainment) VerifyEvidenceContainment(ctx conte
 		return errEvidenceContainmentCeiling
 	}
 
-	root := strings.TrimSpace(policy.ReadRoot)
-	if root == "" || !filepath.IsAbs(root) {
-		return errEvidenceContainmentAmbiguous
-	}
 	// Canonicalize the ROOT itself, not just each target: a mismatch here
 	// would falsely reject legitimate targets (or, worse, falsely accept an
 	// escape) if only one side of the later Rel comparison were resolved.
-	canonicalRoot, err := filepath.EvalSymlinks(root)
+	canonicalRoot, err := canonicalizeEvidenceReadRoot(policy.ReadRoot)
 	if err != nil {
-		return errEvidenceContainmentAmbiguous
+		return err
 	}
 
 	for _, requirement := range request.Requirements {
@@ -148,6 +144,26 @@ func (v permissionReviewEvidenceContainment) VerifyEvidenceContainment(ctx conte
 }
 
 var _ gate.EvidenceContainmentVerifier = permissionReviewEvidenceContainment{}
+
+// canonicalizeEvidenceReadRoot canonicalizes root (a gate.EvidenceContainmentPolicy's
+// ReadRoot) via filepath.EvalSymlinks, requiring it to be a non-empty
+// absolute path that exists. This is the ONE root-canonicalization both
+// permissionReviewEvidenceContainment.VerifyEvidenceContainment (above) and
+// permissionReviewEvidenceObservation.VerifyEvidenceObservations
+// (permission_review_observation.go) use — both verifiers share the exact
+// same notion of "the review workspace root" so the two can never
+// independently drift on what "contained" means.
+func canonicalizeEvidenceReadRoot(root string) (string, error) {
+	root = strings.TrimSpace(root)
+	if root == "" || !filepath.IsAbs(root) {
+		return "", errEvidenceContainmentAmbiguous
+	}
+	canonicalRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", errEvidenceContainmentAmbiguous
+	}
+	return canonicalRoot, nil
+}
 
 // verifyRequirementContainment resolves ONE requirement's target against
 // canonicalRoot (already symlink-resolved) and fails closed unless the
