@@ -9,16 +9,16 @@ tool (
 )
 
 require (
-	github.com/looprig/classifiers v0.0.0
+	github.com/looprig/classifiers v0.1.0
 	github.com/looprig/core v0.4.0
-	github.com/looprig/fsstore v0.2.0
-	github.com/looprig/harness v0.12.0
-	github.com/looprig/inference v0.3.1-0.20260718005749-13e4d7f173b3
-	github.com/looprig/llm v0.3.0
-	github.com/looprig/sandbox v0.1.0
-	github.com/looprig/storage v0.2.0
-	github.com/looprig/tools v0.1.0
-	github.com/looprig/tui v0.8.0
+	github.com/looprig/fsstore v0.3.0
+	github.com/looprig/harness v0.18.0
+	github.com/looprig/inference v0.6.0
+	github.com/looprig/llm v0.4.0
+	github.com/looprig/sandbox v0.4.0
+	github.com/looprig/storage v0.3.0
+	github.com/looprig/tools v0.5.0
+	github.com/looprig/tui v0.12.0
 )
 
 require (
@@ -107,21 +107,4 @@ require (
 	google.golang.org/protobuf v1.36.11 // indirect
 	honnef.co/go/tools v0.7.0 // indirect
 	kernel.org/pub/linux/libs/security/libcap/psx v1.2.77 // indirect
-)
-
-// Local, unpublished/private looprig modules resolved via sibling checkouts under
-// /Users/ipotter/code/looprig. These modules are private (SSH auth) and there is no git
-// insteadOf config, so `go` cannot fetch them over HTTPS — the local replaces are load-bearing
-// for every offline build (GOWORK=off GOPROXY=off GOPRIVATE=github.com/looprig/*).
-replace (
-	github.com/looprig/classifiers => ../classifiers
-	github.com/looprig/core => ../core
-	github.com/looprig/fsstore => ../fsstore
-	github.com/looprig/harness => ../harness-permission-classifier
-	github.com/looprig/inference => ../inference
-	github.com/looprig/llm => ../llm
-	github.com/looprig/sandbox => ../sandbox
-	github.com/looprig/storage => ../storage
-	github.com/looprig/tools => ../tools
-	github.com/looprig/tui => ../tui
 )
