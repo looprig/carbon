@@ -244,6 +244,34 @@ func TestSwarmDefinitionsAntiDrift(t *testing.T) {
 	}
 }
 
+func TestSwarmTaskToolRoster(t *testing.T) {
+	t.Parallel()
+	defs := swarmDefs(t, Config{})
+	for _, definition := range defs[1:] {
+		t.Run(string(definition.Name()), func(t *testing.T) {
+			assertTaskToolRoster(t, definition.FingerprintInitial().ToolNames)
+		})
+	}
+}
+
+func assertTaskToolRoster(t *testing.T, names []string) {
+	t.Helper()
+	want := []string{"TaskCreate", "TaskGet", "TaskList", "TaskUpdate"}
+	got := make([]string, 0, len(want))
+	for _, name := range names {
+		if strings.HasPrefix(name, "Task") {
+			got = append(got, name)
+		}
+		if name == "Todo" {
+			t.Errorf("tool roster contains removed Todo tool: %v", names)
+		}
+	}
+	sort.Strings(got)
+	if !slices.Equal(got, want) {
+		t.Errorf("task tool roster = %v, want exactly %v", got, want)
+	}
+}
+
 // TestReviewerLeafIsReadOnly proves the reviewer leaf carries no write/edit/Subagent tools:
 // its tool policy differs from the operator's, and it declares no delegates.
 func TestReviewerLeafIsReadOnly(t *testing.T) {

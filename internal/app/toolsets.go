@@ -189,7 +189,7 @@ func operatorToolDefinitions(set *sandbox.ExecutorSet, client *http.Client, skil
 		bashDefinition(set),
 		tools.WebSearchDefinition(websearch.NewDuckDuckGoProvider(client)),
 		tools.FetchDefinition(client),
-		tools.TodoDefinition(),
+		tools.TaskDefinitions(),
 		tools.AskUserDefinition(),
 	}
 	if skillTool != nil {
@@ -209,7 +209,7 @@ func reviewerToolDefinitions(set *sandbox.ExecutorSet, skillTool tool.Definition
 		tools.GlobDefinition(guard),
 		tools.GrepDefinition(guard),
 		bashDefinition(set),
-		tools.TodoDefinition(),
+		tools.TaskDefinitions(),
 		tools.AskUserDefinition(),
 	}
 	if skillTool != nil {

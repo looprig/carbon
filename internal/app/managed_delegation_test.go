@@ -64,7 +64,11 @@ func (s *managedScript) Stream(ctx context.Context, req inference.Request) (*str
 }
 
 func toolCall(id, input string) []content.Chunk {
-	return []content.Chunk{&content.ToolUseChunk{Index: 0, ID: id, Name: "Subagent", InputJSON: input}}
+	return namedToolCall(id, "Subagent", input)
+}
+
+func namedToolCall(id, name, input string) []content.Chunk {
+	return []content.Chunk{&content.ToolUseChunk{Index: 0, ID: id, Name: name, InputJSON: input}}
 }
 
 func finalText(text string) []content.Chunk { return []content.Chunk{&content.TextChunk{Text: text}} }
@@ -162,6 +166,14 @@ func toolNamesFromRequest(req inference.Request) []string {
 	return names
 }
 
+func assertTaskToolsAdvertised(t *testing.T, req inference.Request) {
+	t.Helper()
+	assertTaskToolRoster(t, toolNamesFromRequest(req))
+	if slices.Contains(toolNamesFromRequest(req), "Todo") {
+		t.Errorf("inference request advertises removed Todo tool: %v", toolNamesFromRequest(req))
+	}
+}
+
 // approveAllAccessGate is a trivial loop.AccessGate that approves every request.
 // Focused delegation-topology tests use it where the gate itself is not under
 // test (delegation is driven directly through the rig-bound controller).
@@ -191,6 +203,85 @@ func TestManagedSubagentAutoAllowed(t *testing.T) {
 	agent := newTestAgent(t, client, Config{})
 	if got := runManagedTurn(t, agent, "go"); got != "parent done" {
 		t.Fatalf("managed turn final = %q, want the Subagent to be auto-allowed and the turn to complete", got)
+	}
+}
+
+func TestManagedTaskToolsAreLoopScoped(t *testing.T) {
+	t.Parallel()
+	primaryStep := 0
+	operatorStep := 0
+	reviewerStep := 0
+	var primaryList, operatorList, reviewerList string
+	client := &managedScript{}
+	client.fn = func(_ context.Context, req inference.Request) ([]content.Chunk, error) {
+		assertTaskToolsAdvertised(t, req)
+		switch {
+		case strings.Contains(req.System, operatorDelegation):
+			switch primaryStep {
+			case 0:
+				primaryStep++
+				return namedToolCall("primary-create", "TaskCreate", `{"subject":"primary task","description":"primary work"}`), nil
+			case 1:
+				primaryStep++
+				return toolCall("start-operator", `{"agent":"operator","message":"operator work","wait":true}`), nil
+			case 2:
+				primaryStep++
+				return namedToolCall("primary-list", "TaskList", `{}`), nil
+			case 3:
+				primaryList = lastToolText(req)
+				if !strings.Contains(primaryList, "primary task") || strings.Contains(primaryList, "operator task") {
+					return nil, fmt.Errorf("primary TaskList result = %q, want only primary task", primaryList)
+				}
+				primaryStep++
+				return toolCall("primary-reviewer", `{"agent":"reviewer","message":"review","wait":true}`), nil
+			case 4:
+				primaryStep++
+				return finalText("primary done"), nil
+			default:
+				return nil, fmt.Errorf("unexpected primary inference step %d", primaryStep)
+			}
+		case strings.Contains(req.System, `<role name="reviewer">`):
+			switch reviewerStep {
+			case 0:
+				reviewerStep++
+				return namedToolCall("reviewer-list", "TaskList", `{}`), nil
+			case 1:
+				reviewerList = lastToolText(req)
+				if reviewerList != `{"tasks":[]}` {
+					return nil, fmt.Errorf("reviewer TaskList result = %q, want empty graph", reviewerList)
+				}
+				reviewerStep++
+				return finalText("reviewer done"), nil
+			default:
+				return nil, fmt.Errorf("unexpected reviewer inference step %d", reviewerStep)
+			}
+		default:
+			switch operatorStep {
+			case 0:
+				operatorStep++
+				return namedToolCall("operator-list", "TaskList", `{}`), nil
+			case 1:
+				operatorList = lastToolText(req)
+				if operatorList != `{"tasks":[]}` {
+					return nil, fmt.Errorf("operator TaskList result = %q, want empty graph", operatorList)
+				}
+				operatorStep++
+				return namedToolCall("operator-create", "TaskCreate", `{"subject":"operator task","description":"operator work"}`), nil
+			case 2:
+				operatorStep++
+				return finalText("operator done"), nil
+			default:
+				return nil, fmt.Errorf("unexpected operator inference step %d", operatorStep)
+			}
+		}
+	}
+
+	agent := newTestAgent(t, client, Config{})
+	if got := runManagedTurn(t, agent, "create and delegate"); got != "primary done" {
+		t.Fatalf("primary final = %q, want primary done", got)
+	}
+	if primaryStep != 5 || operatorStep != 3 || reviewerStep != 2 {
+		t.Fatalf("steps primary=%d operator=%d reviewer=%d, want 5/3/2", primaryStep, operatorStep, reviewerStep)
 	}
 }
 
