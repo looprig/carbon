@@ -268,6 +268,25 @@ func TestManagedTaskToolsAreLoopScoped(t *testing.T) {
 				operatorStep++
 				return namedToolCall("operator-create", "TaskCreate", `{"subject":"operator task","description":"operator work"}`), nil
 			case 2:
+				var created struct {
+					Task struct {
+						ID      string `json:"id"`
+						Subject string `json:"subject"`
+					} `json:"task"`
+				}
+				if err := json.Unmarshal([]byte(lastToolText(req)), &created); err != nil {
+					return nil, fmt.Errorf("operator TaskCreate result is not JSON: %w", err)
+				}
+				if created.Task.ID == "" || created.Task.Subject != "operator task" {
+					return nil, fmt.Errorf("operator TaskCreate result = %+v, want created operator task", created)
+				}
+				operatorStep++
+				return namedToolCall("operator-list-after-create", "TaskList", `{}`), nil
+			case 3:
+				operatorList = lastToolText(req)
+				if !strings.Contains(operatorList, "operator task") || strings.Contains(operatorList, "primary task") {
+					return nil, fmt.Errorf("operator TaskList after create = %q, want only operator task", operatorList)
+				}
 				operatorStep++
 				return finalText("operator done"), nil
 			default:
@@ -280,8 +299,8 @@ func TestManagedTaskToolsAreLoopScoped(t *testing.T) {
 	if got := runManagedTurn(t, agent, "create and delegate"); got != "primary done" {
 		t.Fatalf("primary final = %q, want primary done", got)
 	}
-	if primaryStep != 5 || operatorStep != 3 || reviewerStep != 2 {
-		t.Fatalf("steps primary=%d operator=%d reviewer=%d, want 5/3/2", primaryStep, operatorStep, reviewerStep)
+	if primaryStep != 5 || operatorStep != 4 || reviewerStep != 2 {
+		t.Fatalf("steps primary=%d operator=%d reviewer=%d, want 5/4/2", primaryStep, operatorStep, reviewerStep)
 	}
 }
 
