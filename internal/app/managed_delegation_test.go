@@ -576,8 +576,8 @@ func TestRestoredDelegateComposed(t *testing.T) {
 	if got := runManagedTurn(t, restored, "continue"); got != "restored parent final" {
 		t.Fatalf("restored primary final = %q", got)
 	}
-	if !strings.Contains(unrelatedResult, "is not owned by this loop") {
-		t.Fatalf("unrelated delegate result = %q", unrelatedResult)
+	if unrelatedResult != "error: subagent request failed" {
+		t.Fatalf("unrelated delegate result = %q, want bounded failure", unrelatedResult)
 	}
 }
 
