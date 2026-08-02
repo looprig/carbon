@@ -321,7 +321,7 @@ func TestACPCompositionRestoresCodexRuntimeThroughCurrentCatalog(t *testing.T) {
 		switch ev := raw.(type) {
 		case event.LoopStarted:
 			if ev.LoopID == childID {
-			sawStarted = ev.AgentRuntime != nil && ev.AgentRuntime.Harness == "codex" && ev.AgentRuntime.Profile == "acp/codex" && ev.AgentRuntime.CredentialMode == string(loop.CredentialGatewayBacked) && ev.AgentRuntime.ModelAlias == "gpt-5.6-luna@max"
+				sawStarted = ev.AgentRuntime != nil && ev.AgentRuntime.Harness == "codex" && ev.AgentRuntime.Profile == "acp/codex" && ev.AgentRuntime.CredentialMode == string(loop.CredentialGatewayBacked) && ev.AgentRuntime.ModelAlias == "gpt-5.6-luna@max"
 			}
 		case event.LoopAgentSessionBound:
 			if ev.LoopID == childID && ev.ACPSessionID == "acp-live-session" {
