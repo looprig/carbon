@@ -223,7 +223,7 @@ func TestNewACPCompositionGatewayPreflightFiltersUnsupportedClaudeAliases(t *tes
 				if !containsString(probe.Models, "sonnet-5@high") || !containsString(probe.Models, "sonnet-5@max") {
 					t.Fatalf("Claude preflight models = %#v, want concrete effort aliases", probe.Models)
 				}
-				return ACPPreflightResult{Ready: true, AdvertisedModels: []string{"sonnet-5", "sonnet-5@high"}}
+				return ACPPreflightResult{Ready: true, AdvertisedModels: []string{"sonnet-5", "sonnet-5@high", "fable-5@high"}}
 			}
 			return ACPPreflightResult{Ready: true}
 		},

@@ -391,12 +391,10 @@ func filterACPPreflightCatalog(catalog ACPCompiledCatalog, decisions map[loop.Ag
 					continue
 				}
 				if !containsModelEffort(retainedEfforts, option.DefaultEffort) {
-					if entry.NeedsSmallModel && option.Alias == entry.SmallModel {
-						// Claude's small model is fixed to its default target. A
-						// concrete non-default route cannot satisfy that contract.
-						continue
-					}
-					option.DefaultEffort = retainedEfforts[0]
+					// The default concrete target is part of the catalog contract.
+					// Promoting a preflighted non-default route would derive a new
+					// bare alias that the adapter never advertised.
+					continue
 				}
 				option.Efforts = retainedEfforts
 			case loop.CredentialNativeAuth:
