@@ -2,359 +2,227 @@
 
 **Date:** 2026-08-01
 
+**Revised:** 2026-08-02
+
 **Status:** Approved
 
 ## Goal
 
-Replace CodeRig's current operator/operator-primary/reviewer topology with three
-named agents—`planner`, `builder`, and `reviewer`—that can each run as a primer
-or be selected as a delegated role. Start every session with `builder` active,
-while preserving the TUI's existing loop footer as the way a user moves among
-the three primer conversations.
+CodeRig has exactly three named agents—`planner`, `builder`, and `reviewer`—and
+starts every session with `builder` active. All three are native primer Loops and
+legal delegated roles. The existing TUI loop footer remains the agent switcher.
 
-Native primer Loops use LM Studio. Delegated children use ACP only, through
-either Claude Code or Codex, in one of two credential modes: the harness's
-**own account** (its native subscription or login, serving that harness's own
-model catalogue) or a **gateway-backed** target for any provider CodeRig holds
-direct API credentials for. The ACP child adapter is the
-`foreignloops/driver/acp` driver, so CodeRig takes a foreignloops dependency
-for delegated children; it never constructs the direct-CLI foreignloops
-drivers or MCP agent transport.
+Delegated children run through ACP using Claude Code or Codex. Gateway-backed
+and native primer model availability is machine configuration, not a compiled Go
+table. CodeRig loads it once from:
 
-This design composes the generic Subagent runtime-selection work specified in
-Harness. It does not redesign the Task/Todo tool.
+```text
+~/.looprig/models.json
+```
 
-Coordinated development uses the checked-in root `go.work`. Implementation must
-not temporarily pin unpublished sibling commits or versions in component
-`go.mod` files. Published dependency-version adoption remains explicit release
-work after the providing module is released.
+The file may contain API keys in this iteration. OAuth and harness-native login
+discovery are deferred. CodeRig validates the file, binds credentials directly
+to provider clients, discards them from all public and durable projections, and
+compiles one immutable, secret-free runtime catalogue.
+
+Workspace permission decisions remain separate and workspace-specific:
+
+```text
+~/.looprig/workspaces/<sha256(canonical-workspace)>/permissions.json
+```
+
+This design composes Harness's generic Subagent runtime-selection work and does
+not redesign Task/Todo or the permission system.
 
 ## Decisions
 
-- The product has exactly three agent definitions: `planner`, `builder`, and
-  `reviewer`.
-- All three definitions are primers and legal Subagent targets.
-- `builder` is the initial active primer.
-- Primers are native Harness Loops backed by LM Studio in this iteration.
-- Delegated children are ACP-backed Loops only.
-- The supported ACP harnesses are `claude-code` and `codex`.
-- Every ACP child runs in exactly one credential mode: `native-auth` (the
-  harness's own subscription/login and its own model catalogue) or
-  `gateway-backed` (a target CodeRig holds direct API credentials for).
-- Gateway-backed targets may be any provider CodeRig owns direct API access
-  to — Anthropic, OpenAI, OpenRouter, Bedrock, Phala, LM Studio, or another
-  configured provider — subject to the Inference module having a client for
-  it.
-- A gateway-backed target is admitted only where a real credential and client
-  exist; a native-auth child is confined to its own harness's models. Cross-
-  harness reach into another vendor's subscription models is impossible and
-  is never advertised.
-- Harness aliases, model aliases, and effort are selected per child Loop.
-- Provider identity is private routing metadata; it is not the ACP harness and
-  is not exposed as a model-facing Subagent parameter.
-- ACP remains optional to Harness and the TUI. CodeRig requires it only for
-  delegated-child construction.
-- The existing TUI loop footer remains the agent switcher. There is no new Agent
-  tray and no `/agent` slash command in this iteration.
-- The current Task/Todo work is out of scope.
+- The fixed role roster and role policies remain in CodeRig source.
+- Model rows, provider targets, credentials, effort choices, and model defaults
+  come from `~/.looprig/models.json`; no production model row is hard-coded.
+- Model configuration is machine-wide and shared by all workspaces for the same
+  OS account. Permission approvals remain isolated per canonical workspace.
+- `models.json` supports API-key and no-auth targets. OAuth, subscription-login
+  discovery, Bedrock SigV4, and other credential mechanisms are deferred until
+  they receive explicit schema and client-construction support.
+- A missing `models.json` is valid: CodeRig has no configured gateway models and
+  reports a bounded capability error when no usable primer/default exists.
+- A present but malformed or insecure `models.json` fails startup. CodeRig never
+  partially accepts a malformed file.
+- All three native primers use one configured `primer_default` in this release.
+  The schema marks other models as primer-capable for future selection, but the
+  TUI must advertise only choices that the current runtime can actually switch.
+- Delegated children are ACP-backed only. Claude Code and Codex may use any
+  configured model marked for delegation when its connector and gateway route
+  pass preflight.
+- ACP children remain posture-only in this release. They do not consult or
+  modify CodeRig's interactive permission file. A role/harness combination is
+  admitted only if the connector can enforce its non-interactive posture.
+- Provider identity, endpoint, exact model ID, and credentials are private
+  routing data. The Subagent surface exposes only harness, alias, and effort.
+- Restore never silently substitutes a model, credential mode, effort, or
+  harness when configuration has changed.
 
-## Terminology and Ownership
+## Ownership
 
-An **agent definition** is a CodeRig role: identity, system instructions,
-capability requirements, modes, access posture, and delegation policy.
-
-A **Loop** is one live or restored conversation executing an agent definition.
-The same `builder` definition can therefore back one primer Loop and many child
-Loops without making "agent" a first-class Harness runtime object.
-
-An **agent harness** is the program driving an ACP child, currently Claude Code
-or Codex. It is not a model provider.
-
-A **model target** is the private destination selected by a stable model alias.
-Its provider/client, target API format, exact provider model ID, URL, and
-credentials stay behind the gateway registry.
-
-Ownership remains layered:
-
-| Module | Responsibility |
+| Owner | Responsibility |
 |---|---|
-| CodeRig | Agent roster, personas, native primer model policy, curated profiles, admitted ACP/model/effort combinations, defaults, and access posture |
-| Harness | Generic parent-scoped Subagent selection, child lifecycle, durability, quotas, and protocol-neutral adapter backend seam |
-| `foreignloops/driver/acp` | Adapt `acp/client` and `acp/launch` into the foreignloops `loop.Backend` live/restore construction |
-| `acp/launch` | Safely launch and configure Claude Code or Codex ACP processes and bind them to the gateway |
-| Inference gateway | Resolve harness-facing aliases and translate ingress requests to the selected target client's API format |
-| TUI | Present Loop conversations, footer focus, focused submission, and optional per-Loop runtime controls |
+| CodeRig | Role roster and prompts, global model-config schema and loader, client construction, defaults, access profiles, and catalogue compilation |
+| Harness | Parent-scoped Subagent selection, child lifecycle, durability, quotas, and protocol-neutral builder registry |
+| `foreignloops/driver/acp` | Adapt ACP sessions to the foreign Loop backend contract |
+| `acp/launch` | Launch/configure Claude Code or Codex and apply its role posture |
+| Inference/LLM | Validate model/provider combinations, construct supported clients, translate gateway ingress, and enforce target effort |
+| Tools/Harness gate | Interactive permission decisions and persisted workspace rules for native Loops |
+| TUI | Loop focus, primer switching, runtime controls, and permission diagnostics |
 
-Harness must not import ACP or know Claude Code/Codex configuration formats.
-ACP packages must not own CodeRig's role catalogue. CodeRig compiles one frozen
-catalogue into both gateway routes and Harness Subagent runtime profiles so the
-advertised choices cannot drift from executable choices.
+Harness must not read `models.json`, import ACP, or know provider configuration.
+ACP packages must not own CodeRig roles or credentials. CodeRig loads the file at
+its process-composition boundary and compiles the existing Harness runtime
+catalogue plus fixed gateway targets from the same normalized input.
 
-## Agent Roster
+## Filesystem Layout and Trust Boundaries
 
-### Planner
+`~/.looprig/models.json` is user-owned machine configuration. It is deliberately
+outside every repository so it cannot be committed accidentally or exposed as
+ordinary workspace content. CodeRig resolves the home directory with
+`os.UserHomeDir`; it never interprets `~` itself.
 
-The planner investigates before execution. Its system prompt emphasizes:
+When the file exists, CodeRig requires:
 
-- repository and architecture exploration;
-- external research when repository evidence is insufficient;
-- decomposition into bounded, independently verifiable work;
-- explicit assumptions and evidence-backed synthesis;
-- delegation to planner, builder, or reviewer when useful;
-- no workspace mutation.
+- a regular file, not a directory, device, or named pipe;
+- no symbolic link at the final path;
+- on Unix, no group or other permission bits (`mode & 0077 == 0`), normally
+  mode `0600`;
+- a bounded size of at most 1 MiB;
+- UTF-8 JSON with exactly one top-level value and no trailing data;
+- schema version `1` and no unknown fields.
 
-Its native tool posture is read/research oriented: ReadFile, Glob, Grep,
-read-only terminal commands, WebSearch, Fetch, Task, AskUser, optional Skill,
-and the managed Subagent tool. Its access gate must reject workspace mutation.
+CodeRig only reads this file. It does not create, rewrite, chmod, or migrate it.
+Those actions require a separate explicit configuration command in the future.
 
-### Builder
-
-The builder owns implementation. Its system prompt emphasizes:
-
-- locating and fixing the root cause;
-- making focused edits that fit surrounding code;
-- executing commands and debugging failures;
-- using research only when local evidence is insufficient;
-- testing from narrow checks to broader verification;
-- delegating investigation or review while retaining end-to-end ownership.
-
-Its native tool posture includes ReadFile, WriteFile, EditFile, Glob, Grep,
-terminal execution, WebSearch, Fetch, Task, AskUser, optional Skill, and the
-managed Subagent tool.
-
-### Reviewer
-
-The reviewer independently checks work and reports findings without editing. Its
-system prompt emphasizes:
-
-- correctness, security, compatibility, and maintainability review;
-- targeted tests, builds, static checks, and terminal inspection;
-- validation of claimed behavior and failure cases;
-- prioritized findings with concrete file/symbol evidence;
-- no workspace mutation.
-
-Its native tool posture includes ReadFile, Glob, Grep, read-only/test terminal
-execution, Task, AskUser, optional Skill, and the managed Subagent tool. It does
-not receive WriteFile or EditFile, and its access profile must enforce the same
-boundary for terminal commands.
-
-### Topology and recursion
-
-CodeRig passes all three definitions to `rig.WithPrimers` and selects `builder`
-with `rig.WithActivePrimer`. Each definition declares all three agent names as
-legal delegates and uses managed delegation, so the Subagent tool is
-structurally injected rather than manually wired.
-
-The session's existing depth and total-spawn quotas remain hard backstops.
-CodeRig initially retains the current bounded, shallow delegation policy unless
-an implementation task deliberately changes the tested policy. A definition's
-presence in both primer and delegate catalogues does not create a global agent
-registry and does not bypass the parent-scoped delegate check.
-
-## Native Primer Models
-
-All three primer Loops use CodeRig's normal Harness backend and LM Studio
-client. The session opens with:
-
-- default: `deepseek-v4-flash`, resolved at startup to the loaded
-  DeepSeek-V4-Flash-0731 server identifier;
-- alternative: `gemma-4-31b`, resolved at startup to the loaded Gemma 4 31B IT
-  server identifier.
-
-The provider's exact served ID is not hard-coded from a model-card repository
-name. CodeRig queries LM Studio's model endpoint, matches an explicit configured
-alias to one unique loaded model, validates capabilities/context, and fails
-startup on absence or ambiguity. DeepSeek Flash is the default for new primer
-Loops; Gemma is selectable per primer through the existing `/model` runtime
-control.
-
-Local models initially advertise only `none` effort unless the loaded model,
-Inference client, and request codec can truthfully enforce another effort. The
-catalogue never presents decorative effort choices that collapse to the same
-request.
-
-ACP-backed primary Loops are intentionally deferred. The generic adapter seam
-must not prevent that later extension, but CodeRig does not launch its three
-primers through ACP in this release.
-
-## Credential Modes
-
-An ACP child reaches models one of two ways, fixed per child at start and
-pinned for its lifetime.
-
-**`native-auth`** — the child runs on the agent harness's own account: Claude
-Code with its Claude subscription/login, Codex with its ChatGPT/Codex login.
-The harness talks to its vendor directly with its own client identity, so:
-
-- no gateway is started, bound, or borrowed for that child;
-- the selectable models are exactly that harness's own catalogue, and only
-  its vendor's models — a Claude Code child cannot reach an OpenAI model this
-  way, and vice versa;
-- effort is expressible only through what the connector itself advertises
-  (the ACP thought-level config option, a Codex reasoning-effort launch
-  setting); where the connector cannot express it, effort is not advertised
-  for that tuple, per the Harness design's admission rule;
-- the gateway-side guarantees do not apply: no target-authoritative effort,
-  no strict alias enforcement, no gateway usage attribution.
-
-**`gateway-backed`** — the child is pointed at its own loopback gateway and
-CodeRig's own credentials serve the traffic. Any provider CodeRig holds
-direct API access to may be a target: Anthropic, OpenAI, OpenRouter,
-Bedrock, Phala, LM Studio, or another provider the Inference module has a
-client for. Because the gateway translates dialects, a gateway-backed target
-is reachable from either ACP ingress — this is where the cross-dialect matrix
-lives (Codex ingress onto an Anthropic target, Claude Code ingress onto an
-OpenAI-format target). All gateway guarantees apply: strict resolution,
-target-authoritative effort, per-child isolation.
-
-The distinction is credential ownership, not vendor. An Anthropic model
-reached with CodeRig's own Anthropic API key is `gateway-backed` and
-available through both harnesses; the same vendor's models reached through a
-Claude subscription are `native-auth` and available only through Claude Code.
-
-**Explicitly out of scope:** CodeRig never replays a harness's subscription
-credential through the gateway, and never impersonates a first-party client
-(forged user-agents, private beta headers, or any other cloaking) to make
-subscription-bound models look like API traffic. Those techniques violate the
-providers' subscription terms, break on every upstream client release, and
-put the user's account at risk. A subscription model is reachable only by
-running its own harness in `native-auth` mode. A combination that would
-require impersonation is simply not admitted.
-
-## ACP Harness Catalogue
-
-CodeRig preflights these ACP connectors:
-
-- `claude-code`, speaking the gateway's Anthropic-compatible ingress;
-- `codex`, speaking the gateway's OpenAI Responses-compatible ingress.
-
-Each child gets one ACP process/session. The selected harness, model alias, and
-effort are fixed before the first child prompt and remain pinned for that child
-Loop. Sibling children may use different tuples while sharing the session
-workspace.
-
-The initial CodeRig composition gives each **gateway-backed** child an owned
-loopback gateway server with a fixed target. This is intentional: the gateway can authoritatively
-enforce that child's selected effort even when an ACP harness sends its own
-default, and no shared `(ingress, alias)` route can confuse two simultaneous
-children that selected the same model with different efforts. `acp/launch`
-already owns the corresponding start-before-child and close-after-child
-lifecycle. A future shared multiplexed server may replace this optimization only
-after its route identity includes the complete runtime profile. A
-`native-auth` child gets no gateway at all: its connector is configured
-without a proxy binding and runs on the harness's own login state, which
-`acp/launch` must support as an explicit mode rather than requiring a
-binding.
-
-An unavailable connector is not advertised. If no ACP connector is available,
-CodeRig can still run its native primers, but a Subagent start fails with a
-bounded capability error because CodeRig registers no native delegated-child
-profile.
-
-CodeRig admits the following stable model aliases:
-
-These are the **gateway-backed** aliases, admitted only where CodeRig holds
-that provider's credential; each is reachable from both ACP harnesses:
-
-| Alias | Display model | Private provider | Allowed efforts |
-|---|---|---|---|
-| `fable-5` | Claude Fable 5 | Anthropic | `low`, `medium`, `high`, `max` |
-| `sonnet-5` | Claude Sonnet 5 | Anthropic | `low`, `medium`, `high`, `max` |
-| `opus-5` | Claude Opus 5 | Anthropic | `low`, `medium`, `high`, `max` |
-| `gpt-5.6-sol` | GPT-5.6 Sol | OpenAI | `none`, `low`, `medium`, `high`, `max` |
-| `gpt-5.6-terra` | GPT-5.6 Terra | OpenAI | `none`, `low`, `medium`, `high`, `max` |
-| `gpt-5.6-luna` | GPT-5.6 Luna | OpenAI | `none`, `low`, `medium`, `high`, `max` |
-| `deepseek-v4-flash` | DeepSeek V4 Flash 0731 | LM Studio | capability-derived; initially `none` |
-| `gemma-4-31b` | Gemma 4 31B IT | LM Studio | capability-derived; initially `none` |
-
-The provider column is private routing metadata and is deliberately
-open-ended: an operator holding OpenRouter, Bedrock, Phala, or another
-provider credential registers those targets the same way, and they become
-admissible aliases with no change to the model-facing surface. The Inference
-module having a working client for that provider is the only gate.
-
-A `native-auth` child instead selects from its own harness's model catalogue.
-Those entries are single-harness by construction, carry no gateway target,
-and advertise effort only where the connector expresses it. CodeRig
-discovers them from the connector rather than hard-coding a vendor list, and
-a harness with no usable login contributes no native-auth entries.
-
-`ultra` and `xhigh` are deliberately excluded: `xhigh` is not a valid
-`model.Effort`, and extending the closed neutral vocabulary is cross-repo
-`inference/model` + codec work outside this design. These tables may widen to
-`xhigh` only as explicit follow-up work after that vocabulary lands. Each
-target's effective effort list is the intersection of model and gateway
-support; ACP runtime support is not a factor because effort binds
-gateway-side.
-
-Claude Code additionally requires a small/fast model (`ClaudeModels.Small`).
-CodeRig fixes it product-wide to `sonnet-5` at default effort. It is not
-model-selectable: a claude-code child's owned gateway materializes the small
-target alongside the selected main target, the catalogue validates it like
-any admitted alias, and it is recorded in the child's durable runtime
-identity.
-
-Every **gateway-backed** target can be reached from both ACP ingress formats,
-because CodeRig's own credential — not the harness's identity — serves it.
-Conceptually the frozen catalogue compiles these routes, while each
-child-owned fixed gateway materializes only its selected target:
+The existing permission file remains:
 
 ```text
-(Anthropic ingress, alias)        -> private target client + target API format
-(OpenAI Responses ingress, alias) -> private target client + target API format
+~/.looprig/workspaces/<sha256(canonical-workspace)>/permissions.json
 ```
 
-Native-auth models are not in this matrix at all: they are reachable only
-from their own harness, and the catalogue admits them as single-harness
-entries. So the full cross product exists only over the gateway-backed
-aliases, and a deployment with no API credentials collapses to the diagonal —
-Claude Code on its own models, Codex on its own. It is never a claim that the
-providers are interchangeable. The gateway performs translation only when
-ingress and target formats differ. For example, Sonnet through Claude Code is a
-same-dialect gateway route, while Sonnet through Codex translates Responses to
-Anthropic Messages. Conversely, an OpenAI model through Claude Code translates
-Anthropic ingress to the OpenAI target format.
+Interactive native Loops use a writable workspace permission store. Headless
+runs accept only an explicitly configured absolute read-only permission file.
+Model loading must not alter either behavior or reuse permission storage APIs.
 
-The target API format comes from the selected target descriptor, never from the
-chosen ACP harness. `provider` therefore never becomes `claude-code` or `codex`.
-Those are harness aliases; `anthropic`, `openai`, and `lmstudio` are private
-target provenance.
+## Model Configuration Schema
 
-The selected normalized effort is part of the immutable ACP runtime profile
-and is enforced solely by the child's fixed gateway target through the
-target-authoritative effort step (the named gateway work item in the Harness
-design). No connector expresses effort. The gateway overwrites only the
-neutral request's effort after ingress decode and before target
-validation/encoding; other harness sampling inputs remain intact.
-An explicit `none` therefore remains distinguishable from an omitted Subagent
-effort even though internal `model.EffortNone` is the empty value. A tuple is admitted
-only when the resulting target request is observably different and matches the
-selection; unsupported or lossy mappings fail catalogue construction.
+The canonical shape is:
 
-## Curated Profiles
+```json
+{
+  "version": 1,
+  "primer_default": "local-builder",
+  "claude_code_small_model": "claude-small",
+  "delegate_defaults": {
+    "planner": {"harness": "codex", "model": "openai-planner", "effort": "high"},
+    "builder": {"harness": "claude-code", "model": "claude-builder", "effort": "high"},
+    "reviewer": {"harness": "claude-code", "model": "claude-reviewer", "effort": "medium"}
+  },
+  "models": [
+    {
+      "alias": "openai-planner",
+      "provider": "openai",
+      "api_format": "openai-responses",
+      "base_url": "",
+      "model": "gpt-5.6-sol",
+      "api_key": "REDACTED-EXAMPLE",
+      "uses": ["primer", "delegate"],
+      "capabilities": {"tools": true, "thinking": true},
+      "efforts": ["none", "low", "medium", "high", "max"],
+      "default_effort": "high"
+    },
+    {
+      "alias": "local-builder",
+      "provider": "lmstudio",
+      "api_format": "openai",
+      "base_url": "http://127.0.0.1:1234/v1",
+      "model": "exact-loaded-model-id",
+      "uses": ["primer", "delegate"],
+      "capabilities": {"tools": true},
+      "efforts": ["none"],
+      "default_effort": "none"
+    }
+  ]
+}
+```
 
-CodeRig presents small role-oriented recommendations without restricting the
-full allowed catalogue:
+`api_key` is omitted for no-auth providers. An empty string is treated as
+absent. The raw decoded configuration is private to the loader/compiler and is
+never returned through `app.Config` or stored on `model.Model`.
 
-| Profile | Agent | Default | Alternate |
-|---|---|---|---|
-| `intelligence` | planner | Fable 5 / `medium` | GPT-5.6 Sol / `high` |
-| `build` | builder | Sonnet 5 / `high` | GPT-5.6 Luna / `max` |
-| `review` | reviewer | Opus 5 / `medium` | GPT-5.6 Terra / `high` |
+Each model row has these rules:
 
-These are product defaults and convenient presets, not providers and not ACP
-harnesses. Harness selection remains independent: either recommended target may
-run through Claude Code or Codex. An explicit Subagent selection may choose any
-other admitted alias/effort combination compatible with the role.
+- `alias`: non-empty stable selector; unique across all rows.
+- `provider`: a provider supported by the current LLM client factory.
+- `api_format`: a format accepted for that provider.
+- `base_url`: optional provider default or an HTTPS URL; HTTP is allowed only
+  for loopback, using the existing `model.Model.Validate` rules.
+- `model`: exact provider model ID; non-empty.
+- `api_key`: required exactly when the provider requires API-key auth.
+- `uses`: non-empty unique subset of `primer` and `delegate`.
+- `capabilities`: conservative user assertions. `tools` must be true for every
+  CodeRig primer or delegate. Thinking must be true if any non-`none` effort is
+  advertised.
+- `efforts`: non-empty, unique, valid neutral efforts. Unsupported `xhigh` and
+  `ultra` are rejected rather than clamped.
+- `default_effort`: must occur exactly once in `efforts`.
 
-The parent-scoped catalogue gives each role one deterministic default harness,
-model, and effort. CodeRig may choose one ACP harness as the product default only
-after connector preflight; omission never silently switches to another harness
-after child creation.
+The loader rejects duplicate keys where detectable by typed decoding rules,
+duplicate aliases, unknown uses, invalid defaults, unsupported provider auth,
+missing Claude small-model requirements, and defaults referring to models not
+admitted for that use.
 
-## Subagent Surface
+## Agent Roster and Native Permissions
 
-CodeRig consumes Harness's approved Subagent envelope. A child start selects:
+The three product definitions remain `planner`, `builder`, and `reviewer`; all
+are primers and delegates, and `builder` is initially active.
+
+- Planner is read/research oriented and cannot mutate the workspace.
+- Builder owns edits, command execution, and verification under the selected
+  native access profile and permission gate.
+- Reviewer can inspect and run admitted checks but cannot mutate the workspace.
+
+Native Loop enforcement uses the current direct sandbox profile, executor set,
+Harness gate, and Tools permission store. Planner and reviewer use the
+intersection with CodeRig's read-only profile under every selected user access
+profile. This design does not replace these current permission-based features.
+
+The model file never grants authority. Changing a model, provider, or API key
+cannot widen a role's tools, sandbox profile, permission rules, or delegation
+limits.
+
+## Catalogue Compilation and Data Flow
+
+Startup proceeds in this order:
+
+1. Resolve and securely open `~/.looprig/models.json`.
+2. Strictly decode and validate the complete schema.
+3. Convert every row into a secret-free `model.Model`.
+4. Validate provider/format/auth requirements through the LLM module.
+5. Bind each API key directly to its `inference.Client`.
+6. Build primer dependencies from the configured `primer_default`.
+7. Build gateway-backed `ACPGatewaySource` rows for delegate-capable models.
+8. Preflight configured ACP executables and remove unavailable harness choices.
+9. Compile one immutable Harness runtime catalogue and fixed-target gateway
+   registry.
+10. Compute a secret-free digest and enter session construction.
+
+No step after decoding needs the raw key. Errors identify a bounded field,
+alias, or provider but never include file contents, credentials, provider
+response bodies, or child environments.
+
+The catalogue remains frozen for the process/session lifetime. Editing the file
+does not mutate a running session. A new process or explicit future reload is
+required.
+
+## ACP Runtime and Permission Semantics
+
+Each delegated child selects one immutable tuple:
 
 ```json
 {
@@ -362,188 +230,88 @@ CodeRig consumes Harness's approved Subagent envelope. A child start selects:
   "prompt": "Inspect restore behavior and report correctness risks.",
   "subagent_type": "reviewer",
   "agent_harness": "claude-code",
-  "model": "opus-5",
+  "model": "claude-reviewer",
   "effort": "medium",
   "run_in_background": true
 }
 ```
 
-`subagent_type` is one of `planner`, `builder`, or `reviewer`.
-`agent_harness`, `model`, and `effort` are optional request fields but appear in
-the model-facing schema only when the parent has a genuine corresponding ACP
-choice. Omission resolves deterministic role defaults. CodeRig does not expose
-provider names, API formats, URLs, credentials, executable paths, or gateway
-tokens through the tool.
+The selected alias resolves to a client-bound fixed gateway target. The child
+receives only its loopback gateway URL and ephemeral gateway token. It never
+receives the configured provider API key or the path/content of `models.json`.
 
-The same `start`, `send`, `wait`, `interrupt`, and `status` control surface
-manages ACP children. Follow-up sends reuse the child's pinned runtime tuple.
-All controller authorization, ownership, request correlation, durability, and
-depth/quota checks remain Harness responsibilities.
+Claude Code requires a configured `claude_code_small_model`. That alias must be
+delegate-capable and gateway-compatible whenever a Claude Code gateway profile
+is advertised. CodeRig materializes it alongside the selected main target.
 
-## ACP Tool and Access Semantics
+ACP permissions remain non-interactive and posture-only. CodeRig maps planner,
+builder, and reviewer to the connector's known sandbox/approval posture and
+registers `session/request_permission` to deny requests outside that posture.
+ACP children neither read nor persist `permissions.json`. Full parity with
+native interactive grants is deferred.
 
-Harness's managed Subagent tool controls the parent. It is independent from the
-execution tools inside Claude Code or Codex.
+## Durability and Fingerprints
 
-An ACP child receives its role instructions and a CodeRig access posture mapped
-to the chosen harness's known configuration. CodeRig admits a role/harness
-combination only if the harness can enforce the role's required boundary:
+The durable model-configuration digest includes only normalized secret-free
+fields: version, aliases, providers, formats, endpoints, exact model IDs, uses,
+capabilities, efforts, defaults, and whether required credentials were present.
+It must never include API-key bytes or a hash of those bytes.
 
-- planner: research/read exploration without workspace mutation;
-- builder: workspace edits and terminal execution under the session's gates;
-- reviewer: reads and test/check execution without workspace mutation.
+ACP child identity remains secret-free: role, harness, credential mode, model
+alias, small-model alias where applicable, normalized effort, runtime-profile
+name, and ACP resume/session ID.
 
-ACP is optional in the ecosystem but real when configured: CodeRig passes the
-genuine harness parameters that the connector supports. Harness does not
-pretend all native tool definitions have been exported into the ACP child. A
-combination that cannot preserve required tool or access semantics is omitted
-instead of being advertised optimistically.
+On restore, a missing alias, changed target descriptor, unavailable harness, or
+configuration digest mismatch never silently falls back. Existing Harness
+configuration-mismatch policy applies. An individual ACP child that cannot be
+resumed restores as a closed tombstone without preventing primer/sibling
+restore.
 
-Direct Claude/Codex CLI Loop integrations are not added to CodeRig. If legacy
-configuration for such a path is found during implementation, remove it after
-tests prove ACP parity. Process launching belongs only to `acp/launch`; child
-Loop adaptation belongs only to `foreignloops/driver/acp`, and CodeRig never
-constructs the direct-CLI foreignloops drivers.
-
-Permission posture follows the Harness design's translation contract: the
-role's access posture maps to the neutral posture vocabulary on the
-foreignloops driver contract; the ACP driver applies it per connector (Claude
-Code permission mode, Codex sandbox/approval posture) before the first prompt
-and always registers the `session/request_permission` handler, denying
-anything outside the posture. This release is policy-only — ACP children have
-no interactive approval path. Note the deliberate asymmetry: CodeRig's native
-Loops get full sandbox/gate enforcement, while ACP children are posture-only;
-a role whose boundary the chosen harness posture cannot enforce is simply not
-admitted for that harness.
-
-## TUI Agent Switching
-
-The TUI already renders Loop conversations in the footer, supports pointer
-selection, and cycles focus with `Ctrl+N` / `Ctrl+P`. The composer already sends
-to the focused Loop through `SubmitToLoop`.
-
-CodeRig/TUI integration changes that existing surface rather than adding a new
-one:
-
-- keep all three primer Loops visible in the footer while idle;
-- initialize focus and active selection to `builder`;
-- selecting a primer focuses it and calls the optional active-primer capability,
-  which delegates to `SessionController.SetActiveLoop`;
-- selecting a delegated child remains focus-only and does not replace the
-  active primer;
-- preserve each primer's transcript, model, effort, mode, and running state;
-- allow an old primer's turn to continue in the background after switching;
-- route subsequent default input and active-loop status to the newly selected
-  primer.
-
-The TUI identifies primers from its existing `LoopStarted` runtime projection;
-it does not require a second agent registry. The setter is a small optional
-capability so third-party/single-loop agents continue to compile and behave as
-today. There is no `/agent` slash command in this iteration.
-
-## Restore and Durability
-
-The active primer is already durable through `ActiveLoopChanged`. Restore must
-recreate all three native primers, recover the saved active primer, and preserve
-each Loop's independent runtime state.
-
-ACP child durability records only secret-free stable identity:
-
-- role/agent name;
-- agent-harness alias;
-- credential mode (`native-auth` or `gateway-backed`);
-- model alias (and the fixed small-model alias for claude-code children);
-- normalized effort;
-- opaque runtime-profile name needed by the injected adapter builder;
-- the agent-assigned ACP session identifier (`ACPSessionID`), journaled once
-  known — it is the resume key.
-
-Restore resolves that identity through the current frozen CodeRig catalogue,
-starts a fresh ACP process, and resumes the child's own agent-side session
-via `session/load` with the journaled `ACPSessionID` when the adapter
-advertises the load capability. A failed or unavailable resume is never
-session-fatal: that child restores as a closed tombstone Loop with a typed
-restore incompatibility (per the Harness design's per-child degraded
-restore), while the primers and sibling children restore normally. Missing
-harnesses, routes, aliases, or incompatible configuration tombstone that
-child explicitly rather than falling back silently. Journals
-never contain provider credentials, gateway tokens, executable paths, raw
-environment, or target URLs.
-
-Catalogue, role prompt, model descriptor, access posture, and gateway-route
-changes participate in existing configuration/policy fingerprints. A mismatch
-does not silently reinterpret a prior child.
+Rotating only an API-key value does not change the digest. Changing key presence
+does, because it changes whether a route is executable.
 
 ## Failure Behavior
 
-- Missing LM Studio default/alternative model: fail CodeRig startup with the
-  unmatched alias and discovered non-secret IDs.
-- Missing ACP executable or failed ACP preflight: omit that harness from new
-  child choices; fail startup only if policy requires at least one child harness.
-- No ACP profiles available: primers remain usable; Subagent start reports that
-  no delegated runtime is available.
-- Unsupported model/effort/harness tuple: reject during Subagent preparation and
-  revalidate in the controller.
-- Missing gateway route or codec: fail catalogue construction before a child can
-  be advertised.
-- Missing or expired native-auth login for a harness: contribute no
-  native-auth entries for it and report a bounded capability error if a child
-  start names one; never fall back to a gateway-backed target, and never
-  attempt to reuse that login's credential outside its own harness.
-- Provider credential absent for a gateway-backed alias: omit that alias from
-  the catalogue rather than registering an unusable route.
-- ACP launch/session failure: return a bounded model-safe Subagent error and
-  release the process/proxy resources.
-- Restore identity cannot resolve or resume fails: restore that child as a
-  closed tombstone with a typed incompatibility rather than falling back to a
-  different harness, model, or effort; the session and its other Loops still
-  restore.
+- Missing `models.json`: return an empty model configuration; startup succeeds
+  only if the requested operation can run without a configured primer/model.
+- Insecure file type or permissions: fail startup with a bounded configuration
+  error naming the path, never file contents.
+- Invalid JSON/schema/model/default: reject the entire file; no partial routes.
+- Unsupported provider credential mechanism: reject that configuration with a
+  typed unsupported-auth error.
+- Missing required API key: reject the row/file; never advertise it.
+- No usable `primer_default`: fail CodeRig session construction before opening
+  persistence or starting a Loop.
+- Missing ACP executable/preflight failure: omit that harness; native primers
+  remain usable.
+- No delegated profiles: Subagent reports bounded no-runtime capability.
+- Gateway/ACP launch failure: release resources and return a bounded error.
+- Restore cannot resolve prior identity: configuration mismatch or child
+  tombstone as dictated by the existing Harness restore boundary.
 
 ## Verification
 
-Tests must prove at least:
+Tests must prove:
 
-- exactly three agent definitions exist and replace operator identities;
-- all three are primers and delegates, with `builder` active initially;
-- native planner/reviewer cannot mutate and builder can use its execution tools;
-- DeepSeek Flash is the native default and Gemma is selectable when discovered;
-- no OpenRouter or direct Claude/Codex child path is constructed;
-- both ACP harnesses can select every admitted gateway-backed model alias;
-- native-auth entries are single-harness: a native-auth alias offered by one
-  harness is never advertised or startable under the other;
-- a composition with no provider credentials still yields working
-  native-auth children, and one with no harness logins still yields working
-  gateway-backed children;
-- no request path ever sends a harness's own credential to the gateway, and
-  no forged client identity headers are constructed anywhere;
-- same-dialect and cross-dialect gateway routes select the correct target API
-  format;
-- `none` survives schema, preparation, runtime resolution, gateway codec,
-  events, and restore where supported, and stays distinguishable from an
-  omitted effort;
-- `xhigh` and `ultra` are rejected and never advertised;
-- curated profiles resolve to the approved default/alternate pairs without
-  hiding the full catalogue;
-- sibling children can run different harness/model/effort tuples concurrently;
-- the Subagent schema omits ACP selectors when no ACP profile exists;
-- all three idle primers remain visible in the footer;
-- selecting a primer changes focus and active loop, while selecting a child
-  changes focus only;
-- switching primers preserves independent conversations and permits background
-  work to finish;
-- restored sessions recover the active primer and secret-free ACP child identity;
-- module dependency tests preserve Harness/ACP/CodeRig ownership boundaries.
+- the three-role roster and builder-active topology remain unchanged;
+- the global path is exactly `~/.looprig/models.json` and permissions remain in
+  the hashed workspace directory;
+- missing model config, strict decoding, size/type/mode checks, duplicate and
+  unknown-field rejection, and no partial acceptance;
+- API-key/no-auth validation and supported-provider client construction;
+- secrets never appear in models, catalogue entries, digests, formatted errors,
+  events, child environments, gateway aliases, or journals;
+- arbitrary configured aliases replace the old frozen six-alias table;
+- primer and delegate use/default validation;
+- Claude small-model validation;
+- exact effort admission and target-authoritative gateway enforcement;
+- same- and cross-dialect routing through both available ACP harnesses;
+- native permission-store behavior and planner/reviewer restrictions do not
+  regress;
+- ACP children remain posture-only and cannot persist interactive approvals;
+- restore detects secret-free configuration drift while API-key rotation alone
+  does not invalidate identity.
 
-Run focused tests and full race suites in each changed Go module. Exercise at
-least one real Claude Code ACP route, one real Codex ACP route, one cross-provider
-translation in each direction, and both LM Studio primer aliases before release.
-
-## External Model References
-
-- Anthropic model overview: <https://platform.claude.com/docs/en/about-claude/models/overview>
-- Anthropic effort controls: <https://platform.claude.com/docs/en/build-with-claude/effort>
-- OpenAI model catalogue: <https://developers.openai.com/api/docs/models>
-- DeepSeek API models: <https://api-docs.deepseek.com/quick_start/pricing/>
-- DeepSeek V4 Flash weights: <https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash>
-- Google Gemma 4 collection: <https://huggingface.co/collections/google/gemma-4>
-- LM Studio Gemma 4 31B build: <https://huggingface.co/lmstudio-community/gemma-4-31B-it-GGUF>
+Run focused tests and full race suites for every changed Go module. Before
+release, exercise one no-auth local primer, one API-key gateway model through
+Codex, one through Claude Code, and one cross-dialect route.
