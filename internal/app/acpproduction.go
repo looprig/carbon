@@ -24,8 +24,8 @@ import (
 )
 
 const (
-	acpAnthropicAPIKeyEnv    = "ANTHROPIC_API_KEY"
-	acpOpenAIAPIKeyEnv       = "OPENAI_API_KEY"
+	acpAnthropicAPIKeyEnv    = "ANTHROPIC_API_KEY" // #nosec G101 -- environment variable name, not a credential value
+	acpOpenAIAPIKeyEnv       = "OPENAI_API_KEY"    // #nosec G101 -- environment variable name, not a credential value
 	acpClaudeExecutableEnv   = "CLAUDE_CODE_ACP_EXECUTABLE"
 	acpCodexExecutableEnv    = "CODEX_ACP_EXECUTABLE"
 	acpClaudeNativeModelsEnv = "CLAUDE_CODE_ACP_NATIVE_MODELS"

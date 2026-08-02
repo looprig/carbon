@@ -385,6 +385,8 @@ func (c ACPCompiledCatalog) HasProfile(profile loop.RuntimeProfileName) bool {
 // preflight. The returned catalog is rebuilt so Harness cannot advertise a
 // profile whose BuilderRegistry entry was omitted. Defaults are repaired after
 // filtering because the original default harness may be the unavailable one.
+//
+//lint:ignore U1000 retained as a package-local catalog filtering seam for legacy fixtures.
 func (c ACPCompiledCatalog) filterProfiles(allowed map[loop.RuntimeProfileName]struct{}) (ACPCompiledCatalog, error) {
 	entries := make([]loop.RuntimeCatalogEntry, 0, len(c.entries))
 	for _, entry := range c.entries {

@@ -14,6 +14,8 @@ var builderSkills = []string{"code-style"}
 
 // operatorSkills is retained for package-local legacy fixtures; builderSkills
 // is the production source of truth.
+//
+//lint:ignore U1000 retained for package-local legacy fixtures.
 var operatorSkills = builderSkills
 
 // leafBuiltin is each agent's package-exported boundary as pure metadata: Name and Role
@@ -54,6 +56,8 @@ func builderBuiltin() leafBuiltin {
 
 // operatorBuiltin is retained for package-local legacy fixtures. Production
 // uses builderBuiltin as the workspace-writing role.
+//
+//lint:ignore U1000 retained for package-local legacy fixtures.
 func operatorBuiltin() leafBuiltin { return builderBuiltin() }
 
 func reviewerBuiltin() leafBuiltin {

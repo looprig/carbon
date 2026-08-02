@@ -387,8 +387,8 @@ func TestManagedSubagentComposed(t *testing.T) {
 	})
 
 	for _, tc := range []struct{ name, args, want string }{
-		{"unknown agent", `{"action":"start","description":"go","prompt":"go","subagent_type":"ghost","run_in_background":false}`, "not an authorized delegate"},
-		{"nonempty mode", `{"action":"start","description":"go","prompt":"go","subagent_type":"reviewer","mode":"build","run_in_background":false}`, "is not declared"},
+		{"unknown agent", `{"action":"start","description":"go","prompt":"go","subagent_type":"ghost","run_in_background":false}`, "error: subagent request failed"},
+		{"nonempty mode", `{"action":"start","description":"go","prompt":"go","subagent_type":"reviewer","mode":"build","run_in_background":false}`, "error: subagent request failed"},
 	} {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {

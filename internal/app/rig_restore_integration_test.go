@@ -597,8 +597,8 @@ func TestManagedDelegateUndeclaredModeFSStore(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = a.Close(context.Background()) })
 	_, observed := runManagedTurnObserved(t, a, "request undeclared mode")
-	if !strings.Contains(result, "is not declared") {
-		t.Fatalf("undeclared mode result = %q", result)
+	if result != "error: subagent request failed" {
+		t.Fatalf("undeclared mode result = %q, want bounded delegation error", result)
 	}
 	if got := countLoopStarted(observed); got != 0 {
 		t.Fatalf("undeclared mode registered %d child loops, want 0", got)

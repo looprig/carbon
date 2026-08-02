@@ -143,10 +143,13 @@ func restrictToReadOnly(selected *sandbox.Profile, workspace string) (*sandbox.P
 // reviewerReadOnlyProfile and restrictToReviewer remain package-local aliases
 // for older access fixtures. Both now use the shared read-only profile applied
 // to planner and reviewer in production.
+//
+//lint:ignore U1000 retained for package-local legacy access fixtures.
 func reviewerReadOnlyProfile(workspace string) (*sandbox.Profile, error) {
 	return readOnlyAgentProfile(workspace)
 }
 
+//lint:ignore U1000 retained for package-local legacy access fixtures.
 func restrictToReviewer(selected *sandbox.Profile, workspace string) (*sandbox.Profile, error) {
 	return restrictToReadOnly(selected, workspace)
 }

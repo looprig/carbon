@@ -122,6 +122,8 @@ func agentFingerprintFields(cfg Config) rig.ConfigFingerprintFields {
 
 // operatorFingerprintFields is a legacy package-local fixture seam. New
 // production sessions use agentFingerprintFields and the builder-active kind.
+//
+//lint:ignore U1000 retained for package-local legacy fixtures.
 func operatorFingerprintFields(cfg Config) rig.ConfigFingerprintFields {
 	fields := agentFingerprintFields(cfg)
 	fields.AgentKind = operatorAgentKind

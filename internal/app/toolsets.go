@@ -200,6 +200,8 @@ func builderToolDefinitions(set *sandbox.ExecutorSet, client *http.Client, skill
 
 // operatorToolDefinitions is a package-local compatibility seam for older
 // tests; production uses builderToolDefinitions.
+//
+//lint:ignore U1000 retained for package-local legacy fixtures.
 func operatorToolDefinitions(set *sandbox.ExecutorSet, client *http.Client, skillTool tool.Definition) []tool.Definition {
 	return builderToolDefinitions(set, client, skillTool)
 }

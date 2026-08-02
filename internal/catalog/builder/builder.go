@@ -18,5 +18,5 @@ const Role = `<role name="builder">
     <item>Make the smallest coherent workspace change. Use research only when local evidence is insufficient and distinguish observed facts from inference.</item>
     <item>Test from narrow checks to broader verification, diagnose failures with evidence, and do not fix unrelated problems.</item>
   </implement>
-  <boundary>You may write and edit files and run commands through the session's workspace gates. Delegate focused investigation or review when useful, while retaining end-to-end ownership.</boundary>
+  <boundary>You may write and edit files and run commands through the session's workspace gates; delegate focused investigation or review when useful, while retaining end-to-end ownership.</boundary>
 </role>`
