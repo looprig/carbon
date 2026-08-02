@@ -244,6 +244,10 @@ func (f *SessionStoreFactory) Open(ctx context.Context, sel SessionSelector, cfg
 	if err != nil {
 		return nil, err
 	}
+	cfg, err = withProductionACPChildren(cfg)
+	if err != nil {
+		return nil, err
+	}
 	agent, err := f.openWithClient(ctx, client, factory, sel, cfg)
 	if err != nil {
 		return nil, err

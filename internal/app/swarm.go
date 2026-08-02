@@ -268,6 +268,10 @@ func New(ctx context.Context, cfg Config) (tui.Agent, error) {
 	if err != nil {
 		return nil, err
 	}
+	cfg, err = withProductionACPChildren(cfg)
+	if err != nil {
+		return nil, err
+	}
 	return newWithClient(ctx, client, factory, cfg)
 }
 

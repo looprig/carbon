@@ -49,6 +49,7 @@ type ACPCompiledCatalog struct {
 
 	gatewayTargets map[loop.ModelAlias]ACPGatewaySource
 	profiles       map[loop.RuntimeProfileName]struct{}
+	entries        []loop.RuntimeCatalogEntry
 }
 
 // CompileACPCatalog compiles the frozen gateway-backed ACP table together with
@@ -109,7 +110,7 @@ func CompileACPCatalog(input ACPCatalogInput) (ACPCompiledCatalog, error) {
 	for _, entry := range entries {
 		profiles[entry.Profile] = struct{}{}
 	}
-	return ACPCompiledCatalog{RuntimeCatalog: catalog, gatewayTargets: gatewayRows, profiles: profiles}, nil
+	return ACPCompiledCatalog{RuntimeCatalog: catalog, gatewayTargets: gatewayRows, profiles: profiles, entries: cloneACPEntries(entries)}, nil
 }
 
 func mustEmptyRuntimeCatalog() loop.RuntimeCatalog {
@@ -258,7 +259,7 @@ func nativeCatalogEntry(role identity.AgentName, harness loop.AgentHarnessName, 
 			break
 		}
 	}
-	return loop.RuntimeCatalogEntry{SubagentType: role, AgentHarness: harness, Profile: loop.RuntimeProfileName("native/" + string(harness)), Credential: loop.CredentialNativeAuth, DefaultModel: defaultModel, Models: append([]loop.RuntimeModelOption(nil), models...)}
+	return loop.RuntimeCatalogEntry{SubagentType: role, AgentHarness: harness, Profile: loop.RuntimeProfileName("acp/" + string(harness)), Credential: loop.CredentialNativeAuth, DefaultModel: defaultModel, Models: append([]loop.RuntimeModelOption(nil), models...)}
 }
 
 func markACPDefaults(entries []loop.RuntimeCatalogEntry) {
@@ -352,6 +353,63 @@ func (c ACPCompiledCatalog) ResolveGatewayTarget(alias loop.ModelAlias, effort m
 func (c ACPCompiledCatalog) HasProfile(profile loop.RuntimeProfileName) bool {
 	_, ok := c.profiles[profile]
 	return ok
+}
+
+// filterProfiles removes entries whose connector did not pass composition
+// preflight. The returned catalog is rebuilt so Harness cannot advertise a
+// profile whose BuilderRegistry entry was omitted. Defaults are repaired after
+// filtering because the original default harness may be the unavailable one.
+func (c ACPCompiledCatalog) filterProfiles(allowed map[loop.RuntimeProfileName]struct{}) (ACPCompiledCatalog, error) {
+	entries := make([]loop.RuntimeCatalogEntry, 0, len(c.entries))
+	for _, entry := range c.entries {
+		if _, ok := allowed[entry.Profile]; !ok {
+			continue
+		}
+		entries = append(entries, cloneACPEntry(entry))
+	}
+	defaultByRole := make(map[identity.AgentName]bool)
+	for _, entry := range entries {
+		if entry.Default {
+			defaultByRole[entry.SubagentType] = true
+		}
+	}
+	for i := range entries {
+		if !defaultByRole[entries[i].SubagentType] {
+			entries[i].Default = true
+			defaultByRole[entries[i].SubagentType] = true
+		}
+	}
+	catalog, err := loop.NewRuntimeCatalog(entries)
+	if err != nil {
+		return ACPCompiledCatalog{}, err
+	}
+	profiles := make(map[loop.RuntimeProfileName]struct{}, len(entries))
+	for _, entry := range entries {
+		profiles[entry.Profile] = struct{}{}
+	}
+	return ACPCompiledCatalog{
+		RuntimeCatalog: catalog,
+		gatewayTargets: c.gatewayTargets,
+		profiles:       profiles,
+		entries:        cloneACPEntries(entries),
+	}, nil
+}
+
+func cloneACPEntries(entries []loop.RuntimeCatalogEntry) []loop.RuntimeCatalogEntry {
+	result := make([]loop.RuntimeCatalogEntry, len(entries))
+	for i, entry := range entries {
+		result[i] = cloneACPEntry(entry)
+	}
+	return result
+}
+
+func cloneACPEntry(entry loop.RuntimeCatalogEntry) loop.RuntimeCatalogEntry {
+	entry.Models = append([]loop.RuntimeModelOption(nil), entry.Models...)
+	for i := range entry.Models {
+		entry.Models[i].Target = entry.Models[i].Target.Clone()
+		entry.Models[i].Efforts = append([]model.Effort(nil), entry.Models[i].Efforts...)
+	}
+	return entry
 }
 
 func containsACPEffort(efforts []model.Effort, wanted model.Effort) bool {

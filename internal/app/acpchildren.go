@@ -45,13 +45,25 @@ func NewACPComposition(config ACPChildrenConfig) (*ACPComposition, error) {
 		return nil, fmt.Errorf("coderig: ACP workspace root must be a clean absolute path")
 	}
 	registry := new(foreign.BuilderRegistry)
-	factory := &acpChildFactory{config: config}
+	available := make(map[loop.RuntimeProfileName]struct{})
 	for _, profile := range []loop.RuntimeProfileName{"acp/claude-code", "acp/codex"} {
 		if !config.Catalog.HasProfile(profile) {
 			continue
 		}
 		harness := loop.AgentHarnessName(strings.TrimPrefix(string(profile), "acp/"))
 		if !preflightACPExecutable(config.Executables[harness]) {
+			continue
+		}
+		available[profile] = struct{}{}
+	}
+	filtered, err := config.Catalog.filterProfiles(available)
+	if err != nil {
+		return nil, err
+	}
+	config.Catalog = filtered
+	factory := &acpChildFactory{config: config}
+	for _, profile := range []loop.RuntimeProfileName{"acp/claude-code", "acp/codex"} {
+		if !config.Catalog.HasProfile(profile) {
 			continue
 		}
 		if err := registry.Register(profile, factory.live, factory.restored); err != nil {
@@ -177,7 +189,7 @@ func acpPostureFor(role string) (driver.Posture, error) {
 	switch role {
 	case "planner", "reviewer":
 		return driver.PostureReadOnly, nil
-	case "builder":
+	case "builder", "operator":
 		return driver.PostureWorkspaceWrite, nil
 	default:
 		return "", fmt.Errorf("coderig: unsupported ACP role posture")

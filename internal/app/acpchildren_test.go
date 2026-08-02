@@ -23,6 +23,7 @@ func TestACPPostureForRole(t *testing.T) {
 		{role: "planner", want: "read-only"},
 		{role: "reviewer", want: "read-only"},
 		{role: "builder", want: "workspace-write"},
+		{role: "operator", want: "workspace-write"},
 	} {
 		t.Run(test.role, func(t *testing.T) {
 			got, err := acpPostureFor(test.role)
@@ -37,7 +38,6 @@ func TestACPPostureForRole(t *testing.T) {
 }
 
 func TestNewACPCompositionPreflightsProfilesAndFiltersEnv(t *testing.T) {
-	t.Parallel()
 	executable, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
@@ -59,8 +59,62 @@ func TestNewACPCompositionPreflightsProfilesAndFiltersEnv(t *testing.T) {
 	if _, _, err := composition.Registry.Builder("acp/codex"); err == nil {
 		t.Fatal("Codex profile registered despite failed executable preflight")
 	}
+	if !composition.Catalog.HasProfile("acp/claude-code") {
+		t.Fatal("Claude profile disappeared from the filtered catalog")
+	}
+	if composition.Catalog.HasProfile("acp/codex") || len(composition.Catalog.RuntimeCatalog.EntriesFor("worker")) != 1 {
+		t.Fatalf("filtered catalog still advertises the failed Codex connector: %#v", composition.Catalog.RuntimeCatalog.EntriesFor("worker"))
+	}
 	if got := filterACPEnv([]string{"PATH=/bin", "SECRET=x", "LANG=C"}, []string{"PATH", "LANG"}); len(got) != 2 || got[0] != "PATH=/bin" || got[1] != "LANG=C" {
 		t.Fatalf("filtered env = %#v", got)
+	}
+}
+
+func TestNewACPCompositionBuildsNativeAuthProfileWithoutGateway(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiled, err := CompileACPCatalog(ACPCatalogInput{
+		SubagentTypes: []identity.AgentName{"worker"},
+		NativeAuth: []ACPNativeAuthSource{{
+			Harness: "codex", Alias: "native-model", Model: testModel(),
+			DefaultEffort: model.EffortNone, Efforts: []model.Effort{model.EffortNone},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := compiled.RuntimeCatalog.Resolve("worker", "codex", "native-model", model.EffortNone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Profile != "acp/codex" || resolved.Credential != loop.CredentialNativeAuth {
+		t.Fatalf("native runtime = %+v, want ACP native-auth profile", resolved)
+	}
+	composition, err := NewACPComposition(ACPChildrenConfig{
+		Catalog:       compiled,
+		Executables:   map[loop.AgentHarnessName]string{"codex": executable},
+		WorkspaceRoot: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := composition.Registry.Builder("acp/codex"); err != nil {
+		t.Fatalf("native ACP profile missing from registry: %v", err)
+	}
+}
+
+func TestProductionACPCompositionWithoutCredentialsIsEmptyAndBounded(t *testing.T) {
+	for _, name := range []string{acpAnthropicAPIKeyEnv, acpOpenAIAPIKeyEnv, acpClaudeExecutableEnv, acpCodexExecutableEnv} {
+		t.Setenv(name, "")
+	}
+	composition, err := newProductionACPComposition()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if composition == nil || composition.Catalog.RuntimeCatalog.HasEntries() {
+		t.Fatalf("production no-credential composition = %#v, want empty catalog", composition)
 	}
 }
 
