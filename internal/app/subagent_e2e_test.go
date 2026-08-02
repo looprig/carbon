@@ -96,12 +96,9 @@ type task33ACPProbe struct {
 	cancels     []string
 }
 
-func (p *task33ACPProbe) recordRuntime(runtime loop.RuntimeIdentity, smallModel string) {
+func (p *task33ACPProbe) recordRuntime(runtime loop.RuntimeIdentity) {
 	p.mu.Lock()
 	p.runtimes = append(p.runtimes, runtime)
-	if smallModel != "" {
-		p.smallModels = append(p.smallModels, smallModel)
-	}
 	p.mu.Unlock()
 }
 
@@ -328,7 +325,7 @@ func (f *task33ACPFactory) build(
 			return nil, "", err
 		}
 	}
-	f.probe.recordRuntime(runtime, smallAlias)
+	f.probe.recordRuntime(runtime)
 	sessionIDValue := seedSID
 	if sessionIDValue == "" {
 		sessionIDValue = "task33-" + string(harness) + "-session"
