@@ -174,7 +174,7 @@ func buildRigWithRegistrationAndACP(definitions []loop.Definition, stores *swarm
 		rig.WithFingerprintFields(operatorFingerprintFields(cfg)),
 		rig.WithOffloadGC(rig.OffloadGCPolicy{Interval: offloadGCInterval, Timeout: offloadGCTimeout}),
 	}
-	if acpChildren != nil && acpChildren.Catalog.RuntimeCatalog.HasEntries() {
+	if acpChildren != nil {
 		options = append(options, rig.WithRuntimeCatalog(acpChildren.Catalog.RuntimeCatalog))
 		if acpChildren.Live != nil && acpChildren.Restored != nil {
 			options = append(options, rig.WithForeignBuilders(acpChildren.Live, acpChildren.Restored))
