@@ -1,12 +1,12 @@
 package app
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -18,11 +18,7 @@ import (
 	"github.com/looprig/coderig/internal/catalog/reviewer"
 	"github.com/looprig/core/content"
 	"github.com/looprig/core/uuid"
-	foreignbackend "github.com/looprig/foreignloops/backend"
-	"github.com/looprig/foreignloops/driver"
-	"github.com/looprig/harness/pkg/command"
 	"github.com/looprig/harness/pkg/event"
-	"github.com/looprig/harness/pkg/foreign"
 	"github.com/looprig/harness/pkg/identity"
 	"github.com/looprig/harness/pkg/loop"
 	"github.com/looprig/harness/pkg/rig"
@@ -89,291 +85,6 @@ func (c *task33InferenceClient) capturedRequests() []inference.Request {
 	return append([]inference.Request(nil), c.requests...)
 }
 
-type task33ACPProbe struct {
-	mu          sync.Mutex
-	runtimes    []loop.RuntimeIdentity
-	smallModels []string
-	cancels     []string
-}
-
-func (p *task33ACPProbe) recordRuntime(runtime loop.RuntimeIdentity) {
-	p.mu.Lock()
-	p.runtimes = append(p.runtimes, runtime)
-	p.mu.Unlock()
-}
-
-func (p *task33ACPProbe) recordSessionCancel(harness loop.AgentHarnessName) {
-	p.mu.Lock()
-	p.cancels = append(p.cancels, string(harness)+":session/cancel")
-	p.mu.Unlock()
-}
-
-func (p *task33ACPProbe) recordSmallModel(alias string) {
-	p.mu.Lock()
-	p.smallModels = append(p.smallModels, alias)
-	p.mu.Unlock()
-}
-
-func (p *task33ACPProbe) snapshot() (runtimes []loop.RuntimeIdentity, smallModels, cancels []string) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return append([]loop.RuntimeIdentity(nil), p.runtimes...), append([]string(nil), p.smallModels...), append([]string(nil), p.cancels...)
-}
-
-// task33ACPStream is the normalized stream emitted by the fake ACP process.
-// Codex remains in-flight until its turn context is cancelled; Claude emits a
-// complete turn immediately. The backend package then supplies the real
-// TurnStarted/TurnDone/TurnInterrupted and session-binding event lifecycle.
-type task33ACPStream struct {
-	events chan driver.Event
-	stop   chan struct{}
-	done   chan struct{}
-	once   sync.Once
-}
-
-func newTask33ACPStream(ctx context.Context, agent *task33ACPAgent, turn driver.Turn, complete bool) *task33ACPStream {
-	stream := &task33ACPStream{
-		events: make(chan driver.Event, 2),
-		stop:   make(chan struct{}),
-		done:   make(chan struct{}),
-	}
-	go func() {
-		defer close(stream.done)
-		defer close(stream.events)
-		select {
-		case stream.events <- driver.Event{Kind: driver.KindInit, SessionID: agent.sessionID}:
-		case <-ctx.Done():
-			return
-		case <-stream.stop:
-			return
-		}
-		if complete {
-			select {
-			case stream.events <- driver.Event{Kind: driver.KindTerminalOK, Message: task33AIMessage("task33 claude answer")}:
-			case <-ctx.Done():
-				return
-			case <-stream.stop:
-				return
-			}
-			return
-		}
-		select {
-		case <-ctx.Done():
-			// The fake ACP process receives the backend cancellation as its
-			// session/cancel protocol action.
-			agent.cancelSession()
-		case <-stream.stop:
-		}
-	}()
-	return stream
-}
-
-func (s *task33ACPStream) Events() <-chan driver.Event { return s.events }
-
-func (*task33ACPStream) History() (driver.History, error) {
-	return driver.History{Available: false}, nil
-}
-
-func (s *task33ACPStream) Close() error {
-	s.once.Do(func() {
-		close(s.stop)
-		<-s.done
-	})
-	return nil
-}
-
-type task33ACPAgent struct {
-	harness    loop.AgentHarnessName
-	sessionID  string
-	modelAlias string
-	smallModel string
-	binding    launch.ProxyBinding
-	probe      *task33ACPProbe
-	complete   bool
-}
-
-func (a *task33ACPAgent) Spawn(ctx context.Context, turn driver.Turn) (driver.Stream, error) {
-	if a.harness == "claude-code" {
-		if a.smallModel == "" {
-			return nil, fmt.Errorf("task33: fake Claude received no small-model selection")
-		}
-		// This is the fake ACP process's model-selection receipt. The real
-		// Claude adapter applies the same value during session setup, before
-		// the first prompt is sent.
-		a.probe.recordSmallModel(a.smallModel)
-	}
-	if err := a.promptGateway(ctx, turn); err != nil {
-		return nil, err
-	}
-	return newTask33ACPStream(ctx, a, turn, a.complete), nil
-}
-
-func (*task33ACPAgent) Close() error { return nil }
-
-func (a *task33ACPAgent) cancelSession() {
-	a.probe.recordSessionCancel(a.harness)
-}
-
-func (a *task33ACPAgent) promptGateway(ctx context.Context, turn driver.Turn) error {
-	var path string
-	var body string
-	switch a.harness {
-	case "codex":
-		path = "/v1/responses"
-		body = fmt.Sprintf(`{"model":%q,"reasoning":{"effort":"low"},"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":%q}]}],"max_output_tokens":16}`, a.modelAlias, firstTask33Text(turn.Input))
-	case "claude-code":
-		path = "/v1/messages"
-		body = fmt.Sprintf(`{"model":%q,"output_config":{"effort":"low"},"max_tokens":16,"messages":[{"role":"user","content":[{"type":"text","text":%q}]}]}`, a.modelAlias, firstTask33Text(turn.Input))
-	default:
-		return fmt.Errorf("task33: unsupported fake harness")
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, a.binding.BaseURL+path, bytes.NewBufferString(body))
-	if err != nil {
-		return err
-	}
-	request.Header.Set("Authorization", "Bearer "+a.binding.Token)
-	request.Header.Set("Content-Type", "application/json")
-	response, err := http.DefaultClient.Do(request)
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	_, _ = io.Copy(io.Discard, response.Body)
-	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return fmt.Errorf("task33: fake gateway request returned status %d", response.StatusCode)
-	}
-	return nil
-}
-
-func firstTask33Text(blocks []content.Block) string {
-	for _, block := range blocks {
-		if text, ok := block.(*content.TextBlock); ok {
-			return text.Text
-		}
-	}
-	return "task33"
-}
-
-func task33AIMessage(text string) *content.AIMessage {
-	return &content.AIMessage{Message: content.Message{
-		Role:   content.RoleAssistant,
-		Blocks: []content.Block{&content.TextBlock{Text: text}},
-	}}
-}
-
-type task33ACPFactory struct {
-	catalog   loop.RuntimeCatalog
-	compiled  ACPCompiledCatalog
-	workspace string
-	probe     *task33ACPProbe
-}
-
-func (f *task33ACPFactory) live(
-	loopCtx context.Context,
-	sessionID, loopID uuid.UUID,
-	parent loop.Provenance,
-	pub foreign.EventPublisher,
-	cfg loop.BoundDefinition,
-	idGen func() (uuid.UUID, error),
-	fac *event.Factory,
-) (loop.Backend, string, error) {
-	return f.build(loopCtx, sessionID, loopID, parent, pub, cfg, idGen, fac, "")
-}
-
-func (f *task33ACPFactory) restored(
-	loopCtx context.Context,
-	sessionID, loopID uuid.UUID,
-	parent loop.Provenance,
-	pub foreign.EventPublisher,
-	cfg loop.BoundDefinition,
-	idGen func() (uuid.UUID, error),
-	fac *event.Factory,
-	seed foreign.RestoredForeign,
-) (loop.Backend, error) {
-	backend, _, err := f.build(loopCtx, sessionID, loopID, parent, pub, cfg, idGen, fac, seed.ForeignSID)
-	return backend, err
-}
-
-func (f *task33ACPFactory) build(
-	loopCtx context.Context,
-	sessionID, loopID uuid.UUID,
-	parent loop.Provenance,
-	pub foreign.EventPublisher,
-	cfg loop.BoundDefinition,
-	idGen func() (uuid.UUID, error),
-	fac *event.Factory,
-	seedSID string,
-) (loop.Backend, string, error) {
-	runtime := cfg.RuntimeIdentity()
-	harness := loop.AgentHarnessName(strings.TrimPrefix(string(runtime.Profile), "acp/"))
-	resolved, err := f.catalog.ResolveTargetAlias(cfg.Name(), harness, runtime.ModelAlias, runtime.Effort)
-	if err != nil {
-		return nil, "", err
-	}
-	if resolved.Credential != loop.CredentialGatewayBacked {
-		return nil, "", fmt.Errorf("task33: fake ACP expected gateway-backed runtime")
-	}
-	ownedGateway, err := NewACPGateway(loopCtx, f.compiled, resolved)
-	if err != nil {
-		return nil, "", err
-	}
-	smallAlias := ""
-	if harness == "claude-code" {
-		_, smallAlias, err = acpChildModelAliases(f.compiled, cfg.Name(), harness, resolved)
-		if err != nil {
-			_ = ownedGateway.Close(context.Background())
-			return nil, "", err
-		}
-	}
-	f.probe.recordRuntime(runtime)
-	sessionIDValue := seedSID
-	if sessionIDValue == "" {
-		sessionIDValue = "task33-" + string(harness) + "-session"
-	}
-	agent := &task33ACPAgent{
-		harness:    harness,
-		sessionID:  sessionIDValue,
-		modelAlias: string(resolved.TargetAlias),
-		smallModel: smallAlias,
-		binding:    ownedGateway.Binding(),
-		probe:      f.probe,
-		complete:   harness == "claude-code",
-	}
-	posture, err := acpPostureFor(string(cfg.Name()))
-	if err != nil {
-		_ = ownedGateway.Close(context.Background())
-		return nil, "", err
-	}
-	backendState, _, err := foreignbackend.New(
-		loopCtx,
-		sessionID,
-		loopID,
-		parent,
-		pub,
-		cfg,
-		foreignbackend.Config{
-			Agent:   agent,
-			Cwd:     f.workspace,
-			Posture: task33PermissionPosture(posture),
-			SIDMode: foreignbackend.SIDLateBound,
-		},
-		idGen,
-		fac,
-	)
-	if err != nil {
-		_ = ownedGateway.Close(context.Background())
-		return nil, "", err
-	}
-	return wrapACPGatewayBackend(backendState, ownedGateway), sessionIDValue, nil
-}
-
-func task33PermissionPosture(posture driver.Posture) driver.PermissionPosture {
-	if posture == driver.PostureWorkspaceWrite {
-		return driver.PostureAcceptEdits
-	}
-	return driver.PostureDefault
-}
-
 func TestSubagentLunaMaxConcurrentEndToEnd(t *testing.T) {
 	openAI := &task33InferenceClient{}
 	anthropic := &task33InferenceClient{}
@@ -387,21 +98,30 @@ func TestSubagentLunaMaxConcurrentEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CompileACPCatalog() error = %v", err)
 	}
-	probe := &task33ACPProbe{}
 	workspace := t.TempDir()
-	factory := &task33ACPFactory{catalog: compiled.RuntimeCatalog, compiled: compiled, workspace: workspace, probe: probe}
-	var registry foreign.BuilderRegistry
-	if err := registry.Register("acp/codex", factory.live, factory.restored); err != nil {
-		t.Fatal(err)
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable() error = %v", err)
 	}
-	if err := registry.Register("acp/claude-code", factory.live, factory.restored); err != nil {
-		t.Fatal(err)
-	}
-	composition := &ACPComposition{
-		Catalog:  compiled,
-		Registry: &registry,
-		Live:     dispatchACPBuilder(&registry),
-		Restored: dispatchACPRestoredBuilder(&registry),
+	composition, err := NewACPComposition(ACPChildrenConfig{
+		Catalog: compiled,
+		Executables: map[loop.AgentHarnessName]string{
+			"codex":       executable,
+			"claude-code": executable,
+		},
+		WorkspaceRoot:       workspace,
+		Env:                 []string{"PATH=" + task33ACPHelperPath, "TMPDIR=" + workspace},
+		GatewayEnvAllowlist: []string{"PATH", "TMPDIR"},
+		gatewayPreflightBinding: &launch.ProxyBinding{
+			BaseURL: "http://127.0.0.1:1",
+			Token:   "task33-preflight-token",
+		},
+		executablePreflight: func(_ context.Context, probe ACPExecutableProbe) ACPPreflightResult {
+			return ACPPreflightResult{Ready: true, AdvertisedModels: append([]string(nil), probe.Models...)}
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewACPComposition() error = %v", err)
 	}
 
 	var step int
@@ -508,15 +228,11 @@ func TestSubagentLunaMaxConcurrentEndToEnd(t *testing.T) {
 
 	assertTask33ProviderRequests(t, openAI.capturedRequests(), model.EffortMax, "openai")
 	assertTask33ProviderRequests(t, anthropic.capturedRequests(), model.EffortHigh, "anthropic")
-	runtimes, smallModels, cancels := probe.snapshot()
-	if !task33ContainsString(smallModels, "sonnet-5") {
-		t.Fatalf("fake Claude small-model selections = %v, want sonnet-5", smallModels)
+	if got, err := os.ReadFile(filepath.Join(workspace, "task33-claude-small-model.receipt")); err != nil || string(got) != "sonnet-5" {
+		t.Fatalf("fake Claude small-model receipt = %q, error = %v; want sonnet-5", got, err)
 	}
-	if !task33ContainsString(cancels, "codex:session/cancel") {
-		t.Fatalf("fake ACP cancel calls = %v, want codex session/cancel", cancels)
-	}
-	if len(runtimes) != 2 {
-		t.Fatalf("fake ACP runtime constructions = %d, want 2", len(runtimes))
+	if got, err := os.ReadFile(filepath.Join(workspace, "task33-codex-cancel.receipt")); err != nil || string(got) != "session/cancel" {
+		t.Fatalf("fake ACP cancel receipt = %q, error = %v; want session/cancel", got, err)
 	}
 	if !strings.Contains(statusResult, codex.DelegateID) || !strings.Contains(statusResult, claude.DelegateID) {
 		t.Fatalf("status result = %q, want both delegate ids", statusResult)
@@ -624,18 +340,3 @@ func assertTask33DurableEvents(t *testing.T, events []event.Event, codex, claude
 		t.Fatal("queued delegate handles were empty")
 	}
 }
-
-func task33ContainsString(values []string, wanted string) bool {
-	for _, value := range values {
-		if value == wanted {
-			return true
-		}
-	}
-	return false
-}
-
-var _ foreign.Builder = (*task33ACPFactory)(nil).live
-var _ foreign.RestoredBuilder = (*task33ACPFactory)(nil).restored
-var _ driver.Stream = (*task33ACPStream)(nil)
-var _ loop.Backend = (*foreignbackend.Loop)(nil)
-var _ command.Command = command.Shutdown{}
