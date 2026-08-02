@@ -160,11 +160,28 @@ func swarmDefinitions(client inference.Client, model model.Model, cfg Config, ac
 	return swarmDefinitionsWithContextPolicy(client, model, cfg, contextPolicy, access)
 }
 
+// swarmDefinitionsWithAdditionalTools is a test-only assembly seam for
+// exercising the production roster with a scoped probe. It uses the same role
+// prompts, access gates, modes, skills, and delegate declarations as
+// swarmDefinitions; the extra definitions are appended only to the requested
+// role and never used by a production composition root.
+func swarmDefinitionsWithAdditionalTools(client inference.Client, model model.Model, cfg Config, access *sessionAccess, extras map[identity.AgentName][]tool.Definition) ([]loop.Definition, error) {
+	contextPolicy, err := newConversationContextPolicy(model)
+	if err != nil {
+		return nil, err
+	}
+	return swarmDefinitionsWithContextPolicyAndExtras(client, model, cfg, contextPolicy, access, extras)
+}
+
 // swarmDefinitionsWithContextPolicy is the immutable assembly seam. Production
 // resolves policy before entering it; focused tests vary one secret-free policy
 // dimension without mutable package globals. access carries the session-fixed
 // role gates, executor sets, and per-role policy revisions the definitions bind.
 func swarmDefinitionsWithContextPolicy(client inference.Client, model model.Model, cfg Config, contextPolicy conversationContextPolicy, access *sessionAccess) ([]loop.Definition, error) {
+	return swarmDefinitionsWithContextPolicyAndExtras(client, model, cfg, contextPolicy, access, nil)
+}
+
+func swarmDefinitionsWithContextPolicyAndExtras(client inference.Client, model model.Model, cfg Config, contextPolicy conversationContextPolicy, access *sessionAccess, extras map[identity.AgentName][]tool.Definition) ([]loop.Definition, error) {
 	httpCl := newHTTPClient()
 	runtimeCtx := NewRuntimeContextProvider()
 
@@ -179,9 +196,12 @@ func swarmDefinitionsWithContextPolicy(client inference.Client, model model.Mode
 	builderBuiltin := builderBuiltin()
 	reviewerBuiltin := reviewerBuiltin()
 
-	plannerTools := plannerToolDefinitions(access.plannerSet, httpCl, skillDefinitionFor(loader, plannerBuiltin, cfg))
-	builderTools := builderToolDefinitions(access.builderSet, httpCl, skillDefinitionFor(loader, builderBuiltin, cfg))
-	reviewerTools := reviewerToolDefinitions(access.reviewerSet, skillDefinitionFor(loader, reviewerBuiltin, cfg))
+	plannerTools := append([]tool.Definition(nil), plannerToolDefinitions(access.plannerSet, httpCl, skillDefinitionFor(loader, plannerBuiltin, cfg))...)
+	builderTools := append([]tool.Definition(nil), builderToolDefinitions(access.builderSet, httpCl, skillDefinitionFor(loader, builderBuiltin, cfg))...)
+	reviewerTools := append([]tool.Definition(nil), reviewerToolDefinitions(access.reviewerSet, skillDefinitionFor(loader, reviewerBuiltin, cfg))...)
+	plannerTools = append(plannerTools, extras[planner.Name]...)
+	builderTools = append(builderTools, extras[builder.Name]...)
+	reviewerTools = append(reviewerTools, extras[reviewer.Name]...)
 
 	ctx := context.Background()
 	plannerSystem := contextPolicy.system(catalog.Identity + planner.Role + delegationGuidance + availableSkillsCatalog(ctx, loader, planner.Name, plannerBuiltin.skills))

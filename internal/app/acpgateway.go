@@ -112,9 +112,12 @@ func buildACPGatewayPlan(catalog ACPCompiledCatalog, resolved loop.Resolved) (ac
 			return acpGatewayPlan{}, err
 		}
 		if resolved.SmallModel == resolved.ModelAlias {
-			if resolved.Effort != smallResolved.Effort {
-				return acpGatewayPlan{}, fmt.Errorf("coderig: ACP main and small model route collision requires distinct efforts")
-			}
+			// Claude's main and small selectors intentionally share the same
+			// harness-facing alias. The wire request carries no discriminator
+			// with which a resolver could choose two efforts for that alias, so
+			// the selected main target is the one authoritative route for both
+			// selectors. Rejecting the advertised main tuple here would make
+			// sonnet-5/high and sonnet-5/max impossible to start.
 			return finishACPGatewayPlan(resolved.AgentHarness, ingress, routes)
 		}
 		routes[gateway.RouteKey{Ingress: ingress, Model: string(resolved.SmallModel)}] = smallTarget

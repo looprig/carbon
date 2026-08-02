@@ -39,6 +39,21 @@ func TestACPPostureForRole(t *testing.T) {
 	}
 }
 
+func TestBoundedACPChildErrorDoesNotExposeProcessDetails(t *testing.T) {
+	t.Parallel()
+	cause := errors.New("stdio: process exited at /private/login/home; https://provider.invalid/token")
+	got := boundedACPChildError(cause)
+	if got.Error() != "coderig: ACP child unavailable" {
+		t.Fatalf("bounded error = %q, want fixed category", got)
+	}
+	if strings.Contains(got.Error(), "/private/login/home") || strings.Contains(got.Error(), "provider.invalid") {
+		t.Fatalf("bounded error leaked process details: %q", got)
+	}
+	if boundedACPChildError(context.Canceled) != context.Canceled {
+		t.Fatal("context cancellation was not preserved")
+	}
+}
+
 func TestNewACPCompositionPreflightsProfilesAndFiltersEnv(t *testing.T) {
 	executable, err := os.Executable()
 	if err != nil {
@@ -46,11 +61,12 @@ func TestNewACPCompositionPreflightsProfilesAndFiltersEnv(t *testing.T) {
 	}
 	compiled := testACPGatewayCatalog(t)
 	composition, err := NewACPComposition(ACPChildrenConfig{
-		Catalog:       compiled,
-		Executables:   map[loop.AgentHarnessName]string{"claude-code": executable, "codex": "relative/codex"},
-		WorkspaceRoot: t.TempDir(),
-		Env:           []string{"PATH=/bin", "SECRET=must-not-pass", "LANG=C"},
-		EnvAllowlist:  []string{"PATH", "LANG"},
+		Catalog:             compiled,
+		Executables:         map[loop.AgentHarnessName]string{"claude-code": executable, "codex": "relative/codex"},
+		WorkspaceRoot:       t.TempDir(),
+		Env:                 []string{"PATH=/bin", "SECRET=must-not-pass", "LANG=C"},
+		EnvAllowlist:        []string{"PATH", "LANG"},
+		executablePreflight: func(context.Context, ACPNativeAuthProbe) bool { return true },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -151,9 +167,10 @@ func TestNewACPCompositionBuildsNativeAuthProfileWithoutGateway(t *testing.T) {
 		t.Fatalf("native runtime = %+v, want ACP native-auth profile", resolved)
 	}
 	composition, err := NewACPComposition(ACPChildrenConfig{
-		Catalog:       compiled,
-		Executables:   map[loop.AgentHarnessName]string{"codex": executable},
-		WorkspaceRoot: t.TempDir(),
+		Catalog:             compiled,
+		Executables:         map[loop.AgentHarnessName]string{"codex": executable},
+		WorkspaceRoot:       t.TempDir(),
+		executablePreflight: func(context.Context, ACPNativeAuthProbe) bool { return true },
 	})
 	if err != nil {
 		t.Fatal(err)

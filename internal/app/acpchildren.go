@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,6 +16,26 @@ import (
 	"github.com/looprig/harness/pkg/foreign"
 	"github.com/looprig/harness/pkg/loop"
 )
+
+var errACPChildUnavailable = errors.New("coderig: ACP child unavailable")
+
+// boundedACPChildError is the model-facing error boundary for ACP startup and
+// restore. ACP launch/RPC/stdio errors can contain executable paths, login
+// locations, URLs, provider messages, or stderr; none of those details belong
+// in a Subagent result or durable Harness error. Keep cancellation recognizable
+// for controller shutdown, but collapse every other cause to one fixed result.
+func boundedACPChildError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, context.Canceled) {
+		return context.Canceled
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return context.DeadlineExceeded
+	}
+	return errACPChildUnavailable
+}
 
 // ACPChildrenConfig is the composition-root input for delegated ACP loops.
 // Executable paths are preflighted before a profile is registered. Env is
@@ -30,6 +51,11 @@ type ACPChildrenConfig struct {
 	EnvAllowlist        []string
 	NativeEnvAllowlist  []string
 	GatewayEnvAllowlist []string
+	// executablePreflight is an internal test seam. Production leaves it nil,
+	// which performs a bounded ACP initialize/session probe before advertising
+	// a profile; focused composition tests can replace the process probe with a
+	// deterministic result.
+	executablePreflight func(context.Context, ACPNativeAuthProbe) bool
 }
 
 // ACPComposition is the immutable CodeRig-to-Harness bridge for ACP children.
@@ -56,7 +82,20 @@ func NewACPComposition(config ACPChildrenConfig) (*ACPComposition, error) {
 			continue
 		}
 		harness := loop.AgentHarnessName(strings.TrimPrefix(string(profile), "acp/"))
-		if !preflightACPExecutable(config.Executables[harness]) {
+		probe := ACPNativeAuthProbe{
+			Harness:       harness,
+			Executable:    config.Executables[harness],
+			WorkspaceRoot: config.WorkspaceRoot,
+			Env:           filterACPEnv(config.Env, acpNativeAuthEnvAllowlist),
+		}
+		if !preflightACPExecutable(probe.Executable) {
+			continue
+		}
+		preflight := config.executablePreflight
+		if preflight == nil {
+			preflight = preflightProductionACPExecutable
+		}
+		if !preflight(context.Background(), probe) {
 			continue
 		}
 		available[profile] = struct{}{}
@@ -106,16 +145,16 @@ func (f *acpChildFactory) live(
 ) (loop.Backend, string, error) {
 	_, acpConfig, ownedGateway, err := f.configFor(loopCtx, cfg, "")
 	if err != nil {
-		return nil, "", err
+		return nil, "", boundedACPChildError(err)
 	}
 	backend, sid, err := acpdriver.BuildWith(acpConfig)(loopCtx, sessionID, loopID, parent, pub, cfg, idGen, fac)
 	if err != nil {
 		_ = ownedGateway.Close(context.Background())
-		return nil, "", err
+		return nil, "", boundedACPChildError(err)
 	}
 	if backend == nil {
 		_ = ownedGateway.Close(context.Background())
-		return nil, "", fmt.Errorf("coderig: ACP builder returned no backend")
+		return nil, "", boundedACPChildError(errors.New("coderig: ACP builder returned no backend"))
 	}
 	return wrapACPGatewayBackend(backend, ownedGateway), sid, nil
 }
@@ -132,16 +171,16 @@ func (f *acpChildFactory) restored(
 ) (loop.Backend, error) {
 	_, acpConfig, ownedGateway, err := f.configFor(loopCtx, cfg, seed.AgentSessionID)
 	if err != nil {
-		return nil, err
+		return nil, boundedACPChildError(err)
 	}
 	backend, err := acpdriver.BuildRestoredWith(acpConfig)(loopCtx, sessionID, loopID, parent, pub, cfg, idGen, fac, seed)
 	if err != nil {
 		_ = ownedGateway.Close(context.Background())
-		return nil, err
+		return nil, boundedACPChildError(err)
 	}
 	if backend == nil {
 		_ = ownedGateway.Close(context.Background())
-		return nil, fmt.Errorf("coderig: ACP restored builder returned no backend")
+		return nil, boundedACPChildError(errors.New("coderig: ACP restored builder returned no backend"))
 	}
 	return wrapACPGatewayBackend(backend, ownedGateway), nil
 }
