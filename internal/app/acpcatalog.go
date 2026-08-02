@@ -223,10 +223,16 @@ func gatewayCatalogEntry(role identity.AgentName, harness loop.AgentHarnessName,
 	if hasRuntimeAlias(models, "sonnet-5") {
 		defaultModel = "sonnet-5"
 	}
+	smallModel := loop.ModelAlias("")
+	needsSmallModel := false
+	if harness == "claude-code" {
+		smallModel = "sonnet-5"
+		needsSmallModel = true
+	}
 	return loop.RuntimeCatalogEntry{
 		SubagentType: role, AgentHarness: harness, Profile: loop.RuntimeProfileName("acp/" + string(harness)),
 		Credential: loop.CredentialGatewayBacked, DefaultModel: defaultModel,
-		SmallModel: "sonnet-5", NeedsSmallModel: harness == "claude-code", Models: models,
+		SmallModel: smallModel, NeedsSmallModel: needsSmallModel, Models: models,
 	}, true
 }
 
