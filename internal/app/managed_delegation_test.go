@@ -207,7 +207,7 @@ func TestManagedSubagentAutoAllowed(t *testing.T) {
 		}
 		calls++
 		if calls == 1 {
-			return toolCall("auto-allow", `{"agent":"reviewer","message":"review","wait":true}`), nil
+			return toolCall("auto-allow", `{"action":"start","description":"review","prompt":"review","subagent_type":"reviewer","run_in_background":false}`), nil
 		}
 		return finalText("parent done"), nil
 	}
@@ -234,7 +234,7 @@ func TestManagedTaskToolsAreLoopScoped(t *testing.T) {
 				return namedToolCall("builder-create", "TaskCreate", `{"subject":"builder task","description":"builder work"}`), nil
 			case 1:
 				builderStep++
-				return toolCall("start-planner", `{"agent":"planner","message":"planner work","wait":true}`), nil
+				return toolCall("start-planner", `{"action":"start","description":"planner work","prompt":"planner work","subagent_type":"planner","run_in_background":false}`), nil
 			case 2:
 				builderStep++
 				return namedToolCall("builder-list", "TaskList", `{}`), nil
@@ -244,7 +244,7 @@ func TestManagedTaskToolsAreLoopScoped(t *testing.T) {
 					return nil, fmt.Errorf("builder TaskList result = %q, want only builder task", builderList)
 				}
 				builderStep++
-				return toolCall("builder-reviewer", `{"agent":"reviewer","message":"review","wait":true}`), nil
+				return toolCall("builder-reviewer", `{"action":"start","description":"review","prompt":"review","subagent_type":"reviewer","run_in_background":false}`), nil
 			case 4:
 				builderStep++
 				return finalText("builder done"), nil
@@ -329,7 +329,7 @@ func TestThreeRoleTopologyComposed(t *testing.T) {
 			builderReq = req
 			builderCalls++
 			if builderCalls == 1 {
-				return toolCall("topology-start", `{"agent":"planner","message":"inspect","wait":true}`), nil
+				return toolCall("topology-start", `{"action":"start","description":"inspect","prompt":"inspect","subagent_type":"planner","run_in_background":false}`), nil
 			}
 			return finalText("topology done"), nil
 		}
@@ -374,7 +374,7 @@ func TestManagedSubagentComposed(t *testing.T) {
 			}
 			calls++
 			if calls == 1 {
-				return toolCall("sync-start", `{"agent":"reviewer","message":"review","wait":true}`), nil
+				return toolCall("sync-start", `{"action":"start","description":"review","prompt":"review","subagent_type":"reviewer","run_in_background":false}`), nil
 			}
 			observed = lastToolText(req)
 			return finalText("parent final"), nil
@@ -387,8 +387,8 @@ func TestManagedSubagentComposed(t *testing.T) {
 	})
 
 	for _, tc := range []struct{ name, args, want string }{
-		{"unknown agent", `{"agent":"ghost","message":"go"}`, "not an authorized delegate"},
-		{"nonempty mode", `{"agent":"reviewer","mode":"build","message":"go"}`, "is not declared"},
+		{"unknown agent", `{"action":"start","description":"go","prompt":"go","subagent_type":"ghost","run_in_background":false}`, "not an authorized delegate"},
+		{"nonempty mode", `{"action":"start","description":"go","prompt":"go","subagent_type":"reviewer","mode":"build","run_in_background":false}`, "is not declared"},
 	} {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
@@ -434,7 +434,7 @@ func TestAsyncDelegateComposed(t *testing.T) {
 		switch step {
 		case 0:
 			step++
-			return toolCall("async-start", `{"action":"start","agent":"planner","message":"first","wait":false}`), nil
+			return toolCall("async-start", `{"action":"start","description":"first","prompt":"first","subagent_type":"planner","run_in_background":true}`), nil
 		case 1:
 			var err error
 			started, err = parseQueued(prior)
@@ -446,7 +446,7 @@ func TestAsyncDelegateComposed(t *testing.T) {
 		case 2:
 			statusResult = prior
 			step++
-			return toolCall("async-send", fmt.Sprintf(`{"action":"send","delegate_id":%q,"message":"second","wait":false}`, started.DelegateID)), nil
+			return toolCall("async-send", fmt.Sprintf(`{"action":"send","delegate_id":%q,"prompt":"second","run_in_background":true}`, started.DelegateID)), nil
 		case 3:
 			var err error
 			sent, err = parseQueued(prior)
@@ -506,20 +506,20 @@ func TestRestoredDelegateComposed(t *testing.T) {
 		if phase == "initial" {
 			if primaryStep == 0 {
 				primaryStep++
-				return toolCall("restore-start", `{"agent":"planner","message":"initial","wait":true}`), nil
+				return toolCall("restore-start", `{"action":"start","description":"initial","prompt":"initial","subagent_type":"planner","run_in_background":false}`), nil
 			}
 			return finalText("initial parent final"), nil
 		}
 		switch primaryStep {
 		case 0:
 			primaryStep++
-			return toolCall("restore-send", fmt.Sprintf(`{"action":"send","delegate_id":%q,"message":"follow up","wait":true}`, childID.String())), nil
+			return toolCall("restore-send", fmt.Sprintf(`{"action":"send","delegate_id":%q,"prompt":"follow up","run_in_background":false}`, childID.String())), nil
 		case 1:
 			if got := lastToolText(req); got != "restored follow-up final" {
 				return nil, fmt.Errorf("restored follow-up result = %q", got)
 			}
 			primaryStep++
-			return toolCall("restore-unrelated", fmt.Sprintf(`{"action":"send","delegate_id":%q,"message":"intrude","wait":true}`, uuid.MustParse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").String())), nil
+			return toolCall("restore-unrelated", fmt.Sprintf(`{"action":"send","delegate_id":%q,"prompt":"intrude","run_in_background":false}`, uuid.MustParse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").String())), nil
 		default:
 			unrelatedResult = lastToolText(req)
 			return finalText("restored parent final"), nil

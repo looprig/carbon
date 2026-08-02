@@ -55,7 +55,7 @@ func TestRuntimeSkillsWorkspaceLoadGatedEndToEnd(t *testing.T) {
 	client.fn = func(_ context.Context, req inference.Request) ([]content.Chunk, error) {
 		if strings.Contains(req.System, `<role name="`+string(builder.Name)+`">`) && phase == "initial" && step == 0 {
 			step++
-			return toolCall("skill-delegate", `{"agent":"builder","message":"prepare for restore","wait":true}`), nil
+			return toolCall("skill-delegate", `{"action":"start","description":"prepare for restore","prompt":"prepare for restore","subagent_type":"builder","run_in_background":false}`), nil
 		}
 		if phase == "initial" {
 			return finalText("runtime skill child prepared"), nil

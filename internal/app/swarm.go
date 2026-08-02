@@ -212,6 +212,7 @@ func swarmDefinitionsWithContextPolicyAndExtras(client inference.Client, model m
 	define := func(b leafBuiltin, system string, definitions []tool.Definition, gate loop.AccessGate, policyRevision string) (loop.Definition, error) {
 		options := []loop.Option{
 			loop.WithName(b.name),
+			loop.WithDisplayName(string(b.name)),
 			loop.WithDescription(b.description),
 			loop.WithInference(client, model),
 			loop.WithSystem(system),

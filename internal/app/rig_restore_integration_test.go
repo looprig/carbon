@@ -101,7 +101,7 @@ func TestRigRestoreStateWorkspaceAndContinuation(t *testing.T) {
 		if strings.Contains(req.System, `<role name="`+string(builder.Name)+`">`) {
 			primaryCalls++
 			if primaryCalls == 1 {
-				return toolCall("restore-state-child", `{"agent":"planner","message":"work","wait":true}`), nil
+				return toolCall("restore-state-child", `{"action":"start","description":"work","prompt":"work","subagent_type":"planner","run_in_background":false}`), nil
 			}
 			return finalText("builder work complete"), nil
 		}
@@ -227,7 +227,7 @@ func TestRigRestoreDelegateOwnership(t *testing.T) {
 		if phase == "initial" {
 			if step == 0 {
 				step++
-				return toolCall("own-start", `{"agent":"planner","message":"first","wait":true}`), nil
+				return toolCall("own-start", `{"action":"start","description":"first","prompt":"first","subagent_type":"planner","run_in_background":false}`), nil
 			}
 			initialSyncResult = lastToolText(req)
 			return finalText("initial parent"), nil
@@ -235,13 +235,13 @@ func TestRigRestoreDelegateOwnership(t *testing.T) {
 		switch step {
 		case 0:
 			step++
-			return toolCall("own-send", fmt.Sprintf(`{"action":"send","delegate_id":%q,"message":"again","wait":true}`, childID)), nil
+			return toolCall("own-send", fmt.Sprintf(`{"action":"send","delegate_id":%q,"prompt":"again","run_in_background":false}`, childID)), nil
 		case 1:
 			if got := lastToolText(req); got != "restored follow-up" {
 				return nil, fmt.Errorf("owned follow-up = %q", got)
 			}
 			step++
-			return toolCall("own-reject", fmt.Sprintf(`{"action":"send","delegate_id":%q,"message":"intrude","wait":true}`, uuid.MustParse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"))), nil
+			return toolCall("own-reject", fmt.Sprintf(`{"action":"send","delegate_id":%q,"prompt":"intrude","run_in_background":false}`, uuid.MustParse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"))), nil
 		default:
 			unrelatedResult = lastToolText(req)
 			return finalText("ownership checked"), nil
@@ -333,7 +333,7 @@ func TestAsyncDelegatesFSStoreResolveIndependently(t *testing.T) {
 		switch step {
 		case 0:
 			step++
-			return toolCall("fs-async-1", `{"action":"start","agent":"planner","message":"first","wait":false}`), nil
+			return toolCall("fs-async-1", `{"action":"start","description":"first","prompt":"first","subagent_type":"planner","run_in_background":true}`), nil
 		case 1:
 			var err error
 			first, err = parseQueued(prior)
@@ -346,7 +346,7 @@ func TestAsyncDelegatesFSStoreResolveIndependently(t *testing.T) {
 				return nil, ctx.Err()
 			}
 			step++
-			return toolCall("fs-async-2", `{"action":"start","agent":"planner","message":"second","wait":false}`), nil
+			return toolCall("fs-async-2", `{"action":"start","description":"second","prompt":"second","subagent_type":"planner","run_in_background":true}`), nil
 		case 2:
 			var err error
 			second, err = parseQueued(prior)
@@ -368,7 +368,7 @@ func TestAsyncDelegatesFSStoreResolveIndependently(t *testing.T) {
 		case 4:
 			firstWait = prior
 			step++
-			return toolCall("fs-followup-1", fmt.Sprintf(`{"action":"send","delegate_id":%q,"message":"follow up","wait":false}`, first.DelegateID)), nil
+			return toolCall("fs-followup-1", fmt.Sprintf(`{"action":"send","delegate_id":%q,"prompt":"follow up","run_in_background":true}`, first.DelegateID)), nil
 		case 5:
 			var err error
 			followup, err = parseQueued(prior)
@@ -444,7 +444,7 @@ func TestManagedDelegateDeclaredModeFSStore(t *testing.T) {
 		if strings.Contains(req.System, "mode-test-primary") {
 			primaryCalls++
 			if primaryCalls == 1 {
-				return toolCall("declared-mode", `{"agent":"operator","mode":"plan","message":"plan it","wait":true}`), nil
+				return toolCall("declared-mode", `{"action":"start","description":"plan it","prompt":"plan it","subagent_type":"operator","mode":"plan","run_in_background":false}`), nil
 			}
 			return finalText("declared mode complete"), nil
 		}
@@ -585,7 +585,7 @@ func TestManagedDelegateUndeclaredModeFSStore(t *testing.T) {
 	client.fn = func(_ context.Context, req inference.Request) ([]content.Chunk, error) {
 		calls++
 		if calls == 1 {
-			return toolCall("undeclared-mode", `{"agent":"planner","mode":"build","message":"must reject","wait":true}`), nil
+			return toolCall("undeclared-mode", `{"action":"start","description":"must reject","prompt":"must reject","subagent_type":"planner","mode":"build","run_in_background":false}`), nil
 		}
 		result = lastToolText(req)
 		return finalText("rejection observed"), nil
