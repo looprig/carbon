@@ -210,17 +210,19 @@ func preflightACPSharedGateway(ctx context.Context, config ACPChildrenConfig, ha
 	defer release()
 
 	aliases := make([]string, 0, len(models))
-	seen := make(map[loop.ModelAlias]struct{}, len(models))
+	seen := make(map[string]struct{}, len(models))
 	for _, runtimeModel := range models {
-		if _, exists := seen[runtimeModel.option.Alias]; exists {
-			continue
+		for _, alias := range acpGatewayTargetAliases(config.Catalog, runtimeModel) {
+			if _, exists := seen[alias]; exists {
+				continue
+			}
+			seen[alias] = struct{}{}
+			aliases = append(aliases, alias)
 		}
-		seen[runtimeModel.option.Alias] = struct{}{}
-		aliases = append(aliases, string(runtimeModel.option.Alias))
 	}
 	if harness == "claude-code" {
 		model := "sonnet-5"
-		if _, exists := seen[loop.ModelAlias(model)]; !exists && len(aliases) > 0 {
+		if _, exists := seen[model]; !exists && len(aliases) > 0 {
 			model = aliases[0]
 		}
 		result := preflight(ctx, ACPExecutableProbe{
@@ -268,6 +270,40 @@ func preflightACPSharedGateway(ctx context.Context, config ACPChildrenConfig, ha
 		}
 	}
 	return len(decision.gatewayAliases) > 0
+}
+
+func acpGatewayTargetAliases(catalog ACPCompiledCatalog, runtimeModel acpRuntimeModel) []string {
+	credential := runtimeModel.option.Credential
+	if credential == "" {
+		credential = runtimeModel.entry.Credential
+	}
+	if credential != loop.CredentialGatewayBacked {
+		return nil
+	}
+	aliases := make([]string, 0, len(runtimeModel.option.Efforts))
+	seen := make(map[string]struct{}, len(runtimeModel.option.Efforts))
+	for _, effort := range runtimeModel.option.Efforts {
+		resolved, err := catalog.RuntimeCatalog.ResolveWithExplicitEffort(
+			runtimeModel.entry.SubagentType,
+			runtimeModel.entry.AgentHarness,
+			runtimeModel.option.Alias,
+			effort,
+			true,
+		)
+		if err != nil || resolved.Credential != loop.CredentialGatewayBacked {
+			continue
+		}
+		alias := resolved.TargetAlias
+		if alias == "" {
+			alias = resolved.ModelAlias
+		}
+		if _, exists := seen[string(alias)]; exists {
+			continue
+		}
+		seen[string(alias)] = struct{}{}
+		aliases = append(aliases, string(alias))
+	}
+	return aliases
 }
 
 func gatewayPreflightBinding(ctx context.Context, config ACPChildrenConfig, harness loop.AgentHarnessName) (*launch.ProxyBinding, func(), bool) {
@@ -337,9 +373,32 @@ func filterACPPreflightCatalog(catalog ACPCompiledCatalog, decisions map[loop.Ag
 				if !decision.gatewayReady {
 					continue
 				}
-				if _, allowed := decision.gatewayAliases[option.Alias]; !allowed {
+				retainedEfforts := make([]model.Effort, 0, len(option.Efforts))
+				for _, effort := range option.Efforts {
+					resolved, err := catalog.RuntimeCatalog.ResolveWithExplicitEffort(entry.SubagentType, entry.AgentHarness, option.Alias, effort, true)
+					if err != nil {
+						continue
+					}
+					alias := resolved.TargetAlias
+					if alias == "" {
+						alias = resolved.ModelAlias
+					}
+					if _, allowed := decision.gatewayAliases[alias]; allowed {
+						retainedEfforts = append(retainedEfforts, effort)
+					}
+				}
+				if len(retainedEfforts) == 0 {
 					continue
 				}
+				if !containsModelEffort(retainedEfforts, option.DefaultEffort) {
+					if entry.NeedsSmallModel && option.Alias == entry.SmallModel {
+						// Claude's small model is fixed to its default target. A
+						// concrete non-default route cannot satisfy that contract.
+						continue
+					}
+					option.DefaultEffort = retainedEfforts[0]
+				}
+				option.Efforts = retainedEfforts
 			case loop.CredentialNativeAuth:
 				if !decision.nativeReady {
 					continue
@@ -368,6 +427,9 @@ func filterACPPreflightCatalog(catalog ACPCompiledCatalog, decisions map[loop.Ag
 					break
 				}
 			}
+		}
+		if entry.NeedsSmallModel && !hasACPDefaultModel(entry, catalog.RuntimeCatalog) {
+			continue
 		}
 		if entry.NeedsSmallModel && entry.SmallModel == "" {
 			continue
@@ -403,6 +465,36 @@ func filterACPPreflightCatalog(catalog ACPCompiledCatalog, decisions map[loop.Ag
 		profiles:       profiles,
 		entries:        cloneACPEntries(entries),
 	}, nil
+}
+
+func containsModelEffort(efforts []model.Effort, wanted model.Effort) bool {
+	for _, effort := range efforts {
+		if effort == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+func hasACPDefaultModel(entry loop.RuntimeCatalogEntry, catalog loop.RuntimeCatalog) bool {
+	if entry.SmallModel == "" {
+		return false
+	}
+	for _, option := range entry.Models {
+		if option.Alias != entry.SmallModel {
+			continue
+		}
+		resolved, err := catalog.ResolveWithExplicitEffort(entry.SubagentType, entry.AgentHarness, option.Alias, option.DefaultEffort, true)
+		if err != nil {
+			return false
+		}
+		targetAlias := resolved.TargetAlias
+		if targetAlias == "" {
+			targetAlias = resolved.ModelAlias
+		}
+		return targetAlias == option.Alias
+	}
+	return false
 }
 
 func hasACPModelAlias(models []loop.RuntimeModelOption, alias loop.ModelAlias) bool {
@@ -574,7 +666,7 @@ func resolveACPBoundRuntime(catalog ACPCompiledCatalog, cfg loop.BoundDefinition
 		return loop.Resolved{}, "", fmt.Errorf("coderig: ACP runtime selection unavailable")
 	}
 	harness := loop.AgentHarnessName(strings.TrimPrefix(string(profile), "acp/"))
-	resolved, err := catalog.RuntimeCatalog.ResolveWithExplicitEffort(cfg.Name(), harness, identity.ModelAlias, identity.Effort, true)
+	resolved, err := catalog.RuntimeCatalog.ResolveTargetAlias(cfg.Name(), harness, identity.ModelAlias, identity.Effort)
 	if err != nil || resolved.Profile != profile {
 		return loop.Resolved{}, "", fmt.Errorf("coderig: ACP runtime selection unavailable")
 	}

@@ -220,7 +220,10 @@ func TestNewACPCompositionGatewayPreflightFiltersUnsupportedClaudeAliases(t *tes
 				return ACPPreflightResult{}
 			}
 			if probe.Harness == "claude-code" {
-				return ACPPreflightResult{Ready: true, AdvertisedModels: []string{"sonnet-5"}}
+				if !containsString(probe.Models, "sonnet-5@high") || !containsString(probe.Models, "sonnet-5@max") {
+					t.Fatalf("Claude preflight models = %#v, want concrete effort aliases", probe.Models)
+				}
+				return ACPPreflightResult{Ready: true, AdvertisedModels: []string{"sonnet-5", "sonnet-5@high"}}
 			}
 			return ACPPreflightResult{Ready: true}
 		},
@@ -245,9 +248,21 @@ func TestNewACPCompositionGatewayPreflightFiltersUnsupportedClaudeAliases(t *tes
 	if len(claude.Models) != 1 || claude.Models[0].Alias != "sonnet-5" {
 		t.Fatalf("Claude advertised unsupported aliases: %#v", claude.Models)
 	}
+	if len(claude.Models[0].Efforts) != 2 || claude.Models[0].Efforts[0] != model.EffortMedium || claude.Models[0].Efforts[1] != model.EffortHigh {
+		t.Fatalf("Claude advertised unsupported efforts: %#v", claude.Models[0].Efforts)
+	}
 	if _, _, err := composition.Registry.Builder("acp/claude-code"); err != nil {
 		t.Fatalf("gateway-only Claude profile was removed: %v", err)
 	}
+}
+
+func containsString(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
 }
 
 func TestNewACPCompositionNativePreflightKeepsNativeEnvironment(t *testing.T) {
@@ -392,7 +407,7 @@ func TestACPBoundRuntimeResolutionUsesPinnedSelectors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bound, err = loop.OverrideBoundRuntimeSelection(bound, resolved.Profile, resolved.ModelAlias, resolved.Target, resolved.Effort)
+	bound, err = loop.OverrideBoundRuntimeSelection(bound, resolved.Profile, resolved.TargetAlias, resolved.Target, resolved.Effort)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -400,7 +415,7 @@ func TestACPBoundRuntimeResolutionUsesPinnedSelectors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if harness != "codex" || got.ModelAlias != "gpt-5.6-luna" || got.Effort != model.EffortMax {
+	if harness != "codex" || got.ModelAlias != "gpt-5.6-luna" || got.TargetAlias != "gpt-5.6-luna@max" || got.Effort != model.EffortMax {
 		t.Fatalf("resolved = %#v harness=%q", got, harness)
 	}
 }

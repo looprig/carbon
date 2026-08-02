@@ -99,7 +99,11 @@ func buildACPGatewayPlan(catalog ACPCompiledCatalog, resolved loop.Resolved) (ac
 	if err != nil {
 		return acpGatewayPlan{}, err
 	}
-	routes := map[gateway.RouteKey]gateway.Target{{Ingress: ingress, Model: string(resolved.ModelAlias)}: mainTarget}
+	mainAlias := resolved.TargetAlias
+	if mainAlias == "" {
+		mainAlias = resolved.ModelAlias
+	}
+	routes := map[gateway.RouteKey]gateway.Target{{Ingress: ingress, Model: string(mainAlias)}: mainTarget}
 	if resolved.AgentHarness == "claude-code" && resolved.SmallModel != "" {
 		smallResolved, err := catalog.RuntimeCatalog.ResolveWithExplicitEffort(
 			resolved.SubagentType, resolved.AgentHarness, resolved.SmallModel, model.EffortNone, false,
@@ -111,16 +115,13 @@ func buildACPGatewayPlan(catalog ACPCompiledCatalog, resolved loop.Resolved) (ac
 		if err != nil {
 			return acpGatewayPlan{}, err
 		}
-		if resolved.SmallModel == resolved.ModelAlias {
-			// Claude's main and small selectors intentionally share the same
-			// harness-facing alias. The wire request carries no discriminator
-			// with which a resolver could choose two efforts for that alias, so
-			// the selected main target is the one authoritative route for both
-			// selectors. Rejecting the advertised main tuple here would make
-			// sonnet-5/high and sonnet-5/max impossible to start.
-			return finishACPGatewayPlan(resolved.AgentHarness, ingress, routes)
+		smallAlias := smallResolved.TargetAlias
+		if smallAlias == "" {
+			smallAlias = smallResolved.ModelAlias
 		}
-		routes[gateway.RouteKey{Ingress: ingress, Model: string(resolved.SmallModel)}] = smallTarget
+		if smallAlias != mainAlias {
+			routes[gateway.RouteKey{Ingress: ingress, Model: string(smallAlias)}] = smallTarget
+		}
 	}
 	return finishACPGatewayPlan(resolved.AgentHarness, ingress, routes)
 }

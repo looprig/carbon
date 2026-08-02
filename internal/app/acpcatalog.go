@@ -351,7 +351,11 @@ func (c ACPCompiledCatalog) GatewayTarget(resolved loop.Resolved) (gateway.Targe
 	}
 	m := source.Model.Clone()
 	m.Sampling.Effort = resolved.Effort
-	return gateway.Target{ID: string(resolved.ModelAlias), Client: source.Client, Model: m, AuthoritativeEffort: true}, nil
+	targetAlias := resolved.TargetAlias
+	if targetAlias == "" {
+		targetAlias = resolved.ModelAlias
+	}
+	return gateway.Target{ID: string(targetAlias), Client: source.Client, Model: m, AuthoritativeEffort: true}, nil
 }
 
 // ResolveGatewayTarget is a convenience seam for gateway construction tests

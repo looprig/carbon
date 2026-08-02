@@ -27,7 +27,7 @@ func TestBuildACPGatewayPlanUsesStrictFixedRoutes(t *testing.T) {
 	if len(claudePlan.routes) != 2 {
 		t.Fatalf("Claude routes = %d, want 2", len(claudePlan.routes))
 	}
-	main, err := claudePlan.resolver.Resolve(context.Background(), model.APIFormatAnthropic, "gpt-5.6-luna")
+	main, err := claudePlan.resolver.Resolve(context.Background(), model.APIFormatAnthropic, string(claude.TargetAlias))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,19 +57,19 @@ func TestBuildACPGatewayPlanUsesStrictFixedRoutes(t *testing.T) {
 	if len(codexPlan.routes) != 1 {
 		t.Fatalf("Codex routes = %d, want 1", len(codexPlan.routes))
 	}
-	target, err := codexPlan.resolver.Resolve(context.Background(), model.APIFormatOpenAIResponses, "gpt-5.6-luna")
+	target, err := codexPlan.resolver.Resolve(context.Background(), model.APIFormatOpenAIResponses, string(codex.TargetAlias))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if target.Model.Provider != "openai" || target.Model.Sampling.Effort != model.EffortMax || !target.AuthoritativeEffort {
 		t.Fatalf("Codex target = %#v", target)
 	}
-	if _, err := codexPlan.resolver.Resolve(context.Background(), model.APIFormatOpenAIResponses, "sonnet-5"); !errors.As(err, &unknown) {
+	if _, err := codexPlan.resolver.Resolve(context.Background(), model.APIFormatOpenAIResponses, "gpt-5.6-luna"); !errors.As(err, &unknown) {
 		t.Fatalf("unknown Codex alias error = %v, want UnknownRouteError", err)
 	}
 }
 
-func TestBuildACPGatewayPlanSharesClaudeMainSmallAliasAtSelectedEffort(t *testing.T) {
+func TestBuildACPGatewayPlanSeparatesClaudeMainAndSmallEffortAliases(t *testing.T) {
 	t.Parallel()
 	compiled := testACPGatewayCatalog(t)
 
@@ -85,15 +85,28 @@ func TestBuildACPGatewayPlanSharesClaudeMainSmallAliasAtSelectedEffort(t *testin
 			if err != nil {
 				t.Fatalf("buildACPGatewayPlan(%s) error = %v", effort, err)
 			}
-			if len(plan.routes) != 1 {
-				t.Fatalf("Claude routes = %d, want one shared wire alias route", len(plan.routes))
+			wantRoutes := 1
+			if effort != model.EffortMedium {
+				wantRoutes = 2
 			}
-			target, err := plan.resolver.Resolve(context.Background(), model.APIFormatAnthropic, "sonnet-5")
+			if len(plan.routes) != wantRoutes {
+				t.Fatalf("Claude routes = %d, want %d", len(plan.routes), wantRoutes)
+			}
+			target, err := plan.resolver.Resolve(context.Background(), model.APIFormatAnthropic, string(selected.TargetAlias))
 			if err != nil {
 				t.Fatal(err)
 			}
 			if target.Model.Sampling.Effort != effort || !target.AuthoritativeEffort {
-				t.Fatalf("shared Claude target = %#v, want %s/authoritative", target, effort)
+				t.Fatalf("Claude main target = %#v, want %s/authoritative", target, effort)
+			}
+			if effort != model.EffortMedium {
+				small, err := plan.resolver.Resolve(context.Background(), model.APIFormatAnthropic, "sonnet-5")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if small.Model.Sampling.Effort != model.EffortMedium {
+					t.Fatalf("Claude small target = %#v, want medium", small)
+				}
 			}
 		})
 	}

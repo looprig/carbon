@@ -307,7 +307,7 @@ func TestACPCompositionRestoresCodexRuntimeThroughCurrentCatalog(t *testing.T) {
 		t.Fatal("delegated child id is zero")
 	}
 	liveCalls, _, runtime, _, _ := recorder.snapshot()
-	if liveCalls != 1 || runtime.Profile != "acp/codex" || runtime.ModelAlias != "gpt-5.6-luna" || runtime.Effort != model.EffortMax {
+	if liveCalls != 1 || runtime.Profile != "acp/codex" || runtime.ModelAlias != "gpt-5.6-luna@max" || runtime.Effort != model.EffortMax {
 		t.Fatalf("live builder calls=%d runtime=%+v", liveCalls, runtime)
 	}
 
@@ -321,7 +321,7 @@ func TestACPCompositionRestoresCodexRuntimeThroughCurrentCatalog(t *testing.T) {
 		switch ev := raw.(type) {
 		case event.LoopStarted:
 			if ev.LoopID == childID {
-				sawStarted = ev.AgentRuntime != nil && ev.AgentRuntime.Harness == "codex" && ev.AgentRuntime.Profile == "acp/codex" && ev.AgentRuntime.CredentialMode == string(loop.CredentialGatewayBacked) && ev.AgentRuntime.ModelAlias == "gpt-5.6-luna"
+			sawStarted = ev.AgentRuntime != nil && ev.AgentRuntime.Harness == "codex" && ev.AgentRuntime.Profile == "acp/codex" && ev.AgentRuntime.CredentialMode == string(loop.CredentialGatewayBacked) && ev.AgentRuntime.ModelAlias == "gpt-5.6-luna@max"
 			}
 		case event.LoopAgentSessionBound:
 			if ev.LoopID == childID && ev.ACPSessionID == "acp-live-session" {
@@ -339,7 +339,7 @@ func TestACPCompositionRestoresCodexRuntimeThroughCurrentCatalog(t *testing.T) {
 	}
 	defer func() { _ = restored.Shutdown(ctx) }()
 	_, restoredCalls, restoredRuntime, _, seed := recorder.snapshot()
-	if restoredCalls != 1 || restoredRuntime.Profile != "acp/codex" || restoredRuntime.ModelAlias != "gpt-5.6-luna" || restoredRuntime.Effort != model.EffortMax {
+	if restoredCalls != 1 || restoredRuntime.Profile != "acp/codex" || restoredRuntime.ModelAlias != "gpt-5.6-luna@max" || restoredRuntime.Effort != model.EffortMax {
 		t.Fatalf("restored builder calls=%d runtime=%+v", restoredCalls, restoredRuntime)
 	}
 	if seed.AgentSessionID != "acp-live-session" || seed.ForeignSID != "acp-live-session" {
