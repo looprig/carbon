@@ -42,9 +42,9 @@ const maxReadBytes int64 = 5 << 20
 const familyPolicyRev = "coderig-family:git-log-status-diff-show-push:v1"
 
 // executorScratchLimit bounds the number of memoized executor identities in one
-// role's set: the two operator faces (primary + leaf) plus every spawnable
-// sub-loop the delegation quota allows, with headroom.
-const executorScratchLimit = operatorSpawnQuota + 4
+// role's set: every primer/delegate Loop plus every spawnable sub-loop the
+// delegation quota allows, with headroom.
+const executorScratchLimit = delegationSpawnQuota + 4
 
 // errNoLoopProvenance reports that the access gate was consulted outside a live
 // loop step (no provenance), so the per-Loop executor cannot be resolved. It
@@ -175,15 +175,42 @@ func bashDefinition(set *sandbox.ExecutorSet) tool.Definition {
 	})
 }
 
-// operatorToolDefinitions builds the operator face's tool roster: read, mutate,
+// builderToolDefinitions builds the builder's tool roster: read, mutate,
 // confined Bash, web, and the interaction utilities, plus the optional Skill
-// tool. Bash routes through the operator role's confined executor set.
-func operatorToolDefinitions(set *sandbox.ExecutorSet, client *http.Client, skillTool tool.Definition) []tool.Definition {
+// tool. Bash routes through the builder role's confined executor set.
+func builderToolDefinitions(set *sandbox.ExecutorSet, client *http.Client, skillTool tool.Definition) []tool.Definition {
 	guard := coderigReadGuard{}
 	definitions := []tool.Definition{
 		tools.ReadFileDefinition(guard),
 		tools.WriteFileDefinition(),
 		tools.EditFileDefinition(),
+		tools.GlobDefinition(guard),
+		tools.GrepDefinition(guard),
+		bashDefinition(set),
+		tools.WebSearchDefinition(websearch.NewDuckDuckGoProvider(client)),
+		tools.FetchDefinition(client),
+		tools.TaskDefinitions(),
+		tools.AskUserDefinition(),
+	}
+	if skillTool != nil {
+		definitions = append(definitions, skillTool)
+	}
+	return definitions
+}
+
+// operatorToolDefinitions is a package-local compatibility seam for older
+// tests; production uses builderToolDefinitions.
+func operatorToolDefinitions(set *sandbox.ExecutorSet, client *http.Client, skillTool tool.Definition) []tool.Definition {
+	return builderToolDefinitions(set, client, skillTool)
+}
+
+// plannerToolDefinitions builds the planner's read/research roster. It carries
+// no file-mutation tools; its terminal is confined by the read-only planner
+// profile. Bash is retained for read-only repository checks.
+func plannerToolDefinitions(set *sandbox.ExecutorSet, client *http.Client, skillTool tool.Definition) []tool.Definition {
+	guard := coderigReadGuard{}
+	definitions := []tool.Definition{
+		tools.ReadFileDefinition(guard),
 		tools.GlobDefinition(guard),
 		tools.GrepDefinition(guard),
 		bashDefinition(set),
@@ -218,28 +245,36 @@ func reviewerToolDefinitions(set *sandbox.ExecutorSet, skillTool tool.Definition
 	return definitions
 }
 
-// sessionAccess is one session's resolved, session-fixed access wiring: the two
-// role executor sets (owned here, closed by the runtime agent), the two role
-// gates, the durable access-config digest, and the presentation metadata (fixed
+// sessionAccess is one session's resolved, session-fixed access wiring: one
+// executor set per role (owned here, closed by the runtime agent), the three
+// role gates, the durable access-config digest, and the presentation metadata (fixed
 // profile name, workspace root, and permission-load diagnostics). It is built
 // once per Open — interactive or headless — and never mutated.
 type sessionAccess struct {
-	profileName       string
-	workspace         string
-	configRev         string
-	diagnostics       []string
+	profileName string
+	workspace   string
+	configRev   string
+	diagnostics []string
+	plannerSet  *sandbox.ExecutorSet
+	builderSet  *sandbox.ExecutorSet
+	reviewerSet *sandbox.ExecutorSet
+	// Legacy aliases keep package-local tests that construct the former
+	// operator face compiling; production always uses builderSet/builderGate.
 	operatorSet       *sandbox.ExecutorSet
-	reviewerSet       *sandbox.ExecutorSet
-	operatorGate      loop.AccessGate
+	plannerGate       loop.AccessGate
+	builderGate       loop.AccessGate
 	reviewerGate      loop.AccessGate
-	operatorPolicyRev string
+	operatorGate      loop.AccessGate
+	plannerPolicyRev  string
+	builderPolicyRev  string
 	reviewerPolicyRev string
+	operatorPolicyRev string
 
 	closeOnce sync.Once
 	closeErr  error
 }
 
-// Close releases both role executor sets exactly once (idempotent), removing
+// Close releases all role executor sets exactly once (idempotent), removing
 // their owned scratch HOME directories and revoking their grant keys and proxies.
 func (a *sessionAccess) Close() error {
 	if a == nil {
@@ -247,8 +282,11 @@ func (a *sessionAccess) Close() error {
 	}
 	a.closeOnce.Do(func() {
 		var errs []error
-		if a.operatorSet != nil {
-			errs = append(errs, a.operatorSet.Close())
+		if a.plannerSet != nil {
+			errs = append(errs, a.plannerSet.Close())
+		}
+		if a.builderSet != nil {
+			errs = append(errs, a.builderSet.Close())
 		}
 		if a.reviewerSet != nil {
 			errs = append(errs, a.reviewerSet.Close())
@@ -267,10 +305,10 @@ func buildHeadlessAccess(cfg Config, root string) (*sessionAccess, error) {
 }
 
 // buildSessionAccess constructs the session's fixed access wiring. It builds the
-// selected operator profile and the independent reviewer restriction over the
+// selected builder profile and the independent planner/reviewer restriction over the
 // workspace root, resolves the parent egress route, opens the permission store,
 // and constructs one executor set + one combined gate per role. On any partial
-// failure it closes what it already built so no scratch HOME leaks. The two role
+// failure it closes what it already built so no scratch HOME leaks. All role
 // gates share the one workspace permission store (one workspace, one file).
 func buildSessionAccess(cfg Config, root string, interactive bool) (*sessionAccess, error) {
 	profileName := cfg.AccessProfile
@@ -282,7 +320,7 @@ func buildSessionAccess(cfg Config, root string, interactive bool) (*sessionAcce
 	if err != nil {
 		return nil, err
 	}
-	reviewer, err := restrictToReviewer(selected, root)
+	readOnly, err := restrictToReadOnly(selected, root)
 	if err != nil {
 		return nil, err
 	}
@@ -304,7 +342,7 @@ func buildSessionAccess(cfg Config, root string, interactive bool) (*sessionAcce
 	product := newProductAccessSource()
 	scratch := os.TempDir()
 
-	operatorSet, err := sandbox.NewExecutorSet(selected,
+	plannerSet, err := sandbox.NewExecutorSet(readOnly,
 		sandbox.WithScratchRoot(scratch),
 		sandbox.WithMaxExecutors(executorScratchLimit),
 		sandbox.WithEgressRoute(egress.Route),
@@ -312,25 +350,51 @@ func buildSessionAccess(cfg Config, root string, interactive bool) (*sessionAcce
 	if err != nil {
 		return nil, err
 	}
-	reviewerSet, err := sandbox.NewExecutorSet(reviewer,
+	builderSet, err := sandbox.NewExecutorSet(selected,
 		sandbox.WithScratchRoot(scratch),
 		sandbox.WithMaxExecutors(executorScratchLimit),
 		sandbox.WithEgressRoute(egress.Route),
 	)
 	if err != nil {
-		_ = operatorSet.Close()
+		_ = plannerSet.Close()
+		return nil, err
+	}
+	reviewerSet, err := sandbox.NewExecutorSet(readOnly,
+		sandbox.WithScratchRoot(scratch),
+		sandbox.WithMaxExecutors(executorScratchLimit),
+		sandbox.WithEgressRoute(egress.Route),
+	)
+	if err != nil {
+		_ = plannerSet.Close()
+		_ = builderSet.Close()
 		return nil, err
 	}
 
 	return &sessionAccess{
 		profileName: string(profileName),
 		workspace:   root,
-		configRev:   accessConfigDigest(profileName, selected, reviewer, egress.Route),
+		configRev:   accessConfigDigest(profileName, selected, readOnly, readOnly, egress.Route),
 		diagnostics: diagnosticMessages(diagnostics),
-		operatorSet: operatorSet,
+		plannerSet:  plannerSet,
+		builderSet:  builderSet,
 		reviewerSet: reviewerSet,
+		operatorSet: builderSet,
+		plannerGate: &roleGate{
+			set:         plannerSet,
+			bindings:    sandboxAccessBindings(readOnly, product),
+			matcher:     store,
+			writer:      writer,
+			interactive: interactive,
+		},
+		builderGate: &roleGate{
+			set:         builderSet,
+			bindings:    sandboxAccessBindings(selected, product),
+			matcher:     store,
+			writer:      writer,
+			interactive: interactive,
+		},
 		operatorGate: &roleGate{
-			set:         operatorSet,
+			set:         builderSet,
 			bindings:    sandboxAccessBindings(selected, product),
 			matcher:     store,
 			writer:      writer,
@@ -338,13 +402,15 @@ func buildSessionAccess(cfg Config, root string, interactive bool) (*sessionAcce
 		},
 		reviewerGate: &roleGate{
 			set:         reviewerSet,
-			bindings:    sandboxAccessBindings(reviewer, product),
+			bindings:    sandboxAccessBindings(readOnly, product),
 			matcher:     store,
 			writer:      writer,
 			interactive: interactive,
 		},
-		operatorPolicyRev: rolePolicyRevision(profileName, "operator"),
+		plannerPolicyRev:  rolePolicyRevision(profileName, "planner"),
+		builderPolicyRev:  rolePolicyRevision(profileName, "builder"),
 		reviewerPolicyRev: rolePolicyRevision(profileName, "reviewer"),
+		operatorPolicyRev: rolePolicyRevision(profileName, "builder"),
 	}, nil
 }
 

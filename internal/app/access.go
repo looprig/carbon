@@ -13,8 +13,8 @@ import (
 )
 
 // access.go owns CodeRig's product access policy: the three named profiles built
-// directly from the reusable sandbox.Profile API, the independent reviewer
-// restriction, the product-owned access source for the consumer-bound
+// directly from the reusable sandbox.Profile API, the independent read-only
+// restriction for planner and reviewer, the product-owned access source for the consumer-bound
 // tool.invoke/context.load kinds, and the secret-free durable access digest that
 // a restore compares. The profile names, combinations, and product kinds live
 // HERE, never in sandbox, harness, or tools; reusable modules ship no named
@@ -107,12 +107,12 @@ func coderigProfile(name AccessProfile, workspace string) (*sandbox.Profile, err
 	return sandbox.NewProfile(config)
 }
 
-// reviewerReadOnlyProfile is CodeRig's locally defined sandboxed, read-only
-// profile. The reviewer's effective authority is the intersection of the
-// selected product profile with this profile, so the reviewer stays read-only
-// under EVERY selected profile. The user dislikes "ceiling" vocabulary; this is
+// readOnlyAgentProfile is CodeRig's locally defined sandboxed, read-only profile.
+// Planner and reviewer use the intersection of the selected product profile with
+// this profile, so both stay read-only under EVERY selected profile. The user
+// dislikes "ceiling" vocabulary; this is
 // the value passed as sandbox.Restrict's shipped `ceiling` parameter.
-func reviewerReadOnlyProfile(workspace string) (*sandbox.Profile, error) {
+func readOnlyAgentProfile(workspace string) (*sandbox.Profile, error) {
 	return sandbox.NewProfile(sandbox.ProfileConfig{
 		WorkspaceRoot:  workspace,
 		WorkspaceRead:  sandbox.Allow,
@@ -126,18 +126,29 @@ func reviewerReadOnlyProfile(workspace string) (*sandbox.Profile, error) {
 	})
 }
 
-// restrictToReviewer returns the reviewer's effective profile: the component-wise
-// intersection of the selected product profile with reviewerReadOnlyProfile. The
-// intersection guarantees the reviewer remains sandboxed and read-only even when
-// the operator's selected profile is Trusted or Unconfined.
-func restrictToReviewer(selected *sandbox.Profile, workspace string) (*sandbox.Profile, error) {
-	reviewer, err := reviewerReadOnlyProfile(workspace)
+// restrictToReadOnly returns the effective planner/reviewer profile: the
+// component-wise intersection of the selected product profile with the local
+// read-only profile. The intersection guarantees both roles remain sandboxed
+// and read-only even when the builder's selected profile is Trusted or Unconfined.
+func restrictToReadOnly(selected *sandbox.Profile, workspace string) (*sandbox.Profile, error) {
+	readOnly, err := readOnlyAgentProfile(workspace)
 	if err != nil {
 		return nil, err
 	}
 	// sandbox.Restrict(base, ceiling) takes the less-authoritative value per
-	// field; reviewer is the `ceiling` argument (shipped sandbox API naming).
-	return sandbox.Restrict(selected, reviewer)
+	// field; readOnly is the `ceiling` argument (shipped sandbox API naming).
+	return sandbox.Restrict(selected, readOnly)
+}
+
+// reviewerReadOnlyProfile and restrictToReviewer remain package-local aliases
+// for older access fixtures. Both now use the shared read-only profile applied
+// to planner and reviewer in production.
+func reviewerReadOnlyProfile(workspace string) (*sandbox.Profile, error) {
+	return readOnlyAgentProfile(workspace)
+}
+
+func restrictToReviewer(selected *sandbox.Profile, workspace string) (*sandbox.Profile, error) {
+	return restrictToReadOnly(selected, workspace)
 }
 
 // productAccessSource is CodeRig's small, immutable access source for the two
@@ -184,18 +195,19 @@ var (
 
 // accessConfigDigest is the secret-free durable identity of a session's access
 // configuration. It folds the access ABI version, the selected profile name, the
-// complete normalized operator and reviewer profiles (each Fingerprint covers
+// complete normalized builder, planner, and reviewer profiles (each Fingerprint covers
 // every normalized access field, roots, HOME, isolation, ack, and required
 // guarantees), and the non-secret egress route identity and declared guarantees.
 // A product-profile, reviewer-restriction, or egress-boundary change therefore
 // changes the digest, so a restore with different authority is a configuration
 // mismatch rather than a silent authority change. Upstream proxy credentials
 // never enter it: the route contributes only its Fingerprint and guarantee bits.
-func accessConfigDigest(selected AccessProfile, operator, reviewer *sandbox.Profile, route sandbox.EgressRoute) string {
+func accessConfigDigest(selected AccessProfile, builder, planner, reviewer *sandbox.Profile, route sandbox.EgressRoute) string {
 	payload, _ := json.Marshal(struct {
 		Version          uint16 `json:"version"`
 		Selected         string `json:"selected"`
-		Operator         string `json:"operator"`
+		Builder          string `json:"builder"`
+		Planner          string `json:"planner"`
 		Reviewer         string `json:"reviewer"`
 		Route            string `json:"route"`
 		TargetGuarantee  bool   `json:"target_guarantee"`
@@ -203,7 +215,8 @@ func accessConfigDigest(selected AccessProfile, operator, reviewer *sandbox.Prof
 	}{
 		Version:          productAccessVersion,
 		Selected:         string(selected),
-		Operator:         operator.Fingerprint(),
+		Builder:          builder.Fingerprint(),
+		Planner:          planner.Fingerprint(),
 		Reviewer:         reviewer.Fingerprint(),
 		Route:            route.Fingerprint(),
 		TargetGuarantee:  route.TargetGuarantee(),

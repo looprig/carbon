@@ -4,27 +4,29 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/looprig/coderig/internal/catalog/operator"
+	"github.com/looprig/coderig/internal/catalog/builder"
+	"github.com/looprig/coderig/internal/catalog/planner"
 	"github.com/looprig/coderig/internal/catalog/reviewer"
 	"github.com/looprig/harness/pkg/loop"
 	"github.com/looprig/tools/skill"
 )
 
 // skills_wiring_test.go proves the composition root wires the per-agent Skill tool and the
-// trusted <available_skills> system-prompt catalog correctly: the operator (which owns the
+// trusted <available_skills> system-prompt catalog correctly: the builder (which owns the
 // embedded code-style skill) gets both; the reviewer (no skills) gets neither.
 
 // testSkillLoader builds the embedded skill loader over the roster's allow-map, exactly as
 // swarmDefinitions does.
 func testSkillLoader() skill.SkillLoader {
 	scopes := []skillScope{
-		{name: operator.Name, skills: operatorSkills},
+		{name: planner.Name},
+		{name: builder.Name, skills: builderSkills},
 		{name: reviewer.Name},
 	}
 	return skill.NewEmbeddedSkillLoader(SkillsFS, buildSkillAllow(scopes))
 }
 
-// TestDefinitionSystemPromptsCarrySkillCatalog proves the operator loops' system prompt carries
+// TestDefinitionSystemPromptsCarrySkillCatalog proves the builder loops' system prompt carries
 // the <available_skills> catalog naming code-style, and the reviewer's does not.
 func TestDefinitionSystemPromptsCarrySkillCatalog(t *testing.T) {
 	t.Parallel()
@@ -39,9 +41,13 @@ func TestDefinitionSystemPromptsCarrySkillCatalog(t *testing.T) {
 		byName[string(d.Name())] = d
 	}
 
-	operatorSys := byName[string(operator.Name)].FingerprintInitial().EffectiveSystem
-	if !strings.Contains(operatorSys, "<available_skills>") || !strings.Contains(operatorSys, "code-style") {
-		t.Errorf("operator system prompt missing the skill catalog: %q", operatorSys)
+	builderSys := byName[string(builder.Name)].FingerprintInitial().EffectiveSystem
+	if !strings.Contains(builderSys, "<available_skills>") || !strings.Contains(builderSys, "code-style") {
+		t.Errorf("builder system prompt missing the skill catalog: %q", builderSys)
+	}
+	plannerSys := byName[string(planner.Name)].FingerprintInitial().EffectiveSystem
+	if strings.Contains(plannerSys, "<available_skills>") {
+		t.Errorf("planner system prompt unexpectedly carries a skill catalog: %q", plannerSys)
 	}
 	reviewerSys := byName[string(reviewer.Name)].FingerprintInitial().EffectiveSystem
 	if strings.Contains(reviewerSys, "<available_skills>") {
@@ -49,7 +55,7 @@ func TestDefinitionSystemPromptsCarrySkillCatalog(t *testing.T) {
 	}
 }
 
-// TestSkillDefinitionForGating proves skillDefinitionFor honors the §7a gate: the operator (an
+// TestSkillDefinitionForGating proves skillDefinitionFor honors the §7a gate: the builder (an
 // embedded-skill owner) always gets a Skill definition; the reviewer (no skills, not
 // runtime-eligible) never does.
 func TestSkillDefinitionForGating(t *testing.T) {
@@ -62,8 +68,10 @@ func TestSkillDefinitionForGating(t *testing.T) {
 		cfg     Config
 		wantNil bool
 	}{
-		{name: "operator embedded-only", builtin: operatorBuiltin(), cfg: Config{}, wantNil: false},
-		{name: "operator runtime-skills on", builtin: operatorBuiltin(), cfg: Config{RuntimeSkills: true}, wantNil: false},
+		{name: "planner no skills off", builtin: plannerBuiltin(), cfg: Config{}, wantNil: true},
+		{name: "planner not runtime-eligible", builtin: plannerBuiltin(), cfg: Config{RuntimeSkills: true}, wantNil: true},
+		{name: "builder embedded-only", builtin: builderBuiltin(), cfg: Config{}, wantNil: false},
+		{name: "builder runtime-skills on", builtin: builderBuiltin(), cfg: Config{RuntimeSkills: true}, wantNil: false},
 		{name: "reviewer no skills off", builtin: reviewerBuiltin(), cfg: Config{}, wantNil: true},
 		{name: "reviewer not runtime-eligible", builtin: reviewerBuiltin(), cfg: Config{RuntimeSkills: true}, wantNil: true},
 	}
@@ -80,20 +88,24 @@ func TestSkillDefinitionForGating(t *testing.T) {
 }
 
 // TestBuildSkillAllowAuthorizesOnlyDeclaredSkills proves the loader allow-map authorizes the
-// operator's code-style skill and nothing for the reviewer.
+// builder's code-style skill and nothing for planner or reviewer.
 func TestBuildSkillAllowAuthorizesOnlyDeclaredSkills(t *testing.T) {
 	t.Parallel()
 
 	allow := buildSkillAllow([]skillScope{
-		{name: operator.Name, skills: operatorSkills},
+		{name: planner.Name},
+		{name: builder.Name, skills: builderSkills},
 		{name: reviewer.Name},
 	})
-	opSkills, ok := allow[operator.Name]
+	builderAllowed, ok := allow[builder.Name]
 	if !ok {
-		t.Fatalf("operator absent from the allow-map")
+		t.Fatalf("builder absent from the allow-map")
 	}
-	if _, ok := opSkills["code-style"]; !ok {
-		t.Errorf("operator allow-map = %v, want it to authorize code-style", opSkills)
+	if _, ok := builderAllowed["code-style"]; !ok {
+		t.Errorf("builder allow-map = %v, want it to authorize code-style", builderAllowed)
+	}
+	if _, ok := allow[planner.Name]; ok {
+		t.Errorf("planner present in the allow-map, want absent (no skills)")
 	}
 	if _, ok := allow[reviewer.Name]; ok {
 		t.Errorf("reviewer present in the allow-map, want absent (no skills)")

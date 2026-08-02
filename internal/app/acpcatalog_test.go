@@ -123,6 +123,60 @@ func TestCompileACPCatalogCredentialGatingAndNativeFallback(t *testing.T) {
 	}
 }
 
+func TestCompileACPCatalogNativeRowsCoexistWithGatewayRows(t *testing.T) {
+	compiled, err := CompileACPCatalog(ACPCatalogInput{
+		SubagentTypes: []identity.AgentName{"worker"},
+		GatewayClients: map[model.ProviderName]inference.Client{
+			"openai": &fakeLLM{},
+		},
+		NativeAuth: []ACPNativeAuthSource{{
+			Harness: "codex", Alias: "native-codex-model", Model: testModel(),
+			DefaultEffort: model.EffortNone, Efforts: []model.Effort{model.EffortNone},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	entries := compiled.RuntimeCatalog.EntriesFor("worker")
+	var codex loop.RuntimeCatalogEntry
+	for _, entry := range entries {
+		if entry.AgentHarness == "codex" {
+			codex = entry
+			break
+		}
+	}
+	if codex.AgentHarness != "codex" {
+		t.Fatalf("codex entry missing: %#v", entries)
+	}
+	var nativeFound bool
+	for _, option := range codex.Models {
+		if option.Alias == "native-codex-model" {
+			nativeFound = true
+			if option.Credential != loop.CredentialNativeAuth {
+				t.Fatalf("native option credential = %q, want %q", option.Credential, loop.CredentialNativeAuth)
+			}
+		}
+	}
+	if !nativeFound {
+		t.Fatalf("native option missing from mixed codex entry: %#v", codex.Models)
+	}
+
+	native, err := compiled.RuntimeCatalog.Resolve("worker", "codex", "native-codex-model", model.EffortNone)
+	if err != nil {
+		t.Fatalf("native codex resolve: %v", err)
+	}
+	if native.Credential != loop.CredentialNativeAuth {
+		t.Fatalf("native credential = %q, want %q", native.Credential, loop.CredentialNativeAuth)
+	}
+	if _, err := compiled.RuntimeCatalog.Resolve("worker", "claude-code", "native-codex-model", model.EffortNone); err == nil {
+		t.Fatal("native codex alias resolved under claude-code")
+	}
+	if _, err := compiled.ResolveGatewayTarget("native-codex-model", model.EffortNone); err == nil {
+		t.Fatal("native codex alias unexpectedly has gateway target")
+	}
+}
+
 func TestCompileACPCatalogExtraProvider(t *testing.T) {
 	extraClient := &fakeLLM{}
 	extraModel := model.CustomModel("openrouter", model.APIFormatOpenAI, "https://openrouter.ai/api/v1", "vendor/model", model.WithTools())

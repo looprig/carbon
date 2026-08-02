@@ -13,11 +13,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/looprig/coderig/internal/catalog/builder"
 	"github.com/looprig/coderig/internal/catalog/operator"
+	"github.com/looprig/coderig/internal/catalog/planner"
+	"github.com/looprig/coderig/internal/catalog/reviewer"
 	"github.com/looprig/core/content"
 	"github.com/looprig/core/uuid"
 	"github.com/looprig/harness/pkg/event"
 	"github.com/looprig/harness/pkg/gate"
+	"github.com/looprig/harness/pkg/identity"
 	"github.com/looprig/harness/pkg/journal"
 	"github.com/looprig/harness/pkg/loop"
 	"github.com/looprig/harness/pkg/rig"
@@ -174,6 +178,10 @@ func assertTaskToolsAdvertised(t *testing.T, req inference.Request) {
 	}
 }
 
+func requestHasRole(req inference.Request, name identity.AgentName) bool {
+	return strings.Contains(req.System, `<role name="`+string(name)+`">`)
+}
+
 // approveAllAccessGate is a trivial loop.AccessGate that approves every request.
 // Focused delegation-topology tests use it where the gate itself is not under
 // test (delegation is driven directly through the rig-bound controller).
@@ -191,8 +199,11 @@ func TestManagedSubagentAutoAllowed(t *testing.T) {
 	calls := 0
 	client := &managedScript{}
 	client.fn = func(_ context.Context, req inference.Request) ([]content.Chunk, error) {
-		if !strings.Contains(req.System, operatorDelegation) {
+		if requestHasRole(req, reviewer.Name) {
 			return finalText("child done"), nil
+		}
+		if !requestHasRole(req, builder.Name) {
+			return nil, fmt.Errorf("unexpected role in managed auto-allow request")
 		}
 		calls++
 		if calls == 1 {
@@ -208,39 +219,39 @@ func TestManagedSubagentAutoAllowed(t *testing.T) {
 
 func TestManagedTaskToolsAreLoopScoped(t *testing.T) {
 	t.Parallel()
-	primaryStep := 0
-	operatorStep := 0
+	builderStep := 0
+	plannerStep := 0
 	reviewerStep := 0
-	var primaryList, operatorList, reviewerList string
+	var builderList, plannerList, reviewerList string
 	client := &managedScript{}
 	client.fn = func(_ context.Context, req inference.Request) ([]content.Chunk, error) {
 		assertTaskToolsAdvertised(t, req)
 		switch {
-		case strings.Contains(req.System, operatorDelegation):
-			switch primaryStep {
+		case requestHasRole(req, builder.Name):
+			switch builderStep {
 			case 0:
-				primaryStep++
-				return namedToolCall("primary-create", "TaskCreate", `{"subject":"primary task","description":"primary work"}`), nil
+				builderStep++
+				return namedToolCall("builder-create", "TaskCreate", `{"subject":"builder task","description":"builder work"}`), nil
 			case 1:
-				primaryStep++
-				return toolCall("start-operator", `{"agent":"operator","message":"operator work","wait":true}`), nil
+				builderStep++
+				return toolCall("start-planner", `{"agent":"planner","message":"planner work","wait":true}`), nil
 			case 2:
-				primaryStep++
-				return namedToolCall("primary-list", "TaskList", `{}`), nil
+				builderStep++
+				return namedToolCall("builder-list", "TaskList", `{}`), nil
 			case 3:
-				primaryList = lastToolText(req)
-				if !strings.Contains(primaryList, "primary task") || strings.Contains(primaryList, "operator task") {
-					return nil, fmt.Errorf("primary TaskList result = %q, want only primary task", primaryList)
+				builderList = lastToolText(req)
+				if !strings.Contains(builderList, "builder task") || strings.Contains(builderList, "planner task") {
+					return nil, fmt.Errorf("builder TaskList result = %q, want only builder task", builderList)
 				}
-				primaryStep++
-				return toolCall("primary-reviewer", `{"agent":"reviewer","message":"review","wait":true}`), nil
+				builderStep++
+				return toolCall("builder-reviewer", `{"agent":"reviewer","message":"review","wait":true}`), nil
 			case 4:
-				primaryStep++
-				return finalText("primary done"), nil
+				builderStep++
+				return finalText("builder done"), nil
 			default:
-				return nil, fmt.Errorf("unexpected primary inference step %d", primaryStep)
+				return nil, fmt.Errorf("unexpected builder inference step %d", builderStep)
 			}
-		case strings.Contains(req.System, `<role name="reviewer">`):
+		case requestHasRole(req, reviewer.Name):
 			switch reviewerStep {
 			case 0:
 				reviewerStep++
@@ -255,18 +266,18 @@ func TestManagedTaskToolsAreLoopScoped(t *testing.T) {
 			default:
 				return nil, fmt.Errorf("unexpected reviewer inference step %d", reviewerStep)
 			}
-		default:
-			switch operatorStep {
+		case requestHasRole(req, planner.Name):
+			switch plannerStep {
 			case 0:
-				operatorStep++
-				return namedToolCall("operator-list", "TaskList", `{}`), nil
+				plannerStep++
+				return namedToolCall("planner-list", "TaskList", `{}`), nil
 			case 1:
-				operatorList = lastToolText(req)
-				if operatorList != `{"tasks":[]}` {
-					return nil, fmt.Errorf("operator TaskList result = %q, want empty graph", operatorList)
+				plannerList = lastToolText(req)
+				if plannerList != `{"tasks":[]}` {
+					return nil, fmt.Errorf("planner TaskList result = %q, want empty graph", plannerList)
 				}
-				operatorStep++
-				return namedToolCall("operator-create", "TaskCreate", `{"subject":"operator task","description":"operator work"}`), nil
+				plannerStep++
+				return namedToolCall("planner-create", "TaskCreate", `{"subject":"planner task","description":"planner work"}`), nil
 			case 2:
 				var created struct {
 					Task struct {
@@ -275,73 +286,77 @@ func TestManagedTaskToolsAreLoopScoped(t *testing.T) {
 					} `json:"task"`
 				}
 				if err := json.Unmarshal([]byte(lastToolText(req)), &created); err != nil {
-					return nil, fmt.Errorf("operator TaskCreate result is not JSON: %w", err)
+					return nil, fmt.Errorf("planner TaskCreate result is not JSON: %w", err)
 				}
-				if created.Task.ID == "" || created.Task.Subject != "operator task" {
-					return nil, fmt.Errorf("operator TaskCreate result = %+v, want created operator task", created)
+				if created.Task.ID == "" || created.Task.Subject != "planner task" {
+					return nil, fmt.Errorf("planner TaskCreate result = %+v, want created planner task", created)
 				}
-				operatorStep++
-				return namedToolCall("operator-list-after-create", "TaskList", `{}`), nil
+				plannerStep++
+				return namedToolCall("planner-list-after-create", "TaskList", `{}`), nil
 			case 3:
-				operatorList = lastToolText(req)
-				if !strings.Contains(operatorList, "operator task") || strings.Contains(operatorList, "primary task") {
-					return nil, fmt.Errorf("operator TaskList after create = %q, want only operator task", operatorList)
+				plannerList = lastToolText(req)
+				if !strings.Contains(plannerList, "planner task") || strings.Contains(plannerList, "builder task") {
+					return nil, fmt.Errorf("planner TaskList after create = %q, want only planner task", plannerList)
 				}
-				operatorStep++
-				return finalText("operator done"), nil
+				plannerStep++
+				return finalText("planner done"), nil
 			default:
-				return nil, fmt.Errorf("unexpected operator inference step %d", operatorStep)
+				return nil, fmt.Errorf("unexpected planner inference step %d", plannerStep)
 			}
+		default:
+			return nil, fmt.Errorf("unexpected role in managed task-tools request")
 		}
 	}
 
 	agent := newTestAgent(t, client, Config{})
-	if got := runManagedTurn(t, agent, "create and delegate"); got != "primary done" {
-		t.Fatalf("primary final = %q, want primary done", got)
+	if got := runManagedTurn(t, agent, "create and delegate"); got != "builder done" {
+		t.Fatalf("builder final = %q, want builder done", got)
 	}
-	if primaryStep != 5 || operatorStep != 4 || reviewerStep != 2 {
-		t.Fatalf("steps primary=%d operator=%d reviewer=%d, want 5/4/2", primaryStep, operatorStep, reviewerStep)
+	if builderStep != 5 || plannerStep != 4 || reviewerStep != 2 {
+		t.Fatalf("steps builder=%d planner=%d reviewer=%d, want 5/4/2", builderStep, plannerStep, reviewerStep)
 	}
 }
 
-// TestOperatorTopologyComposed proves the production primer is the sole delegation-capable
-// loop and compares what the provider actually receives on the primer and operator leaf.
-func TestOperatorTopologyComposed(t *testing.T) {
+// TestThreeRoleTopologyComposed proves the active builder and a delegated planner both receive
+// the managed Subagent surface and their own role-specific prompts.
+func TestThreeRoleTopologyComposed(t *testing.T) {
 	t.Parallel()
-	var primaryReq, leafReq inference.Request
-	primaryCalls := 0
+	var builderReq, plannerReq inference.Request
+	builderCalls := 0
 	client := &managedScript{}
 	client.fn = func(_ context.Context, req inference.Request) ([]content.Chunk, error) {
-		if strings.Contains(req.System, operatorDelegation) {
-			primaryReq = req
-			primaryCalls++
-			if primaryCalls == 1 {
-				return toolCall("topology-start", `{"agent":"operator","message":"inspect","wait":true}`), nil
+		if requestHasRole(req, builder.Name) {
+			builderReq = req
+			builderCalls++
+			if builderCalls == 1 {
+				return toolCall("topology-start", `{"agent":"planner","message":"inspect","wait":true}`), nil
 			}
 			return finalText("topology done"), nil
 		}
-		leafReq = req
-		return finalText("leaf done"), nil
+		if requestHasRole(req, planner.Name) {
+			plannerReq = req
+			return finalText("planner done"), nil
+		}
+		return nil, fmt.Errorf("unexpected role in topology request")
 	}
 	agent := newTestAgent(t, client, Config{})
 	if got := runManagedTurn(t, agent, "go"); got != "topology done" {
 		t.Fatalf("primary final = %q", got)
 	}
 
-	primaryTools := toolNamesFromRequest(primaryReq)
-	leafTools := toolNamesFromRequest(leafReq)
-	if !slices.Contains(primaryTools, "Subagent") {
-		t.Fatalf("bound primary tools = %v, want injected Subagent", primaryTools)
+	builderTools := toolNamesFromRequest(builderReq)
+	plannerTools := toolNamesFromRequest(plannerReq)
+	if !slices.Contains(builderTools, "Subagent") {
+		t.Fatalf("bound builder tools = %v, want injected Subagent", builderTools)
 	}
-	if slices.Contains(leafTools, "Subagent") {
-		t.Fatalf("bound operator leaf tools = %v, must not contain Subagent", leafTools)
+	if !slices.Contains(plannerTools, "Subagent") {
+		t.Fatalf("bound planner tools = %v, want injected Subagent", plannerTools)
 	}
-	withoutSubagent := slices.DeleteFunc(append([]string(nil), primaryTools...), func(name string) bool { return name == "Subagent" })
-	if !slices.Equal(withoutSubagent, leafTools) {
-		t.Fatalf("bound primary-minus-Subagent tools = %v, leaf = %v", withoutSubagent, leafTools)
+	if !strings.Contains(builderReq.System, delegationGuidance) || !strings.Contains(plannerReq.System, delegationGuidance) {
+		t.Fatal("builder or planner system prompt omitted managed-delegation guidance")
 	}
-	if got := strings.Replace(primaryReq.System, operatorDelegation, "", 1); got != leafReq.System {
-		t.Fatal("bound primary-minus-delegation prompt differs from operator leaf prompt")
+	if !requestHasRole(builderReq, builder.Name) || !requestHasRole(plannerReq, planner.Name) {
+		t.Fatal("role-specific system prompt attribution is missing")
 	}
 }
 
@@ -354,7 +369,7 @@ func TestManagedSubagentComposed(t *testing.T) {
 		var observed string
 		client := &managedScript{}
 		client.fn = func(_ context.Context, req inference.Request) ([]content.Chunk, error) {
-			if !strings.Contains(req.System, operatorDelegation) {
+			if requestHasRole(req, reviewer.Name) {
 				return finalText("child final text"), nil
 			}
 			calls++
@@ -373,7 +388,7 @@ func TestManagedSubagentComposed(t *testing.T) {
 
 	for _, tc := range []struct{ name, args, want string }{
 		{"unknown agent", `{"agent":"ghost","message":"go"}`, "not an authorized delegate"},
-		{"nonempty mode", `{"agent":"operator","mode":"build","message":"go"}`, "is not declared"},
+		{"nonempty mode", `{"agent":"reviewer","mode":"build","message":"go"}`, "is not declared"},
 	} {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
@@ -411,7 +426,7 @@ func TestAsyncDelegateComposed(t *testing.T) {
 	childTurn := 0
 	client := &managedScript{}
 	client.fn = func(_ context.Context, req inference.Request) ([]content.Chunk, error) {
-		if !strings.Contains(req.System, operatorDelegation) {
+		if requestHasRole(req, planner.Name) {
 			childTurn++
 			return finalText(fmt.Sprintf("child answer %d", childTurn)), nil
 		}
@@ -419,7 +434,7 @@ func TestAsyncDelegateComposed(t *testing.T) {
 		switch step {
 		case 0:
 			step++
-			return toolCall("async-start", `{"action":"start","agent":"operator","message":"first","wait":false}`), nil
+			return toolCall("async-start", `{"action":"start","agent":"planner","message":"first","wait":false}`), nil
 		case 1:
 			var err error
 			started, err = parseQueued(prior)
@@ -482,7 +497,7 @@ func TestRestoredDelegateComposed(t *testing.T) {
 	var childID uuid.UUID
 	client := &managedScript{}
 	client.fn = func(_ context.Context, req inference.Request) ([]content.Chunk, error) {
-		if !strings.Contains(req.System, operatorDelegation) {
+		if requestHasRole(req, planner.Name) {
 			if phase == "initial" {
 				return finalText("initial child final"), nil
 			}
@@ -491,7 +506,7 @@ func TestRestoredDelegateComposed(t *testing.T) {
 		if phase == "initial" {
 			if primaryStep == 0 {
 				primaryStep++
-				return toolCall("restore-start", `{"agent":"operator","message":"initial","wait":true}`), nil
+				return toolCall("restore-start", `{"agent":"planner","message":"initial","wait":true}`), nil
 			}
 			return finalText("initial parent final"), nil
 		}

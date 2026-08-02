@@ -14,7 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/looprig/coderig/internal/catalog/builder"
 	"github.com/looprig/coderig/internal/catalog/operator"
+	"github.com/looprig/coderig/internal/catalog/planner"
 	"github.com/looprig/core/content"
 	"github.com/looprig/core/uuid"
 	"github.com/looprig/harness/pkg/event"
@@ -96,12 +98,12 @@ func TestRigRestoreStateWorkspaceAndContinuation(t *testing.T) {
 	var restoredEffort model.Effort
 	client := &managedScript{}
 	client.fn = func(_ context.Context, req inference.Request) ([]content.Chunk, error) {
-		if strings.Contains(req.System, operatorDelegation) {
+		if strings.Contains(req.System, `<role name="`+string(builder.Name)+`">`) {
 			primaryCalls++
 			if primaryCalls == 1 {
-				return toolCall("restore-state-child", `{"agent":"operator","message":"work","wait":true}`), nil
+				return toolCall("restore-state-child", `{"agent":"planner","message":"work","wait":true}`), nil
 			}
-			return finalText("operator work complete"), nil
+			return finalText("builder work complete"), nil
 		}
 		if phase == "restored" {
 			restoredEffort = req.Model.Sampling.Effort
@@ -119,7 +121,7 @@ func TestRigRestoreStateWorkspaceAndContinuation(t *testing.T) {
 		t.Fatal(err)
 	}
 	sessionID := a1.SessionID()
-	_, observed := runManagedTurnObserved(t, a1, "perform operator work")
+	_, observed := runManagedTurnObserved(t, a1, "perform builder work")
 	var childID uuid.UUID
 	for _, ev := range observed {
 		if started, ok := ev.(event.LoopStarted); ok && !started.Cause.Coordinates.LoopID.IsZero() {
@@ -127,7 +129,7 @@ func TestRigRestoreStateWorkspaceAndContinuation(t *testing.T) {
 		}
 	}
 	if childID.IsZero() {
-		t.Fatal("managed operator work did not create a delegate")
+		t.Fatal("managed builder work did not create a delegate")
 	}
 	if err := a1.sess.SetActiveLoop(context.Background(), childID); err != nil {
 		t.Fatalf("SetActiveLoop(delegate): %v", err)
@@ -216,7 +218,7 @@ func TestRigRestoreDelegateOwnership(t *testing.T) {
 	var initialSyncResult string
 	client := &managedScript{}
 	client.fn = func(_ context.Context, req inference.Request) ([]content.Chunk, error) {
-		if !strings.Contains(req.System, operatorDelegation) {
+		if !strings.Contains(req.System, `<role name="`+string(planner.Name)+`">`) {
 			if phase == "initial" {
 				return finalText("initial child"), nil
 			}
@@ -225,7 +227,7 @@ func TestRigRestoreDelegateOwnership(t *testing.T) {
 		if phase == "initial" {
 			if step == 0 {
 				step++
-				return toolCall("own-start", `{"agent":"operator","message":"first","wait":true}`), nil
+				return toolCall("own-start", `{"agent":"planner","message":"first","wait":true}`), nil
 			}
 			initialSyncResult = lastToolText(req)
 			return finalText("initial parent"), nil
@@ -308,7 +310,7 @@ func TestAsyncDelegatesFSStoreResolveIndependently(t *testing.T) {
 	childCalls := 0
 	client := &concurrentManagedScript{}
 	client.fn = func(ctx context.Context, req inference.Request) ([]content.Chunk, error) {
-		if !strings.Contains(req.System, operatorDelegation) {
+		if strings.Contains(req.System, `<role name="`+string(planner.Name)+`">`) {
 			childCalls++ // serialized by the parent barriers below: child 1 enters before child 2 starts
 			switch childCalls {
 			case 1:
@@ -331,7 +333,7 @@ func TestAsyncDelegatesFSStoreResolveIndependently(t *testing.T) {
 		switch step {
 		case 0:
 			step++
-			return toolCall("fs-async-1", `{"action":"start","agent":"operator","message":"first","wait":false}`), nil
+			return toolCall("fs-async-1", `{"action":"start","agent":"planner","message":"first","wait":false}`), nil
 		case 1:
 			var err error
 			first, err = parseQueued(prior)
@@ -344,7 +346,7 @@ func TestAsyncDelegatesFSStoreResolveIndependently(t *testing.T) {
 				return nil, ctx.Err()
 			}
 			step++
-			return toolCall("fs-async-2", `{"action":"start","agent":"operator","message":"second","wait":false}`), nil
+			return toolCall("fs-async-2", `{"action":"start","agent":"planner","message":"second","wait":false}`), nil
 		case 2:
 			var err error
 			second, err = parseQueued(prior)
@@ -572,7 +574,7 @@ func TestManagedDelegateDeclaredModeFSStore(t *testing.T) {
 	}
 }
 
-// TestManagedDelegateUndeclaredModeFSStore proves the production single-mode operator
+// TestManagedDelegateUndeclaredModeFSStore proves the production declared-mode
 // definition rejects a requested mode before registering any child in the real fsstore
 // journal. This is the production counterpart to the topology-equivalent acceptance test.
 func TestManagedDelegateUndeclaredModeFSStore(t *testing.T) {
@@ -583,7 +585,7 @@ func TestManagedDelegateUndeclaredModeFSStore(t *testing.T) {
 	client.fn = func(_ context.Context, req inference.Request) ([]content.Chunk, error) {
 		calls++
 		if calls == 1 {
-			return toolCall("undeclared-mode", `{"agent":"operator","mode":"build","message":"must reject","wait":true}`), nil
+			return toolCall("undeclared-mode", `{"agent":"planner","mode":"build","message":"must reject","wait":true}`), nil
 		}
 		result = lastToolText(req)
 		return finalText("rejection observed"), nil

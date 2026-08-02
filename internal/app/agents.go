@@ -1,16 +1,20 @@
 package app
 
 import (
-	"github.com/looprig/coderig/internal/catalog/operator"
+	"github.com/looprig/coderig/internal/catalog/builder"
+	"github.com/looprig/coderig/internal/catalog/planner"
 	"github.com/looprig/coderig/internal/catalog/reviewer"
 	"github.com/looprig/harness/pkg/identity"
 )
 
-// operatorSkills is the operator's closed set of allowed embedded skills (the primer and the
-// operator leaf share it). The implementer gets the coding-style checklist; the reviewer
-// starts with none in this cut. This is the single source of truth the loader's allow-map AND
-// the agent's <available_skills> catalog are both derived from.
-var operatorSkills = []string{"code-style"}
+// builderSkills is the builder's closed set of allowed embedded skills. This is the
+// single source of truth the loader's allow-map AND the agent's <available_skills>
+// catalog are both derived from.
+var builderSkills = []string{"code-style"}
+
+// operatorSkills is retained for package-local legacy fixtures; builderSkills
+// is the production source of truth.
+var operatorSkills = builderSkills
 
 // leafBuiltin is each agent's package-exported boundary as pure metadata: Name and Role
 // plus allowed embedded Skills, runtime-skills eligibility, and the static per-role
@@ -19,41 +23,48 @@ var operatorSkills = []string{"code-style"}
 // place the per-agent skill set, runtime-skills eligibility, and role prompt are declared for
 // the skill loader allow-map and the <available_skills> catalog.
 type leafBuiltin struct {
-	name   identity.AgentName
-	role   string
-	skills []string
+	name        identity.AgentName
+	description string
+	role        string
+	skills      []string
 	// allowsRuntimeSkills marks a leaf eligible for the untrusted, human-gated workspace
-	// skill source (§7a). True ONLY for the operator (the approved decision extended
-	// eligibility to it once the operator merged write/exec capability); the reviewer stays
-	// false. Both this per-agent gate AND the swarm-wide cfg.RuntimeSkills mode must be true
-	// to wire the workspace source.
+	// skill source (§7a). True ONLY for the builder, which owns workspace mutation. Both
+	// this per-agent gate AND the swarm-wide cfg.RuntimeSkills mode must be true to wire
+	// the workspace source.
 	allowsRuntimeSkills bool
 }
 
-// operatorBuiltin is the single operator definition, shared by the operator-primary primer
-// and the operator leaf (via their shared operator.BuildTools call in swarm.go) so their
-// skills/eligibility/role cannot drift. A spawned operator leaf has no delegates, so it cannot
-// itself spawn.
-func operatorBuiltin() leafBuiltin {
+func plannerBuiltin() leafBuiltin {
 	return leafBuiltin{
-		name:                operator.Name,
-		role:                operator.Role,
-		skills:              operatorSkills,
-		allowsRuntimeSkills: true, // §7a: extended to operator (approved) — bounded, human-gated workspace load.
+		name:        planner.Name,
+		description: planner.Description,
+		role:        planner.Role,
 	}
 }
 
-// reviewerBuiltin is the reviewer leaf definition: read-only critique, no embedded skills, no
-// runtime-skills eligibility.
+func builderBuiltin() leafBuiltin {
+	return leafBuiltin{
+		name:                builder.Name,
+		description:         builder.Description,
+		role:                builder.Role,
+		skills:              builderSkills,
+		allowsRuntimeSkills: true,
+	}
+}
+
+// operatorBuiltin is retained for package-local legacy fixtures. Production
+// uses builderBuiltin as the workspace-writing role.
+func operatorBuiltin() leafBuiltin { return builderBuiltin() }
+
 func reviewerBuiltin() leafBuiltin {
 	return leafBuiltin{
-		name: reviewer.Name,
-		role: reviewer.Role,
+		name:        reviewer.Name,
+		description: reviewer.Description,
+		role:        reviewer.Role,
 	}
 }
 
-// leafBuiltins is the fixed roster in deterministic catalog order: operator then reviewer.
-// operator appears once (it is the primer's identity AND the spawnable operator leaf).
+// leafBuiltins is the fixed roster in deterministic catalog order.
 func leafBuiltins() []leafBuiltin {
-	return []leafBuiltin{operatorBuiltin(), reviewerBuiltin()}
+	return []leafBuiltin{plannerBuiltin(), builderBuiltin(), reviewerBuiltin()}
 }

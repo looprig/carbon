@@ -180,16 +180,16 @@ func TestCoderigProfileRejectsUnknown(t *testing.T) {
 	}
 }
 
-// TestReviewerRestrictionStaysReadOnly asserts the reviewer's effective profile
-// is read-only and sandboxed under EVERY selected product profile — the
-// intersection never widens past the reviewer read-only profile.
-func TestReviewerRestrictionStaysReadOnly(t *testing.T) {
+// TestReadOnlyRoleRestrictionStaysReadOnly asserts the planner/reviewer's
+// effective profile is read-only and sandboxed under EVERY selected product
+// profile — the intersection never widens past the read-only role profile.
+func TestReadOnlyRoleRestrictionStaysReadOnly(t *testing.T) {
 	t.Parallel()
 	ws := canonicalTempDir(t)
 
-	reference, err := reviewerReadOnlyProfile(ws)
+	reference, err := readOnlyAgentProfile(ws)
 	if err != nil {
-		t.Fatalf("reviewerReadOnlyProfile error = %v", err)
+		t.Fatalf("readOnlyAgentProfile error = %v", err)
 	}
 	const (
 		deny  = uint8(sandbox.Deny)
@@ -203,34 +203,34 @@ func TestReviewerRestrictionStaysReadOnly(t *testing.T) {
 			if err != nil {
 				t.Fatalf("coderigProfile(%q) error = %v", selected, err)
 			}
-			reviewer, err := restrictToReviewer(base, ws)
+			readOnly, err := restrictToReadOnly(base, ws)
 			if err != nil {
-				t.Fatalf("restrictToReviewer(%q) error = %v", selected, err)
+				t.Fatalf("restrictToReadOnly(%q) error = %v", selected, err)
 			}
 			// Read-only, no host access, no network, gated command, under every
 			// selected profile.
-			if got := accessAt(t, reviewer, "filesystem.read", ws); got != allow {
+			if got := accessAt(t, readOnly, "filesystem.read", ws); got != allow {
 				t.Errorf("workspace read = %d, want %d", got, allow)
 			}
-			if got := accessAt(t, reviewer, "filesystem.write", ws); got != deny {
+			if got := accessAt(t, readOnly, "filesystem.write", ws); got != deny {
 				t.Errorf("workspace write = %d, want Deny", got)
 			}
-			if got := accessAt(t, reviewer, "filesystem.read", "host:*"); got != deny {
+			if got := accessAt(t, readOnly, "filesystem.read", "host:*"); got != deny {
 				t.Errorf("host read = %d, want Deny", got)
 			}
-			if got := accessAt(t, reviewer, "filesystem.write", "host:*"); got != deny {
+			if got := accessAt(t, readOnly, "filesystem.write", "host:*"); got != deny {
 				t.Errorf("host write = %d, want Deny", got)
 			}
-			if got := accessAt(t, reviewer, "network", ""); got != deny {
+			if got := accessAt(t, readOnly, "network", ""); got != deny {
 				t.Errorf("network = %d, want Deny", got)
 			}
-			if got := accessAt(t, reviewer, "command.execute", ""); got != gated {
+			if got := accessAt(t, readOnly, "command.execute", ""); got != gated {
 				t.Errorf("command = %d, want Gated", got)
 			}
 			// Full normalization (sandboxed, isolated HOME, no ack) matches the
 			// reviewer read-only profile regardless of the selected profile.
-			if reviewer.Fingerprint() != reference.Fingerprint() {
-				t.Errorf("reviewer(%q) fingerprint = %s, want read-only reference %s", selected, reviewer.Fingerprint(), reference.Fingerprint())
+			if readOnly.Fingerprint() != reference.Fingerprint() {
+				t.Errorf("read-only(%q) fingerprint = %s, want read-only reference %s", selected, readOnly.Fingerprint(), reference.Fingerprint())
 			}
 		})
 	}
@@ -300,15 +300,15 @@ func TestAccessConfigDigestDrift(t *testing.T) {
 	if err != nil {
 		t.Fatalf("coderigProfile(trusted): %v", err)
 	}
-	roReviewer, err := restrictToReviewer(readOnly, ws)
+	roPlanner, err := restrictToReadOnly(readOnly, ws)
 	if err != nil {
-		t.Fatalf("restrictToReviewer(readonly): %v", err)
+		t.Fatalf("restrictToReadOnly(readonly): %v", err)
 	}
-	// A DIFFERENT reviewer restriction (writable) to prove the reviewer field
-	// contributes independently of the operator profile.
-	writableReviewer, err := coderigProfile(AccessTrusted, ws)
+	// A DIFFERENT planner restriction (writable) to prove the read-only role
+	// field contributes independently of the builder profile.
+	writablePlanner, err := coderigProfile(AccessTrusted, ws)
 	if err != nil {
-		t.Fatalf("coderigProfile(trusted) reviewer: %v", err)
+		t.Fatalf("coderigProfile(trusted) planner: %v", err)
 	}
 	direct, err := sandbox.NewDirectEgressRoute()
 	if err != nil {
@@ -319,18 +319,18 @@ func TestAccessConfigDigestDrift(t *testing.T) {
 		t.Fatalf("NewUpstreamEgressRoute: %v", err)
 	}
 
-	base := accessConfigDigest(AccessReadOnly, readOnly, roReviewer, direct)
+	base := accessConfigDigest(AccessReadOnly, readOnly, roPlanner, roPlanner, direct)
 
-	if got := accessConfigDigest(AccessReadOnly, readOnly, roReviewer, direct); got != base {
+	if got := accessConfigDigest(AccessReadOnly, readOnly, roPlanner, roPlanner, direct); got != base {
 		t.Errorf("identical inputs produced different digests:\n%s\n%s", got, base)
 	}
-	if got := accessConfigDigest(AccessTrusted, trusted, roReviewer, direct); got == base {
-		t.Error("selected/operator profile change did not invalidate the digest")
+	if got := accessConfigDigest(AccessTrusted, trusted, roPlanner, roPlanner, direct); got == base {
+		t.Error("selected/builder profile change did not invalidate the digest")
 	}
-	if got := accessConfigDigest(AccessReadOnly, readOnly, writableReviewer, direct); got == base {
-		t.Error("reviewer restriction change did not invalidate the digest")
+	if got := accessConfigDigest(AccessReadOnly, readOnly, writablePlanner, roPlanner, direct); got == base {
+		t.Error("planner restriction change did not invalidate the digest")
 	}
-	if got := accessConfigDigest(AccessReadOnly, readOnly, roReviewer, upstream); got == base {
+	if got := accessConfigDigest(AccessReadOnly, readOnly, roPlanner, roPlanner, upstream); got == base {
 		t.Error("egress route change did not invalidate the digest")
 	}
 }

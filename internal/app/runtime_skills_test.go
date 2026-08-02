@@ -4,7 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/looprig/coderig/internal/catalog/operator"
+	"github.com/looprig/coderig/internal/catalog/builder"
+	"github.com/looprig/coderig/internal/catalog/planner"
 	"github.com/looprig/coderig/internal/catalog/reviewer"
 	"github.com/looprig/core/uuid"
 	"github.com/looprig/harness/pkg/tool"
@@ -12,13 +13,14 @@ import (
 )
 
 // runtime_skills_test.go proves the §7a per-agent Skill definition builds a bound Skill tool
-// for the operator both embedded-only (RuntimeSkills off) and workspace-enabled (RuntimeSkills
+// for the builder both embedded-only (RuntimeSkills off) and workspace-enabled (RuntimeSkills
 // on), and that the reviewer never gets one.
 
 // runtimeSkillLoader mirrors swarmDefinitions' loader over the roster allow-map.
 func runtimeSkillLoader() skill.SkillLoader {
 	return skill.NewEmbeddedSkillLoader(SkillsFS, buildSkillAllow([]skillScope{
-		{name: operator.Name, skills: operatorSkills},
+		{name: planner.Name},
+		{name: builder.Name, skills: builderSkills},
 		{name: reviewer.Name},
 	}))
 }
@@ -49,10 +51,10 @@ func buildSkillTool(t *testing.T, def tool.Definition, root string) []string {
 	return names
 }
 
-// TestOperatorSkillDefinitionBinds proves the operator's Skill definition builds one "Skill"
+// TestBuilderSkillDefinitionBinds proves the builder's Skill definition builds one "Skill"
 // tool both embedded-only and workspace-enabled (the workspace-enabled path reads the bound
 // root per bind).
-func TestOperatorSkillDefinitionBinds(t *testing.T) {
+func TestBuilderSkillDefinitionBinds(t *testing.T) {
 	t.Parallel()
 	loader := runtimeSkillLoader()
 
@@ -67,15 +69,23 @@ func TestOperatorSkillDefinitionBinds(t *testing.T) {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			def := skillDefinitionFor(loader, operatorBuiltin(), tt.cfg)
+			def := skillDefinitionFor(loader, builderBuiltin(), tt.cfg)
 			if def == nil {
-				t.Fatal("skillDefinitionFor(operator) = nil, want a Skill definition")
+				t.Fatal("skillDefinitionFor(builder) = nil, want a Skill definition")
 			}
 			names := buildSkillTool(t, def, t.TempDir())
 			if len(names) != 1 || names[0] != skillToolName {
 				t.Errorf("built tool names = %v, want exactly [%q]", names, skillToolName)
 			}
 		})
+	}
+}
+
+func TestPlannerHasNoSkillDefinition(t *testing.T) {
+	t.Parallel()
+	loader := runtimeSkillLoader()
+	if def := skillDefinitionFor(loader, plannerBuiltin(), Config{RuntimeSkills: true}); def != nil {
+		t.Errorf("skillDefinitionFor(planner, RuntimeSkills on) = non-nil, want nil")
 	}
 }
 

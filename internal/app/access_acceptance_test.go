@@ -121,30 +121,37 @@ func TestAcceptanceProfileGateBehavior(t *testing.T) {
 			t.Cleanup(func() { _ = access.Close() })
 			ctx := mustLoopProvenance(t)
 
-			if got := observeGate(t, ctx, access.operatorGate, hostRead); got != tc.hostRead {
-				t.Errorf("operator host read = %d, want %d", got, tc.hostRead)
+			if got := observeGate(t, ctx, access.builderGate, hostRead); got != tc.hostRead {
+				t.Errorf("builder host read = %d, want %d", got, tc.hostRead)
 			}
-			if got := observeGate(t, ctx, access.operatorGate, hostWrite); got != tc.hostWrite {
-				t.Errorf("operator host write = %d, want %d", got, tc.hostWrite)
+			if got := observeGate(t, ctx, access.builderGate, hostWrite); got != tc.hostWrite {
+				t.Errorf("builder host write = %d, want %d", got, tc.hostWrite)
 			}
-			if got := observeGate(t, ctx, access.operatorGate, workspaceWrite); got != tc.workspaceWrite {
-				t.Errorf("operator workspace write = %d, want %d", got, tc.workspaceWrite)
+			if got := observeGate(t, ctx, access.builderGate, workspaceWrite); got != tc.workspaceWrite {
+				t.Errorf("builder workspace write = %d, want %d", got, tc.workspaceWrite)
 			}
-			if got := observeGate(t, ctx, access.operatorGate, network); got != tc.network {
-				t.Errorf("operator network = %d, want %d", got, tc.network)
+			if got := observeGate(t, ctx, access.builderGate, network); got != tc.network {
+				t.Errorf("builder network = %d, want %d", got, tc.network)
 			}
 
-			// Reviewer restriction: sandboxed and read-only under EVERY selected
-			// profile. Host read, workspace write, and network are all denied
-			// regardless of the operator's selected authority.
-			if got := observeGate(t, ctx, access.reviewerGate, hostRead); got != outcomeDenied {
-				t.Errorf("reviewer host read under %q = %d, want denied", tc.profile, got)
-			}
-			if got := observeGate(t, ctx, access.reviewerGate, workspaceWrite); got != outcomeDenied {
-				t.Errorf("reviewer workspace write under %q = %d, want denied", tc.profile, got)
-			}
-			if got := observeGate(t, ctx, access.reviewerGate, network); got != outcomeDenied {
-				t.Errorf("reviewer network under %q = %d, want denied", tc.profile, got)
+			// Planner and reviewer restrictions: sandboxed and read-only under
+			// EVERY selected profile.
+			for _, role := range []struct {
+				name string
+				gate loop.AccessGate
+			}{
+				{name: "planner", gate: access.plannerGate},
+				{name: "reviewer", gate: access.reviewerGate},
+			} {
+				if got := observeGate(t, ctx, role.gate, hostRead); got != outcomeDenied {
+					t.Errorf("%s host read under %q = %d, want denied", role.name, tc.profile, got)
+				}
+				if got := observeGate(t, ctx, role.gate, workspaceWrite); got != outcomeDenied {
+					t.Errorf("%s workspace write under %q = %d, want denied", role.name, tc.profile, got)
+				}
+				if got := observeGate(t, ctx, role.gate, network); got != outcomeDenied {
+					t.Errorf("%s network under %q = %d, want denied", role.name, tc.profile, got)
+				}
 			}
 		})
 	}
@@ -219,7 +226,7 @@ func TestAcceptanceFamilyAndExactApprovalFlow(t *testing.T) {
 
 	// 1. First `git log` invocation prompts once and offers the git-log FAMILY
 	//    candidate (product catalog), which "Approve always" persists.
-	res, err := access.operatorGate.Authorize(ctx, commandRequest(t, root, "git log --oneline"))
+	res, err := access.builderGate.Authorize(ctx, commandRequest(t, root, "git log --oneline"))
 	if err != nil {
 		t.Fatalf("Authorize(git log --oneline): %v", err)
 	}
@@ -239,7 +246,7 @@ func TestAcceptanceFamilyAndExactApprovalFlow(t *testing.T) {
 
 	// 2. A DIFFERENT git-log invocation reuses the persisted family rule: approved
 	//    with NO second prompt.
-	res, err = access.operatorGate.Authorize(ctx, commandRequest(t, root, "git log -n 5 --stat"))
+	res, err = access.builderGate.Authorize(ctx, commandRequest(t, root, "git log -n 5 --stat"))
 	if err != nil {
 		t.Fatalf("Authorize(git log -n 5): %v", err)
 	}
@@ -252,7 +259,7 @@ func TestAcceptanceFamilyAndExactApprovalFlow(t *testing.T) {
 
 	// 3. A non-catalog `git commit` is NOT covered by the git-log family: it
 	//    prompts again and offers only the EXACT command as a candidate (no family).
-	res, err = access.operatorGate.Authorize(ctx, commandRequest(t, root, "git commit -m wip"))
+	res, err = access.builderGate.Authorize(ctx, commandRequest(t, root, "git commit -m wip"))
 	if err != nil {
 		t.Fatalf("Authorize(git commit): %v", err)
 	}
@@ -396,8 +403,8 @@ func TestAcceptanceNewRestoreAuthorityParity(t *testing.T) {
 	if first.configRev != second.configRev {
 		t.Errorf("access-config digest differs across identical opens:\n%s\n%s", first.configRev, second.configRev)
 	}
-	if first.operatorPolicyRev != second.operatorPolicyRev {
-		t.Errorf("operator policy revision differs: %q vs %q", first.operatorPolicyRev, second.operatorPolicyRev)
+	if first.builderPolicyRev != second.builderPolicyRev {
+		t.Errorf("builder policy revision differs: %q vs %q", first.builderPolicyRev, second.builderPolicyRev)
 	}
 	if first.reviewerPolicyRev != second.reviewerPolicyRev {
 		t.Errorf("reviewer policy revision differs: %q vs %q", first.reviewerPolicyRev, second.reviewerPolicyRev)
@@ -452,8 +459,8 @@ func TestAcceptanceAgentShutdownClosesExecutors(t *testing.T) {
 		t.Fatalf("newSessionOverStores: %v", err)
 	}
 	access := agent.access
-	if _, err := access.operatorSet.For("live-loop"); err != nil {
-		t.Fatalf("operatorSet.For before shutdown: %v", err)
+	if _, err := access.builderSet.For("live-loop"); err != nil {
+		t.Fatalf("builderSet.For before shutdown: %v", err)
 	}
 
 	if err := agent.Close(context.Background()); err != nil {
@@ -461,8 +468,11 @@ func TestAcceptanceAgentShutdownClosesExecutors(t *testing.T) {
 	}
 
 	// Shutdown closed the executor sets: resolving now fails closed.
-	if _, err := access.operatorSet.For("live-loop"); !errors.Is(err, sandbox.ErrExecutorSetClosed) {
-		t.Errorf("operatorSet.For after shutdown = %v, want ErrExecutorSetClosed", err)
+	if _, err := access.builderSet.For("live-loop"); !errors.Is(err, sandbox.ErrExecutorSetClosed) {
+		t.Errorf("builderSet.For after shutdown = %v, want ErrExecutorSetClosed", err)
+	}
+	if _, err := access.plannerSet.For("live-loop"); !errors.Is(err, sandbox.ErrExecutorSetClosed) {
+		t.Errorf("plannerSet.For after shutdown = %v, want ErrExecutorSetClosed", err)
 	}
 	if _, err := access.reviewerSet.For("live-loop"); !errors.Is(err, sandbox.ErrExecutorSetClosed) {
 		t.Errorf("reviewerSet.For after shutdown = %v, want ErrExecutorSetClosed", err)

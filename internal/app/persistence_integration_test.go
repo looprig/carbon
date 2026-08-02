@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/looprig/coderig/internal/catalog/builder"
 	"github.com/looprig/core/content"
 	"github.com/looprig/core/uuid"
 	"github.com/looprig/harness/pkg/event"
@@ -372,8 +373,8 @@ func TestSessionStoreRoundTrip(t *testing.T) {
 	if !hasType(backlog, event.RestoreStarted{}) {
 		t.Errorf("restored all-loop backlog missing RestoreStarted: %v", typeNames(backlog))
 	}
-	if got := primaryLoopAgentName(backlog, a2.ActiveLoopID()); got != operatorPrimaryName {
-		t.Errorf("restored active primer LoopStarted AgentName = %q, want %q", got, operatorPrimaryName)
+	if got := primaryLoopAgentName(backlog, a2.ActiveLoopID()); got != builder.Name {
+		t.Errorf("restored active primer LoopStarted AgentName = %q, want %q", got, builder.Name)
 	}
 
 	drainTurn(t, a2, "continue")

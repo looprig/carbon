@@ -10,7 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/looprig/coderig/internal/catalog/operator"
+	"github.com/looprig/coderig/internal/catalog/builder"
+	"github.com/looprig/coderig/internal/catalog/planner"
 	"github.com/looprig/coderig/internal/catalog/reviewer"
 	"github.com/looprig/core/uuid"
 	"github.com/looprig/harness/pkg/event"
@@ -20,18 +21,14 @@ import (
 	"github.com/looprig/harness/pkg/sessionstore"
 	"github.com/looprig/harness/pkg/tool"
 	"github.com/looprig/inference/contextcount"
-
 	model "github.com/looprig/inference/model"
-	"github.com/looprig/tui"
 )
 
-// swarm_test.go proves the three-loop managed-delegation topology: swarmDefinitions yields
-// exactly [operator-primary, operator, reviewer]; only the primer declares delegates + managed
-// delegation and displays as "operator"; the primer's tool policy and prompt identity match the
-// operator leaf's (minus the primer-only delegation guidance) so they cannot drift; and the
-// headless New path brings the primer up as the durable root loop.
+// swarm_test.go proves the three-role managed-delegation topology: planner,
+// builder, and reviewer are all primers and legal managed Subagent targets;
+// builder is the initially active primer; and each role keeps its own prompt,
+// tool, and access posture.
 
-// swarmDefs builds the three definitions with the fake client + test model under cfg.
 func swarmDefs(t *testing.T, cfg Config) []loop.Definition {
 	t.Helper()
 	access, cfg := headlessTestAccess(t, cfg, t.TempDir())
@@ -45,48 +42,32 @@ func swarmDefs(t *testing.T, cfg Config) []loop.Definition {
 	return defs
 }
 
-// TestSwarmDefinitionsTopology proves the three definitions, their order and names, and that
-// ONLY the operator-primary primer declares delegates + managed delegation; both leaves are
-// delegate-free with the zero (sync-only) delegation.
 func TestSwarmDefinitionsTopology(t *testing.T) {
 	t.Parallel()
 	defs := swarmDefs(t, Config{})
-	primer, operatorLeaf, reviewerLeaf := defs[0], defs[1], defs[2]
+	want := []identity.AgentName{planner.Name, builder.Name, reviewer.Name}
 
-	tests := []struct {
-		name          string
-		def           loop.Definition
-		wantName      identity.AgentName
-		wantDelegates int
-		wantManaged   bool
-	}{
-		{name: "primer", def: primer, wantName: operatorPrimaryName, wantDelegates: 2, wantManaged: true},
-		{name: "operator leaf", def: operatorLeaf, wantName: operator.Name, wantDelegates: 0, wantManaged: false},
-		{name: "reviewer leaf", def: reviewerLeaf, wantName: reviewer.Name, wantDelegates: 0, wantManaged: false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			if got := tt.def.Name(); got != tt.wantName {
-				t.Errorf("Name() = %q, want %q", got, tt.wantName)
+	for i, def := range defs {
+		t.Run(string(want[i]), func(t *testing.T) {
+			if got := def.Name(); got != want[i] {
+				t.Errorf("Name() = %q, want %q", got, want[i])
 			}
-			if got := len(tt.def.Delegates()); got != tt.wantDelegates {
-				t.Errorf("len(Delegates()) = %d, want %d", got, tt.wantDelegates)
+			if got := len(def.Delegates()); got != len(want) {
+				t.Errorf("len(Delegates()) = %d, want %d", got, len(want))
 			}
-			managed := tt.def.Delegation().Style == loop.DelegationManaged
-			if managed != tt.wantManaged {
-				t.Errorf("Delegation managed = %v, want %v", managed, tt.wantManaged)
+			delegates := map[identity.AgentName]bool{}
+			for _, delegate := range def.Delegates() {
+				delegates[delegate] = true
+			}
+			for _, name := range want {
+				if !delegates[name] {
+					t.Errorf("delegates = %v, missing %q", def.Delegates(), name)
+				}
+			}
+			if got := def.Delegation().Style; got != loop.DelegationManaged {
+				t.Errorf("Delegation style = %q, want managed", got)
 			}
 		})
-	}
-
-	// The primer's delegates are exactly the two leaves.
-	delegates := map[identity.AgentName]bool{}
-	for _, d := range primer.Delegates() {
-		delegates[d] = true
-	}
-	if !delegates[operator.Name] || !delegates[reviewer.Name] {
-		t.Errorf("primer delegates = %v, want operator + reviewer", primer.Delegates())
 	}
 }
 
@@ -112,21 +93,16 @@ func TestSwarmDefinitionsUseModesAndEffort(t *testing.T) {
 	}
 }
 
-// TestSwarmDefinitionsCompactionComposition proves every native loop carries the
-// same complete context policy and the trusted summary-consumption fragment once.
 func TestSwarmDefinitionsCompactionComposition(t *testing.T) {
 	t.Parallel()
 
 	client := &fakeLLM{}
-	model := testModel()
+	nativeModel := testModel()
 	root := t.TempDir()
 	access, cfg := headlessTestAccess(t, Config{}, root)
-	defs, err := swarmDefinitions(client, model, cfg, access)
+	defs, err := swarmDefinitions(client, nativeModel, cfg, access)
 	if err != nil {
 		t.Fatalf("swarmDefinitions() error = %v", err)
-	}
-	if len(defs) != 3 {
-		t.Fatalf("swarmDefinitions() len = %d, want 3", len(defs))
 	}
 	wantCounter := contextcount.CounterCapability{
 		Transport:    contextcount.CounterTransportLocal,
@@ -134,42 +110,27 @@ func TestSwarmDefinitionsCompactionComposition(t *testing.T) {
 		TokenizerRev: contextcount.EstimatorRevision,
 		Quality:      contextcount.CountQualityHeuristicEstimate,
 	}
-	wantInference, err := inferenceCapabilityForModel(model)
+	wantInference, err := inferenceCapabilityForModel(nativeModel)
 	if err != nil {
 		t.Fatalf("inferenceCapabilityForModel() error = %v", err)
 	}
 
-	tests := []struct {
-		name string
-		def  loop.Definition
-	}{
-		{name: "operator primer", def: defs[0]},
-		{name: "operator leaf", def: defs[1]},
-		{name: "reviewer leaf", def: defs[2]},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			if got := strings.Count(tt.def.FingerprintInitial().EffectiveSystem, conversationSummaryConsumptionFragment); got != 1 {
+	for _, def := range defs {
+		t.Run(string(def.Name()), func(t *testing.T) {
+			if got := strings.Count(def.FingerprintInitial().EffectiveSystem, conversationSummaryConsumptionFragment); got != 1 {
 				t.Errorf("summary fragment count = %d, want 1", got)
 			}
-			policy, ok := tt.def.CompactionPolicy()
+			policy, ok := def.CompactionPolicy()
 			if !ok {
 				t.Fatal("CompactionPolicy() configured = false, want true")
 			}
 			if want := conversationCompactionPolicy(); policy != want {
 				t.Errorf("CompactionPolicy() = %+v, want %+v", policy, want)
 			}
-
-			bound, bindErr := tt.def.Bind(context.Background(), tool.Bindings{
-				SessionID: mustUUID(t),
-				LoopID:    mustUUID(t),
-				Workspace: &tool.WorkspaceBinding{
-					Root:         root,
-					Coordinator:  &testWorkspaceCoordinator{},
-					Observations: tool.NewWorkspaceObservations(),
-				},
+			bound, bindErr := def.Bind(context.Background(), tool.Bindings{
+				SessionID: uuid.MustParse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+				LoopID:    uuid.MustParse("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+				Workspace: &tool.WorkspaceBinding{Root: root, Coordinator: &testWorkspaceCoordinator{}, Observations: tool.NewWorkspaceObservations()},
 			})
 			if bindErr != nil {
 				t.Fatalf("Bind() error = %v", bindErr)
@@ -186,68 +147,45 @@ func TestSwarmDefinitionsCompactionComposition(t *testing.T) {
 			if bound.Client() != client {
 				t.Errorf("Client() type = %T, want originating client", bound.Client())
 			}
-			if got := bound.Model(); got.Key() != model.Key() {
-				t.Errorf("Model().Key() = %+v, want %+v", got.Key(), model.Key())
+			if got := bound.Model(); got.Key() != nativeModel.Key() {
+				t.Errorf("Model().Key() = %+v, want %+v", got.Key(), nativeModel.Key())
 			}
 		})
 	}
-
-	primerSystem := defs[0].FingerprintInitial().EffectiveSystem
-	operatorSystem := defs[1].FingerprintInitial().EffectiveSystem
-	if got := strings.Replace(primerSystem, operatorDelegation, "", 1); got != operatorSystem {
-		t.Errorf("primer-minus-delegation system != operator leaf system:\nprimer(-deleg)=%q\nleaf=%q", got, operatorSystem)
-	}
 }
 
-// TestSwarmDefinitionsAntiDrift proves the primer and operator leaf share one base tool policy
-// and one prompt identity: the operator leaf's effective
-// system equals the primer's with the primer-only operatorDelegation guidance removed. This
-// is the guard that the two operator faces cannot silently diverge.
-func TestSwarmDefinitionsAntiDrift(t *testing.T) {
+func TestSwarmDefinitionsRolePromptsAndTools(t *testing.T) {
 	t.Parallel()
 	defs := swarmDefs(t, Config{})
-	primer, operatorLeaf := defs[0], defs[1]
-
-	// The primer and operator leaf are built from the SAME operator.BuildTools result, so
-	// their declared tool sets are byte-identical (the managed Subagent is added
-	// structurally by the rig at bind, not part of either definition's WithTools). Whole-
-	// definition PolicyRevision necessarily differs (name, system, delegation), so the
-	// no-drift signal is the identical declared tool-name set.
-	primerTools := append([]string(nil), primer.FingerprintInitial().ToolNames...)
-	leafTools := append([]string(nil), operatorLeaf.FingerprintInitial().ToolNames...)
-	sort.Strings(primerTools)
-	sort.Strings(leafTools)
-	if !slices.Equal(primerTools, leafTools) {
-		t.Errorf("primer tool set %v != operator leaf %v — tool policy drifted", primerTools, leafTools)
-	}
-	if primer.PolicyRevision() == operatorLeaf.PolicyRevision() {
-		t.Error("primer PolicyRevision equals operator leaf, want managed Subagent capability recorded")
-	}
-
-	primerSys := primer.FingerprintInitial().EffectiveSystem
-	leafSys := operatorLeaf.FingerprintInitial().EffectiveSystem
-
-	if !strings.Contains(primerSys, operatorDelegation) {
-		t.Error("primer system does not carry the operatorDelegation guidance")
-	}
-	if strings.Contains(leafSys, operatorDelegation) {
-		t.Error("operator leaf system carries the primer-only operatorDelegation guidance, want absent")
-	}
-	if got := strings.Replace(primerSys, operatorDelegation, "", 1); got != leafSys {
-		t.Errorf("primer-minus-delegation system != operator leaf system:\nprimer(-deleg)=%q\nleaf=%q", got, leafSys)
-	}
-	// Both carry the shared identity, operator role, and trusted code-style catalog.
-	for _, want := range []string{`<identity product="CodeRig">`, `<role name="operator">`, "<available_skills>", "code-style"} {
-		if !strings.Contains(leafSys, want) {
-			t.Errorf("operator leaf system missing %q", want)
+	for _, def := range defs {
+		system := def.FingerprintInitial().EffectiveSystem
+		if !strings.Contains(system, `<identity product="CodeRig">`) {
+			t.Errorf("%s missing shared identity", def.Name())
+		}
+		if !strings.Contains(system, `<role name="`+string(def.Name())+`">`) {
+			t.Errorf("%s missing role prompt", def.Name())
+		}
+		if !strings.Contains(system, delegationGuidance) {
+			t.Errorf("%s missing managed delegation guidance", def.Name())
+		}
+		names := def.FingerprintInitial().ToolNames
+		hasWrite := slices.Contains(names, "WriteFile") || slices.Contains(names, "EditFile")
+		switch def.Name() {
+		case planner.Name, reviewer.Name:
+			if hasWrite {
+				t.Errorf("%s has mutating tools: %v", def.Name(), names)
+			}
+		case builder.Name:
+			if !slices.Contains(names, "WriteFile") || !slices.Contains(names, "EditFile") {
+				t.Errorf("builder tools = %v, want WriteFile and EditFile", names)
+			}
 		}
 	}
 }
 
 func TestSwarmTaskToolRoster(t *testing.T) {
 	t.Parallel()
-	defs := swarmDefs(t, Config{})
-	for _, definition := range defs[1:] {
+	for _, definition := range swarmDefs(t, Config{}) {
 		t.Run(string(definition.Name()), func(t *testing.T) {
 			assertTaskToolRoster(t, definition.FingerprintInitial().ToolNames)
 		})
@@ -272,59 +210,30 @@ func assertTaskToolRoster(t *testing.T, names []string) {
 	}
 }
 
-// TestReviewerLeafIsReadOnly proves the reviewer leaf carries no write/edit/Subagent tools:
-// its tool policy differs from the operator's, and it declares no delegates.
-func TestReviewerLeafIsReadOnly(t *testing.T) {
-	t.Parallel()
-	defs := swarmDefs(t, Config{})
-	operatorLeaf, reviewerLeaf := defs[1], defs[2]
-	if reviewerLeaf.PolicyRevision() == operatorLeaf.PolicyRevision() {
-		t.Error("reviewer PolicyRevision == operator's, want a distinct read-only policy")
-	}
-	names := map[string]bool{}
-	for _, n := range reviewerLeaf.FingerprintInitial().ToolNames {
-		names[n] = true
-	}
-	for _, forbidden := range []string{"WriteFile", "EditFile", "Subagent"} {
-		if names[forbidden] {
-			t.Errorf("reviewer leaf carries %q, want read-only critique tools only", forbidden)
-		}
-	}
-}
-
-// TestOperatorDelegationIsWellFormedXML proves the primer-only operatorDelegation fragment is a
-// single well-formed <delegation> element (it is baked into the primer system prompt).
-func TestOperatorDelegationIsWellFormedXML(t *testing.T) {
+func TestDelegationGuidanceIsWellFormedXML(t *testing.T) {
 	t.Parallel()
 	var probe struct {
 		XMLName xml.Name `xml:"delegation"`
 	}
-	if err := xml.Unmarshal([]byte(operatorDelegation), &probe); err != nil {
-		t.Fatalf("operatorDelegation is not well-formed XML: %v", err)
+	if err := xml.Unmarshal([]byte(delegationGuidance), &probe); err != nil {
+		t.Fatalf("delegationGuidance is not well-formed XML: %v", err)
 	}
 	if probe.XMLName.Local != "delegation" {
-		t.Errorf("operatorDelegation root element = %q, want %q", probe.XMLName.Local, "delegation")
+		t.Errorf("delegationGuidance root element = %q, want delegation", probe.XMLName.Local)
 	}
 }
 
-// TestOperatorSpawnCaps pins the delegation safety caps the rig enforces (Depth 2 admits the
-// one structural level primary→leaf; Quota 64 bounds total spawns).
-func TestOperatorSpawnCaps(t *testing.T) {
+func TestDelegationSpawnCaps(t *testing.T) {
 	t.Parallel()
-	if operatorSpawnDepth != 2 {
-		t.Errorf("operatorSpawnDepth = %d, want 2 (structural depth-1: primary → non-spawning leaf)", operatorSpawnDepth)
+	if delegationSpawnDepth != 2 {
+		t.Errorf("delegationSpawnDepth = %d, want 2", delegationSpawnDepth)
 	}
-	if operatorSpawnQuota != 64 {
-		t.Errorf("operatorSpawnQuota = %d, want 64", operatorSpawnQuota)
+	if delegationSpawnQuota != 64 {
+		t.Errorf("delegationSpawnQuota = %d, want 64", delegationSpawnQuota)
 	}
 }
 
-// TestNewWithClientBuildsRootPrimer proves the headless New path (via the fake-client seam)
-// builds a usable tui.Agent whose durable root loop is the operator-primary, DISPLAYED as
-// "operator", started first (zero-parent). It is serial (not t.Parallel) because the exclusive
-// current-checkout placement means only one headless session can hold the root lease at a time;
-// it Closes the agent so the next serial session test can acquire.
-func TestNewWithClientBuildsRootPrimer(t *testing.T) {
+func TestNewWithClientBuildsBuilderAsActivePrimer(t *testing.T) {
 	ctx := context.Background()
 	agent, err := newWithClient(ctx, &fakeLLM{}, newModelFactory(), Config{})
 	if err != nil {
@@ -332,31 +241,32 @@ func TestNewWithClientBuildsRootPrimer(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = agent.Close(ctx) })
 
-	var _ tui.Agent = agent
-
 	active := agent.ActiveLoopID()
 	if active.IsZero() {
 		t.Fatal("ActiveLoopID() is zero")
 	}
-
-	started := swarmFirstRootLoop(t, agent.SessionID())
-	if got := string(started.AgentName); got != string(operatorPrimaryName) {
-		t.Errorf("root loop AgentName = %q, want %q", got, operatorPrimaryName)
+	roots := swarmRootLoops(t, agent.SessionID())
+	if len(roots) != 3 {
+		t.Fatalf("root loop count = %d, want 3", len(roots))
 	}
-	if started.DisplayName != string(operator.Name) {
-		t.Errorf("root loop DisplayName = %q, want %q", started.DisplayName, operator.Name)
+	for _, name := range []identity.AgentName{planner.Name, builder.Name, reviewer.Name} {
+		if _, ok := roots[name]; !ok {
+			t.Errorf("missing root primer %q", name)
+		}
 	}
-	if started.Description != operator.Description {
-		t.Errorf("root loop Description = %q, want operator.Description", started.Description)
+	builderRoot := roots[builder.Name]
+	if builderRoot.LoopID != active {
+		t.Errorf("ActiveLoopID() = %v, want builder root %v", active, builderRoot.LoopID)
 	}
-	if started.LoopID != active {
-		t.Errorf("primer LoopStarted LoopID = %v, want active %v", started.LoopID, active)
+	if builderRoot.DisplayName != string(builder.Name) {
+		t.Errorf("builder root DisplayName = %q, want %q", builderRoot.DisplayName, builder.Name)
+	}
+	if builderRoot.Description != builder.Description {
+		t.Errorf("builder root Description = %q, want %q", builderRoot.Description, builder.Description)
 	}
 }
 
-// swarmFirstRootLoop drains the durable log of the headless session and returns the first
-// zero-parent LoopStarted (the active primer, started first).
-func swarmFirstRootLoop(t *testing.T, sessionID uuid.UUID) event.LoopStarted {
+func swarmRootLoops(t *testing.T, sessionID uuid.UUID) map[identity.AgentName]event.LoopStarted {
 	t.Helper()
 	stores, err := headlessStores()
 	if err != nil {
@@ -371,16 +281,17 @@ func swarmFirstRootLoop(t *testing.T, sessionID uuid.UUID) event.LoopStarted {
 		t.Fatalf("replayer.Open() error = %v", err)
 	}
 	defer func() { _ = cursor.Close() }()
+	roots := map[identity.AgentName]event.LoopStarted{}
 	for {
 		ev, _, err := cursor.Next(context.Background())
 		if errors.Is(err, io.EOF) {
-			t.Fatal("no zero-parent LoopStarted in the durable log")
+			return roots
 		}
 		if err != nil {
 			t.Fatalf("cursor.Next() error = %v", err)
 		}
 		if started, ok := ev.(event.LoopStarted); ok && started.Cause.Coordinates.LoopID.IsZero() {
-			return started
+			roots[started.AgentName] = started
 		}
 	}
 }

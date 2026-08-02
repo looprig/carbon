@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/looprig/coderig/internal/catalog/operator"
+	"github.com/looprig/coderig/internal/catalog/builder"
 	"github.com/looprig/core/uuid"
 	"github.com/looprig/harness/pkg/event"
 	"github.com/looprig/harness/pkg/hustle"
@@ -27,7 +27,7 @@ func compactionFingerprintFor(t *testing.T, root string, client *fakeLLM, policy
 	stores := mustHeadlessTestStores(t)
 	assembly, err := buildRigWithRegistration(
 		definitions, stores, root, cfg, false,
-		rig.DelegationLimits{Depth: operatorSpawnDepth, Quota: operatorSpawnQuota}, registration,
+		rig.DelegationLimits{Depth: delegationSpawnDepth, Quota: delegationSpawnQuota}, registration,
 		permissionReviewRegistration{},
 	)
 	if err != nil {
@@ -130,13 +130,13 @@ func TestCompactionCompositionFingerprintSensitivityAndSecretExclusion(t *testin
 	}
 }
 
-// TestOperatorFingerprintFields asserts the rig-level config-fingerprint fields the
-// composition root injects via rig.WithFingerprintFields: AgentKind is the swarm+primary
-// identity ("coderig:operator") and RuntimeSkills passes the human-set mode through verbatim. The
+// TestAgentFingerprintFields asserts the rig-level config-fingerprint fields the
+// composition root injects via rig.WithFingerprintFields: AgentKind is the swarm+active-primer
+// identity ("coderig:builder") and RuntimeSkills passes the human-set mode through verbatim. The
 // workspace-root field is NOT set here — the rig's exclusive-workspace placement folds the
 // canonical root into the fingerprint — so a restore still compares agent identity, skill
 // mode, AND (via the placement) the repo root.
-func TestOperatorFingerprintFields(t *testing.T) {
+func TestAgentFingerprintFields(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -147,18 +147,18 @@ func TestOperatorFingerprintFields(t *testing.T) {
 		{
 			name: "runtime skills off",
 			cfg:  Config{RuntimeSkills: false},
-			want: rig.ConfigFingerprintFields{AgentKind: "coderig:operator", RuntimeSkills: false},
+			want: rig.ConfigFingerprintFields{AgentKind: "coderig:builder", RuntimeSkills: false},
 		},
 		{
 			name: "runtime skills on",
 			cfg:  Config{RuntimeSkills: true},
-			want: rig.ConfigFingerprintFields{AgentKind: "coderig:operator", RuntimeSkills: true},
+			want: rig.ConfigFingerprintFields{AgentKind: "coderig:builder", RuntimeSkills: true},
 		},
 		{
 			name: "access profile and digest fold in",
 			cfg:  Config{AccessProfile: AccessTrusted, AccessConfigRev: "coderig-access-v1:deadbeef"},
 			want: rig.ConfigFingerprintFields{
-				AgentKind:                 "coderig:operator",
+				AgentKind:                 "coderig:builder",
 				NativePermissionPolicyRev: "coderig-access-v1:deadbeef",
 				AppFields:                 map[string]string{"access_profile": "trusted"},
 			},
@@ -168,9 +168,9 @@ func TestOperatorFingerprintFields(t *testing.T) {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := operatorFingerprintFields(tt.cfg)
+			got := agentFingerprintFields(tt.cfg)
 			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("operatorFingerprintFields = %+v, want %+v", got, tt.want)
+				t.Errorf("agentFingerprintFields = %+v, want %+v", got, tt.want)
 			}
 		})
 	}
@@ -185,31 +185,31 @@ func TestOperatorFingerprintFields(t *testing.T) {
 func TestAccessConfigInvalidatesFingerprintFields(t *testing.T) {
 	t.Parallel()
 
-	base := operatorFingerprintFields(Config{AccessProfile: AccessReadOnly, AccessConfigRev: "rev-a"})
+	base := agentFingerprintFields(Config{AccessProfile: AccessReadOnly, AccessConfigRev: "rev-a"})
 
-	if got := operatorFingerprintFields(Config{AccessProfile: AccessReadOnly, AccessConfigRev: "rev-a"}); !reflect.DeepEqual(got, base) {
+	if got := agentFingerprintFields(Config{AccessProfile: AccessReadOnly, AccessConfigRev: "rev-a"}); !reflect.DeepEqual(got, base) {
 		t.Fatalf("identical access config produced different fields:\n got=%+v\nbase=%+v", got, base)
 	}
 	// A changed access digest (profile/reviewer/egress change) must invalidate.
-	if got := operatorFingerprintFields(Config{AccessProfile: AccessReadOnly, AccessConfigRev: "rev-b"}); reflect.DeepEqual(got, base) {
+	if got := agentFingerprintFields(Config{AccessProfile: AccessReadOnly, AccessConfigRev: "rev-b"}); reflect.DeepEqual(got, base) {
 		t.Error("changed AccessConfigRev did not change the fingerprint fields")
 	}
 	// A changed selected profile name must invalidate.
-	if got := operatorFingerprintFields(Config{AccessProfile: AccessTrusted, AccessConfigRev: "rev-a"}); reflect.DeepEqual(got, base) {
+	if got := agentFingerprintFields(Config{AccessProfile: AccessTrusted, AccessConfigRev: "rev-a"}); reflect.DeepEqual(got, base) {
 		t.Error("changed AccessProfile did not change the fingerprint fields")
 	}
 }
 
-// TestOperatorAgentKindFormat pins the AgentKind to "<swarm>:<primary agent>" so a rename of
-// the operator's attribution name is reflected in the fingerprint (and a prior/other session,
+// TestAgentKindFormat pins the AgentKind to "<swarm>:<active primer>" so a rename of
+// the builder's attribution name is reflected in the fingerprint (and a prior/other session,
 // with a different or empty AgentKind, cannot resume as CodeRig).
-func TestOperatorAgentKindFormat(t *testing.T) {
+func TestAgentKindFormat(t *testing.T) {
 	t.Parallel()
-	want := "coderig:" + string(operator.Name)
-	if operatorAgentKind != want {
-		t.Errorf("operatorAgentKind = %q, want %q", operatorAgentKind, want)
+	want := "coderig:" + string(builder.Name)
+	if agentKind != want {
+		t.Errorf("agentKind = %q, want %q", agentKind, want)
 	}
-	if operatorAgentKind != "coderig:operator" {
-		t.Errorf("operatorAgentKind = %q, want %q", operatorAgentKind, "coderig:operator")
+	if agentKind != "coderig:builder" {
+		t.Errorf("agentKind = %q, want %q", agentKind, "coderig:builder")
 	}
 }

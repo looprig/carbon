@@ -407,7 +407,7 @@ func TestPermissionReviewRigOptionDoubleRegistrationRejected(t *testing.T) {
 // TestPermissionReviewDoesNotWidenAccessCeiling proves requirement 6: for
 // every named access profile, enabling permission review (any model, either
 // policy) leaves the durable access-config digest — which folds the
-// selected profile and the complete normalized operator/reviewer sandbox
+// selected profile and the complete normalized planner/builder/reviewer sandbox
 // profiles (accessConfigDigest, access.go) — byte-for-byte IDENTICAL to the
 // same profile with permission review disabled. CodeRig exposes no
 // independent "security ceiling" knob for the classifier: whatever ceiling a
@@ -441,7 +441,7 @@ func TestPermissionReviewDoesNotWidenAccessCeiling(t *testing.T) {
 
 // TestPermissionReviewHeadlessComposesSafely proves requirement 7: enabling
 // permission review in a headless (unattended) session changes nothing about
-// headless mode's existing fail-closed gate wiring — both role gates stay
+// headless mode's existing fail-closed gate wiring — all role gates stay
 // non-interactive with no rule writer (gate.NewHeadlessEvaluator, exactly as
 // buildHeadlessAccess already selects for every headless session) — and the
 // resulting composition still passes rig.Define, so permission review composes
@@ -455,9 +455,13 @@ func TestPermissionReviewHeadlessComposesSafely(t *testing.T) {
 	cfg := Config{PermissionReviewEnabled: true, PermissionReviewModel: permissionReviewTestModel()}
 	access, sessionCfg := headlessTestAccess(t, cfg, root)
 
-	operatorGate, ok := access.operatorGate.(*roleGate)
-	if !ok || operatorGate.interactive || operatorGate.writer != nil {
-		t.Fatalf("operator gate = %+v, want a non-interactive headless gate with no rule writer", access.operatorGate)
+	plannerGate, ok := access.plannerGate.(*roleGate)
+	if !ok || plannerGate.interactive || plannerGate.writer != nil {
+		t.Fatalf("planner gate = %+v, want a non-interactive headless gate with no rule writer", access.plannerGate)
+	}
+	builderGate, ok := access.builderGate.(*roleGate)
+	if !ok || builderGate.interactive || builderGate.writer != nil {
+		t.Fatalf("builder gate = %+v, want a non-interactive headless gate with no rule writer", access.builderGate)
 	}
 	reviewerGate, ok := access.reviewerGate.(*roleGate)
 	if !ok || reviewerGate.interactive || reviewerGate.writer != nil {

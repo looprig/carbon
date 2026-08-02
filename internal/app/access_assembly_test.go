@@ -9,38 +9,37 @@ import (
 )
 
 // TestSessionAccessPerRoleExecutorSeparation proves the session access wiring gives each role
-// its OWN executor set and each Loop ID its OWN executor within a set. The operator-primary
-// and operator leaf share the operator profile but, keyed by distinct Loop IDs, receive
-// distinct executor instances (so distinct grants/scratch HOME); the reviewer uses a separate
-// set entirely. A repeated Loop ID is memoized to the same executor.
+// its OWN executor set and each Loop ID its OWN executor within a set. Builder uses the selected
+// writable profile; planner and reviewer each use separate read-only sets. A repeated Loop ID
+// is memoized to the same executor.
 func TestSessionAccessPerRoleExecutorSeparation(t *testing.T) {
 	access, _ := headlessTestAccess(t, Config{}, t.TempDir())
 
-	if access.operatorSet == access.reviewerSet {
-		t.Fatal("operator and reviewer share one executor set, want separate sets per role authority")
+	if access.plannerSet == access.builderSet || access.builderSet == access.reviewerSet || access.plannerSet == access.reviewerSet {
+		t.Fatal("roles share an executor set, want separate sets per role authority")
 	}
 
-	primary, err := access.operatorSet.For("operator-primary-loop")
+	planner, err := access.plannerSet.For("planner-loop")
 	if err != nil {
-		t.Fatalf("operatorSet.For(primary): %v", err)
+		t.Fatalf("plannerSet.For: %v", err)
 	}
-	leaf, err := access.operatorSet.For("operator-leaf-loop")
+	builder, err := access.builderSet.For("builder-loop")
 	if err != nil {
-		t.Fatalf("operatorSet.For(leaf): %v", err)
+		t.Fatalf("builderSet.For: %v", err)
 	}
-	if primary == leaf {
-		t.Fatal("operator-primary and operator leaf resolved the SAME executor; sharing a profile must not share grants")
+	if planner == builder {
+		t.Fatal("planner and builder resolved the SAME executor")
 	}
-	if again, _ := access.operatorSet.For("operator-primary-loop"); again != primary {
-		t.Fatal("repeated Loop ID did not memoize to the same executor")
+	if again, _ := access.plannerSet.For("planner-loop"); again != planner {
+		t.Fatal("repeated planner Loop ID did not memoize to the same executor")
 	}
 
-	reviewer, err := access.reviewerSet.For("operator-primary-loop")
+	reviewer, err := access.reviewerSet.For("reviewer-loop")
 	if err != nil {
 		t.Fatalf("reviewerSet.For: %v", err)
 	}
-	if reviewer == primary {
-		t.Fatal("reviewer executor equals operator executor; the restricted role must use a separate set")
+	if reviewer == builder {
+		t.Fatal("reviewer executor equals builder executor; the restricted role must use a separate set")
 	}
 }
 
@@ -52,7 +51,7 @@ func TestSessionAccessCloseIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildHeadlessAccess: %v", err)
 	}
-	if _, err := access.operatorSet.For("live-loop"); err != nil {
+	if _, err := access.builderSet.For("live-loop"); err != nil {
 		t.Fatalf("For: %v", err)
 	}
 	if err := access.Close(); err != nil {

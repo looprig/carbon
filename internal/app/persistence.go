@@ -7,8 +7,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/looprig/coderig/internal/catalog/builder"
+	"github.com/looprig/coderig/internal/catalog/planner"
+	"github.com/looprig/coderig/internal/catalog/reviewer"
 	"github.com/looprig/core/uuid"
 	"github.com/looprig/fsstore"
+	"github.com/looprig/harness/pkg/identity"
 	"github.com/looprig/harness/pkg/loop"
 	"github.com/looprig/harness/pkg/rig"
 	"github.com/looprig/harness/pkg/sessionstore"
@@ -92,20 +96,20 @@ func headlessStores() (*swarmStores, error) {
 	return headlessResult, headlessError
 }
 
-// operatorFingerprintFields assembles the rig-level config-fingerprint inputs that are not
-// part of a loop.Definition: the swarm+primary AgentKind, the human-set RuntimeSkills mode,
+// agentFingerprintFields assembles the rig-level config-fingerprint inputs that are not
+// part of a loop.Definition: the swarm+active-primer AgentKind, the human-set RuntimeSkills mode,
 // and the durable access configuration identity. NativePermissionPolicyRev carries the
-// secret-free access digest (access ABI version, selected profile, normalized operator and
-// reviewer profiles, and the non-secret egress route identity/guarantees) so a product-profile,
+// secret-free access digest (access ABI version, selected profile, normalized builder, planner,
+// and reviewer profiles, and the non-secret egress route identity/guarantees) so a product-profile,
 // reviewer-restriction, or egress-boundary change invalidates a restore rather than silently
 // resuming with different authority. AppFields additionally surfaces the human-visible profile
 // name for the richer manifest (the 5.2 SessionPresenter consumes it). The workspace-root field
 // is owned by the rig's exclusive-workspace placement, so it is not set here. A zero Config
 // (AccessProfile/AccessConfigRev empty) leaves both access inputs empty, keeping the fields
 // additive for callers that do not select a profile.
-func operatorFingerprintFields(cfg Config) rig.ConfigFingerprintFields {
+func agentFingerprintFields(cfg Config) rig.ConfigFingerprintFields {
 	fields := rig.ConfigFingerprintFields{
-		AgentKind:                 operatorAgentKind,
+		AgentKind:                 agentKind,
 		RuntimeSkills:             cfg.RuntimeSkills,
 		NativePermissionPolicyRev: cfg.AccessConfigRev,
 		AppFields:                 accessAppFields(cfg.AccessProfile),
@@ -113,6 +117,14 @@ func operatorFingerprintFields(cfg Config) rig.ConfigFingerprintFields {
 	if cfg.ACPChildren != nil {
 		fields.RuntimeCatalogRev = cfg.ACPChildren.Catalog.RuntimeCatalog.Digest()
 	}
+	return fields
+}
+
+// operatorFingerprintFields is a legacy package-local fixture seam. New
+// production sessions use agentFingerprintFields and the builder-active kind.
+func operatorFingerprintFields(cfg Config) rig.ConfigFingerprintFields {
+	fields := agentFingerprintFields(cfg)
+	fields.AgentKind = operatorAgentKind
 	return fields
 }
 
@@ -137,7 +149,7 @@ func accessAppFields(profile AccessProfile) map[string]string {
 // existing callers (production's delegation defaults, and every test unconcerned with
 // permission review) use unchanged.
 func buildRig(definitions []loop.Definition, stores *swarmStores, root string, cfg Config, allowMismatch bool) (*rig.Rig, error) {
-	return buildRigForDelegationCaps(definitions, stores, root, cfg, allowMismatch, rig.DelegationLimits{Depth: operatorSpawnDepth, Quota: operatorSpawnQuota}, permissionReviewRegistration{})
+	return buildRigForDelegationCaps(definitions, stores, root, cfg, allowMismatch, rig.DelegationLimits{Depth: delegationSpawnDepth, Quota: delegationSpawnQuota}, permissionReviewRegistration{})
 }
 
 // buildRigForDelegationCaps is the common assembly path with explicit delegation caps and an
@@ -163,15 +175,16 @@ func buildRigWithRegistration(definitions []loop.Definition, stores *swarmStores
 }
 
 func buildRigWithRegistrationAndACP(definitions []loop.Definition, stores *swarmStores, root string, cfg Config, allowMismatch bool, limits rig.DelegationLimits, registration conversationHustleRegistration, permissionReview permissionReviewRegistration, acpChildren *ACPComposition) (*rig.Rig, error) {
+	primers, activePrimer := primerConfiguration(definitions)
 	options := []rig.Option{
 		rig.WithLoops(definitions...),
-		rig.WithPrimers(string(operatorPrimaryName)),
-		rig.WithActivePrimer(string(operatorPrimaryName)),
+		rig.WithPrimers(primers...),
+		rig.WithActivePrimer(activePrimer),
 		rig.WithSessionStore(stores.session),
 		rig.WithExclusiveWorkspace(stores.workspace, root, stores.leaser),
 		rig.WithSnapshots(rig.SnapshotPolicy{Trigger: rig.SnapshotOnIdle, Priority: rig.SnapshotBestEffort, Timeout: snapshotTimeout}),
 		rig.WithDelegationLimits(limits),
-		rig.WithFingerprintFields(operatorFingerprintFields(cfg)),
+		rig.WithFingerprintFields(agentFingerprintFields(cfg)),
 		rig.WithOffloadGC(rig.OffloadGCPolicy{Interval: offloadGCInterval, Timeout: offloadGCTimeout}),
 	}
 	if acpChildren != nil {
@@ -186,6 +199,33 @@ func buildRigWithRegistrationAndACP(definitions []loop.Definition, stores *swarm
 		options = append(options, rig.WithAllowConfigMismatch())
 	}
 	return rig.Define(options...)
+}
+
+// primerConfiguration keeps the production roster explicit while allowing
+// narrow package tests to assemble a smaller custom definition set. The real
+// CodeRig definitions always take the three-primer branch; a custom set uses
+// its managed-delegating root as its only primer.
+func primerConfiguration(definitions []loop.Definition) ([]string, string) {
+	byName := make(map[identity.AgentName]loop.Definition, len(definitions))
+	for _, definition := range definitions {
+		byName[definition.Name()] = definition
+	}
+	if _, plannerOK := byName[planner.Name]; plannerOK {
+		if _, builderOK := byName[builder.Name]; builderOK {
+			if _, reviewerOK := byName[reviewer.Name]; reviewerOK {
+				return []string{string(planner.Name), string(builder.Name), string(reviewer.Name)}, string(activePrimerName)
+			}
+		}
+	}
+	for _, definition := range definitions {
+		if len(definition.Delegates()) != 0 || definition.Delegation().Style == loop.DelegationManaged {
+			return []string{string(definition.Name())}, string(definition.Name())
+		}
+	}
+	if len(definitions) == 0 {
+		return nil, ""
+	}
+	return []string{string(definitions[0].Name())}, string(definitions[0].Name())
 }
 
 // SessionSelector chooses which session a persisted Open opens. The zero value (Resume zero)

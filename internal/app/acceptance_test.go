@@ -7,6 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/looprig/coderig/internal/catalog/builder"
+	"github.com/looprig/coderig/internal/catalog/planner"
+	"github.com/looprig/coderig/internal/catalog/reviewer"
 	"github.com/looprig/core/content"
 	"github.com/looprig/core/uuid"
 	"github.com/looprig/harness/pkg/event"
@@ -17,8 +20,8 @@ import (
 
 // acceptance_test.go drives the assembled CodeRig headless (over an isolated in-memory
 // store + a temp checkout, so it never contends on the real current-checkout lease with
-// sibling tests). It proves the composed rig starts with the operator-primary as the durable
-// root loop, that a submitted turn is observable on the whole-session event stream, and that
+// sibling tests). It proves the composed rig starts with builder as the active durable
+// primer, that a submitted turn is observable on the whole-session event stream, and that
 // the agent closes cleanly.
 //
 // The composed managed-delegation action flows live in managed_delegation_test.go; the
@@ -37,9 +40,8 @@ func openAcceptanceAgent(t *testing.T) (*RuntimeAgent, *swarmStores) {
 	return agent, stores
 }
 
-// durableRootLoop folds the session's durable log and returns the first zero-parent
-// LoopStarted's agent name and loop id — the root primer.
-func durableRootLoop(t *testing.T, stores *swarmStores, sessionID uuid.UUID) (string, uuid.UUID) {
+// durableRootLoops folds the session's durable log and returns every zero-parent primer.
+func durableRootLoops(t *testing.T, stores *swarmStores, sessionID uuid.UUID) map[string]uuid.UUID {
 	t.Helper()
 	replayer, err := stores.session.OpenEventReplayer(sessionID, sessionstore.ReplayRequest{})
 	if err != nil {
@@ -50,35 +52,35 @@ func durableRootLoop(t *testing.T, stores *swarmStores, sessionID uuid.UUID) (st
 		t.Fatalf("replayer.Open() error = %v", err)
 	}
 	defer func() { _ = cursor.Close() }()
+	roots := make(map[string]uuid.UUID)
 	for {
 		ev, _, err := cursor.Next(context.Background())
 		if errors.Is(err, io.EOF) {
-			return "", uuid.UUID{}
+			return roots
 		}
 		if err != nil {
 			t.Fatalf("cursor.Next() error = %v", err)
 		}
 		if started, ok := ev.(event.LoopStarted); ok && started.Cause.Coordinates.LoopID.IsZero() {
-			return string(started.AgentName), started.LoopID
+			roots[string(started.AgentName)] = started.LoopID
 		}
 	}
 }
 
-// TestAcceptanceRootLoopIsOperatorPrimary proves the composed rig starts with the
-// operator-primary as the durable, zero-parent primer and that it is initially active.
-func TestAcceptanceRootLoopIsOperatorPrimary(t *testing.T) {
+// TestAcceptanceActivePrimerIsBuilder proves the composed rig selects builder as
+// the active durable, zero-parent primer while the other primers also exist.
+func TestAcceptanceActivePrimerIsBuilder(t *testing.T) {
 	t.Parallel()
 	agent, stores := openAcceptanceAgent(t)
 
-	name, rootID := durableRootLoop(t, stores, agent.SessionID())
-	if name != string(operatorPrimaryName) {
-		t.Errorf("durable root loop agent = %q, want %q", name, operatorPrimaryName)
+	roots := durableRootLoops(t, stores, agent.SessionID())
+	for _, name := range []string{string(planner.Name), string(builder.Name), string(reviewer.Name)} {
+		if roots[name].IsZero() {
+			t.Errorf("durable zero-parent primer %q is missing; roots=%v", name, roots)
+		}
 	}
-	if rootID.IsZero() {
-		t.Fatal("no durable zero-parent root LoopStarted found")
-	}
-	if got := agent.ActiveLoopID(); got != rootID {
-		t.Errorf("ActiveLoopID() = %v, want the active primer %v", got, rootID)
+	if got, want := agent.ActiveLoopID(), roots[string(builder.Name)]; got != want {
+		t.Errorf("ActiveLoopID() = %v, want builder root %v", got, want)
 	}
 }
 

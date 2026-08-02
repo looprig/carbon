@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/looprig/harness/pkg/foreign"
@@ -68,6 +69,62 @@ func TestNewACPCompositionPreflightsProfilesAndFiltersEnv(t *testing.T) {
 	if got := filterACPEnv([]string{"PATH=/bin", "SECRET=x", "LANG=C"}, []string{"PATH", "LANG"}); len(got) != 2 || got[0] != "PATH=/bin" || got[1] != "LANG=C" {
 		t.Fatalf("filtered env = %#v", got)
 	}
+}
+
+func TestACPChildEnvIsCredentialScoped(t *testing.T) {
+	config := ACPChildrenConfig{
+		Env: []string{
+			"HOME=/Users/alice",
+			"XDG_CONFIG_HOME=/Users/alice/.config",
+			"XDG_DATA_HOME=/Users/alice/.local/share",
+			"PATH=/usr/bin",
+			"LANG=C",
+			"ANTHROPIC_API_KEY=should-not-pass",
+			"SECRET_TOKEN=should-not-pass",
+		},
+		NativeEnvAllowlist:  acpNativeAuthEnvAllowlist,
+		GatewayEnvAllowlist: acpGatewayEnvAllowlist,
+	}
+
+	native := config.envForCredential(loop.CredentialNativeAuth)
+	if !containsEnv(native, "HOME=/Users/alice") ||
+		!containsEnv(native, "XDG_CONFIG_HOME=/Users/alice/.config") ||
+		!containsEnv(native, "XDG_DATA_HOME=/Users/alice/.local/share") {
+		t.Fatalf("native env lost login locations: %#v", native)
+	}
+	if !containsEnv(native, "PATH=/usr/bin") || !containsEnv(native, "LANG=C") {
+		t.Fatalf("native env lost safe process configuration: %#v", native)
+	}
+
+	gateway := config.envForCredential(loop.CredentialGatewayBacked)
+	if containsEnvKey(gateway, "HOME") || containsEnvKey(gateway, "XDG_CONFIG_HOME") || containsEnvKey(gateway, "XDG_DATA_HOME") {
+		t.Fatalf("gateway env inherited harness login locations: %#v", gateway)
+	}
+	if containsEnvKey(gateway, "ANTHROPIC_API_KEY") || containsEnvKey(gateway, "SECRET_TOKEN") {
+		t.Fatalf("gateway env inherited a secret: %#v", gateway)
+	}
+	if !containsEnv(gateway, "PATH=/usr/bin") || !containsEnv(gateway, "LANG=C") {
+		t.Fatalf("gateway env lost safe process configuration: %#v", gateway)
+	}
+}
+
+func containsEnv(env []string, wanted string) bool {
+	for _, entry := range env {
+		if entry == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+func containsEnvKey(env []string, key string) bool {
+	prefix := key + "="
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestNewACPCompositionBuildsNativeAuthProfileWithoutGateway(t *testing.T) {

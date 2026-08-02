@@ -24,7 +24,12 @@ type ACPChildrenConfig struct {
 	Executables   map[loop.AgentHarnessName]string
 	WorkspaceRoot string
 	Env           []string
-	EnvAllowlist  []string
+	// EnvAllowlist is the compatibility fallback for callers that predate
+	// credential-specific allowlists. Production supplies both mode-specific
+	// lists below.
+	EnvAllowlist        []string
+	NativeEnvAllowlist  []string
+	GatewayEnvAllowlist []string
 }
 
 // ACPComposition is the immutable CodeRig-to-Harness bridge for ACP children.
@@ -158,17 +163,60 @@ func (f *acpChildFactory) configFor(ctx context.Context, cfg loop.BoundDefinitio
 	if ownedGateway != nil {
 		binding = ownedGateway.Binding()
 	}
+	modelAlias := string(resolved.ModelAlias)
+	smallModelAlias := string(resolved.SmallModel)
+	if resolved.Credential == loop.CredentialNativeAuth {
+		native, ok := f.config.Catalog.nativeModel(resolved.ModelAlias)
+		if !ok || native.harnessModel == "" {
+			return loop.Resolved{}, acpdriver.Config{}, nil, fmt.Errorf("coderig: native ACP model unavailable")
+		}
+		modelAlias = native.harnessModel
+		smallModelAlias = native.smallModel
+		if harness == "claude-code" && smallModelAlias == "" {
+			smallModelAlias = native.harnessModel
+		}
+	}
 	return resolved, acpdriver.Config{
 		Harness:         acpdriver.Harness(harness),
 		Executable:      f.config.Executables[harness],
-		Env:             filterACPEnv(f.config.Env, f.config.EnvAllowlist),
+		Env:             f.config.envForCredential(resolved.Credential),
 		Credential:      resolved.Credential,
 		Binding:         binding,
-		ModelAlias:      string(resolved.ModelAlias),
-		SmallModelAlias: string(resolved.SmallModel),
+		ModelAlias:      modelAlias,
+		SmallModelAlias: smallModelAlias,
 		Posture:         posture,
 		WorkspaceRoot:   f.config.WorkspaceRoot,
 	}, ownedGateway, nil
+}
+
+func (c ACPChildrenConfig) envForCredential(credential loop.CredentialMode) []string {
+	allowlist := c.GatewayEnvAllowlist
+	if credential == loop.CredentialNativeAuth {
+		allowlist = c.NativeEnvAllowlist
+	}
+	if len(allowlist) == 0 {
+		allowlist = c.EnvAllowlist
+	}
+	if credential == loop.CredentialGatewayBacked {
+		// Even legacy callers that supply only EnvAllowlist must not be able
+		// to pass harness login locations to a gateway-backed child.
+		allowlist = intersectEnvAllowlists(allowlist, acpGatewayEnvAllowlist)
+	}
+	return filterACPEnv(c.Env, allowlist)
+}
+
+func intersectEnvAllowlists(left, right []string) []string {
+	allowed := make(map[string]struct{}, len(right))
+	for _, name := range right {
+		allowed[name] = struct{}{}
+	}
+	result := make([]string, 0, len(left))
+	for _, name := range left {
+		if _, ok := allowed[name]; ok {
+			result = append(result, name)
+		}
+	}
+	return result
 }
 
 func resolveACPBoundRuntime(catalog ACPCompiledCatalog, cfg loop.BoundDefinition) (loop.Resolved, loop.AgentHarnessName, error) {
