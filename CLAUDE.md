@@ -102,6 +102,12 @@ Prefer direct assembly over local wrappers that only rename another module's API
 
 ## Code and tests
 
+- Follow SOLID principles:
+  - **Single Responsibility:** keep each package, type, and function focused on one cohesive reason to change.
+  - **Open/Closed:** extend behavior through stable seams instead of repeatedly modifying unrelated callers.
+  - **Liskov Substitution:** implementations must preserve the full behavioral contract of the interfaces they satisfy.
+  - **Interface Segregation:** prefer small consumer-owned interfaces over broad capability bundles.
+  - **Dependency Inversion:** product policy depends on abstractions owned at the consuming boundary; infrastructure details are injected by the composition root.
 - Keep packages cohesive. Split code when ownership or invariants differ, not to satisfy an arbitrary size rule.
 - Introduce interfaces at consumer boundaries or when multiple implementations justify them.
 - Use typed errors when callers need to classify or recover. Wrapped ordinary errors are fine for contextual failures.
@@ -129,6 +135,8 @@ The binary and command are both named `coderig`.
 ## Dependencies
 
 Prefer the standard library. Ask before adding a new third-party dependency. Sibling looprig modules already in `go.mod` are approved architecture dependencies.
+
+Do not use pinned local sibling-module versions in `go.mod` to coordinate development across Looprig repositories. Use the root `/Users/ipotter/code/looprig/go.work` workspace instead. Change a sibling version in `go.mod` only as explicit release/adoption work after the providing module has a published version.
 
 The following development-only analysis tools are approved and declared through
 the Go toolchain:
