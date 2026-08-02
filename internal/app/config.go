@@ -9,6 +9,10 @@ import (
 // CLI fills before the Rig is constructed; the access profile cannot change for
 // the lifetime of the session.
 type Config struct {
+	// ACPChildren is the optional, already-preflighted delegated-child
+	// composition. Native primer operation remains available when it is nil or
+	// when its catalog has no executable profiles.
+	ACPChildren *ACPComposition
 	// RuntimeSkills enables the untrusted, human-gated workspace skill source.
 	RuntimeSkills bool
 	// AccessProfile is the selected product access profile (readonly by

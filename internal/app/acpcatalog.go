@@ -48,6 +48,7 @@ type ACPCompiledCatalog struct {
 	RuntimeCatalog loop.RuntimeCatalog
 
 	gatewayTargets map[loop.ModelAlias]ACPGatewaySource
+	profiles       map[loop.RuntimeProfileName]struct{}
 }
 
 // CompileACPCatalog compiles the frozen gateway-backed ACP table together with
@@ -104,7 +105,11 @@ func CompileACPCatalog(input ACPCatalogInput) (ACPCompiledCatalog, error) {
 	if err != nil {
 		return ACPCompiledCatalog{}, err
 	}
-	return ACPCompiledCatalog{RuntimeCatalog: catalog, gatewayTargets: gatewayRows}, nil
+	profiles := make(map[loop.RuntimeProfileName]struct{}, len(entries))
+	for _, entry := range entries {
+		profiles[entry.Profile] = struct{}{}
+	}
+	return ACPCompiledCatalog{RuntimeCatalog: catalog, gatewayTargets: gatewayRows, profiles: profiles}, nil
 }
 
 func mustEmptyRuntimeCatalog() loop.RuntimeCatalog {
@@ -339,6 +344,14 @@ func (c ACPCompiledCatalog) ResolveGatewayTarget(alias loop.ModelAlias, effort m
 	m := source.Model.Clone()
 	m.Sampling.Effort = effort
 	return gateway.Target{ID: string(alias), Client: source.Client, Model: m, AuthoritativeEffort: true}, nil
+}
+
+// HasProfile reports whether the compiled catalog contains an executable
+// profile. It lets the composition root omit ACP builders when only native
+// authentication rows are available.
+func (c ACPCompiledCatalog) HasProfile(profile loop.RuntimeProfileName) bool {
+	_, ok := c.profiles[profile]
+	return ok
 }
 
 func containsACPEffort(efforts []model.Effort, wanted model.Effort) bool {

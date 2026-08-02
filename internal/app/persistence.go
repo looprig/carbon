@@ -104,12 +104,16 @@ func headlessStores() (*swarmStores, error) {
 // (AccessProfile/AccessConfigRev empty) leaves both access inputs empty, keeping the fields
 // additive for callers that do not select a profile.
 func operatorFingerprintFields(cfg Config) rig.ConfigFingerprintFields {
-	return rig.ConfigFingerprintFields{
+	fields := rig.ConfigFingerprintFields{
 		AgentKind:                 operatorAgentKind,
 		RuntimeSkills:             cfg.RuntimeSkills,
 		NativePermissionPolicyRev: cfg.AccessConfigRev,
 		AppFields:                 accessAppFields(cfg.AccessProfile),
 	}
+	if cfg.ACPChildren != nil {
+		fields.RuntimeCatalogRev = cfg.ACPChildren.Catalog.RuntimeCatalog.Digest()
+	}
+	return fields
 }
 
 // accessAppFields returns the secret-free, human-visible access manifest fields, or nil when no
@@ -146,7 +150,7 @@ func buildRigForDelegationCaps(definitions []loop.Definition, stores *swarmStore
 	if err != nil {
 		return nil, err
 	}
-	return buildRigWithRegistration(definitions, stores, root, cfg, allowMismatch, limits, registration, permissionReview)
+	return buildRigWithRegistrationAndACP(definitions, stores, root, cfg, allowMismatch, limits, registration, permissionReview, cfg.ACPChildren)
 }
 
 // buildRigWithRegistration is the common immutable rig assembly. Production
@@ -155,6 +159,10 @@ func buildRigForDelegationCaps(definitions []loop.Definition, stores *swarmStore
 // prove fingerprint sensitivity. permissionReview's disabled zero value adds
 // no options, so passing it changes nothing about the assembled rig.
 func buildRigWithRegistration(definitions []loop.Definition, stores *swarmStores, root string, cfg Config, allowMismatch bool, limits rig.DelegationLimits, registration conversationHustleRegistration, permissionReview permissionReviewRegistration) (*rig.Rig, error) {
+	return buildRigWithRegistrationAndACP(definitions, stores, root, cfg, allowMismatch, limits, registration, permissionReview, cfg.ACPChildren)
+}
+
+func buildRigWithRegistrationAndACP(definitions []loop.Definition, stores *swarmStores, root string, cfg Config, allowMismatch bool, limits rig.DelegationLimits, registration conversationHustleRegistration, permissionReview permissionReviewRegistration, acpChildren *ACPComposition) (*rig.Rig, error) {
 	options := []rig.Option{
 		rig.WithLoops(definitions...),
 		rig.WithPrimers(string(operatorPrimaryName)),
@@ -165,6 +173,12 @@ func buildRigWithRegistration(definitions []loop.Definition, stores *swarmStores
 		rig.WithDelegationLimits(limits),
 		rig.WithFingerprintFields(operatorFingerprintFields(cfg)),
 		rig.WithOffloadGC(rig.OffloadGCPolicy{Interval: offloadGCInterval, Timeout: offloadGCTimeout}),
+	}
+	if acpChildren != nil && acpChildren.Catalog.RuntimeCatalog.HasEntries() {
+		options = append(options, rig.WithRuntimeCatalog(acpChildren.Catalog.RuntimeCatalog))
+		if acpChildren.Live != nil && acpChildren.Restored != nil {
+			options = append(options, rig.WithForeignBuilders(acpChildren.Live, acpChildren.Restored))
+		}
 	}
 	options = append(options, registration.options()...)
 	options = append(options, permissionReview.options()...)
