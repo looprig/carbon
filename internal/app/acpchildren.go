@@ -14,7 +14,9 @@ import (
 	acpdriver "github.com/looprig/foreignloops/driver/acp"
 	"github.com/looprig/harness/pkg/event"
 	"github.com/looprig/harness/pkg/foreign"
+	"github.com/looprig/harness/pkg/identity"
 	"github.com/looprig/harness/pkg/loop"
+	model "github.com/looprig/inference/model"
 )
 
 var errACPChildUnavailable = errors.New("coderig: ACP child unavailable")
@@ -54,8 +56,34 @@ type ACPChildrenConfig struct {
 	// executablePreflight is an internal test seam. Production leaves it nil,
 	// which performs a bounded ACP initialize/session probe before advertising
 	// a profile; focused composition tests can replace the process probe with a
-	// deterministic result.
-	executablePreflight func(context.Context, ACPNativeAuthProbe) bool
+	// deterministic result. The probe is credential-scoped so a gateway row is
+	// never admitted by a native-login check.
+	executablePreflight func(context.Context, ACPExecutableProbe) ACPPreflightResult
+	// gatewayPreflightBinding avoids starting a loopback listener in focused
+	// composition tests. Production leaves it nil and NewACPComposition owns a
+	// short-lived ACPGateway solely for the SharedProxy preflight binding.
+	gatewayPreflightBinding *launch.ProxyBinding
+}
+
+// ACPExecutableProbe is the bounded, secret-free input to one ACP startup
+// preflight. Models contains model-facing aliases for a Claude session or a
+// single exact launch model for Codex. SharedProxy is set only for a
+// gateway-backed child; native-auth probes use NoProxy and keep it nil.
+type ACPExecutableProbe struct {
+	ACPNativeAuthProbe
+	Credential  loop.CredentialMode
+	Model       string
+	Models      []string
+	SharedProxy *launch.ProxyBinding
+}
+
+// ACPPreflightResult is the bounded result of an ACP initialize/session probe.
+// Claude uses AdvertisedModels to close the catalog to values the adapter
+// actually offered. Codex is checked by launching each candidate in turn and
+// therefore only needs Ready.
+type ACPPreflightResult struct {
+	Ready            bool
+	AdvertisedModels []string
 }
 
 // ACPComposition is the immutable CodeRig-to-Harness bridge for ACP children.
@@ -76,31 +104,27 @@ func NewACPComposition(config ACPChildrenConfig) (*ACPComposition, error) {
 		return nil, fmt.Errorf("coderig: ACP workspace root must be a clean absolute path")
 	}
 	registry := new(foreign.BuilderRegistry)
-	available := make(map[loop.RuntimeProfileName]struct{})
+	preflight := config.executablePreflight
+	if preflight == nil {
+		preflight = func(ctx context.Context, probe ACPExecutableProbe) ACPPreflightResult {
+			return preflightProductionACPExecutable(ctx, probe)
+		}
+	}
+	decisions := make(map[loop.AgentHarnessName]acpPreflightDecision)
 	for _, profile := range []loop.RuntimeProfileName{"acp/claude-code", "acp/codex"} {
 		if !config.Catalog.HasProfile(profile) {
 			continue
 		}
 		harness := loop.AgentHarnessName(strings.TrimPrefix(string(profile), "acp/"))
-		probe := ACPNativeAuthProbe{
-			Harness:       harness,
-			Executable:    config.Executables[harness],
-			WorkspaceRoot: config.WorkspaceRoot,
-			Env:           filterACPEnv(config.Env, acpNativeAuthEnvAllowlist),
-		}
-		if !preflightACPExecutable(probe.Executable) {
+		if !preflightACPExecutable(config.Executables[harness]) {
 			continue
 		}
-		preflight := config.executablePreflight
-		if preflight == nil {
-			preflight = preflightProductionACPExecutable
+		decision := preflightACPProfile(context.Background(), config, harness, preflight)
+		if decision.gatewayReady || decision.nativeReady {
+			decisions[harness] = decision
 		}
-		if !preflight(context.Background(), probe) {
-			continue
-		}
-		available[profile] = struct{}{}
 	}
-	filtered, err := config.Catalog.filterProfiles(available)
+	filtered, err := filterACPPreflightCatalog(config.Catalog, decisions)
 	if err != nil {
 		return nil, err
 	}
@@ -120,6 +144,274 @@ func NewACPComposition(config ACPChildrenConfig) (*ACPComposition, error) {
 		Live:     dispatchACPBuilder(registry),
 		Restored: dispatchACPRestoredBuilder(registry),
 	}, nil
+}
+
+type acpPreflightDecision struct {
+	gatewayReady   bool
+	gatewayAliases map[loop.ModelAlias]struct{}
+	nativeReady    bool
+}
+
+type acpRuntimeModel struct {
+	entry  loop.RuntimeCatalogEntry
+	option loop.RuntimeModelOption
+}
+
+func preflightACPProfile(ctx context.Context, config ACPChildrenConfig, harness loop.AgentHarnessName, preflight func(context.Context, ACPExecutableProbe) ACPPreflightResult) acpPreflightDecision {
+	decision := acpPreflightDecision{gatewayAliases: make(map[loop.ModelAlias]struct{})}
+	models := make([]acpRuntimeModel, 0)
+	for _, entry := range config.Catalog.entries {
+		if entry.AgentHarness != harness {
+			continue
+		}
+		for _, option := range entry.Models {
+			models = append(models, acpRuntimeModel{entry: entry, option: option})
+		}
+	}
+	var gatewayModels, nativeModels []acpRuntimeModel
+	for _, runtimeModel := range models {
+		credential := runtimeModel.option.Credential
+		if credential == "" {
+			credential = runtimeModel.entry.Credential
+		}
+		switch credential {
+		case loop.CredentialGatewayBacked:
+			gatewayModels = append(gatewayModels, runtimeModel)
+		case loop.CredentialNativeAuth:
+			nativeModels = append(nativeModels, runtimeModel)
+		}
+	}
+
+	if len(gatewayModels) > 0 && preflightACPSharedGateway(ctx, config, harness, gatewayModels, preflight, &decision) {
+		decision.gatewayReady = true
+	}
+	if len(nativeModels) > 0 {
+		probe := ACPExecutableProbe{
+			ACPNativeAuthProbe: ACPNativeAuthProbe{
+				Harness:       harness,
+				Executable:    config.Executables[harness],
+				WorkspaceRoot: config.WorkspaceRoot,
+				Env:           config.envForCredential(loop.CredentialNativeAuth),
+			},
+			Credential: loop.CredentialNativeAuth,
+			Model:      nativeModels[0].option.Target.Name,
+		}
+		result := preflight(ctx, probe)
+		decision.nativeReady = result.Ready
+	}
+	return decision
+}
+
+func preflightACPSharedGateway(ctx context.Context, config ACPChildrenConfig, harness loop.AgentHarnessName, models []acpRuntimeModel, preflight func(context.Context, ACPExecutableProbe) ACPPreflightResult, decision *acpPreflightDecision) bool {
+	binding, release, ok := gatewayPreflightBinding(ctx, config, harness)
+	if !ok {
+		return false
+	}
+	defer release()
+
+	aliases := make([]string, 0, len(models))
+	seen := make(map[loop.ModelAlias]struct{}, len(models))
+	for _, runtimeModel := range models {
+		if _, exists := seen[runtimeModel.option.Alias]; exists {
+			continue
+		}
+		seen[runtimeModel.option.Alias] = struct{}{}
+		aliases = append(aliases, string(runtimeModel.option.Alias))
+	}
+	if harness == "claude-code" {
+		model := "sonnet-5"
+		if _, exists := seen[loop.ModelAlias(model)]; !exists && len(aliases) > 0 {
+			model = aliases[0]
+		}
+		result := preflight(ctx, ACPExecutableProbe{
+			ACPNativeAuthProbe: ACPNativeAuthProbe{
+				Harness:       harness,
+				Executable:    config.Executables[harness],
+				WorkspaceRoot: config.WorkspaceRoot,
+				Env:           config.envForCredential(loop.CredentialGatewayBacked),
+			},
+			Credential:  loop.CredentialGatewayBacked,
+			Model:       model,
+			Models:      append([]string(nil), aliases...),
+			SharedProxy: binding,
+		})
+		if !result.Ready {
+			return false
+		}
+		advertised := make(map[string]struct{}, len(result.AdvertisedModels))
+		for _, model := range result.AdvertisedModels {
+			advertised[model] = struct{}{}
+		}
+		for _, alias := range aliases {
+			if _, exists := advertised[alias]; exists {
+				decision.gatewayAliases[loop.ModelAlias(alias)] = struct{}{}
+			}
+		}
+		return len(decision.gatewayAliases) > 0
+	}
+
+	for _, alias := range aliases {
+		result := preflight(ctx, ACPExecutableProbe{
+			ACPNativeAuthProbe: ACPNativeAuthProbe{
+				Harness:       harness,
+				Executable:    config.Executables[harness],
+				WorkspaceRoot: config.WorkspaceRoot,
+				Env:           config.envForCredential(loop.CredentialGatewayBacked),
+			},
+			Credential:  loop.CredentialGatewayBacked,
+			Model:       alias,
+			Models:      []string{alias},
+			SharedProxy: binding,
+		})
+		if result.Ready {
+			decision.gatewayAliases[loop.ModelAlias(alias)] = struct{}{}
+		}
+	}
+	return len(decision.gatewayAliases) > 0
+}
+
+func gatewayPreflightBinding(ctx context.Context, config ACPChildrenConfig, harness loop.AgentHarnessName) (*launch.ProxyBinding, func(), bool) {
+	if config.gatewayPreflightBinding != nil {
+		binding := *config.gatewayPreflightBinding
+		return &binding, func() {}, binding.BaseURL != "" && binding.Token != ""
+	}
+	if config.executablePreflight != nil {
+		// A deterministic test preflight still receives the same SharedProxy
+		// shape as production without requiring a listener or network access.
+		return &launch.ProxyBinding{BaseURL: "http://127.0.0.1:1", Token: "preflight"}, func() {}, true
+	}
+	resolved, ok := firstACPGatewayResolved(config.Catalog, harness)
+	if !ok {
+		return nil, func() {}, false
+	}
+	owned, err := NewACPGateway(ctx, config.Catalog, resolved)
+	if err != nil || owned == nil {
+		return nil, func() {}, false
+	}
+	binding := owned.Binding()
+	if binding.BaseURL == "" || binding.Token == "" {
+		_ = owned.Close(context.Background())
+		return nil, func() {}, false
+	}
+	return &binding, func() { _ = owned.Close(context.Background()) }, true
+}
+
+func firstACPGatewayResolved(catalog ACPCompiledCatalog, harness loop.AgentHarnessName) (loop.Resolved, bool) {
+	for _, entry := range catalog.entries {
+		if entry.AgentHarness != harness {
+			continue
+		}
+		for _, option := range entry.Models {
+			credential := option.Credential
+			if credential == "" {
+				credential = entry.Credential
+			}
+			if credential != loop.CredentialGatewayBacked {
+				continue
+			}
+			resolved, err := catalog.RuntimeCatalog.ResolveWithExplicitEffort(entry.SubagentType, harness, option.Alias, option.DefaultEffort, true)
+			if err == nil && resolved.Credential == loop.CredentialGatewayBacked {
+				return resolved, true
+			}
+		}
+	}
+	return loop.Resolved{}, false
+}
+
+func filterACPPreflightCatalog(catalog ACPCompiledCatalog, decisions map[loop.AgentHarnessName]acpPreflightDecision) (ACPCompiledCatalog, error) {
+	entries := make([]loop.RuntimeCatalogEntry, 0, len(catalog.entries))
+	for _, source := range catalog.entries {
+		decision, ok := decisions[source.AgentHarness]
+		if !ok {
+			continue
+		}
+		entry := cloneACPEntry(source)
+		models := make([]loop.RuntimeModelOption, 0, len(entry.Models))
+		for _, option := range entry.Models {
+			credential := option.Credential
+			if credential == "" {
+				credential = entry.Credential
+			}
+			switch credential {
+			case loop.CredentialGatewayBacked:
+				if !decision.gatewayReady {
+					continue
+				}
+				if _, allowed := decision.gatewayAliases[option.Alias]; !allowed {
+					continue
+				}
+			case loop.CredentialNativeAuth:
+				if !decision.nativeReady {
+					continue
+				}
+			default:
+				continue
+			}
+			models = append(models, option)
+		}
+		if len(models) == 0 {
+			continue
+		}
+		entry.Models = models
+		if !hasACPModelAlias(entry.Models, entry.DefaultModel) {
+			entry.DefaultModel = entry.Models[0].Alias
+		}
+		if entry.SmallModel != "" && !hasACPModelAlias(entry.Models, entry.SmallModel) {
+			entry.SmallModel = ""
+			for _, option := range entry.Models {
+				credential := option.Credential
+				if credential == "" {
+					credential = entry.Credential
+				}
+				if credential == loop.CredentialNativeAuth {
+					entry.SmallModel = option.Alias
+					break
+				}
+			}
+		}
+		if entry.NeedsSmallModel && entry.SmallModel == "" {
+			continue
+		}
+		entries = append(entries, entry)
+	}
+	for i := range entries {
+		if entries[i].Default {
+			continue
+		}
+		defaultFound := false
+		for _, other := range entries {
+			if other.SubagentType == entries[i].SubagentType && other.Default {
+				defaultFound = true
+				break
+			}
+		}
+		if !defaultFound {
+			entries[i].Default = true
+		}
+	}
+	catalogRuntime, err := loop.NewRuntimeCatalog(entries)
+	if err != nil {
+		return ACPCompiledCatalog{}, err
+	}
+	profiles := make(map[loop.RuntimeProfileName]struct{}, len(entries))
+	for _, entry := range entries {
+		profiles[entry.Profile] = struct{}{}
+	}
+	return ACPCompiledCatalog{
+		RuntimeCatalog: catalogRuntime,
+		gatewayTargets: catalog.gatewayTargets,
+		profiles:       profiles,
+		entries:        cloneACPEntries(entries),
+	}, nil
+}
+
+func hasACPModelAlias(models []loop.RuntimeModelOption, alias loop.ModelAlias) bool {
+	for _, option := range models {
+		if option.Alias == alias {
+			return true
+		}
+	}
+	return false
 }
 
 func preflightACPExecutable(path string) bool {
@@ -202,17 +494,10 @@ func (f *acpChildFactory) configFor(ctx context.Context, cfg loop.BoundDefinitio
 	if ownedGateway != nil {
 		binding = ownedGateway.Binding()
 	}
-	modelAlias := string(resolved.ModelAlias)
-	smallModelAlias := string(resolved.SmallModel)
-	if resolved.Credential == loop.CredentialNativeAuth {
-		if resolved.Target.Name == "" {
-			return loop.Resolved{}, acpdriver.Config{}, nil, fmt.Errorf("coderig: native ACP model unavailable")
-		}
-		modelAlias = resolved.Target.Name
-		smallModelAlias = resolved.NativeSmallModel
-		if harness == "claude-code" && smallModelAlias == "" {
-			smallModelAlias = resolved.Target.Name
-		}
+	modelAlias, smallModelAlias, err := acpChildModelAliases(f.config.Catalog, cfg.Name(), harness, resolved)
+	if err != nil {
+		_ = ownedGateway.Close(context.Background())
+		return loop.Resolved{}, acpdriver.Config{}, nil, err
 	}
 	return resolved, acpdriver.Config{
 		Harness:         acpdriver.Harness(harness),
@@ -225,6 +510,31 @@ func (f *acpChildFactory) configFor(ctx context.Context, cfg loop.BoundDefinitio
 		Posture:         posture,
 		WorkspaceRoot:   f.config.WorkspaceRoot,
 	}, ownedGateway, nil
+}
+
+func acpChildModelAliases(catalog ACPCompiledCatalog, role identity.AgentName, harness loop.AgentHarnessName, resolved loop.Resolved) (string, string, error) {
+	if resolved.Credential == loop.CredentialNativeAuth {
+		if resolved.Target.Name == "" {
+			return "", "", fmt.Errorf("coderig: native ACP model unavailable")
+		}
+		smallModelAlias := resolved.NativeSmallModel
+		if harness == "claude-code" && smallModelAlias == "" {
+			smallModelAlias = resolved.Target.Name
+		}
+		return resolved.Target.Name, smallModelAlias, nil
+	}
+	modelAlias := string(resolved.TargetAlias)
+	if modelAlias == "" {
+		return "", "", fmt.Errorf("coderig: ACP target alias unavailable")
+	}
+	if harness != "claude-code" || resolved.SmallModel == "" {
+		return modelAlias, "", nil
+	}
+	smallResolved, err := catalog.RuntimeCatalog.ResolveWithExplicitEffort(role, harness, resolved.SmallModel, model.EffortNone, false)
+	if err != nil || smallResolved.Credential != loop.CredentialGatewayBacked || smallResolved.TargetAlias == "" {
+		return "", "", fmt.Errorf("coderig: ACP small target alias unavailable")
+	}
+	return modelAlias, string(smallResolved.TargetAlias), nil
 }
 
 func (c ACPChildrenConfig) envForCredential(credential loop.CredentialMode) []string {

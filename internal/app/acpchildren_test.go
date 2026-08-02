@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/looprig/acp/launch"
 	"github.com/looprig/harness/pkg/foreign"
 	"github.com/looprig/harness/pkg/identity"
 	"github.com/looprig/harness/pkg/loop"
@@ -61,12 +62,15 @@ func TestNewACPCompositionPreflightsProfilesAndFiltersEnv(t *testing.T) {
 	}
 	compiled := testACPGatewayCatalog(t)
 	composition, err := NewACPComposition(ACPChildrenConfig{
-		Catalog:             compiled,
-		Executables:         map[loop.AgentHarnessName]string{"claude-code": executable, "codex": "relative/codex"},
-		WorkspaceRoot:       t.TempDir(),
-		Env:                 []string{"PATH=/bin", "SECRET=must-not-pass", "LANG=C"},
-		EnvAllowlist:        []string{"PATH", "LANG"},
-		executablePreflight: func(context.Context, ACPNativeAuthProbe) bool { return true },
+		Catalog:                 compiled,
+		Executables:             map[loop.AgentHarnessName]string{"claude-code": executable, "codex": "relative/codex"},
+		WorkspaceRoot:           t.TempDir(),
+		Env:                     []string{"PATH=/bin", "SECRET=must-not-pass", "LANG=C"},
+		EnvAllowlist:            []string{"PATH", "LANG"},
+		gatewayPreflightBinding: &launch.ProxyBinding{BaseURL: "http://127.0.0.1:1", Token: "test-token"},
+		executablePreflight: func(context.Context, ACPExecutableProbe) ACPPreflightResult {
+			return ACPPreflightResult{Ready: true, AdvertisedModels: []string{"fable-5", "sonnet-5", "opus-5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"}}
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -167,16 +171,186 @@ func TestNewACPCompositionBuildsNativeAuthProfileWithoutGateway(t *testing.T) {
 		t.Fatalf("native runtime = %+v, want ACP native-auth profile", resolved)
 	}
 	composition, err := NewACPComposition(ACPChildrenConfig{
-		Catalog:             compiled,
-		Executables:         map[loop.AgentHarnessName]string{"codex": executable},
-		WorkspaceRoot:       t.TempDir(),
-		executablePreflight: func(context.Context, ACPNativeAuthProbe) bool { return true },
+		Catalog:       compiled,
+		Executables:   map[loop.AgentHarnessName]string{"codex": executable},
+		WorkspaceRoot: t.TempDir(),
+		executablePreflight: func(context.Context, ACPExecutableProbe) ACPPreflightResult {
+			return ACPPreflightResult{Ready: true}
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := composition.Registry.Builder("acp/codex"); err != nil {
 		t.Fatalf("native ACP profile missing from registry: %v", err)
+	}
+}
+
+func TestNewACPCompositionGatewayPreflightFiltersUnsupportedClaudeAliases(t *testing.T) {
+	t.Parallel()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiled := testACPGatewayCatalog(t)
+	probes := make([]ACPExecutableProbe, 0, 2)
+	composition, err := NewACPComposition(ACPChildrenConfig{
+		Catalog:       compiled,
+		Executables:   map[loop.AgentHarnessName]string{"claude-code": executable, "codex": executable},
+		WorkspaceRoot: "/workspace/project",
+		Env: []string{
+			"HOME=/private/login",
+			"XDG_CONFIG_HOME=/private/login/.config",
+			"PATH=/usr/bin",
+			"LANG=C",
+			"SECRET=must-not-pass",
+		},
+		NativeEnvAllowlist:  acpNativeAuthEnvAllowlist,
+		GatewayEnvAllowlist: acpGatewayEnvAllowlist,
+		gatewayPreflightBinding: &launch.ProxyBinding{
+			BaseURL: "http://127.0.0.1:1",
+			Token:   "test-token",
+		},
+		executablePreflight: func(_ context.Context, probe ACPExecutableProbe) ACPPreflightResult {
+			probes = append(probes, probe)
+			if probe.Credential != loop.CredentialGatewayBacked || probe.SharedProxy == nil {
+				return ACPPreflightResult{}
+			}
+			if containsEnvKey(probe.Env, "HOME") || containsEnvKey(probe.Env, "XDG_CONFIG_HOME") || containsEnvKey(probe.Env, "SECRET") {
+				return ACPPreflightResult{}
+			}
+			if probe.Harness == "claude-code" {
+				return ACPPreflightResult{Ready: true, AdvertisedModels: []string{"sonnet-5"}}
+			}
+			return ACPPreflightResult{Ready: true}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(probes) == 0 {
+		t.Fatal("gateway preflight did not run")
+	}
+	claudeEntries := composition.Catalog.RuntimeCatalog.EntriesFor("worker")
+	var claude loop.RuntimeCatalogEntry
+	for _, entry := range claudeEntries {
+		if entry.AgentHarness == "claude-code" {
+			claude = entry
+			break
+		}
+	}
+	if claude.AgentHarness != "claude-code" {
+		t.Fatalf("Claude gateway entry missing: %#v", claudeEntries)
+	}
+	if len(claude.Models) != 1 || claude.Models[0].Alias != "sonnet-5" {
+		t.Fatalf("Claude advertised unsupported aliases: %#v", claude.Models)
+	}
+	if _, _, err := composition.Registry.Builder("acp/claude-code"); err != nil {
+		t.Fatalf("gateway-only Claude profile was removed: %v", err)
+	}
+}
+
+func TestNewACPCompositionNativePreflightKeepsNativeEnvironment(t *testing.T) {
+	t.Parallel()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiled, err := CompileACPCatalog(ACPCatalogInput{
+		SubagentTypes: []identity.AgentName{"worker"},
+		NativeAuth: []ACPNativeAuthSource{{
+			Harness: "codex", Alias: "native-model", Model: testModel(),
+			DefaultEffort: model.EffortNone, Efforts: []model.Effort{model.EffortNone},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got ACPExecutableProbe
+	composition, err := NewACPComposition(ACPChildrenConfig{
+		Catalog:       compiled,
+		Executables:   map[loop.AgentHarnessName]string{"codex": executable},
+		WorkspaceRoot: "/workspace/project",
+		Env: []string{
+			"HOME=/private/login",
+			"XDG_CONFIG_HOME=/private/login/.config",
+			"PATH=/usr/bin",
+			"LANG=C",
+			"SECRET=must-not-pass",
+		},
+		NativeEnvAllowlist: acpNativeAuthEnvAllowlist,
+		executablePreflight: func(_ context.Context, probe ACPExecutableProbe) ACPPreflightResult {
+			got = probe
+			if probe.Credential != loop.CredentialNativeAuth || probe.SharedProxy != nil {
+				return ACPPreflightResult{}
+			}
+			if !containsEnv(probe.Env, "HOME=/private/login") || !containsEnv(probe.Env, "XDG_CONFIG_HOME=/private/login/.config") {
+				return ACPPreflightResult{}
+			}
+			if containsEnvKey(probe.Env, "SECRET") {
+				return ACPPreflightResult{}
+			}
+			return ACPPreflightResult{Ready: true}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Harness != "codex" || got.Model == "" {
+		t.Fatalf("native preflight probe = %#v", got)
+	}
+	if _, _, err := composition.Registry.Builder("acp/codex"); err != nil {
+		t.Fatalf("native profile was removed: %v", err)
+	}
+}
+
+func TestACPChildModelAliasesUseConcreteGatewayTargetsAndNativeModels(t *testing.T) {
+	t.Parallel()
+	compiled := testACPGatewayCatalog(t)
+	claude, err := compiled.RuntimeCatalog.Resolve("worker", "claude-code", "sonnet-5", model.EffortHigh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mainAlias, smallAlias, err := acpChildModelAliases(compiled, "worker", "claude-code", claude)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mainAlias != "sonnet-5@high" || smallAlias != "sonnet-5" {
+		t.Fatalf("Claude child aliases = %q/%q, want sonnet-5@high/sonnet-5", mainAlias, smallAlias)
+	}
+
+	codex, err := compiled.RuntimeCatalog.Resolve("worker", "codex", "gpt-5.6-luna", model.EffortMax)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mainAlias, smallAlias, err = acpChildModelAliases(compiled, "worker", "codex", codex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mainAlias != "gpt-5.6-luna@max" || smallAlias != "" {
+		t.Fatalf("Codex child aliases = %q/%q, want gpt-5.6-luna@max/empty", mainAlias, smallAlias)
+	}
+
+	nativeCatalog, err := CompileACPCatalog(ACPCatalogInput{
+		SubagentTypes: []identity.AgentName{"worker"},
+		NativeAuth: []ACPNativeAuthSource{{
+			Harness: "codex", Alias: "native-model", Model: testModel(),
+			DefaultEffort: model.EffortNone, Efforts: []model.Effort{model.EffortNone},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	native, err := nativeCatalog.RuntimeCatalog.Resolve("worker", "codex", "native-model", model.EffortNone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mainAlias, smallAlias, err = acpChildModelAliases(nativeCatalog, "worker", "codex", native)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mainAlias != native.Target.Name || smallAlias != "" {
+		t.Fatalf("native child aliases = %q/%q, want %q/empty", mainAlias, smallAlias, native.Target.Name)
 	}
 }
 

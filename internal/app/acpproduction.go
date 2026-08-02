@@ -112,10 +112,16 @@ func newProductionACPCompositionWithDiscovery(ctx context.Context, discover acpN
 	// tests. Those tests replace native discovery but do not launch a real ACP
 	// executable; production uses newProductionACPComposition above, which
 	// keeps the real executable/session preflight enabled.
-	return newProductionACPCompositionWithDiscoveryAndPreflight(ctx, discover, func(context.Context, ACPNativeAuthProbe) bool { return true })
+	return newProductionACPCompositionWithDiscoveryAndPreflight(ctx, discover, func(_ context.Context, probe ACPExecutableProbe) ACPPreflightResult {
+		result := ACPPreflightResult{Ready: true}
+		if probe.Harness == "claude-code" {
+			result.AdvertisedModels = append([]string(nil), probe.Models...)
+		}
+		return result
+	})
 }
 
-func newProductionACPCompositionWithDiscoveryAndPreflight(ctx context.Context, discover acpNativeAuthDiscoverer, executablePreflight func(context.Context, ACPNativeAuthProbe) bool) (*ACPComposition, error) {
+func newProductionACPCompositionWithDiscoveryAndPreflight(ctx context.Context, discover acpNativeAuthDiscoverer, executablePreflight func(context.Context, ACPExecutableProbe) ACPPreflightResult) (*ACPComposition, error) {
 	clients := make(map[model.ProviderName]inference.Client)
 	anthropic, err := productionACPClient(
 		model.ProviderName("anthropic"), model.APIFormatAnthropic, "claude-sonnet-5", acpAnthropicAPIKeyEnv,
@@ -153,7 +159,10 @@ func newProductionACPCompositionWithDiscoveryAndPreflight(ctx context.Context, d
 			Env: filterACPEnv(os.Environ(), acpNativeDiscoveryEnvAllowlist),
 		})
 		if err != nil {
-			return nil, err
+			// Native login/discovery is optional. Keep gateway-backed rows
+			// usable when a native probe cannot run, and never carry a raw
+			// child/login error into composition.
+			continue
 		}
 		native = append(native, sources...)
 	}
@@ -178,43 +187,107 @@ func newProductionACPCompositionWithDiscoveryAndPreflight(ctx context.Context, d
 }
 
 // preflightProductionACPExecutable proves that the configured file is an ACP
-// adapter, not merely an executable bit. It deliberately uses no proxy: the
-// probe verifies initialize/session creation and never sends model traffic.
-// The caller supplies the production child environment allowlist, and all
-// process/protocol errors are collapsed to false at this boundary.
-func preflightProductionACPExecutable(ctx context.Context, probe ACPNativeAuthProbe) bool {
+// adapter, not merely an executable bit. It uses the same credential mode as
+// the eventual child: native-auth probes use NoProxy and native login env;
+// gateway probes borrow the caller's SharedProxy binding and gateway env.
+// Process/protocol failures collapse to a bounded false result here.
+func preflightProductionACPExecutable(ctx context.Context, probe ACPExecutableProbe) ACPPreflightResult {
 	if !preflightACPExecutable(probe.Executable) || !cleanACPWorkspaceRoot(probe.WorkspaceRoot) {
-		return false
+		return ACPPreflightResult{}
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, acpNativeProbeTimeout)
 	defer cancel()
 	var connector launch.HarnessAdapter
 	switch probe.Harness {
 	case "claude-code":
-		connector = launch.ClaudeCode(launch.ClaudeModels{Default: "sonnet-5", Small: "sonnet-5"})
+		model := probe.Model
+		if model == "" {
+			model = "sonnet-5"
+		}
+		small := model
+		if probe.Credential == loop.CredentialGatewayBacked {
+			small = "sonnet-5"
+		}
+		connector = launch.ClaudeCode(launch.ClaudeModels{Default: model, Small: small})
 	case "codex":
-		codex := launch.Codex("gpt-5.6-luna")
+		if probe.Model == "" {
+			return ACPPreflightResult{}
+		}
+		codex := launch.Codex(probe.Model)
 		codex.Posture = launch.CodexPosture{ApprovalPolicy: "never", SandboxMode: "read-only"}
 		connector = codex
 	default:
-		return false
+		return ACPPreflightResult{}
 	}
-	managed, err := launch.Dial(probeCtx, launch.Config{
-		NoProxy: true,
+	config := launch.Config{
 		Harness: connector,
-		Command: stdio.Command{Path: probe.Executable, Dir: probe.WorkspaceRoot, Env: filterACPEnv(probe.Env, acpNativeAuthEnvAllowlist)},
+		Command: stdio.Command{Path: probe.Executable, Dir: probe.WorkspaceRoot, Env: probe.Env},
 		Client:  client.Options{},
-	})
+	}
+	switch probe.Credential {
+	case loop.CredentialNativeAuth:
+		config.NoProxy = true
+		config.Command.Env = filterACPEnv(config.Command.Env, acpNativeAuthEnvAllowlist)
+	case loop.CredentialGatewayBacked:
+		if probe.SharedProxy == nil || probe.SharedProxy.BaseURL == "" || probe.SharedProxy.Token == "" {
+			return ACPPreflightResult{}
+		}
+		config.SharedProxy = probe.SharedProxy
+		config.Command.Env = filterACPEnv(config.Command.Env, acpGatewayEnvAllowlist)
+	default:
+		return ACPPreflightResult{}
+	}
+	managed, err := launch.Dial(probeCtx, config)
 	if err != nil {
-		return false
+		return ACPPreflightResult{}
 	}
 	defer func() {
 		closeCtx, closeCancel := context.WithTimeout(context.Background(), time.Second)
 		defer closeCancel()
 		_ = managed.Close(closeCtx)
 	}()
-	_, err = managed.Client().NewSession(probeCtx, client.NewSessionParams{Cwd: probe.WorkspaceRoot})
-	return err == nil && probeCtx.Err() == nil
+	session, err := managed.Client().NewSession(probeCtx, client.NewSessionParams{Cwd: probe.WorkspaceRoot})
+	if err != nil || probeCtx.Err() != nil {
+		return ACPPreflightResult{}
+	}
+	result := ACPPreflightResult{Ready: true}
+	if probe.Harness == "claude-code" && session != nil {
+		result.AdvertisedModels = advertisedACPModelValues(session.ConfigOptions())
+	}
+	return result
+}
+
+func advertisedACPModelValues(options []protocol.SessionConfigOption) []string {
+	seen := make(map[string]struct{})
+	values := make([]string, 0)
+	for _, option := range options {
+		if option.Category == nil || *option.Category != protocol.SessionConfigOptionCategoryModel || option.Select == nil {
+			continue
+		}
+		for _, item := range option.Select.Options.Ungrouped {
+			value := string(item.Value)
+			if !validACPNativeField(value) {
+				continue
+			}
+			if _, exists := seen[value]; !exists {
+				seen[value] = struct{}{}
+				values = append(values, value)
+			}
+		}
+		for _, group := range option.Select.Options.Grouped {
+			for _, item := range group.Options {
+				value := string(item.Value)
+				if !validACPNativeField(value) {
+					continue
+				}
+				if _, exists := seen[value]; !exists {
+					seen[value] = struct{}{}
+					values = append(values, value)
+				}
+			}
+		}
+	}
+	return values
 }
 
 // discoverProductionACPNativeAuth treats the bounded model projection only as
