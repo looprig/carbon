@@ -9,8 +9,12 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/looprig/coderig/internal/catalog/builder"
+	"github.com/looprig/coderig/internal/catalog/planner"
+	"github.com/looprig/coderig/internal/catalog/reviewer"
 	"github.com/looprig/core/content"
 	"github.com/looprig/core/uuid"
+	"github.com/looprig/foreignloops/driver"
 	"github.com/looprig/harness/pkg/command"
 	"github.com/looprig/harness/pkg/event"
 	"github.com/looprig/harness/pkg/foreign"
@@ -143,25 +147,7 @@ func testACPDelegationRig(t *testing.T, cfg Config) (*rig.Rig, *swarmStores, *de
 		return finalText("child done"), nil
 	}}
 	probe := &delegateProbe{}
-	primer, err := loop.Define(
-		loop.WithName(operatorPrimaryName),
-		loop.WithInference(client, testModel()),
-		loop.WithTools(probe.definition()),
-		loop.WithAccessGate(approveAllAccessGate{}),
-		loop.WithPolicyRevision("acp-task31"),
-		loop.WithDelegates(identity.AgentName("operator")),
-		loop.WithDelegation(loop.Delegation{Style: loop.DelegationManaged}),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	child, err := loop.Define(
-		loop.WithName(identity.AgentName("operator")),
-		loop.WithInference(client, testModel()),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	definitions := task31ProductionDefinitions(t, client, probe)
 	stores, err := openStores(memstore.New())
 	if err != nil {
 		t.Fatal(err)
@@ -171,8 +157,8 @@ func testACPDelegationRig(t *testing.T, cfg Config) (*rig.Rig, *swarmStores, *de
 		t.Fatal(err)
 	}
 	assembly, err := buildRigWithRegistrationAndACP(
-		[]loop.Definition{primer, child}, stores, t.TempDir(), cfg, false,
-		rig.DelegationLimits{Depth: operatorSpawnDepth, Quota: operatorSpawnQuota},
+		definitions, stores, t.TempDir(), cfg, false,
+		rig.DelegationLimits{Depth: delegationSpawnDepth, Quota: delegationSpawnQuota},
 		registration, permissionReviewRegistration{}, cfg.ACPChildren,
 	)
 	if err != nil {
@@ -181,10 +167,35 @@ func testACPDelegationRig(t *testing.T, cfg Config) (*rig.Rig, *swarmStores, *de
 	return assembly, stores, probe
 }
 
+func task31ProductionDefinitions(t *testing.T, client inference.Client, probe *delegateProbe) []loop.Definition {
+	t.Helper()
+	delegates := []identity.AgentName{planner.Name, builder.Name, reviewer.Name}
+	definitions := make([]loop.Definition, 0, len(delegates))
+	for _, name := range delegates {
+		options := []loop.Option{
+			loop.WithName(name),
+			loop.WithInference(client, testModel()),
+			loop.WithAccessGate(approveAllAccessGate{}),
+			loop.WithPolicyRevision("acp-task31:" + string(name)),
+			loop.WithDelegates(delegates...),
+			loop.WithDelegation(loop.Delegation{Style: loop.DelegationManaged}),
+		}
+		if name == builder.Name {
+			options = append(options, loop.WithTools(probe.definition()))
+		}
+		definition, err := loop.Define(options...)
+		if err != nil {
+			t.Fatalf("define %s: %v", name, err)
+		}
+		definitions = append(definitions, definition)
+	}
+	return definitions
+}
+
 func gatewayRuntimeCatalogForTask31(t *testing.T, clients map[model.ProviderName]inference.Client) loop.RuntimeCatalog {
 	t.Helper()
 	compiled, err := CompileACPCatalog(ACPCatalogInput{
-		SubagentTypes:  []identity.AgentName{"operator"},
+		SubagentTypes:  []identity.AgentName{planner.Name, builder.Name, reviewer.Name},
 		GatewayClients: clients,
 	})
 	if err != nil {
@@ -224,6 +235,30 @@ func replayACPEvents(t *testing.T, store *sessionstore.Store, sessionID uuid.UUI
 	}
 }
 
+func TestACPPostureUsesProductionRolesOnly(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		role    string
+		posture driver.Posture
+	}{
+		{role: string(planner.Name), posture: driver.PostureReadOnly},
+		{role: string(builder.Name), posture: driver.PostureWorkspaceWrite},
+		{role: string(reviewer.Name), posture: driver.PostureReadOnly},
+	}
+	for _, tt := range tests {
+		got, err := acpPostureFor(tt.role)
+		if err != nil {
+			t.Fatalf("acpPostureFor(%q): %v", tt.role, err)
+		}
+		if got != tt.posture {
+			t.Errorf("acpPostureFor(%q) = %q, want %q", tt.role, got, tt.posture)
+		}
+	}
+	if _, err := acpPostureFor("operator"); err == nil {
+		t.Fatal("acpPostureFor(\"operator\") succeeded; stale role must be rejected")
+	}
+}
+
 func TestACPCompositionRestoresCodexRuntimeThroughCurrentCatalog(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -239,8 +274,17 @@ func TestACPCompositionRestoresCodexRuntimeThroughCurrentCatalog(t *testing.T) {
 		t.Fatal(err)
 	}
 	rootID := live.ActiveLoop().ID()
+	var activeIsBuilder bool
+	for _, raw := range replayACPEvents(t, stores.session, live.SessionID()) {
+		if ev, ok := raw.(event.LoopStarted); ok && ev.LoopID == rootID && ev.AgentName == builder.Name {
+			activeIsBuilder = true
+		}
+	}
+	if !activeIsBuilder {
+		t.Fatal("active primer is not builder")
+	}
 	started, err := probe.captured().Execute(ctx, tool.DelegateRequest{
-		Operation: tool.DelegateStart, Agent: "operator", Message: "build", Wait: false, Runtime: codexMaxRuntime(),
+		Operation: tool.DelegateStart, Agent: string(reviewer.Name), Message: "review", Wait: false, Runtime: codexMaxRuntime(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -308,7 +352,7 @@ func TestACPCompositionMissingLunaTombstonesChildAndKeepsPrimer(t *testing.T) {
 	}
 	rootID := live.ActiveLoop().ID()
 	started, err := probe.captured().Execute(ctx, tool.DelegateRequest{
-		Operation: tool.DelegateStart, Agent: "operator", Message: "build", Wait: false, Runtime: codexMaxRuntime(),
+		Operation: tool.DelegateStart, Agent: string(reviewer.Name), Message: "review", Wait: false, Runtime: codexMaxRuntime(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -326,19 +370,12 @@ func TestACPCompositionMissingLunaTombstonesChildAndKeepsPrimer(t *testing.T) {
 	// Rebuild the same CodeRig topology with the current, deliberately incomplete catalog.
 	client := &managedScript{fn: func(context.Context, inference.Request) ([]content.Chunk, error) { return finalText("unused"), nil }}
 	probe2 := &delegateProbe{}
-	primer, err := loop.Define(loop.WithName(operatorPrimaryName), loop.WithInference(client, testModel()), loop.WithTools(probe2.definition()), loop.WithAccessGate(approveAllAccessGate{}), loop.WithPolicyRevision("acp-task31"), loop.WithDelegates(identity.AgentName("operator")), loop.WithDelegation(loop.Delegation{Style: loop.DelegationManaged}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	child, err := loop.Define(loop.WithName(identity.AgentName("operator")), loop.WithInference(client, testModel()))
-	if err != nil {
-		t.Fatal(err)
-	}
+	definitions := task31ProductionDefinitions(t, client, probe2)
 	registration, err := newConversationHustleRegistration()
 	if err != nil {
 		t.Fatal(err)
 	}
-	currentRig, err := buildRigWithRegistrationAndACP([]loop.Definition{primer, child}, stores, t.TempDir(), missingCfg, true, rig.DelegationLimits{Depth: operatorSpawnDepth, Quota: operatorSpawnQuota}, registration, permissionReviewRegistration{}, missingComposition)
+	currentRig, err := buildRigWithRegistrationAndACP(definitions, stores, t.TempDir(), missingCfg, true, rig.DelegationLimits{Depth: delegationSpawnDepth, Quota: delegationSpawnQuota}, registration, permissionReviewRegistration{}, missingComposition)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -379,24 +416,13 @@ func TestACPCompositionWithoutProfilesHidesSelectorsAndFailsStartBounded(t *test
 				}
 			}
 			step++
-			return toolCall("no-acp", `{"action":"start","description":"work","prompt":"do it","subagent_type":"operator","run_in_background":true}`), nil
+			return toolCall("no-acp", `{"action":"start","description":"work","prompt":"do it","subagent_type":"reviewer","run_in_background":true}`), nil
 		}
 		result = lastToolText(req)
 		return finalText("parent done"), nil
 	}
 	probe := &delegateProbe{}
-	primer, err := loop.Define(
-		loop.WithName(operatorPrimaryName), loop.WithInference(client, testModel()), loop.WithTools(probe.definition()),
-		loop.WithAccessGate(approveAllAccessGate{}), loop.WithPolicyRevision("acp-task31"),
-		loop.WithDelegates(identity.AgentName("operator")), loop.WithDelegation(loop.Delegation{Style: loop.DelegationManaged}),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	child, err := loop.Define(loop.WithName(identity.AgentName("operator")), loop.WithInference(client, testModel()))
-	if err != nil {
-		t.Fatal(err)
-	}
+	definitions := task31ProductionDefinitions(t, client, probe)
 	stores, err := openStores(memstore.New())
 	if err != nil {
 		t.Fatal(err)
@@ -407,8 +433,8 @@ func TestACPCompositionWithoutProfilesHidesSelectorsAndFailsStartBounded(t *test
 	}
 	emptyComposition := testACPEmptyComposition(t)
 	assembly, err := buildRigWithRegistrationAndACP(
-		[]loop.Definition{primer, child}, stores, t.TempDir(), Config{ACPChildren: emptyComposition}, false,
-		rig.DelegationLimits{Depth: operatorSpawnDepth, Quota: operatorSpawnQuota}, registration, permissionReviewRegistration{}, emptyComposition,
+		definitions, stores, t.TempDir(), Config{ACPChildren: emptyComposition}, false,
+		rig.DelegationLimits{Depth: delegationSpawnDepth, Quota: delegationSpawnQuota}, registration, permissionReviewRegistration{}, emptyComposition,
 	)
 	if err != nil {
 		t.Fatal(err)

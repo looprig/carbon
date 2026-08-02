@@ -100,7 +100,7 @@ func buildACPGatewayPlan(catalog ACPCompiledCatalog, resolved loop.Resolved) (ac
 		return acpGatewayPlan{}, err
 	}
 	routes := map[gateway.RouteKey]gateway.Target{{Ingress: ingress, Model: string(resolved.ModelAlias)}: mainTarget}
-	if resolved.AgentHarness == "claude-code" && resolved.SmallModel != "" && resolved.SmallModel != resolved.ModelAlias {
+	if resolved.AgentHarness == "claude-code" && resolved.SmallModel != "" {
 		smallResolved, err := catalog.RuntimeCatalog.ResolveWithExplicitEffort(
 			resolved.SubagentType, resolved.AgentHarness, resolved.SmallModel, model.EffortNone, false,
 		)
@@ -111,15 +111,25 @@ func buildACPGatewayPlan(catalog ACPCompiledCatalog, resolved loop.Resolved) (ac
 		if err != nil {
 			return acpGatewayPlan{}, err
 		}
+		if resolved.SmallModel == resolved.ModelAlias {
+			if resolved.Effort != smallResolved.Effort {
+				return acpGatewayPlan{}, fmt.Errorf("coderig: ACP main and small model route collision requires distinct efforts")
+			}
+			return finishACPGatewayPlan(resolved.AgentHarness, ingress, routes)
+		}
 		routes[gateway.RouteKey{Ingress: ingress, Model: string(resolved.SmallModel)}] = smallTarget
 	}
+	return finishACPGatewayPlan(resolved.AgentHarness, ingress, routes)
+}
+
+func finishACPGatewayPlan(harness loop.AgentHarnessName, ingress model.APIFormat, routes map[gateway.RouteKey]gateway.Target) (acpGatewayPlan, error) {
 	mux, err := gateway.NewMux(gateway.Mux{Routes: routes})
 	if err != nil {
 		return acpGatewayPlan{}, err
 	}
 	return acpGatewayPlan{
 		resolver: gateway.Strict(mux),
-		codecs:   map[model.APIFormat]codec.ServerCodec{ingress: acpGatewayCodec(resolved.AgentHarness)},
+		codecs:   map[model.APIFormat]codec.ServerCodec{ingress: acpGatewayCodec(harness)},
 		routes:   routes,
 	}, nil
 }

@@ -24,7 +24,6 @@ func TestACPPostureForRole(t *testing.T) {
 		{role: "planner", want: "read-only"},
 		{role: "reviewer", want: "read-only"},
 		{role: "builder", want: "workspace-write"},
-		{role: "operator", want: "workspace-write"},
 	} {
 		t.Run(test.role, func(t *testing.T) {
 			got, err := acpPostureFor(test.role)
@@ -33,8 +32,10 @@ func TestACPPostureForRole(t *testing.T) {
 			}
 		})
 	}
-	if _, err := acpPostureFor("unknown"); err == nil {
-		t.Fatal("unknown role posture succeeded")
+	for _, role := range []string{"operator", "unknown"} {
+		if _, err := acpPostureFor(role); err == nil {
+			t.Fatalf("stale/unknown role posture for %q succeeded", role)
+		}
 	}
 }
 

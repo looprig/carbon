@@ -1,6 +1,7 @@
 package app
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/looprig/harness/pkg/identity"
@@ -156,6 +157,9 @@ func TestCompileACPCatalogNativeRowsCoexistWithGatewayRows(t *testing.T) {
 			if option.Credential != loop.CredentialNativeAuth {
 				t.Fatalf("native option credential = %q, want %q", option.Credential, loop.CredentialNativeAuth)
 			}
+			if option.NativeSmallModel != "" {
+				t.Fatalf("Codex native small model = %q, want empty", option.NativeSmallModel)
+			}
 		}
 	}
 	if !nativeFound {
@@ -174,6 +178,49 @@ func TestCompileACPCatalogNativeRowsCoexistWithGatewayRows(t *testing.T) {
 	}
 	if _, err := compiled.ResolveGatewayTarget("native-codex-model", model.EffortNone); err == nil {
 		t.Fatal("native codex alias unexpectedly has gateway target")
+	}
+}
+
+func TestCompileACPCatalogCarriesNativeSmallModelIntoRuntimeIdentity(t *testing.T) {
+	compiled, err := CompileACPCatalog(ACPCatalogInput{
+		SubagentTypes: []identity.AgentName{"worker"},
+		NativeAuth: []ACPNativeAuthSource{{
+			Harness: "claude-code", Alias: "native-claude-model", Model: testModel(),
+			SmallModel: "claude-native-small", DefaultEffort: model.EffortNone,
+			Efforts: []model.Effort{model.EffortNone},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := compiled.RuntimeCatalog.Resolve("worker", "claude-code", "native-claude-model", model.EffortNone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.NativeSmallModel != "claude-native-small" {
+		t.Fatalf("NativeSmallModel = %q, want %q", resolved.NativeSmallModel, "claude-native-small")
+	}
+	if compiled.RuntimeCatalog.Digest() == "" {
+		t.Fatal("native catalog digest is empty")
+	}
+}
+
+func TestCompileACPCatalogRejectsNativeGatewayAliasCollision(t *testing.T) {
+	_, err := CompileACPCatalog(ACPCatalogInput{
+		SubagentTypes: []identity.AgentName{"worker"},
+		GatewayClients: map[model.ProviderName]inference.Client{
+			"openai": &fakeLLM{},
+		},
+		NativeAuth: []ACPNativeAuthSource{{
+			Harness: "codex", Alias: "gpt-5.6-luna", Model: testModel(),
+			DefaultEffort: model.EffortNone, Efforts: []model.Effort{model.EffortNone},
+		}},
+	})
+	if err == nil {
+		t.Fatal("CompileACPCatalog() accepted one alias with native-auth and gateway-backed credentials")
+	}
+	if !strings.Contains(err.Error(), "credential alias collision") {
+		t.Fatalf("CompileACPCatalog() error = %q, want credential alias collision", err)
 	}
 }
 

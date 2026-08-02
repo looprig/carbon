@@ -166,14 +166,13 @@ func (f *acpChildFactory) configFor(ctx context.Context, cfg loop.BoundDefinitio
 	modelAlias := string(resolved.ModelAlias)
 	smallModelAlias := string(resolved.SmallModel)
 	if resolved.Credential == loop.CredentialNativeAuth {
-		native, ok := f.config.Catalog.nativeModel(resolved.ModelAlias)
-		if !ok || native.harnessModel == "" {
+		if resolved.Target.Name == "" {
 			return loop.Resolved{}, acpdriver.Config{}, nil, fmt.Errorf("coderig: native ACP model unavailable")
 		}
-		modelAlias = native.harnessModel
-		smallModelAlias = native.smallModel
+		modelAlias = resolved.Target.Name
+		smallModelAlias = resolved.NativeSmallModel
 		if harness == "claude-code" && smallModelAlias == "" {
-			smallModelAlias = native.harnessModel
+			smallModelAlias = resolved.Target.Name
 		}
 	}
 	return resolved, acpdriver.Config{
@@ -237,7 +236,7 @@ func acpPostureFor(role string) (driver.Posture, error) {
 	switch role {
 	case "planner", "reviewer":
 		return driver.PostureReadOnly, nil
-	case "builder", "operator":
+	case "builder":
 		return driver.PostureWorkspaceWrite, nil
 	default:
 		return "", fmt.Errorf("coderig: unsupported ACP role posture")

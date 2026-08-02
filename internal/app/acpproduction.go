@@ -4,8 +4,14 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/looprig/acp/client"
+	"github.com/looprig/acp/launch"
+	"github.com/looprig/acp/protocol"
+	"github.com/looprig/acp/transport/stdio"
 	"github.com/looprig/coderig/internal/catalog/builder"
 	"github.com/looprig/coderig/internal/catalog/planner"
 	"github.com/looprig/coderig/internal/catalog/reviewer"
@@ -63,6 +69,19 @@ type ACPNativeAuthProbe struct {
 }
 
 type acpNativeAuthDiscoverer func(context.Context, ACPNativeAuthProbe) ([]ACPNativeAuthSource, error)
+
+type acpNativeModelMetadata struct {
+	alias string
+	name  string
+}
+
+type acpNativeSessionProbe func(context.Context, ACPNativeAuthProbe, []acpNativeModelMetadata) ([]acpNativeModelMetadata, error)
+
+const (
+	acpNativeProbeTimeout = 5 * time.Second
+	acpNativeModelLimit   = 32
+	acpNativeFieldLimit   = 128
+)
 
 // withProductionACPChildren installs the real process composition only at the
 // public production entry points. Test seams may continue to pass an explicit
@@ -149,12 +168,17 @@ func newProductionACPCompositionWithDiscovery(ctx context.Context, discover acpN
 	})
 }
 
-// discoverProductionACPNativeAuth consumes a bounded, secret-free projection
-// from the harness connector. The value is a comma-separated alias=model list
-// supplied by the connector's discovery boundary; empty output means that the
-// harness has no usable native-auth catalogue. No login token is read or
-// forwarded, and missing native rows never fall back to gateway rows.
-func discoverProductionACPNativeAuth(_ context.Context, probe ACPNativeAuthProbe) ([]ACPNativeAuthSource, error) {
+// discoverProductionACPNativeAuth treats the bounded model projection only as
+// candidates. It advertises them only after the configured executable starts,
+// initializes as ACP, and creates a native-auth session. Every process/login/
+// protocol failure is intentionally collapsed to an empty result: raw child
+// errors can contain login paths or credentials and must not cross into the
+// composition or model-facing surface.
+func discoverProductionACPNativeAuth(ctx context.Context, probe ACPNativeAuthProbe) ([]ACPNativeAuthSource, error) {
+	return discoverProductionACPNativeAuthWithSessionProbe(ctx, probe, probeProductionACPNativeSession)
+}
+
+func discoverProductionACPNativeAuthWithSessionProbe(ctx context.Context, probe ACPNativeAuthProbe, sessionProbe acpNativeSessionProbe) ([]ACPNativeAuthSource, error) {
 	envName := acpCodexNativeModelsEnv
 	provider := model.ProviderName("openai")
 	format := model.APIFormatOpenAIResponses
@@ -167,30 +191,154 @@ func discoverProductionACPNativeAuth(_ context.Context, probe ACPNativeAuthProbe
 	if strings.TrimSpace(value) == "" {
 		return nil, nil
 	}
-	result := make([]ACPNativeAuthSource, 0)
+	candidates, ok := parseACPNativeModelMetadata(value)
+	if !ok || sessionProbe == nil {
+		return nil, nil
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, acpNativeProbeTimeout)
+	defer cancel()
+	verified, err := sessionProbe(probeCtx, probe, candidates)
+	if err != nil || probeCtx.Err() != nil || len(verified) == 0 || len(verified) > acpNativeModelLimit {
+		return nil, nil
+	}
+	allowed := make(map[acpNativeModelMetadata]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		allowed[candidate] = struct{}{}
+	}
+	result := make([]ACPNativeAuthSource, 0, len(verified))
 	var claudeSmall string
-	for _, raw := range strings.Split(value, ",") {
-		alias, name, ok := strings.Cut(strings.TrimSpace(raw), "=")
-		if !ok || strings.TrimSpace(alias) == "" || strings.TrimSpace(name) == "" {
-			return nil, fmt.Errorf("coderig: invalid native ACP model discovery")
+	seen := make(map[acpNativeModelMetadata]struct{}, len(verified))
+	for _, metadata := range verified {
+		if _, ok := allowed[metadata]; !ok || !validACPNativeMetadata(metadata) {
+			return nil, nil
 		}
-		alias, name = strings.TrimSpace(alias), strings.TrimSpace(name)
+		if _, duplicate := seen[metadata]; duplicate {
+			continue
+		}
+		seen[metadata] = struct{}{}
 		source := ACPNativeAuthSource{
 			Harness:       probe.Harness,
-			Alias:         loop.ModelAlias(alias),
-			Model:         model.CustomModel(provider, format, "", name, model.WithTools(), model.WithThinking()),
+			Alias:         loop.ModelAlias(metadata.alias),
+			Model:         model.CustomModel(provider, format, "", metadata.name, model.WithTools(), model.WithThinking()),
 			DefaultEffort: model.EffortNone,
 			Efforts:       []model.Effort{model.EffortNone},
 		}
 		if probe.Harness == "claude-code" {
 			if claudeSmall == "" {
-				claudeSmall = name
+				claudeSmall = metadata.name
 			}
 			source.SmallModel = claudeSmall
 		}
 		result = append(result, source)
 	}
 	return result, nil
+}
+
+func parseACPNativeModelMetadata(value string) ([]acpNativeModelMetadata, bool) {
+	parts := strings.Split(value, ",")
+	if len(parts) == 0 || len(parts) > acpNativeModelLimit {
+		return nil, false
+	}
+	result := make([]acpNativeModelMetadata, 0, len(parts))
+	for _, raw := range parts {
+		alias, name, ok := strings.Cut(strings.TrimSpace(raw), "=")
+		metadata := acpNativeModelMetadata{alias: strings.TrimSpace(alias), name: strings.TrimSpace(name)}
+		if !ok || !validACPNativeMetadata(metadata) {
+			return nil, false
+		}
+		result = append(result, metadata)
+	}
+	return result, true
+}
+
+func validACPNativeMetadata(metadata acpNativeModelMetadata) bool {
+	return validACPNativeField(metadata.alias) && validACPNativeField(metadata.name)
+}
+
+func validACPNativeField(value string) bool {
+	if value == "" || len(value) > acpNativeFieldLimit || strings.ContainsAny(value, "\x00\r\n\t =") {
+		return false
+	}
+	for _, r := range value {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || strings.ContainsRune("._:/-", r)) {
+			return false
+		}
+	}
+	return true
+}
+
+func cleanACPWorkspaceRoot(root string) bool {
+	return root != "" && filepath.IsAbs(root) && filepath.Clean(root) == root
+}
+
+func probeProductionACPNativeSession(ctx context.Context, probe ACPNativeAuthProbe, candidates []acpNativeModelMetadata) ([]acpNativeModelMetadata, error) {
+	if len(candidates) == 0 || !preflightACPExecutable(probe.Executable) || !cleanACPWorkspaceRoot(probe.WorkspaceRoot) {
+		return nil, fmt.Errorf("native ACP session probe has no candidates")
+	}
+	var connector launch.HarnessAdapter
+	switch probe.Harness {
+	case "claude-code":
+		connector = launch.ClaudeCode(launch.ClaudeModels{Default: candidates[0].name, Small: candidates[0].name})
+	case "codex":
+		codex := launch.Codex(candidates[0].name)
+		codex.Posture = launch.CodexPosture{ApprovalPolicy: "never", SandboxMode: "read-only"}
+		connector = codex
+	default:
+		return nil, fmt.Errorf("unsupported native ACP harness")
+	}
+	managed, err := launch.Dial(ctx, launch.Config{
+		NoProxy: true,
+		Harness: connector,
+		Command: stdio.Command{Path: probe.Executable, Env: filterACPEnv(probe.Env, acpNativeAuthEnvAllowlist)},
+		Client:  client.Options{},
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = managed.Close(closeCtx)
+	}()
+	session, err := managed.Client().NewSession(ctx, client.NewSessionParams{Cwd: probe.WorkspaceRoot})
+	if err != nil {
+		return nil, err
+	}
+	if probe.Harness == "codex" {
+		// Codex model selection is process-scoped rather than a stable ACP
+		// config option. Successful native session creation validates the
+		// bounded candidates supplied to that process.
+		return append([]acpNativeModelMetadata(nil), candidates...), nil
+	}
+	return verifiedClaudeNativeModels(session.ConfigOptions(), candidates), nil
+}
+
+func verifiedClaudeNativeModels(options []protocol.SessionConfigOption, candidates []acpNativeModelMetadata) []acpNativeModelMetadata {
+	advertised := make(map[string]struct{})
+	for _, option := range options {
+		if option.Category == nil || *option.Category != protocol.SessionConfigOptionCategoryModel || option.Select == nil {
+			continue
+		}
+		for _, item := range option.Select.Options.Ungrouped {
+			if validACPNativeField(string(item.Value)) {
+				advertised[string(item.Value)] = struct{}{}
+			}
+		}
+		for _, group := range option.Select.Options.Grouped {
+			for _, item := range group.Options {
+				if validACPNativeField(string(item.Value)) {
+					advertised[string(item.Value)] = struct{}{}
+				}
+			}
+		}
+	}
+	verified := make([]acpNativeModelMetadata, 0, len(candidates))
+	for _, candidate := range candidates {
+		if _, ok := advertised[candidate.name]; ok {
+			verified = append(verified, candidate)
+		}
+	}
+	return verified
 }
 
 func lookupEnv(env []string, wanted string) string {

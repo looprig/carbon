@@ -69,6 +69,51 @@ func TestBuildACPGatewayPlanUsesStrictFixedRoutes(t *testing.T) {
 	}
 }
 
+func TestBuildACPGatewayPlanRejectsClaudeMainSmallRouteEffortCollision(t *testing.T) {
+	t.Parallel()
+	compiled := testACPGatewayCatalog(t)
+
+	for _, effort := range []model.Effort{model.EffortHigh, model.EffortMax} {
+		effort := effort
+		t.Run(string(effort), func(t *testing.T) {
+			t.Parallel()
+			selected, err := compiled.RuntimeCatalog.Resolve("worker", "claude-code", "sonnet-5", effort)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := buildACPGatewayPlan(compiled, selected); err == nil {
+				t.Fatalf("buildACPGatewayPlan() accepted one Claude route for %s main effort and default small effort", effort)
+			} else if !strings.Contains(err.Error(), "main and small model route collision") {
+				t.Fatalf("buildACPGatewayPlan() error = %q, want route collision", err)
+			}
+		})
+	}
+}
+
+func TestBuildACPGatewayPlanAllowsClaudeMainSmallRouteAtDefaultEffort(t *testing.T) {
+	t.Parallel()
+	compiled := testACPGatewayCatalog(t)
+
+	selected, err := compiled.RuntimeCatalog.Resolve("worker", "claude-code", "sonnet-5", model.EffortMedium)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := buildACPGatewayPlan(compiled, selected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.routes) != 1 {
+		t.Fatalf("Claude routes = %d, want one shared default-effort route", len(plan.routes))
+	}
+	target, err := plan.resolver.Resolve(context.Background(), model.APIFormatAnthropic, "sonnet-5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.Model.Sampling.Effort != model.EffortMedium || !target.AuthoritativeEffort {
+		t.Fatalf("shared Claude target = %#v, want medium/authoritative", target)
+	}
+}
+
 func TestNewACPGatewayNativeAuthHasNoBinding(t *testing.T) {
 	t.Parallel()
 	compiled, err := CompileACPCatalog(ACPCatalogInput{

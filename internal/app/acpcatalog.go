@@ -54,12 +54,6 @@ type ACPCompiledCatalog struct {
 	gatewayTargets map[loop.ModelAlias]ACPGatewaySource
 	profiles       map[loop.RuntimeProfileName]struct{}
 	entries        []loop.RuntimeCatalogEntry
-	nativeModels   map[loop.ModelAlias]acpNativeModel
-}
-
-type acpNativeModel struct {
-	harnessModel string
-	smallModel   string
 }
 
 // CompileACPCatalog compiles the frozen gateway-backed ACP table together with
@@ -75,20 +69,15 @@ func CompileACPCatalog(input ACPCatalogInput) (ACPCompiledCatalog, error) {
 
 	nativeByHarness := make(map[loop.AgentHarnessName][]loop.RuntimeModelOption)
 	nativeSourcesByHarness := make(map[loop.AgentHarnessName][]ACPNativeAuthSource)
-	nativeModels := make(map[loop.ModelAlias]acpNativeModel)
 	for _, source := range input.NativeAuth {
 		if err := validateACPNativeSource(source); err != nil {
 			return ACPCompiledCatalog{}, err
 		}
 		if _, exists := gatewayRows[source.Alias]; exists {
-			// An alias is one model-facing identity. If the product also has a
-			// gateway target with that alias, keep the gateway row authoritative
-			// and require native discovery to expose a distinct alias.
-			continue
+			return ACPCompiledCatalog{}, fmt.Errorf("coderig: ACP credential alias collision: %q", source.Alias)
 		}
 		nativeByHarness[source.Harness] = append(nativeByHarness[source.Harness], runtimeOptionFromNative(source))
 		nativeSourcesByHarness[source.Harness] = append(nativeSourcesByHarness[source.Harness], source)
-		nativeModels[source.Alias] = acpNativeModel{harnessModel: source.Model.Name, smallModel: source.SmallModel}
 	}
 
 	entries := make([]loop.RuntimeCatalogEntry, 0, len(roles)*2)
@@ -125,7 +114,7 @@ func CompileACPCatalog(input ACPCatalogInput) (ACPCompiledCatalog, error) {
 	for _, entry := range entries {
 		profiles[entry.Profile] = struct{}{}
 	}
-	return ACPCompiledCatalog{RuntimeCatalog: catalog, gatewayTargets: gatewayRows, profiles: profiles, entries: cloneACPEntries(entries), nativeModels: cloneACPNativeModels(nativeModels)}, nil
+	return ACPCompiledCatalog{RuntimeCatalog: catalog, gatewayTargets: gatewayRows, profiles: profiles, entries: cloneACPEntries(entries)}, nil
 }
 
 func mustEmptyRuntimeCatalog() loop.RuntimeCatalog {
@@ -305,7 +294,14 @@ func markACPDefaults(entries []loop.RuntimeCatalogEntry) {
 }
 
 func runtimeOptionFromNative(source ACPNativeAuthSource) loop.RuntimeModelOption {
-	return loop.RuntimeModelOption{Alias: source.Alias, Credential: loop.CredentialNativeAuth, Target: source.Model.Clone(), DefaultEffort: source.DefaultEffort, Efforts: append([]model.Effort(nil), source.Efforts...)}
+	return loop.RuntimeModelOption{
+		Alias:            source.Alias,
+		Credential:       loop.CredentialNativeAuth,
+		NativeSmallModel: source.SmallModel,
+		Target:           source.Model.Clone(),
+		DefaultEffort:    source.DefaultEffort,
+		Efforts:          append([]model.Effort(nil), source.Efforts...),
+	}
 }
 
 func validateACPNativeSource(source ACPNativeAuthSource) error {
@@ -418,24 +414,7 @@ func (c ACPCompiledCatalog) filterProfiles(allowed map[loop.RuntimeProfileName]s
 		gatewayTargets: c.gatewayTargets,
 		profiles:       profiles,
 		entries:        cloneACPEntries(entries),
-		nativeModels:   cloneACPNativeModels(c.nativeModels),
 	}, nil
-}
-
-func cloneACPNativeModels(models map[loop.ModelAlias]acpNativeModel) map[loop.ModelAlias]acpNativeModel {
-	if len(models) == 0 {
-		return nil
-	}
-	result := make(map[loop.ModelAlias]acpNativeModel, len(models))
-	for alias, native := range models {
-		result[alias] = native
-	}
-	return result
-}
-
-func (c ACPCompiledCatalog) nativeModel(alias loop.ModelAlias) (acpNativeModel, bool) {
-	native, ok := c.nativeModels[alias]
-	return native, ok
 }
 
 func cloneACPEntries(entries []loop.RuntimeCatalogEntry) []loop.RuntimeCatalogEntry {
