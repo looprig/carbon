@@ -223,6 +223,35 @@ func replayACPEvents(t *testing.T, store *sessionstore.Store, sessionID uuid.UUI
 	}
 }
 
+func task31PrimerRootIDs(t *testing.T, store *sessionstore.Store, sessionID uuid.UUID) map[identity.AgentName]uuid.UUID {
+	t.Helper()
+	rootIDs := make(map[identity.AgentName]uuid.UUID)
+	for _, raw := range replayACPEvents(t, store, sessionID) {
+		if ev, ok := raw.(event.LoopStarted); ok && ev.Cause.Coordinates.LoopID.IsZero() {
+			rootIDs[ev.AgentName] = ev.LoopID
+		}
+	}
+	wantPrimers := []identity.AgentName{planner.Name, builder.Name, reviewer.Name}
+	if len(rootIDs) != len(wantPrimers) {
+		t.Fatalf("durable root loops = %v, want planner, builder, and reviewer", rootIDs)
+	}
+	for _, name := range wantPrimers {
+		if _, ok := rootIDs[name]; !ok {
+			t.Fatalf("durable root loop %q is missing", name)
+		}
+	}
+	return rootIDs
+}
+
+func assertTask31PrimersPresent(t *testing.T, rootIDs map[identity.AgentName]uuid.UUID, lookup func(uuid.UUID) (loop.Handle, bool)) {
+	t.Helper()
+	for _, name := range []identity.AgentName{planner.Name, builder.Name, reviewer.Name} {
+		if _, ok := lookup(rootIDs[name]); !ok {
+			t.Fatalf("primer %q is missing", name)
+		}
+	}
+}
+
 func TestACPPostureUsesProductionRolesOnly(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -261,15 +290,11 @@ func TestACPCompositionRestoresCodexRuntimeThroughCurrentCatalog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rootID := live.ActiveLoop().ID()
-	var activeIsBuilder bool
-	for _, raw := range replayACPEvents(t, stores.session, live.SessionID()) {
-		if ev, ok := raw.(event.LoopStarted); ok && ev.LoopID == rootID && ev.AgentName == builder.Name {
-			activeIsBuilder = true
-		}
-	}
-	if !activeIsBuilder {
-		t.Fatal("active primer is not builder")
+	rootIDs := task31PrimerRootIDs(t, stores.session, live.SessionID())
+	assertTask31PrimersPresent(t, rootIDs, live.Loop)
+	rootID := rootIDs[builder.Name]
+	if live.ActiveLoop().ID() != rootID {
+		t.Fatalf("active primer = %v, want builder root %v", live.ActiveLoop().ID(), rootID)
 	}
 	started, err := probe.captured().Execute(ctx, tool.DelegateRequest{
 		Operation: tool.DelegateStart, Agent: string(reviewer.Name), Message: "review", Wait: false, Runtime: codexMaxRuntime(),
@@ -320,8 +345,9 @@ func TestACPCompositionRestoresCodexRuntimeThroughCurrentCatalog(t *testing.T) {
 	if seed.AgentSessionID != "acp-live-session" || seed.ForeignSID != "acp-live-session" {
 		t.Fatalf("restore seed = %+v, want durable ACP session id", seed)
 	}
-	if _, ok := restored.Loop(rootID); !ok {
-		t.Fatal("restored primer is missing")
+	assertTask31PrimersPresent(t, rootIDs, restored.Loop)
+	if restored.ActiveLoop().ID() != rootID {
+		t.Fatalf("restored active primer = %v, want builder root %v", restored.ActiveLoop().ID(), rootID)
 	}
 }
 
@@ -338,7 +364,12 @@ func TestACPCompositionMissingLunaTombstonesChildAndKeepsPrimer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rootID := live.ActiveLoop().ID()
+	rootIDs := task31PrimerRootIDs(t, stores.session, live.SessionID())
+	assertTask31PrimersPresent(t, rootIDs, live.Loop)
+	rootID := rootIDs[builder.Name]
+	if live.ActiveLoop().ID() != rootID {
+		t.Fatalf("active primer = %v, want builder root %v", live.ActiveLoop().ID(), rootID)
+	}
 	started, err := probe.captured().Execute(ctx, tool.DelegateRequest{
 		Operation: tool.DelegateStart, Agent: string(reviewer.Name), Message: "review", Wait: false, Runtime: codexMaxRuntime(),
 	})
@@ -372,8 +403,9 @@ func TestACPCompositionMissingLunaTombstonesChildAndKeepsPrimer(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = restored.Shutdown(ctx) }()
-	if _, ok := restored.Loop(rootID); !ok {
-		t.Fatal("primer did not restore")
+	assertTask31PrimersPresent(t, rootIDs, restored.Loop)
+	if restored.ActiveLoop().ID() != rootID {
+		t.Fatalf("restored active primer = %v, want builder root %v", restored.ActiveLoop().ID(), rootID)
 	}
 	if _, ok := restored.Loop(childID); !ok {
 		t.Fatal("missing-runtime child was not retained as a tombstone")
