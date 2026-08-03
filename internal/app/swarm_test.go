@@ -22,6 +22,8 @@ import (
 	"github.com/looprig/harness/pkg/tool"
 	"github.com/looprig/inference/contextcount"
 	model "github.com/looprig/inference/model"
+	"github.com/looprig/storage/memstore"
+	"github.com/looprig/tui"
 )
 
 // swarm_test.go proves the three-role managed-delegation topology: planner,
@@ -263,6 +265,96 @@ func TestNewWithClientBuildsBuilderAsActivePrimer(t *testing.T) {
 	}
 	if builderRoot.Description != builder.Description {
 		t.Errorf("builder root Description = %q, want %q", builderRoot.Description, builder.Description)
+	}
+}
+
+func TestProductionModelsLoadExactlyOnceAndConfigureCurrentPrimer(t *testing.T) {
+	ctx := context.Background()
+	configured := testModel()
+	configured.Name = "configured-primer-only"
+	loadCalls := 0
+	storeCalls := 0
+	agent, err := newWithProductionModelsLoader(ctx, Config{}, func() (productionModels, error) {
+		loadCalls++
+		return productionModels{
+			PrimerClient: &fakeLLM{}, PrimerModel: configured, PrimerAlias: "configured-primer-alias", PrimerEfforts: []model.Effort{model.EffortHigh}, ConfigRev: "model-config-rev",
+		}, nil
+	}, func() (*swarmStores, error) {
+		storeCalls++
+		return openStores(memstore.New())
+	})
+	if err != nil {
+		t.Fatalf("newWithProductionModelsLoader() error = %v", err)
+	}
+	t.Cleanup(func() { _ = agent.Close(ctx) })
+	if loadCalls != 1 {
+		t.Fatalf("production model loads = %d, want exactly 1", loadCalls)
+	}
+	if storeCalls != 1 {
+		t.Fatalf("store opens = %d, want 1", storeCalls)
+	}
+	options, err := agent.LoopRuntimeOptions(ctx, agent.ActiveLoopID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(options.Models) != 1 || options.Models[0].ID != "configured-primer-alias" || options.Models[0].Label != "configured-primer-alias" || options.Models[0].Description != "" {
+		t.Fatalf("runtime models = %#v, want only configured primer alias", options.Models)
+	}
+	if len(options.Efforts) != 1 || options.Efforts[0].ID != tui.EffortID(model.EffortHigh) {
+		t.Fatalf("runtime efforts = %#v, want only configured high effort", options.Efforts)
+	}
+	for _, mode := range []tui.ModeID{"quick", "deep"} {
+		if err := agent.SetMode(ctx, agent.ActiveLoopID(), mode); err == nil {
+			t.Fatalf("SetMode(%q) succeeded without an admitted effort", mode)
+		}
+	}
+	if err := agent.SetEffort(ctx, agent.ActiveLoopID(), tui.EffortID(model.EffortLow)); err == nil {
+		t.Fatal("SetEffort(low) succeeded for high-only configured primer")
+	}
+}
+
+func TestProductionModelsMissingPrimerFailsBeforeStoreOpen(t *testing.T) {
+	loadCalls := 0
+	storeCalls := 0
+	agent, err := newWithProductionModelsLoader(context.Background(), Config{}, func() (productionModels, error) {
+		loadCalls++
+		return productionModels{}, nil
+	}, func() (*swarmStores, error) {
+		storeCalls++
+		return openStores(memstore.New())
+	})
+	if agent != nil {
+		t.Fatalf("agent = %T, want nil", agent)
+	}
+	var capabilityErr *ModelConfigCapabilityError
+	if !errors.As(err, &capabilityErr) {
+		t.Fatalf("error = %v, want *ModelConfigCapabilityError", err)
+	}
+	if loadCalls != 1 {
+		t.Fatalf("production model loads = %d, want exactly 1", loadCalls)
+	}
+	if storeCalls != 0 {
+		t.Fatalf("store opens = %d, want 0", storeCalls)
+	}
+}
+
+func TestProductionModelsLoaderFailureHappensBeforeStoreOpen(t *testing.T) {
+	wantErr := modelConfigFailure("decode", errors.New("fixture invalid configuration"))
+	storeCalls := 0
+	agent, err := newWithProductionModelsLoader(context.Background(), Config{}, func() (productionModels, error) {
+		return productionModels{}, wantErr
+	}, func() (*swarmStores, error) {
+		storeCalls++
+		return openStores(memstore.New())
+	})
+	if agent != nil {
+		t.Fatalf("agent = %T, want nil", agent)
+	}
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("error = %v, want loader error %v", err, wantErr)
+	}
+	if storeCalls != 0 {
+		t.Fatalf("store opens = %d, want 0", storeCalls)
 	}
 }
 

@@ -2,9 +2,9 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Replace CodeRig's frozen production model rows and fixed credential environment variables with one securely loaded machine-wide `~/.looprig/models.json`, while preserving the existing three-agent roster, permission-based native sandbox, ACP gateway isolation, durability, and TUI behavior.
+**Goal:** Replace CodeRig's frozen production model rows and fixed credential environment variables with one securely loaded machine-wide `~/.looprig/models.json`, while preserving the existing three-agent roster, permission-based native sandbox, source-aware ACP gateway/native isolation, durability, and TUI behavior.
 
-**Architecture:** CodeRig reads and validates the global file once at the process-composition boundary, converts it into secret-free model descriptors plus credential-bound provider clients, and compiles the existing immutable primer and ACP runtime dependencies. Raw API keys never leave the loader/compiler. Native permission files remain per-workspace under `~/.looprig/workspaces/<hash>/permissions.json`; ACP children remain non-interactive and posture-only.
+**Architecture:** CodeRig reads and validates the global file once at the process-composition boundary, converts it into secret-free model descriptors plus credential-bound provider clients, and compiles the existing immutable primer and source-aware ACP runtime dependencies. Raw API keys never leave the loader/compiler. Native permission files remain per-workspace under `~/.looprig/workspaces/<hash>/permissions.json`; gateway and native ACP children remain non-interactive and posture-only, with separate proxy and harness-login environments.
 
 **Tech Stack:** Go 1.26.x, standard-library `encoding/json`, `io`, and `os`, root `go.work`, CodeRig `internal/app`, Inference model/gateway, LLM provider validation/client factory, Harness runtime catalogue, ACP launch/driver, Tools permission store, Sandbox profiles.
 
@@ -18,13 +18,14 @@ already implemented and must not be rebuilt:
 - the `planner`, `builder`, and `reviewer` roster;
 - builder as the active primer;
 - managed Subagent runtime selection;
-- ACP Claude Code/Codex child builders and fixed gateways;
+- ACP Claude Code/Codex child builders, gateway routes, and native-profile seams;
 - native sandbox profiles, gates, executor sets, permission persistence, and
   planner/reviewer read-only restrictions;
 - TUI footer switching and runtime-control surfaces;
 - child restore/tombstone behavior.
 
-This plan does not implement OAuth, harness subscription-login discovery,
+This plan does not implement OAuth, harness subscription-login discovery or
+login configuration,
 Bedrock SigV4, Phala attestation policy, interactive ACP approvals, live config
 reload, a config-writing CLI, or multiple switchable native primer clients.
 
@@ -34,8 +35,11 @@ The first implementation supports exactly:
 - no-auth providers constructible through `llm/auto.New`, such as LM Studio;
 - one `primer_default` shared by all three native primers;
 - any number of delegate-capable gateway models;
+- optional enabled native ACP profiles, with omitted models treated as
+  harness-managed and explicit non-empty aliases preflighted independently;
 - configured role-specific delegated defaults;
-- one configured Claude Code small-model alias.
+- one configured Claude Code small-model alias for gateway-backed Claude
+  profiles.
 
 If a requested provider needs a credential type other than API key or none,
 return a typed configuration error. Do not invent a fallback or silently omit
@@ -550,15 +554,20 @@ Continue to read only ACP executable path configuration from its existing
 process boundary. Provider API keys remain bound inside clients and must not be
 added to either native or gateway ACP child environment allowlists.
 
-**Step 4: Remove production native-auth discovery**
+**Step 4: Wire configured native ACP profiles**
 
-Remove `CLAUDE_CODE_ACP_NATIVE_MODELS`, `CODEX_ACP_NATIVE_MODELS`, and production
-login probing from this iteration. Do not remove reusable ACP driver support
-owned by another module. Keep CodeRig focused on configured API-key/no-auth
-gateway models.
+Remove `CLAUDE_CODE_ACP_NATIVE_MODELS` and `CODEX_ACP_NATIVE_MODELS` as model
+configuration sources. Instead, compile the optional `native_acp` profiles from
+`models.json`: an absent or disabled profile contributes no native route, an
+enabled profile with omitted `models` is harness-managed, and an explicit
+non-empty list is an alias allowlist. Native defaults set `source: "native"` and
+must name an explicit alias when the profile is constrained.
 
-Update tests so absence of OAuth/native login does not affect configured gateway
-models.
+Preflight gateway routes through the loopback proxy and native routes through
+`DialNative` with no proxy. Keep native login/process variables in the native
+allowlist only; provider keys and model-selection environment variables never
+enter either child environment. Update tests so one failed native alias does
+not remove other ready aliases.
 
 **Step 5: Fold the secret-free digest into durability**
 

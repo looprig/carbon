@@ -218,7 +218,7 @@ func TestRigRestoreDelegateOwnership(t *testing.T) {
 	var initialSyncResult string
 	client := &managedScript{}
 	client.fn = func(_ context.Context, req inference.Request) ([]content.Chunk, error) {
-		if !strings.Contains(req.System, `<role name="`+string(planner.Name)+`">`) {
+		if !strings.Contains(req.System, `<role name="`+string(builder.Name)+`">`) {
 			if phase == "initial" {
 				return finalText("initial child"), nil
 			}
@@ -290,7 +290,7 @@ func TestRigRestoreDelegateOwnership(t *testing.T) {
 	if got := runManagedTurn(t, a2, "continue"); got != "ownership checked" {
 		t.Fatalf("final = %q", got)
 	}
-	if !strings.Contains(unrelatedResult, "is not owned by this loop") {
+	if unrelatedResult != "error: subagent request failed" {
 		t.Fatalf("unrelated delegate result = %q", unrelatedResult)
 	}
 }
@@ -480,6 +480,9 @@ func TestManagedDelegateDeclaredModeFSStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := f1.List(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	assembly1, err := buildRig(definitions(t), f1.stores, root, Config{}, false)
 	if err != nil {
 		t.Fatal(err)
@@ -526,6 +529,9 @@ func TestManagedDelegateDeclaredModeFSStore(t *testing.T) {
 	phase = "restored"
 	f2, err := NewSessionStoreFactory(dataDir)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f2.List(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = f2.Close() })
@@ -755,6 +761,9 @@ func TestRigRestoreSiblingOwnershipScopes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := f1.List(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	s1, err := build(t, f1).NewSession(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -787,6 +796,9 @@ func TestRigRestoreSiblingOwnershipScopes(t *testing.T) {
 	probeA, probeB = nil, nil
 	f2, err := NewSessionStoreFactory(dataDir)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f2.List(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = f2.Close() })

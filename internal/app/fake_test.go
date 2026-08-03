@@ -223,3 +223,7 @@ func newTestAgent(t *testing.T, client inference.Client, cfg Config) *sessionAda
 	t.Cleanup(func() { _ = agent.Close(context.Background()) })
 	return agent
 }
+
+// newModelFactory is retained only as a package-test fixture seam. Production
+// composition always binds the model loaded from models.json explicitly.
+func newModelFactory() ModelFactory { return newModelFactoryFor(testModel()) }

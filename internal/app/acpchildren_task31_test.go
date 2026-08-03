@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"strings"
 	"sync"
 	"testing"
 
@@ -184,7 +183,9 @@ func gatewayRuntimeCatalogForTask31(t *testing.T, clients map[model.ProviderName
 	t.Helper()
 	compiled, err := CompileACPCatalog(ACPCatalogInput{
 		SubagentTypes:  []identity.AgentName{planner.Name, builder.Name, reviewer.Name},
-		GatewayClients: clients,
+		GatewayTargets: legacyTestGatewayTargets(clients),
+		Defaults:       legacyTestDefaults([]identity.AgentName{planner.Name, builder.Name, reviewer.Name}),
+		ClaudeSmall:    "sonnet-5",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -421,7 +422,7 @@ func TestACPCompositionMissingLunaTombstonesChildAndKeepsPrimer(t *testing.T) {
 	}
 }
 
-func TestACPCompositionWithoutProfilesHidesSelectorsAndFailsStartBounded(t *testing.T) {
+func TestACPCompositionWithoutProfilesUsesManagedNativeFallback(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	client := &managedScript{}
@@ -429,6 +430,12 @@ func TestACPCompositionWithoutProfilesHidesSelectorsAndFailsStartBounded(t *test
 	var result string
 	step := 0
 	client.fn = func(_ context.Context, req inference.Request) ([]content.Chunk, error) {
+		if requestHasRole(req, reviewer.Name) {
+			return finalText("reviewer done"), nil
+		}
+		if !requestHasRole(req, builder.Name) {
+			return nil, errors.New("unexpected role in managed native fallback request")
+		}
 		if step == 0 {
 			for _, info := range req.Tools {
 				if info.Name == "Subagent" {
@@ -482,7 +489,19 @@ func TestACPCompositionWithoutProfilesHidesSelectorsAndFailsStartBounded(t *test
 			t.Errorf("empty catalog schema advertises %q", field)
 		}
 	}
-	if !strings.Contains(result, "runtime selection is unavailable") {
-		t.Fatalf("empty catalog start result = %q, want bounded no-runtime error", result)
+	var queued struct {
+		DelegateID string          `json:"delegate_id"`
+		RequestID  string          `json:"request_id"`
+		Status     string          `json:"status"`
+		Runtime    json.RawMessage `json:"runtime"`
+	}
+	if err := json.Unmarshal([]byte(result), &queued); err != nil {
+		t.Fatalf("managed native fallback result = %q: %v", result, err)
+	}
+	if queued.DelegateID == "" || queued.RequestID == "" || queued.Status != "queued" {
+		t.Fatalf("managed native fallback result = %q, want queued delegate handle", result)
+	}
+	if len(queued.Runtime) != 0 && string(queued.Runtime) != "null" {
+		t.Fatalf("managed native fallback result advertises runtime selectors: %q", queued.Runtime)
 	}
 }

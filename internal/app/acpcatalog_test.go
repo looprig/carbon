@@ -1,247 +1,231 @@
 package app
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/looprig/harness/pkg/identity"
 	"github.com/looprig/harness/pkg/loop"
-	"github.com/looprig/inference"
 	"github.com/looprig/inference/model"
 )
 
-func TestCompileACPCatalogFrozenMatrix(t *testing.T) {
-	clients := map[model.ProviderName]inference.Client{
-		"anthropic": &fakeLLM{},
-		"openai":    &fakeLLM{},
+func TestCompileACPCatalogUsesConfiguredTargetsAndDefaults(t *testing.T) {
+	clientA := &fakeLLM{}
+	clientB := &fakeLLM{}
+	targets := []ACPGatewaySource{
+		{
+			Alias: "fixture-a", Client: clientA,
+			Model:         model.CustomModel("openai", model.APIFormatOpenAIResponses, "", "provider-a", model.WithTools(), model.WithThinking()),
+			DefaultEffort: model.EffortMedium,
+			Efforts:       []model.Effort{model.EffortLow, model.EffortMedium, model.EffortHigh},
+		},
+		{
+			Alias: "fixture-b", Client: clientB,
+			Model:         model.CustomModel("anthropic", model.APIFormatAnthropic, "", "provider-b", model.WithTools(), model.WithThinking()),
+			DefaultEffort: model.EffortLow,
+			Efforts:       []model.Effort{model.EffortLow, model.EffortMax},
+		},
 	}
-	first, err := CompileACPCatalog(ACPCatalogInput{SubagentTypes: []identity.AgentName{"worker"}, GatewayClients: clients})
+	defaults := map[identity.AgentName]configuredDelegateDefault{
+		"planner":  {Harness: "claude-code", Model: "fixture-b", Effort: model.EffortMax},
+		"builder":  {Harness: "codex", Model: "fixture-a", Effort: model.EffortHigh},
+		"reviewer": {Harness: "codex", Model: "fixture-a", Effort: model.EffortLow},
+	}
+
+	compiled, err := CompileACPCatalog(ACPCatalogInput{
+		GatewayTargets: targets,
+		Defaults:       defaults,
+		ClaudeSmall:    "fixture-b",
+	})
 	if err != nil {
 		t.Fatalf("CompileACPCatalog() error = %v", err)
 	}
-	second, err := CompileACPCatalog(ACPCatalogInput{SubagentTypes: []identity.AgentName{"worker"}, GatewayClients: clients})
-	if err != nil {
-		t.Fatalf("second CompileACPCatalog() error = %v", err)
-	}
-	if first.RuntimeCatalog.Digest() != second.RuntimeCatalog.Digest() {
-		t.Fatalf("digest changed: %q != %q", first.RuntimeCatalog.Digest(), second.RuntimeCatalog.Digest())
-	}
 
-	wantAliases := map[loop.ModelAlias]bool{
-		"fable-5": false, "sonnet-5": false, "opus-5": false,
-		"gpt-5.6-sol": false, "gpt-5.6-terra": false, "gpt-5.6-luna": false,
-	}
-	entries := first.RuntimeCatalog.EntriesFor("worker")
-	if len(entries) != 2 {
-		t.Fatalf("entries = %d, want 2", len(entries))
-	}
-	for _, entry := range entries {
-		if entry.Credential != loop.CredentialGatewayBacked {
-			t.Errorf("%s credential = %q", entry.AgentHarness, entry.Credential)
-		}
-		if entry.Profile != loop.RuntimeProfileName("acp/"+string(entry.AgentHarness)) {
-			t.Errorf("%s profile = %q", entry.AgentHarness, entry.Profile)
-		}
-		if entry.AgentHarness == "claude-code" && (!entry.NeedsSmallModel || entry.SmallModel != "sonnet-5") {
-			t.Errorf("claude small model = %q required=%v", entry.SmallModel, entry.NeedsSmallModel)
-		}
-		seen := make(map[loop.ModelAlias]bool)
-		for _, option := range entry.Models {
-			seen[option.Alias] = true
-			if option.Alias == "deepseek-v4-flash" || option.Alias == "gemma-4-31b" {
-				t.Errorf("primer alias %q leaked into delegate catalog", option.Alias)
-			}
-			for _, effort := range option.Efforts {
-				if effort == "xhigh" || effort == "ultra" {
-					t.Errorf("invalid effort %q advertised", effort)
+	for _, role := range []identity.AgentName{"planner", "builder", "reviewer"} {
+		for _, harness := range []loop.AgentHarnessName{"claude-code", "codex"} {
+			for _, target := range targets {
+				resolved, err := compiled.RuntimeCatalog.ResolveWithExplicitEffort(role, harness, target.Alias, target.Efforts[0], true)
+				if err != nil {
+					t.Errorf("Resolve(%s, %s, %s) error = %v", role, harness, target.Alias, err)
+					continue
+				}
+				if resolved.ModelAlias != target.Alias || resolved.Effort != target.Efforts[0] {
+					t.Errorf("Resolve(%s, %s, %s) = alias %q effort %q", role, harness, target.Alias, resolved.ModelAlias, resolved.Effort)
 				}
 			}
 		}
-		for alias := range wantAliases {
-			if !seen[alias] {
-				t.Errorf("%s missing alias %q", entry.AgentHarness, alias)
-			}
-		}
-	}
-}
 
-func TestCompileACPCatalogCrossDialectAndAuthoritativeTarget(t *testing.T) {
-	compiled, err := CompileACPCatalog(ACPCatalogInput{
-		SubagentTypes: []identity.AgentName{"worker"},
-		GatewayClients: map[model.ProviderName]inference.Client{
-			"anthropic": &fakeLLM{}, "openai": &fakeLLM{},
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, harness := range []loop.AgentHarnessName{"codex", "claude-code"} {
-		resolved, err := compiled.RuntimeCatalog.Resolve("worker", harness, "gpt-5.6-luna", model.EffortMax)
+		resolved, err := compiled.RuntimeCatalog.Resolve(role, "", "", model.EffortNone)
 		if err != nil {
-			t.Fatalf("Resolve(%s, luna@max): %v", harness, err)
+			t.Fatalf("Resolve(%s default) error = %v", role, err)
 		}
-		if resolved.Target.Provider != "openai" || resolved.Effort != model.EffortMax {
-			t.Fatalf("Resolve(%s) = provider %q effort %q", harness, resolved.Target.Provider, resolved.Effort)
+		want := defaults[role]
+		if resolved.AgentHarness != want.Harness || resolved.ModelAlias != want.Model || resolved.Effort != want.Effort {
+			t.Errorf("Resolve(%s default) = %s/%s@%s, want %s/%s@%s", role, resolved.AgentHarness, resolved.ModelAlias, resolved.Effort, want.Harness, want.Model, want.Effort)
 		}
 	}
-	target, err := compiled.ResolveGatewayTarget("gpt-5.6-luna", model.EffortMax)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !target.AuthoritativeEffort || target.Model.Sampling.Effort != model.EffortMax || target.Client == nil {
-		t.Fatalf("target = %#v", target)
-	}
-}
 
-func TestCompileACPCatalogCredentialGatingAndNativeFallback(t *testing.T) {
-	compiled, err := CompileACPCatalog(ACPCatalogInput{
-		SubagentTypes: []identity.AgentName{"worker"},
-		NativeAuth: []ACPNativeAuthSource{{
-			Harness: "codex", Alias: "codex-native", Model: testModel(),
-			Efforts: []model.Effort{model.EffortLow, model.EffortHigh}, DefaultEffort: model.EffortHigh,
-		}},
-	})
+	claude, err := compiled.RuntimeCatalog.Resolve("planner", "claude-code", "fixture-a", model.EffortLow)
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolved, err := compiled.RuntimeCatalog.Resolve("worker", "codex", "codex-native", model.EffortHigh)
-	if err != nil {
-		t.Fatalf("native codex resolve: %v", err)
+	if claude.SmallModel != "fixture-b" {
+		t.Fatalf("Claude small alias = %q, want fixture-b", claude.SmallModel)
 	}
-	if resolved.Credential != loop.CredentialNativeAuth {
-		t.Fatalf("credential = %q", resolved.Credential)
-	}
-	if _, err := compiled.RuntimeCatalog.Resolve("worker", "claude-code", "codex-native", model.EffortHigh); err == nil {
-		t.Fatal("codex native alias resolved under claude-code")
-	}
-	if _, err := compiled.ResolveGatewayTarget("codex-native", model.EffortHigh); err == nil {
-		t.Fatal("native-auth alias unexpectedly has gateway target")
-	}
-	for _, alias := range []loop.ModelAlias{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"} {
-		if _, err := compiled.RuntimeCatalog.Resolve("worker", "codex", alias, model.EffortHigh); err == nil {
-			t.Errorf("unconfigured OpenAI alias %q resolved", alias)
+	for _, oldAlias := range []loop.ModelAlias{"fable-5", "sonnet-5", "opus-5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"} {
+		if _, err := compiled.RuntimeCatalog.Resolve("builder", "codex", oldAlias, model.EffortMedium); err == nil {
+			t.Errorf("unconfigured old alias %q resolved", oldAlias)
 		}
 	}
 }
 
-func TestCompileACPCatalogNativeRowsCoexistWithGatewayRows(t *testing.T) {
-	compiled, err := CompileACPCatalog(ACPCatalogInput{
-		SubagentTypes: []identity.AgentName{"worker"},
-		GatewayClients: map[model.ProviderName]inference.Client{
-			"openai": &fakeLLM{},
+func TestCompileACPCatalogDerivesDistinctEffortTargets(t *testing.T) {
+	compiled := compileFixtureACPCatalog(t)
+	low, err := compiled.RuntimeCatalog.ResolveWithExplicitEffort("worker", "codex", "fixture-a", model.EffortLow, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	high, err := compiled.RuntimeCatalog.ResolveWithExplicitEffort("worker", "codex", "fixture-a", model.EffortHigh, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if low.TargetAlias == high.TargetAlias {
+		t.Fatalf("target aliases are both %q for different efforts", low.TargetAlias)
+	}
+	if low.TargetAlias != "fixture-a@low" || high.TargetAlias != "fixture-a@high" {
+		t.Fatalf("target aliases = %q and %q, want fixture-a@low and fixture-a@high", low.TargetAlias, high.TargetAlias)
+	}
+}
+
+func TestCompileACPCatalogRejectsDuplicateAliasesAndInvalidDefaults(t *testing.T) {
+	target := fixtureGatewaySource("fixture-a", &fakeLLM{})
+	tests := []struct {
+		name  string
+		input ACPCatalogInput
+	}{
+		{
+			name: "duplicate alias",
+			input: ACPCatalogInput{
+				SubagentTypes:  []identity.AgentName{"worker"},
+				GatewayTargets: []ACPGatewaySource{target, target},
+				Defaults: map[identity.AgentName]configuredDelegateDefault{
+					"worker": {Harness: "codex", Model: "fixture-a", Effort: model.EffortMedium},
+				},
+				ClaudeSmall: "fixture-a",
+			},
 		},
-		NativeAuth: []ACPNativeAuthSource{{
-			Harness: "codex", Alias: "native-codex-model", Model: testModel(),
-			DefaultEffort: model.EffortNone, Efforts: []model.Effort{model.EffortNone},
-		}},
-	})
-	if err != nil {
-		t.Fatal(err)
+		{
+			name: "missing default",
+			input: ACPCatalogInput{
+				SubagentTypes: []identity.AgentName{"worker"}, GatewayTargets: []ACPGatewaySource{target}, ClaudeSmall: "fixture-a",
+			},
+		},
+		{
+			name: "extra default",
+			input: ACPCatalogInput{
+				SubagentTypes: []identity.AgentName{"worker"}, GatewayTargets: []ACPGatewaySource{target}, ClaudeSmall: "fixture-a",
+				Defaults: map[identity.AgentName]configuredDelegateDefault{
+					"worker": {Harness: "codex", Model: "fixture-a", Effort: model.EffortMedium},
+					"other":  {Harness: "codex", Model: "fixture-a", Effort: model.EffortMedium},
+				},
+			},
+		},
+		{
+			name: "unavailable default harness",
+			input: ACPCatalogInput{
+				SubagentTypes: []identity.AgentName{"worker"}, GatewayTargets: []ACPGatewaySource{target},
+				Defaults: map[identity.AgentName]configuredDelegateDefault{
+					"worker": {Harness: "claude-code", Model: "fixture-a", Effort: model.EffortMedium},
+				},
+			},
+		},
 	}
-
-	entries := compiled.RuntimeCatalog.EntriesFor("worker")
-	var codex loop.RuntimeCatalogEntry
-	for _, entry := range entries {
-		if entry.AgentHarness == "codex" {
-			codex = entry
-			break
-		}
-	}
-	if codex.AgentHarness != "codex" {
-		t.Fatalf("codex entry missing: %#v", entries)
-	}
-	var nativeFound bool
-	for _, option := range codex.Models {
-		if option.Alias == "native-codex-model" {
-			nativeFound = true
-			if option.Credential != loop.CredentialNativeAuth {
-				t.Fatalf("native option credential = %q, want %q", option.Credential, loop.CredentialNativeAuth)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := CompileACPCatalog(test.input); err == nil {
+				t.Fatal("CompileACPCatalog() succeeded")
 			}
-			if option.NativeSmallModel != "" {
-				t.Fatalf("Codex native small model = %q, want empty", option.NativeSmallModel)
-			}
-		}
-	}
-	if !nativeFound {
-		t.Fatalf("native option missing from mixed codex entry: %#v", codex.Models)
-	}
-
-	native, err := compiled.RuntimeCatalog.Resolve("worker", "codex", "native-codex-model", model.EffortNone)
-	if err != nil {
-		t.Fatalf("native codex resolve: %v", err)
-	}
-	if native.Credential != loop.CredentialNativeAuth {
-		t.Fatalf("native credential = %q, want %q", native.Credential, loop.CredentialNativeAuth)
-	}
-	if _, err := compiled.RuntimeCatalog.Resolve("worker", "claude-code", "native-codex-model", model.EffortNone); err == nil {
-		t.Fatal("native codex alias resolved under claude-code")
-	}
-	if _, err := compiled.ResolveGatewayTarget("native-codex-model", model.EffortNone); err == nil {
-		t.Fatal("native codex alias unexpectedly has gateway target")
+		})
 	}
 }
 
-func TestCompileACPCatalogCarriesNativeSmallModelIntoRuntimeIdentity(t *testing.T) {
+func TestACPGatewayTargetReturnsExactClientAndAuthoritativeEffort(t *testing.T) {
+	client := &fakeLLM{}
+	targetModel := model.CustomModel("openai", model.APIFormatOpenAIResponses, "", "provider-a", model.WithTools(), model.WithThinking())
 	compiled, err := CompileACPCatalog(ACPCatalogInput{
 		SubagentTypes: []identity.AgentName{"worker"},
-		NativeAuth: []ACPNativeAuthSource{{
-			Harness: "claude-code", Alias: "native-claude-model", Model: testModel(),
-			SmallModel: "claude-native-small", DefaultEffort: model.EffortNone,
-			Efforts: []model.Effort{model.EffortNone},
+		GatewayTargets: []ACPGatewaySource{{
+			Alias: "fixture-a", Client: client, Model: targetModel,
+			DefaultEffort: model.EffortMedium, Efforts: []model.Effort{model.EffortLow, model.EffortMedium, model.EffortHigh},
 		}},
+		Defaults: map[identity.AgentName]configuredDelegateDefault{
+			"worker": {Harness: "codex", Model: "fixture-a", Effort: model.EffortMedium},
+		},
+		ClaudeSmall: "fixture-a",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolved, err := compiled.RuntimeCatalog.Resolve("worker", "claude-code", "native-claude-model", model.EffortNone)
+	resolved, err := compiled.RuntimeCatalog.ResolveWithExplicitEffort("worker", "codex", "fixture-a", model.EffortHigh, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resolved.NativeSmallModel != "claude-native-small" {
-		t.Fatalf("NativeSmallModel = %q, want %q", resolved.NativeSmallModel, "claude-native-small")
+	got, err := compiled.GatewayTarget(resolved)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if compiled.RuntimeCatalog.Digest() == "" {
-		t.Fatal("native catalog digest is empty")
+	if got.Client != client || !got.AuthoritativeEffort || got.Model.Sampling.Effort != model.EffortHigh || got.ID != "fixture-a@high" {
+		t.Fatalf("GatewayTarget() returned wrong binding")
+	}
+	wantModel := targetModel.Clone()
+	wantModel.Sampling.Effort = model.EffortHigh
+	if !reflect.DeepEqual(got.Model, wantModel) {
+		t.Fatalf("GatewayTarget() model did not preserve descriptor")
 	}
 }
 
-func TestCompileACPCatalogRejectsNativeGatewayAliasCollision(t *testing.T) {
+func TestCompileACPCatalogErrorDoesNotEchoAliases(t *testing.T) {
+	const sentinel = "test-secret-do-not-log"
+	target := fixtureGatewaySource("fixture-a", &fakeLLM{})
+	target.Alias = loop.ModelAlias(sentinel)
 	_, err := CompileACPCatalog(ACPCatalogInput{
-		SubagentTypes: []identity.AgentName{"worker"},
-		GatewayClients: map[model.ProviderName]inference.Client{
-			"openai": &fakeLLM{},
+		SubagentTypes:  []identity.AgentName{"worker"},
+		GatewayTargets: []ACPGatewaySource{target, target},
+		Defaults: map[identity.AgentName]configuredDelegateDefault{
+			"worker": {Harness: "codex", Model: loop.ModelAlias(sentinel), Effort: model.EffortMedium},
 		},
-		NativeAuth: []ACPNativeAuthSource{{
-			Harness: "codex", Alias: "gpt-5.6-luna", Model: testModel(),
-			DefaultEffort: model.EffortNone, Efforts: []model.Effort{model.EffortNone},
-		}},
+		ClaudeSmall: loop.ModelAlias(sentinel),
 	})
 	if err == nil {
-		t.Fatal("CompileACPCatalog() accepted one alias with native-auth and gateway-backed credentials")
+		t.Fatal("CompileACPCatalog() succeeded")
 	}
-	if !strings.Contains(err.Error(), "credential alias collision") {
-		t.Fatalf("CompileACPCatalog() error = %q, want credential alias collision", err)
+	if strings.Contains(err.Error(), sentinel) {
+		t.Fatalf("error exposed configured alias: %q", err)
 	}
 }
 
-func TestCompileACPCatalogExtraProvider(t *testing.T) {
-	extraClient := &fakeLLM{}
-	extraModel := model.CustomModel("openrouter", model.APIFormatOpenAI, "https://openrouter.ai/api/v1", "vendor/model", model.WithTools())
+func compileFixtureACPCatalog(t *testing.T) ACPCompiledCatalog {
+	t.Helper()
 	compiled, err := CompileACPCatalog(ACPCatalogInput{
-		SubagentTypes: []identity.AgentName{"worker"},
-		ExtraGatewayTargets: []ACPGatewaySource{{
-			Alias: "extra-reasoner", Client: extraClient, Model: extraModel,
-			Efforts: []model.Effort{model.EffortNone, model.EffortHigh}, DefaultEffort: model.EffortHigh,
-		}},
+		SubagentTypes:  []identity.AgentName{"worker"},
+		GatewayTargets: []ACPGatewaySource{fixtureGatewaySource("fixture-a", &fakeLLM{})},
+		Defaults: map[identity.AgentName]configuredDelegateDefault{
+			"worker": {Harness: "codex", Model: "fixture-a", Effort: model.EffortMedium},
+		},
+		ClaudeSmall: "fixture-a",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolved, err := compiled.RuntimeCatalog.Resolve("worker", "codex", "extra-reasoner", model.EffortHigh)
-	if err != nil {
-		t.Fatalf("Resolve(codex, extra): %v", err)
-	}
-	if resolved.Target.Provider != "openrouter" {
-		t.Fatalf("provider = %q", resolved.Target.Provider)
+	return compiled
+}
+
+func fixtureGatewaySource(alias loop.ModelAlias, client *fakeLLM) ACPGatewaySource {
+	return ACPGatewaySource{
+		Alias: alias, Client: client,
+		Model:         model.CustomModel("openai", model.APIFormatOpenAIResponses, "", "provider-model", model.WithTools(), model.WithThinking()),
+		DefaultEffort: model.EffortMedium,
+		Efforts:       []model.Effort{model.EffortLow, model.EffortMedium, model.EffortHigh},
 	}
 }

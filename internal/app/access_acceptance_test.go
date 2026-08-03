@@ -1,10 +1,14 @@
 package app
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +16,9 @@ import (
 	"github.com/looprig/harness/pkg/gate"
 	"github.com/looprig/harness/pkg/loop"
 	"github.com/looprig/harness/pkg/tool"
+	"github.com/looprig/inference"
+	"github.com/looprig/inference/auth"
+	model "github.com/looprig/inference/model"
 	"github.com/looprig/sandbox"
 	"github.com/looprig/storage/memstore"
 	"github.com/looprig/tools/permission"
@@ -114,7 +121,12 @@ func TestAcceptanceProfileGateBehavior(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(string(tc.profile), func(t *testing.T) {
-			access, err := buildHeadlessAccess(Config{AccessProfile: tc.profile}, root)
+			access, err := buildHeadlessAccess(Config{
+				AccessProfile:  tc.profile,
+				ModelConfigRev: "fixture-model-config-revision",
+				PrimerAlias:    "fixture-primer",
+				PrimerEfforts:  []model.Effort{model.EffortMax},
+			}, root)
 			if err != nil {
 				t.Fatalf("buildHeadlessAccess(%q): %v", tc.profile, err)
 			}
@@ -274,12 +286,167 @@ func TestAcceptanceFamilyAndExactApprovalFlow(t *testing.T) {
 	}
 }
 
+func TestAcceptanceBuilderPermissionApprovalReachesStoreAndExecutorGrantPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("HTTPS_PROXY", "")
+	t.Setenv("HTTP_PROXY", "")
+	t.Setenv("NO_PROXY", "")
+	root := canonicalTempDir(t)
+	command := "echo task6-grant-path"
+
+	access, err := buildSessionAccess(Config{
+		AccessProfile:  AccessReadOnly,
+		ModelConfigRev: "fixture-model-revision-must-not-change-access",
+		PrimerAlias:    "fixture-model-alias-must-not-change-access",
+		PrimerEfforts:  []model.Effort{model.EffortMax},
+	}, root, true)
+	if err != nil {
+		t.Fatalf("buildSessionAccess(interactive): %v", err)
+	}
+	t.Cleanup(func() { _ = access.Close() })
+
+	provenanceContext := mustLoopProvenance(t)
+	provenance, ok := loop.ProvenanceFrom(provenanceContext)
+	if !ok {
+		t.Fatal("loop provenance missing from test context")
+	}
+	prompts := 0
+	ctx := loop.WithApprovalRequester(provenanceContext, func(context.Context, gate.ApprovalPrompt) (gate.ApprovalAction, error) {
+		prompts++
+		return gate.ApprovalApproveAlwaysWorkspace, nil
+	})
+	request := commandRequest(t, root, command)
+	resolution, err := access.builderGate.Authorize(ctx, request)
+	if err != nil {
+		t.Fatalf("Authorize(first command): %v", err)
+	}
+	if !resolution.Approved || len(resolution.Grants) == 0 || prompts != 1 {
+		t.Fatalf("first resolution approved=%v grants=%d prompts=%d, want true/nonzero/1", resolution.Approved, len(resolution.Grants), prompts)
+	}
+	executor, err := access.builderSet.For(provenance.LoopID.String())
+	if err != nil {
+		t.Fatalf("builderSet.For: %v", err)
+	}
+	stdout, exitCode, err := executor.RunCommandWithGrants(context.Background(), request.ExecutionID, root, command, resolution.Grants)
+	if err != nil || exitCode != 0 || !strings.Contains(string(stdout), "task6-grant-path") {
+		t.Fatalf("granted execution = stdout %q exit %d error %v", stdout, exitCode, err)
+	}
+
+	permissionPath, err := defaultPermissionsPath(root)
+	if err != nil {
+		t.Fatalf("defaultPermissionsPath: %v", err)
+	}
+	if _, err := os.Stat(permissionPath); err != nil {
+		t.Fatalf("workspace approval not persisted at hashed path: %v", err)
+	}
+
+	reopened, err := buildSessionAccess(Config{AccessProfile: AccessReadOnly}, root, true)
+	if err != nil {
+		t.Fatalf("reopen session access: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	reopenedContext := loop.WithApprovalRequester(mustLoopProvenance(t), func(context.Context, gate.ApprovalPrompt) (gate.ApprovalAction, error) {
+		t.Fatal("persisted workspace approval unexpectedly prompted")
+		return "", errors.New("unexpected prompt")
+	})
+	resolution, err = reopened.builderGate.Authorize(reopenedContext, commandRequest(t, root, command))
+	if err != nil || !resolution.Approved || len(resolution.Grants) == 0 {
+		t.Fatalf("reopened resolution approved=%v grants=%d error=%v", resolution.Approved, len(resolution.Grants), err)
+	}
+}
+
+func TestAcceptanceModelAndInteractivePermissionFilesRemainSeparated(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("HTTPS_PROXY", "")
+	t.Setenv("HTTP_PROXY", "")
+	t.Setenv("NO_PROXY", "")
+	root := canonicalTempDir(t)
+
+	modelPath, err := defaultModelConfigPath()
+	if err != nil {
+		t.Fatalf("defaultModelConfigPath: %v", err)
+	}
+	permissionPath, err := defaultPermissionsPath(root)
+	if err != nil {
+		t.Fatalf("defaultPermissionsPath: %v", err)
+	}
+	wantModelPath := filepath.Join(home, ".looprig", "models.json")
+	if modelPath != wantModelPath {
+		t.Fatalf("model path = %q, want %q", modelPath, wantModelPath)
+	}
+	if modelPath == permissionPath {
+		t.Fatalf("model and permission paths are identical: %q", modelPath)
+	}
+	digest := sha256.Sum256([]byte(root))
+	wantPermissionPath := filepath.Join(home, ".looprig", "workspaces", hex.EncodeToString(digest[:]), permissionFileName)
+	if permissionPath != wantPermissionPath {
+		t.Fatalf("permission path = %q, want %q", permissionPath, wantPermissionPath)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(modelPath), 0o700); err != nil {
+		t.Fatalf("create model directory: %v", err)
+	}
+	modelBytes := []byte(validLMStudioModelConfig)
+	if err := os.WriteFile(modelPath, modelBytes, 0o600); err != nil {
+		t.Fatalf("write models.json: %v", err)
+	}
+	modelBefore, err := os.Stat(modelPath)
+	if err != nil {
+		t.Fatalf("stat models.json: %v", err)
+	}
+	if _, err := os.Stat(permissionPath); !os.IsNotExist(err) {
+		t.Fatalf("permission file exists before model load: %v", err)
+	}
+
+	_, err = loadProductionModelsFrom(modelPath, func(model.Model, auth.APIKey) (inference.Client, error) {
+		return &fakeLLM{}, nil
+	})
+	if err != nil {
+		t.Fatalf("loadProductionModelsFrom: %v", err)
+	}
+	if _, err := os.Stat(permissionPath); !os.IsNotExist(err) {
+		t.Fatalf("model load created or touched permission file: %v", err)
+	}
+
+	access, err := buildSessionAccess(Config{AccessProfile: AccessReadOnly}, root, true)
+	if err != nil {
+		t.Fatalf("buildSessionAccess(interactive): %v", err)
+	}
+	t.Cleanup(func() { _ = access.Close() })
+	ctx := loop.WithApprovalRequester(mustLoopProvenance(t), func(context.Context, gate.ApprovalPrompt) (gate.ApprovalAction, error) {
+		return gate.ApprovalApproveAlwaysWorkspace, nil
+	})
+	resolution, err := access.builderGate.Authorize(ctx, commandRequest(t, root, "git status --short"))
+	if err != nil {
+		t.Fatalf("Authorize(git status): %v", err)
+	}
+	if !resolution.Approved {
+		t.Fatal("interactive approval did not approve the builder command")
+	}
+	if _, err := os.Stat(permissionPath); err != nil {
+		t.Fatalf("interactive approval did not persist hashed workspace permissions: %v", err)
+	}
+
+	modelAfterBytes, err := os.ReadFile(modelPath)
+	if err != nil {
+		t.Fatalf("read models.json after approval: %v", err)
+	}
+	modelAfter, err := os.Stat(modelPath)
+	if err != nil {
+		t.Fatalf("stat models.json after approval: %v", err)
+	}
+	if !bytes.Equal(modelAfterBytes, modelBytes) || !modelAfter.ModTime().Equal(modelBefore.ModTime()) || modelAfter.Mode() != modelBefore.Mode() {
+		t.Fatal("interactive approval created or modified models.json")
+	}
+}
+
 // TestAcceptanceHeadlessPermissionFileLoads proves headless assembly loads an
 // explicit read-only permission file, fails startup on a missing or malformed
 // file, and never searches HOME. A valid file is produced through the product
 // interactive store (round-trip), then loaded through the product headless config.
 func TestAcceptanceHeadlessPermissionFileLoads(t *testing.T) {
-	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, permissionFileName)
 
@@ -322,6 +489,30 @@ func TestAcceptanceHeadlessPermissionFileLoads(t *testing.T) {
 	}
 	if !matched {
 		t.Error("loaded read-only file did not admit the persisted git-log family rule")
+	}
+
+	// Drive the explicit file through assembled session access as well. HOME
+	// points elsewhere, proving headless assembly does not discover or write an
+	// interactive workspace store.
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("HTTPS_PROXY", "")
+	t.Setenv("HTTP_PROXY", "")
+	t.Setenv("NO_PROXY", "")
+	root := canonicalTempDir(t)
+	access, err := buildHeadlessAccess(Config{AccessProfile: AccessReadOnly}, root, path)
+	if err != nil {
+		t.Fatalf("buildHeadlessAccess(explicit permission file): %v", err)
+	}
+	t.Cleanup(func() { _ = access.Close() })
+	if got := observeGate(t, mustLoopProvenance(t), access.builderGate, commandRequest(t, root, "git log -n 2")); got != outcomeAllowed {
+		t.Fatalf("assembled headless builder outcome = %d, want persisted allow", got)
+	}
+	interactivePath, err := defaultPermissionsPath(root)
+	if err != nil {
+		t.Fatalf("defaultPermissionsPath: %v", err)
+	}
+	if _, err := os.Stat(interactivePath); !os.IsNotExist(err) {
+		t.Fatalf("headless access searched or wrote interactive permissions: %v", err)
 	}
 
 	// A malformed file fails startup (fail closed) rather than loading loosely.

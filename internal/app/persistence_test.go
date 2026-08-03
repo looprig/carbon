@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/looprig/harness/pkg/rig"
 	model "github.com/looprig/inference/model"
 	"github.com/looprig/storage/memstore"
+	"github.com/looprig/tui"
 )
 
 // mustHeadlessTestStores opens an ISOLATED in-memory store (NOT the process-shared headless
@@ -25,6 +27,111 @@ func mustHeadlessTestStores(t *testing.T) *swarmStores {
 		t.Fatalf("openStores(memstore) error = %v", err)
 	}
 	return stores
+}
+
+func TestProductionModelsPersistedOpenLoadsExactlyOnce(t *testing.T) {
+	configured := testModel()
+	configured.Name = "persisted-configured-primer"
+	loads := 0
+	factory := &SessionStoreFactory{
+		stores: mustHeadlessTestStores(t),
+		loadModels: func() (productionModels, error) {
+			loads++
+			return productionModels{PrimerClient: &fakeLLM{}, PrimerModel: configured, PrimerAlias: "persisted-primer-alias", PrimerEfforts: []model.Effort{model.EffortHigh}, ConfigRev: "persisted-model-rev"}, nil
+		},
+	}
+	agent, err := factory.Open(context.Background(), SessionSelector{}, Config{})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = agent.Close(context.Background()) })
+	if loads != 1 {
+		t.Fatalf("production model loads = %d, want exactly 1", loads)
+	}
+	options, err := agent.LoopRuntimeOptions(context.Background(), agent.ActiveLoopID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(options.Models) != 1 || options.Models[0].ID != "persisted-primer-alias" || options.Models[0].Label != "persisted-primer-alias" || options.Models[0].Description != "" {
+		t.Fatalf("runtime models = %#v, want only configured primer alias", options.Models)
+	}
+	if len(options.Efforts) != 1 || options.Efforts[0].ID != tui.EffortID(model.EffortHigh) {
+		t.Fatalf("runtime efforts = %#v, want only configured high effort", options.Efforts)
+	}
+}
+
+func TestProductionOpenRejectsInvalidModelsBeforeOpeningPersistence(t *testing.T) {
+	home := t.TempDir()
+	setProcessHome(t, home)
+	modelsPath := filepath.Join(home, ".looprig", "models.json")
+	if err := os.MkdirAll(filepath.Dir(modelsPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(modelsPath, []byte(`{"version":`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dataDir := filepath.Join(t.TempDir(), "store")
+	factory, err := NewSessionStoreFactory(dataDir)
+	if err != nil {
+		t.Fatalf("NewSessionStoreFactory() error = %v", err)
+	}
+	defer func() { _ = factory.Close() }()
+	if _, err := os.Stat(dataDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("store directory after factory construction = %v, want absent", err)
+	}
+	if _, err := factory.Open(context.Background(), SessionSelector{}, Config{}); err == nil {
+		t.Fatal("Open() error = nil, want invalid model configuration error")
+	}
+	if _, err := os.Stat(dataDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("store directory after invalid Open = %v, want absent", err)
+	}
+}
+
+func TestRestoreRejectsModelConfigRevisionDrift(t *testing.T) {
+	stores := mustHeadlessTestStores(t)
+	root := t.TempDir()
+	ctx := context.Background()
+
+	openAccess, openCfg := headlessTestAccess(t, Config{ModelConfigRev: "model-rev-a"}, root)
+	definitions, err := swarmDefinitions(&fakeLLM{}, testModel(), openCfg, openAccess)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assembly, err := buildRig(definitions, stores, root, openCfg, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	controller, err := assembly.NewSession(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionID := controller.SessionID()
+	if err := controller.Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	restore := func(revision string) error {
+		restoreAccess, restoreCfg := headlessTestAccess(t, Config{ModelConfigRev: revision}, root)
+		restoreDefinitions, err := swarmDefinitions(&fakeLLM{}, testModel(), restoreCfg, restoreAccess)
+		if err != nil {
+			return err
+		}
+		restoreAssembly, err := buildRig(restoreDefinitions, stores, root, restoreCfg, false)
+		if err != nil {
+			return err
+		}
+		restored, err := restoreAssembly.RestoreSession(ctx, sessionID)
+		if err == nil {
+			_ = restored.Shutdown(ctx)
+		}
+		return err
+	}
+	if err := restore("model-rev-b"); err == nil {
+		t.Fatal("restore with changed model configuration revision succeeded")
+	}
+	if err := restore("model-rev-a"); err != nil {
+		t.Fatalf("restore with identical model configuration revision failed: %v", err)
+	}
 }
 
 func TestBuildRigRegistersConversationCompaction(t *testing.T) {
@@ -353,6 +460,61 @@ func TestNewSessionStoreFactoryLifecycle(t *testing.T) {
 	}
 	if err := f.Close(); err != nil {
 		t.Errorf("Close error = %v", err)
+	}
+}
+
+func TestSessionStoreFactoryClosePreventsLateStoreOpen(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "store")
+	factory, err := NewSessionStoreFactory(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := factory.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if _, err := factory.List(context.Background()); err == nil {
+		t.Fatal("List() after Close() succeeded, want closed-factory error")
+	}
+	if _, err := os.Stat(dataDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("store directory after close-before-use = %v, want absent", err)
+	}
+	if err := factory.Close(); err != nil {
+		t.Fatalf("second Close() error = %v", err)
+	}
+}
+
+func TestSessionStoreFactoryCloseAndListAreSerialized(t *testing.T) {
+	factory, err := NewSessionStoreFactory(filepath.Join(t.TempDir(), "store"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	var listErr, closeErr error
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		_, listErr = factory.List(context.Background())
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		closeErr = factory.Close()
+	}()
+	close(start)
+	wg.Wait()
+	if closeErr != nil {
+		t.Fatalf("concurrent Close() error = %v", closeErr)
+	}
+	if listErr != nil {
+		var closedErr *StoreClosedError
+		if !errors.As(listErr, &closedErr) {
+			t.Fatalf("concurrent List() error = %v, want nil or StoreClosedError", listErr)
+		}
+	}
+	if _, err := factory.List(context.Background()); err == nil {
+		t.Fatal("List() after concurrent Close() succeeded")
 	}
 }
 

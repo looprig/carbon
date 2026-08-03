@@ -2,9 +2,15 @@ package app
 
 import (
 	"context"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,9 +18,14 @@ import (
 	"github.com/looprig/core/uuid"
 	"github.com/looprig/harness/pkg/event"
 	"github.com/looprig/harness/pkg/hustle"
+	"github.com/looprig/harness/pkg/identity"
 	"github.com/looprig/harness/pkg/journal"
+	"github.com/looprig/harness/pkg/loop"
 	"github.com/looprig/harness/pkg/rig"
 	"github.com/looprig/harness/pkg/sessionstore"
+	"github.com/looprig/inference"
+	"github.com/looprig/inference/auth"
+	model "github.com/looprig/inference/model"
 )
 
 func compactionFingerprintFor(t *testing.T, root string, client *fakeLLM, policy conversationContextPolicy, registration conversationHustleRegistration) event.ConfigFingerprint {
@@ -130,6 +141,192 @@ func TestCompactionCompositionFingerprintSensitivityAndSecretExclusion(t *testin
 	}
 }
 
+func TestSecretRedactionAcrossModelCatalogueGatewayFingerprintAndDurableEvents(t *testing.T) {
+	const sentinel = "task6-obvious-fake-provider-key"
+	captured := make(map[string][]byte)
+	capture := func(name string, value any) {
+		t.Helper()
+		switch typed := value.(type) {
+		case []byte:
+			captured[name] = append([]byte(nil), typed...)
+		case string:
+			captured[name] = []byte(typed)
+		default:
+			encoded, err := json.Marshal(typed)
+			if err != nil {
+				t.Fatalf("marshal %s: %v", name, err)
+			}
+			captured[name] = encoded
+		}
+	}
+	captureErrorFormats := func(name string, err error) {
+		t.Helper()
+		if err == nil {
+			t.Fatalf("%s error = nil", name)
+		}
+		capture(name+" %v", fmt.Sprintf("%v", err))
+		capture(name+" %+v", fmt.Sprintf("%+v", err))
+		capture(name+" %#v", fmt.Sprintf("%#v", err))
+	}
+
+	wireConfig := digestModelConfigFixture(t, sentinel)
+	encodedConfig, err := json.Marshal(wireConfig)
+	if err != nil {
+		t.Fatalf("marshal model fixture: %v", err)
+	}
+	modelPath := filepath.Join(t.TempDir(), "models.json")
+	if err := os.WriteFile(modelPath, encodedConfig, 0o600); err != nil {
+		t.Fatalf("write model fixture: %v", err)
+	}
+
+	decoded, err := decodeModelConfig(encodedConfig)
+	if err != nil {
+		t.Fatalf("decodeModelConfig: %v", err)
+	}
+	normalized, err := normalizeModelConfig(decoded)
+	if err != nil {
+		t.Fatalf("normalizeModelConfig: %v", err)
+	}
+	if len(normalized.Models) == 0 || normalized.Models[0].client.APIKey != sentinel {
+		t.Fatal("sentinel did not reach the private normalized client input")
+	}
+	secretFreeJSON, err := secretFreeModelConfigJSON(normalized)
+	if err != nil {
+		t.Fatalf("secretFreeModelConfigJSON: %v", err)
+	}
+	capture("normalized canonical JSON", secretFreeJSON)
+	normalizedDigest, err := modelConfigDigest(normalized)
+	if err != nil {
+		t.Fatalf("modelConfigDigest: %v", err)
+	}
+	capture("normalized digest", normalizedDigest)
+
+	factorySawSentinel := false
+	configured, err := loadProductionModelsFrom(modelPath, func(_ model.Model, key auth.APIKey) (inference.Client, error) {
+		factorySawSentinel = factorySawSentinel || string(key) == sentinel
+		return &fakeLLM{credential: string(key)}, nil
+	})
+	if err != nil {
+		t.Fatalf("loadProductionModelsFrom: %v", err)
+	}
+	if !factorySawSentinel {
+		t.Fatal("loader did not deliver sentinel to the credential-binding factory")
+	}
+	capture("production model formats", fmt.Sprintf("%v|%+v|%#v", configured, configured, configured))
+
+	_, factoryErr := loadProductionModelsFrom(modelPath, func(_ model.Model, key auth.APIKey) (inference.Client, error) {
+		return nil, errors.New("fixture client factory rejected " + string(key))
+	})
+	captureErrorFormats("client factory failure", factoryErr)
+
+	compiled, err := CompileACPCatalog(ACPCatalogInput{
+		SubagentTypes:  []identity.AgentName{"planner", "builder", "reviewer"},
+		GatewayTargets: configured.ACP,
+		Defaults:       configured.Defaults,
+		ClaudeSmall:    configured.ClaudeSmall,
+	})
+	if err != nil {
+		t.Fatalf("CompileACPCatalog: %v", err)
+	}
+	capture("runtime catalogue digest", compiled.RuntimeCatalog.Digest())
+	for _, role := range []identity.AgentName{"planner", "builder", "reviewer"} {
+		capture("runtime catalogue "+string(role), compiled.RuntimeCatalog.EntriesFor(role))
+	}
+	duplicateTargets := append(append([]ACPGatewaySource(nil), configured.ACP...), configured.ACP[0])
+	_, catalogueErr := CompileACPCatalog(ACPCatalogInput{
+		SubagentTypes:  []identity.AgentName{"builder"},
+		GatewayTargets: duplicateTargets,
+		Defaults: map[identity.AgentName]configuredDelegateDefault{
+			"builder": configured.Defaults["builder"],
+		},
+	})
+	captureErrorFormats("catalogue compilation failure", catalogueErr)
+
+	resolved, err := compiled.RuntimeCatalog.Resolve("builder", "codex", "zeta", model.EffortHigh)
+	if err != nil {
+		t.Fatalf("resolve gateway target: %v", err)
+	}
+	plan, err := buildACPGatewayPlan(compiled, resolved)
+	if err != nil {
+		t.Fatalf("buildACPGatewayPlan: %v", err)
+	}
+	_, gatewayErr := plan.resolver.Resolve(context.Background(), model.APIFormatOpenAIResponses, "fixture-not-configured")
+	captureErrorFormats("gateway route failure", gatewayErr)
+	badResolved := resolved
+	badResolved.AgentHarness = "unsupported"
+	_, gatewayConstructionErr := buildACPGatewayPlan(compiled, badResolved)
+	captureErrorFormats("gateway construction failure", gatewayConstructionErr)
+
+	_, preflightErr := NewACPComposition(ACPChildrenConfig{
+		Catalog: compiled,
+		Executables: map[loop.AgentHarnessName]string{
+			"codex": "/fixture/" + sentinel,
+		},
+		WorkspaceRoot: "relative/" + sentinel,
+		Env:           []string{"PROVIDER_KEY=" + sentinel},
+	})
+	captureErrorFormats("ACP preflight configuration failure", preflightErr)
+
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	preflightCalled := false
+	failedPreflight, err := NewACPComposition(ACPChildrenConfig{
+		Catalog: compiled,
+		Executables: map[loop.AgentHarnessName]string{
+			"codex": executable,
+		},
+		WorkspaceRoot:       t.TempDir(),
+		Env:                 []string{"PATH=/fixture/bin", "PROVIDER_KEY=" + sentinel},
+		GatewayEnvAllowlist: acpGatewayEnvAllowlist,
+		executablePreflight: func(_ context.Context, probe ACPExecutableProbe) ACPPreflightResult {
+			preflightCalled = true
+			capture("failed ACP preflight probe", probe)
+			return ACPPreflightResult{}
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewACPComposition(failed preflight): %v", err)
+	}
+	if !preflightCalled {
+		t.Fatal("ACP preflight callback was not called")
+	}
+	capture("failed ACP preflight catalogue", failedPreflight.Catalog.RuntimeCatalog.EntriesFor("builder"))
+	captureErrorFormats("ACP bounded preflight failure", boundedACPChildError(errors.New("preflight failed: "+sentinel)))
+
+	fingerprintFields := agentFingerprintFields(Config{
+		ModelConfigRev: configured.ConfigRev,
+		ACPChildren:    &ACPComposition{Catalog: compiled},
+	})
+	capture("fingerprint fields", fingerprintFields)
+	capture("fingerprint formats", fmt.Sprintf("%v|%+v|%#v", fingerprintFields, fingerprintFields, fingerprintFields))
+	fingerprint := event.ConfigFingerprint{
+		AgentKind:         fingerprintFields.AgentKind,
+		RuntimeCatalogRev: fingerprintFields.RuntimeCatalogRev,
+	}
+	durableFixture := []event.Event{
+		event.SessionStarted{Config: fingerprint},
+		event.LoopStarted{AgentRuntime: &event.AgentRuntime{
+			Harness: "codex", Profile: "acp/codex", CredentialMode: string(loop.CredentialGatewayBacked), ModelAlias: string(resolved.TargetAlias),
+		}},
+	}
+	durableBytes, err := json.Marshal(durableFixture)
+	if err != nil {
+		t.Fatalf("marshal durable event fixture: %v", err)
+	}
+	capture("durable event serialization", durableBytes)
+
+	for name, value := range captured {
+		if strings.Contains(string(value), sentinel) {
+			t.Errorf("%s exposed sentinel", name)
+		}
+	}
+	if len(captured) < 18 {
+		t.Fatalf("redaction capture count = %d, want broad stage coverage", len(captured))
+	}
+}
+
 // TestAgentFingerprintFields asserts the rig-level config-fingerprint fields the
 // composition root injects via rig.WithFingerprintFields: AgentKind is the swarm+active-primer
 // identity ("coderig:builder") and RuntimeSkills passes the human-set mode through verbatim. The
@@ -163,6 +360,14 @@ func TestAgentFingerprintFields(t *testing.T) {
 				AppFields:                 map[string]string{"access_profile": "trusted"},
 			},
 		},
+		{
+			name: "model configuration digest folds in",
+			cfg:  Config{ModelConfigRev: "coderig-models-v1:deadbeef"},
+			want: rig.ConfigFingerprintFields{
+				AgentKind:         "coderig:builder",
+				RuntimeCatalogRev: "coderig-models-v1:deadbeef",
+			},
+		},
 	}
 	for _, tt := range tests {
 		tt := tt
@@ -173,6 +378,76 @@ func TestAgentFingerprintFields(t *testing.T) {
 				t.Errorf("agentFingerprintFields = %+v, want %+v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestModelConfigInvalidatesAgentFingerprintWithoutCredentialRotation(t *testing.T) {
+	t.Parallel()
+
+	base := agentFingerprintFields(Config{ModelConfigRev: "model-rev-a"})
+	if got := agentFingerprintFields(Config{ModelConfigRev: "model-rev-a"}); !reflect.DeepEqual(got, base) {
+		t.Fatalf("identical model config produced different fields: got=%+v base=%+v", got, base)
+	}
+	if got := agentFingerprintFields(Config{ModelConfigRev: "model-rev-b"}); reflect.DeepEqual(got, base) {
+		t.Fatal("changed ModelConfigRev did not change fingerprint fields")
+	}
+}
+
+func TestAgentFingerprintCombinesModelAndRuntimeCatalogRevisionsAsValidIdentifier(t *testing.T) {
+	t.Parallel()
+
+	catalog := mustEmptyRuntimeCatalog()
+	got := agentFingerprintFields(Config{
+		ModelConfigRev: "model-rev",
+		ACPChildren: &ACPComposition{Catalog: ACPCompiledCatalog{
+			RuntimeCatalog: catalog,
+		}},
+	})
+	want := "model-rev/" + catalog.Digest()
+	if got.RuntimeCatalogRev != want {
+		t.Fatalf("RuntimeCatalogRev = %q, want %q", got.RuntimeCatalogRev, want)
+	}
+}
+
+func TestAgentFingerprintBoundsProductionLengthModelAndRuntimeCatalogRevisions(t *testing.T) {
+	t.Parallel()
+
+	modelRevision := strings.Repeat("a", 64)
+	otherModelRevision := strings.Repeat("b", 64)
+	emptyCatalog := mustEmptyRuntimeCatalog()
+	populatedCatalog, err := loop.NewRuntimeCatalog([]loop.RuntimeCatalogEntry{{
+		SubagentType:  "worker",
+		AgentHarness:  "codex",
+		Profile:       "acp/codex",
+		Credential:    loop.CredentialNativeAuth,
+		Source:        loop.RuntimeSourceNative,
+		SelectionKind: loop.RuntimeSelectionHarnessManaged,
+		Default:       true,
+	}})
+	if err != nil {
+		t.Fatalf("NewRuntimeCatalog() error = %v", err)
+	}
+
+	fields := func(modelRevision string, catalog loop.RuntimeCatalog) rig.ConfigFingerprintFields {
+		return agentFingerprintFields(Config{
+			ModelConfigRev: modelRevision,
+			ACPChildren: &ACPComposition{Catalog: ACPCompiledCatalog{
+				RuntimeCatalog: catalog,
+			}},
+		})
+	}
+	base := fields(modelRevision, emptyCatalog).RuntimeCatalogRev
+	if len(base) != 64 {
+		t.Fatalf("combined RuntimeCatalogRev length = %d, want 64: %q", len(base), base)
+	}
+	if _, err := hex.DecodeString(base); err != nil {
+		t.Fatalf("combined RuntimeCatalogRev = %q is not hex: %v", base, err)
+	}
+	if changedModel := fields(otherModelRevision, emptyCatalog).RuntimeCatalogRev; changedModel == base {
+		t.Fatal("changing the model configuration revision did not change the combined revision")
+	}
+	if changedCatalog := fields(modelRevision, populatedCatalog).RuntimeCatalogRev; changedCatalog == base {
+		t.Fatal("changing the runtime catalog revision did not change the combined revision")
 	}
 }
 

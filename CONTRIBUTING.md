@@ -25,9 +25,12 @@ this repository.
   reusable across products. Prefer direct assembly over local wrappers that
   only rename another module's API.
 - **No generic agent registry or model tier catalog.** The roster is a
-  small fixed set of Loop definitions. Do not reintroduce a confinement
-  bridge, a security-limit ordinal, or any in-session authority-mutation
-  surface.
+  small fixed set of Loop definitions, and role policy remains fixed in code.
+  Production loads model data once from the operator-managed
+  `~/.looprig/models.json`; do not reintroduce frozen production rows, fixed
+  model aliases, provider-key environment reads, or native-model environment
+  variables. Do not reintroduce a confinement bridge, a security-limit
+  ordinal, or any in-session authority-mutation surface.
 - **Least privilege per Loop.** Give each Loop the minimum tool set and the
   least-authority access profile it needs. Keep mutating, command, and
   network effects human-gated unless enforced guarantees justify automatic
@@ -37,7 +40,20 @@ this repository.
   the Rig.
 - **No secrets in logs or audit summaries.** Upstream proxy credentials
   live only inside the sandbox egress route and never enter the
-  fingerprint, permission file, logs, or child environment.
+  fingerprint, permission file, logs, or child environment. Inline provider
+  keys are permitted only in the external, owner-only `0600`
+  `~/.looprig/models.json`; never put them in `.env` or a shell command.
+- **Keep model and permission boundaries separate.** CodeRig only reads the
+  global model catalogue and never writes or chmods it. Native permissions
+  remain per workspace at
+  `~/.looprig/workspaces/<sha256(canonical-workspace)>/permissions.json`.
+  ACP children may be gateway-backed or native-auth, but both receive posture
+  metadata only and never provider keys or native permission files. Gateway
+  children receive only the loopback proxy environment; native children
+  receive only the isolated harness-login environment. An absent or disabled
+  `native_acp` profile is unavailable; omitted `models` means harness-managed
+  selection, while an explicit non-empty list requires source-aware defaults
+  to name configured aliases.
 - **Fail closed.** When access, permission, identity, or durable policy
   state is uncertain, deny by default.
 - **Typed errors when callers classify or recover; wrapped ordinary errors
@@ -51,13 +67,83 @@ Run these before pushing. CI runs the same.
 
 ```sh
 make build     # CGO_ENABLED=0 go build -trimpath -o bin/coderig ./cmd/coderig
-make run       # loads .env (if present) and runs the TUI directly
+make run       # runs the TUI; optional .env values are launcher settings only
 make test      # go test -race ./...
 make fmt       # gofmt this module's Go files in place
 make lint      # fmt-check + go vet + staticcheck + gosec
 make vuln      # go mod verify + govulncheck
 make secure    # lint + vuln
 ```
+
+## Configure production models
+
+CodeRig reads its machine-wide model catalogue once from
+`~/.looprig/models.json` when production dependencies are assembled. It does
+not create or modify this file. Create it with an editor, then restrict it to
+the owner:
+
+```sh
+mkdir -p ~/.looprig
+$EDITOR ~/.looprig/models.json
+chmod 600 ~/.looprig/models.json
+```
+
+Do not paste a real key into a shell command: shell history, process listings,
+and terminal capture can retain it. Enter credentials only inside the editor.
+This complete example contains one no-auth LM Studio model and one API-key
+model; `FAKE_EXAMPLE_KEY_DO_NOT_USE` is deliberately unusable:
+
+```json
+{
+  "version": 1,
+  "primer_default": "local-builder",
+  "claude_code_small_model": "remote-delegate",
+  "delegate_defaults": {
+    "planner": {"harness": "codex", "model": "remote-delegate", "effort": "high"},
+    "builder": {"harness": "claude-code", "model": "remote-delegate", "effort": "high"},
+    "reviewer": {"harness": "claude-code", "model": "remote-delegate", "effort": "medium"}
+  },
+  "models": [
+    {
+      "alias": "local-builder",
+      "provider": "lmstudio",
+      "api_format": "openai",
+      "base_url": "http://localhost:1234/v1",
+      "model": "local-tool-model",
+      "api_key": "",
+      "uses": ["primer", "delegate"],
+      "capabilities": {"tools": true, "thinking": false},
+      "efforts": ["none"],
+      "default_effort": "none"
+    },
+    {
+      "alias": "remote-delegate",
+      "provider": "openai",
+      "api_format": "openai-responses",
+      "base_url": "",
+      "model": "example-remote-model",
+      "api_key": "FAKE_EXAMPLE_KEY_DO_NOT_USE",
+      "uses": ["delegate"],
+      "capabilities": {"tools": true, "thinking": true},
+      "efforts": ["medium", "high"],
+      "default_effort": "high"
+    }
+  ]
+}
+```
+
+The catalogue is authoritative for production model aliases and credentials.
+The `.env` file, when used by `make run`, is only for launcher settings such as
+ACP executable path overrides; it is not a provider-key source.
+
+Native ACP configuration is an optional `native_acp` object in the same file.
+An enabled profile may omit `models` to let Claude Code or Codex use its
+already-configured login/default model. If `models` is present, it must be
+non-empty; each explicit native default names one of those aliases. Set
+`source: "native"` on a delegate default to select that profile. Native ACP
+preflight uses no gateway proxy and its child environment is limited to the
+harness login allowlist; gateway ACP uses the loopback proxy and excludes that
+login environment.
 
 ## Tests
 

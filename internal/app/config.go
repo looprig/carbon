@@ -26,6 +26,15 @@ type Config struct {
 	// reviewer-restriction, or egress-boundary change invalidates a restore. It
 	// never carries a secret.
 	AccessConfigRev string
+	// ModelConfigRev is the secret-free digest of the normalized process model
+	// configuration. Production composition sets it before rig assembly.
+	ModelConfigRev string
+	// PrimerAlias is the public, stable selector for the configured primer. It
+	// is used only by runtime controls; provider routing remains private.
+	PrimerAlias string
+	// PrimerEfforts is the exact normalized effort allowlist for the configured
+	// primer. Production composition copies it before runtime assembly.
+	PrimerEfforts []model.Effort
 	// PermissionReviewEnabled turns on classifier-based automatic permission
 	// review (off by default — a zero Config never auto-approves anything).
 	// See internal/app/permission_review.go for the composition this enables.
@@ -40,6 +49,15 @@ type Config struct {
 	// the Codex-compatible default. It can only ever tighten the default's
 	// ceilings, never loosen them. Ignored when PermissionReviewEnabled is false.
 	PermissionReviewStrictPolicy bool
+}
+
+// ModelConfigCapabilityError reports that a production operation has no
+// configured primer capability. It is intentionally bounded and carries no
+// path, raw configuration, or credential material.
+type ModelConfigCapabilityError struct{}
+
+func (*ModelConfigCapabilityError) Error() string {
+	return "coderig: model configuration has no configured primer"
 }
 
 // ModelFactory returns the secret-free model descriptor shared by CodeRig Loops.

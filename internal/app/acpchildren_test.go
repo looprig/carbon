@@ -155,6 +155,9 @@ func TestNewACPCompositionBuildsNativeAuthProfileWithoutGateway(t *testing.T) {
 	}
 	compiled, err := CompileACPCatalog(ACPCatalogInput{
 		SubagentTypes: []identity.AgentName{"worker"},
+		Defaults: map[identity.AgentName]configuredDelegateDefault{
+			"worker": {Harness: "codex", Model: "native-model", Effort: model.EffortNone},
+		},
 		NativeAuth: []ACPNativeAuthSource{{
 			Harness: "codex", Alias: "native-model", Model: testModel(),
 			DefaultEffort: model.EffortNone, Efforts: []model.Effort{model.EffortNone},
@@ -186,7 +189,7 @@ func TestNewACPCompositionBuildsNativeAuthProfileWithoutGateway(t *testing.T) {
 	}
 }
 
-func TestNewACPCompositionGatewayPreflightFiltersUnsupportedClaudeAliases(t *testing.T) {
+func TestACPChildEnvironmentAndGatewayPreflightExcludeParentSecrets(t *testing.T) {
 	t.Parallel()
 	executable, err := os.Executable()
 	if err != nil {
@@ -203,7 +206,15 @@ func TestNewACPCompositionGatewayPreflightFiltersUnsupportedClaudeAliases(t *tes
 			"XDG_CONFIG_HOME=/private/login/.config",
 			"PATH=/usr/bin",
 			"LANG=C",
-			"SECRET=must-not-pass",
+			"PROVIDER_SENTINEL=task6-obvious-fake-provider-key",
+			"MODELS_JSON_PATH=/private/login/.looprig/models.json",
+			`MODELS_JSON_CONTENT={"api_key":"task6-obvious-fake-provider-key"}`,
+			"NATIVE_PERMISSION_PATH=/private/login/.looprig/workspaces/hash/permissions.json",
+			`NATIVE_PERMISSION_CONTENT={"rules":["must-not-pass"]}`,
+			"ANTHROPIC_API_KEY=task6-obvious-fake-anthropic-key",
+			"OPENAI_API_KEY=task6-obvious-fake-openai-key",
+			"CLAUDE_CODE_ACP_NATIVE_MODELS=native=obsolete",
+			"CODEX_ACP_NATIVE_MODELS=native=obsolete",
 		},
 		NativeEnvAllowlist:  acpNativeAuthEnvAllowlist,
 		GatewayEnvAllowlist: acpGatewayEnvAllowlist,
@@ -213,11 +224,11 @@ func TestNewACPCompositionGatewayPreflightFiltersUnsupportedClaudeAliases(t *tes
 		},
 		executablePreflight: func(_ context.Context, probe ACPExecutableProbe) ACPPreflightResult {
 			probes = append(probes, probe)
-			if probe.Credential != loop.CredentialGatewayBacked || probe.SharedProxy == nil {
+			if probe.Credential != loop.CredentialGatewayBacked || probe.SharedProxy == nil || probe.SharedProxy.BaseURL != "http://127.0.0.1:1" || probe.SharedProxy.Token != "test-token" {
 				return ACPPreflightResult{}
 			}
-			if containsEnvKey(probe.Env, "HOME") || containsEnvKey(probe.Env, "XDG_CONFIG_HOME") || containsEnvKey(probe.Env, "SECRET") {
-				return ACPPreflightResult{}
+			if len(probe.Env) != 2 || probe.Env[0] != "PATH=/usr/bin" || probe.Env[1] != "LANG=C" {
+				t.Fatalf("gateway child env = %#v, want only safe process values", probe.Env)
 			}
 			if probe.Harness == "claude-code" {
 				if !containsString(probe.Models, "sonnet-5@high") || !containsString(probe.Models, "sonnet-5@max") {
@@ -256,6 +267,76 @@ func TestNewACPCompositionGatewayPreflightFiltersUnsupportedClaudeAliases(t *tes
 	}
 }
 
+func TestNewACPCompositionRejectsUnavailableConfiguredDefaultHarness(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiled := testACPGatewayCatalog(t)
+	composition, err := NewACPComposition(ACPChildrenConfig{
+		Catalog:       compiled,
+		Executables:   map[loop.AgentHarnessName]string{"claude-code": executable, "codex": executable},
+		WorkspaceRoot: "/workspace/project",
+		gatewayPreflightBinding: &launch.ProxyBinding{
+			BaseURL: "http://127.0.0.1:1",
+			Token:   "test-token",
+		},
+		executablePreflight: func(_ context.Context, probe ACPExecutableProbe) ACPPreflightResult {
+			if probe.Harness == "claude-code" {
+				return ACPPreflightResult{}
+			}
+			return ACPPreflightResult{Ready: true}
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewACPComposition() failed when configured default harness was unavailable: %v", err)
+	}
+	if composition == nil {
+		t.Fatal("NewACPComposition() returned nil composition")
+	}
+	if entries := composition.Catalog.RuntimeCatalog.EntriesFor("worker"); len(entries) != 0 {
+		t.Fatalf("NewACPComposition() substituted another harness: %#v", entries)
+	}
+}
+
+func TestNewACPCompositionPreflightHonorsCanceledContext(t *testing.T) {
+	t.Parallel()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiled := testACPGatewayCatalog(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	calls := 0
+	composition, err := NewACPComposition(ACPChildrenConfig{
+		Catalog:          compiled,
+		Executables:      map[loop.AgentHarnessName]string{"claude-code": executable, "codex": executable},
+		WorkspaceRoot:    "/workspace/project",
+		preflightContext: ctx,
+		gatewayPreflightBinding: &launch.ProxyBinding{
+			BaseURL: "http://127.0.0.1:1",
+			Token:   "test-token",
+		},
+		executablePreflight: func(ctx context.Context, _ ACPExecutableProbe) ACPPreflightResult {
+			calls++
+			if ctx.Err() == nil {
+				t.Error("preflight callback received an uncanceled context")
+			}
+			return ACPPreflightResult{}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if composition == nil {
+		t.Fatal("NewACPComposition() returned nil composition")
+	}
+	if calls > 1 {
+		t.Fatalf("canceled preflight continued across %d target probes", calls)
+	}
+}
+
 func containsString(values []string, wanted string) bool {
 	for _, value := range values {
 		if value == wanted {
@@ -273,6 +354,9 @@ func TestNewACPCompositionNativePreflightKeepsNativeEnvironment(t *testing.T) {
 	}
 	compiled, err := CompileACPCatalog(ACPCatalogInput{
 		SubagentTypes: []identity.AgentName{"worker"},
+		Defaults: map[identity.AgentName]configuredDelegateDefault{
+			"worker": {Harness: "codex", Model: "native-model", Effort: model.EffortNone},
+		},
 		NativeAuth: []ACPNativeAuthSource{{
 			Harness: "codex", Alias: "native-model", Model: testModel(),
 			DefaultEffort: model.EffortNone, Efforts: []model.Effort{model.EffortNone},
@@ -348,6 +432,9 @@ func TestACPChildModelAliasesUseConcreteGatewayTargetsAndNativeModels(t *testing
 
 	nativeCatalog, err := CompileACPCatalog(ACPCatalogInput{
 		SubagentTypes: []identity.AgentName{"worker"},
+		Defaults: map[identity.AgentName]configuredDelegateDefault{
+			"worker": {Harness: "codex", Model: "native-model", Effort: model.EffortNone},
+		},
 		NativeAuth: []ACPNativeAuthSource{{
 			Harness: "codex", Alias: "native-model", Model: testModel(),
 			DefaultEffort: model.EffortNone, Efforts: []model.Effort{model.EffortNone},
@@ -364,29 +451,20 @@ func TestACPChildModelAliasesUseConcreteGatewayTargetsAndNativeModels(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if mainAlias != native.Target.Name || smallAlias != "" {
-		t.Fatalf("native child aliases = %q/%q, want %q/empty", mainAlias, smallAlias, native.Target.Name)
-	}
-}
-
-func TestProductionACPCompositionWithoutCredentialsIsEmptyAndBounded(t *testing.T) {
-	for _, name := range []string{acpAnthropicAPIKeyEnv, acpOpenAIAPIKeyEnv, acpClaudeExecutableEnv, acpCodexExecutableEnv} {
-		t.Setenv(name, "")
-	}
-	composition, err := newProductionACPComposition()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if composition == nil || composition.Catalog.RuntimeCatalog.HasEntries() {
-		t.Fatalf("production no-credential composition = %#v, want empty catalog", composition)
+	if mainAlias != string(native.ModelAlias) || smallAlias != "" {
+		t.Fatalf("native child aliases = %q/%q, want %q/empty", mainAlias, smallAlias, native.ModelAlias)
 	}
 }
 
 func TestACPBoundRuntimeResolutionUsesPinnedSelectors(t *testing.T) {
 	t.Parallel()
 	compiled, err := CompileACPCatalog(ACPCatalogInput{
-		SubagentTypes:  []identity.AgentName{"builder"},
-		GatewayClients: map[model.ProviderName]inference.Client{"anthropic": &fakeLLM{}, "openai": &fakeLLM{}},
+		SubagentTypes: []identity.AgentName{"builder"},
+		GatewayTargets: legacyTestGatewayTargets(map[model.ProviderName]inference.Client{
+			"anthropic": &fakeLLM{}, "openai": &fakeLLM{},
+		}),
+		Defaults:    legacyTestDefaults([]identity.AgentName{"builder"}),
+		ClaudeSmall: "sonnet-5",
 	})
 	if err != nil {
 		t.Fatal(err)

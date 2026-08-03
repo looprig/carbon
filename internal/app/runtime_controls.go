@@ -19,13 +19,15 @@ import (
 // profile is fixed at Open; there is no in-session authority mutation surface.
 type RuntimeAgent struct {
 	*sessionadapter.Adapter
-	sess   session.SessionController
-	root   string
-	access *sessionAccess
+	sess          session.SessionController
+	root          string
+	access        *sessionAccess
+	primerAlias   string
+	primerEfforts []model.Effort
 }
 
-func newRuntimeAgent(adapter *sessionadapter.Adapter, sess session.SessionController, root string, access *sessionAccess) *RuntimeAgent {
-	return &RuntimeAgent{Adapter: adapter, sess: sess, root: root, access: access}
+func newRuntimeAgentWithPrimerAlias(adapter *sessionadapter.Adapter, sess session.SessionController, root string, access *sessionAccess, primerAlias string, primerEfforts []model.Effort) *RuntimeAgent {
+	return &RuntimeAgent{Adapter: adapter, sess: sess, root: root, access: access, primerAlias: primerAlias, primerEfforts: append([]model.Effort(nil), primerEfforts...)}
 }
 
 // Close shuts the session down and then releases the session's executor sets exactly once.
@@ -74,15 +76,18 @@ func (a *RuntimeAgent) LoopRuntimeOptions(_ context.Context, loopID uuid.UUID) (
 		}
 	}
 	selectedModel := handle.Model()
-	options.Models = []tui.ModelOption{{ID: tui.ModelID(modelID(selectedModel)), Label: selectedModel.Name, Description: string(selectedModel.Provider)}}
-	if selectedModel.Caps.Thinking {
-		for _, effort := range []model.Effort{model.EffortNone, model.EffortLow, model.EffortMedium, model.EffortHigh, model.EffortMax} {
-			label := string(effort)
-			if label == "" {
-				label = "Model default"
-			}
-			options.Efforts = append(options.Efforts, tui.EffortOption{ID: tui.EffortID(effort), Label: label})
+	publicID := a.publicModelID(selectedModel)
+	options.Models = []tui.ModelOption{{ID: tui.ModelID(publicID), Label: publicID}}
+	efforts := a.primerEfforts
+	if len(efforts) == 0 && selectedModel.Caps.Thinking {
+		efforts = []model.Effort{model.EffortNone, model.EffortLow, model.EffortMedium, model.EffortHigh, model.EffortMax}
+	}
+	for _, effort := range efforts {
+		label := string(effort)
+		if label == "" {
+			label = "Model default"
 		}
+		options.Efforts = append(options.Efforts, tui.EffortOption{ID: tui.EffortID(effort), Label: label})
 	}
 	return options, nil
 }
@@ -92,7 +97,20 @@ func (a *RuntimeAgent) SetMode(ctx context.Context, loopID uuid.UUID, id tui.Mod
 	if !ok {
 		return fmt.Errorf("coderig: loop %s is unavailable", loopID)
 	}
-	return controller.SetMode(ctx, loop.ModeName(id))
+	mode := loop.ModeName(id)
+	if len(a.primerEfforts) != 0 {
+		switch mode {
+		case "quick":
+			if !containsPrimerEffort(a.primerEfforts, model.EffortLow) {
+				return fmt.Errorf("coderig: mode %q is not admitted by the configured primer", id)
+			}
+		case "deep":
+			if !containsPrimerEffort(a.primerEfforts, model.EffortMax) {
+				return fmt.Errorf("coderig: mode %q is not admitted by the configured primer", id)
+			}
+		}
+	}
+	return controller.SetMode(ctx, mode)
 }
 
 func (a *RuntimeAgent) SetModel(ctx context.Context, loopID uuid.UUID, id tui.ModelID) error {
@@ -101,7 +119,7 @@ func (a *RuntimeAgent) SetModel(ctx context.Context, loopID uuid.UUID, id tui.Mo
 		return fmt.Errorf("coderig: loop %s is unavailable", loopID)
 	}
 	selectedModel := controller.Model()
-	if modelID(selectedModel) != string(id) {
+	if a.publicModelID(selectedModel) != string(id) {
 		return fmt.Errorf("coderig: model choice %q is stale or unknown", id)
 	}
 	return controller.Change(ctx, loop.ChangeModel(selectedModel))
@@ -116,10 +134,29 @@ func (a *RuntimeAgent) SetEffort(ctx context.Context, loopID uuid.UUID, id tui.E
 	if !effort.Valid() {
 		return fmt.Errorf("coderig: effort choice %q is unknown", id)
 	}
+	if len(a.primerEfforts) != 0 && !containsPrimerEffort(a.primerEfforts, effort) {
+		return fmt.Errorf("coderig: effort choice %q is not admitted by the configured primer", id)
+	}
 	return controller.Change(ctx, loop.ChangeEffort(effort))
 }
 
+func containsPrimerEffort(efforts []model.Effort, wanted model.Effort) bool {
+	for _, effort := range efforts {
+		if effort == wanted {
+			return true
+		}
+	}
+	return false
+}
+
 func modelID(value model.Model) string { return string(value.Provider) + "/" + value.Name }
+
+func (a *RuntimeAgent) publicModelID(value model.Model) string {
+	if a.primerAlias != "" {
+		return a.primerAlias
+	}
+	return modelID(value)
+}
 
 var (
 	_ tui.Agent             = (*RuntimeAgent)(nil)

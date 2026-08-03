@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"sync"
@@ -18,6 +20,7 @@ import (
 	"github.com/looprig/harness/pkg/sessionstore"
 	"github.com/looprig/harness/pkg/workspacestore"
 	"github.com/looprig/inference"
+	model "github.com/looprig/inference/model"
 	"github.com/looprig/storage"
 	"github.com/looprig/storage/memstore"
 )
@@ -37,7 +40,13 @@ const (
 	offloadGCTimeout  = 60 * time.Second
 	// snapshotTimeout bounds one best-effort workspace snapshot at quiescence.
 	snapshotTimeout = 60 * time.Second
+	// maxRuntimeManifestIdentifierBytes matches Harness's current-schema runtime
+	// manifest identifier cap. Production model and catalog revisions are each
+	// 64-byte hex digests, so their short form needs the digest fallback below.
+	maxRuntimeManifestIdentifierBytes = 128
 )
+
+const runtimeCatalogRevisionDigestDomain = "looprig/coderig/runtime-catalog-revision/v1"
 
 // DefaultDataDir is the default root for the on-disk session store: ~/.looprig/store. It
 // fails loud with a typed *StoreInitError if the home directory cannot be resolved.
@@ -114,10 +123,31 @@ func agentFingerprintFields(cfg Config) rig.ConfigFingerprintFields {
 		NativePermissionPolicyRev: cfg.AccessConfigRev,
 		AppFields:                 accessAppFields(cfg.AccessProfile),
 	}
+	fields.RuntimeCatalogRev = cfg.ModelConfigRev
 	if cfg.ACPChildren != nil {
-		fields.RuntimeCatalogRev = cfg.ACPChildren.Catalog.RuntimeCatalog.Digest()
+		catalogRev := cfg.ACPChildren.Catalog.RuntimeCatalog.Digest()
+		fields.RuntimeCatalogRev = combineRuntimeCatalogRevisions(fields.RuntimeCatalogRev, catalogRev)
 	}
 	return fields
+}
+
+// combineRuntimeCatalogRevisions derives the one durable runtime revision from
+// the model configuration and compiled runtime catalogue revisions. Keep the
+// historical short synthetic form where it fits; production-length revisions
+// use a domain-separated hex digest so the manifest cap can never be exceeded.
+func combineRuntimeCatalogRevisions(modelConfigRev, runtimeCatalogRev string) string {
+	if modelConfigRev == "" {
+		return runtimeCatalogRev
+	}
+	if runtimeCatalogRev == "" {
+		return modelConfigRev
+	}
+	combined := modelConfigRev + "/" + runtimeCatalogRev
+	if len(combined) <= maxRuntimeManifestIdentifierBytes {
+		return combined
+	}
+	digest := sha256.Sum256([]byte(runtimeCatalogRevisionDigestDomain + "\x00" + modelConfigRev + "\x00" + runtimeCatalogRev))
+	return hex.EncodeToString(digest[:])
 }
 
 // operatorFingerprintFields is a legacy package-local fixture seam. New
@@ -243,18 +273,51 @@ type SessionSelector struct {
 // it. It holds the fsstore backend (closed once at teardown) and the store facades + listing
 // catalog over it. Read-only after construction.
 type SessionStoreFactory struct {
-	fs             *fsstore.Store
-	stores         *swarmStores
+	dataDir    string
+	fs         *fsstore.Store
+	stores     *swarmStores
+	loadModels productionModelsLoader
+	// buildClient is retained as an explicit-client compatibility seam for
+	// package tests. When set, Open bypasses models.json and production ACP
+	// composition exactly like openWithClient.
 	buildClient    func() (inference.Client, ModelFactory, error)
+	storeMu        sync.Mutex
+	closed         bool
 	mu             sync.Mutex
 	currentSession uuid.UUID
 }
 
-// NewSessionStoreFactory opens the on-disk store rooted at dataDir and returns the production
-// factory. It fails closed with a typed *StoreInitError if any store layer cannot be opened,
-// closing the backend if a later layer fails so no directory lock leaks.
+// NewSessionStoreFactory returns a lazy production factory for the on-disk store rooted at
+// dataDir. The backend is opened by List, or by Open after production model configuration has
+// been loaded and validated, so configuration failures cannot open or mutate persistence.
 func NewSessionStoreFactory(dataDir string) (*SessionStoreFactory, error) {
-	fs, err := fsstore.Open(fsstore.Options{Root: dataDir})
+	return &SessionStoreFactory{dataDir: dataDir, loadModels: loadProductionModels}, nil
+}
+
+// Close releases the shared on-disk backend, once, at process teardown (after every session
+// opened from this factory has been Closed). It is idempotent.
+func (f *SessionStoreFactory) Close() error {
+	f.storeMu.Lock()
+	defer f.storeMu.Unlock()
+	if f.closed {
+		return nil
+	}
+	f.closed = true
+	fs := f.fs
+	if fs == nil {
+		return nil
+	}
+	return fs.Close()
+}
+
+func (f *SessionStoreFactory) ensureStoresLocked() (*swarmStores, error) {
+	if f.closed {
+		return nil, &StoreClosedError{}
+	}
+	if f.stores != nil {
+		return f.stores, nil
+	}
+	fs, err := fsstore.Open(fsstore.Options{Root: f.dataDir})
 	if err != nil {
 		return nil, &StoreInitError{Stage: "fsstore", Cause: err}
 	}
@@ -263,32 +326,50 @@ func NewSessionStoreFactory(dataDir string) (*SessionStoreFactory, error) {
 		_ = fs.Close()
 		return nil, err
 	}
-	return &SessionStoreFactory{fs: fs, stores: stores, buildClient: buildClient}, nil
-}
-
-// Close releases the shared on-disk backend, once, at process teardown (after every session
-// opened from this factory has been Closed). It is idempotent.
-func (f *SessionStoreFactory) Close() error {
-	return f.fs.Close()
+	f.fs = fs
+	f.stores = stores
+	return stores, nil
 }
 
 // List returns the session catalog (most-recently-active-first), the source the CLI --list
 // path prints. It reads the listing index only — no lease, no replay — so it stays cheap.
 func (f *SessionStoreFactory) List(ctx context.Context) ([]sessionstore.SessionMeta, error) {
-	return f.stores.catalog.ListSessions(ctx)
-}
-
-// Open builds a fully-persisted CodeRig session for sel (new or resumed) and returns it as
-// a tui.Agent. It builds the provider client + ModelFactory exactly like New (reads
-// LLM_API_KEY, fails loud on a missing key), then delegates to the construction seam.
-func (f *SessionStoreFactory) Open(ctx context.Context, sel SessionSelector, cfg Config) (*RuntimeAgent, error) {
-	client, factory, err := f.buildClient()
+	f.storeMu.Lock()
+	defer f.storeMu.Unlock()
+	stores, err := f.ensureStoresLocked()
 	if err != nil {
 		return nil, err
 	}
-	cfg, err = withProductionACPChildren(cfg)
-	if err != nil {
-		return nil, err
+	return stores.catalog.ListSessions(ctx)
+}
+
+// Open builds a fully-persisted CodeRig session from one models.json load.
+func (f *SessionStoreFactory) Open(ctx context.Context, sel SessionSelector, cfg Config) (*RuntimeAgent, error) {
+	var client inference.Client
+	var factory ModelFactory
+	if f.buildClient != nil {
+		var err error
+		client, factory, err = f.buildClient()
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		configured, err := f.loadModels()
+		if err != nil {
+			return nil, err
+		}
+		if configured.PrimerClient == nil || configured.PrimerModel.Name == "" {
+			return nil, &ModelConfigCapabilityError{}
+		}
+		client = configured.PrimerClient
+		factory = newModelFactoryFor(configured.PrimerModel)
+		cfg.ModelConfigRev = configured.ConfigRev
+		cfg.PrimerAlias = configured.PrimerAlias
+		cfg.PrimerEfforts = append([]model.Effort(nil), configured.PrimerEfforts...)
+		cfg, err = withProductionACPChildren(ctx, cfg, configured)
+		if err != nil {
+			return nil, err
+		}
 	}
 	agent, err := f.openWithClient(ctx, client, factory, sel, cfg)
 	if err != nil {
@@ -305,6 +386,12 @@ func (f *SessionStoreFactory) Open(ctx context.Context, sel SessionSelector, cfg
 // integration tests drive with an injected fake client. A resume threads
 // sel.AllowConfigMismatch into the rig so a deliberate config change can proceed.
 func (f *SessionStoreFactory) openWithClient(ctx context.Context, client inference.Client, factory ModelFactory, sel SessionSelector, cfg Config) (*RuntimeAgent, error) {
+	f.storeMu.Lock()
+	defer f.storeMu.Unlock()
+	stores, err := f.ensureStoresLocked()
+	if err != nil {
+		return nil, err
+	}
 	root, err := os.Getwd()
 	if err != nil {
 		return nil, &WorkspaceRootError{Cause: err}
@@ -313,5 +400,5 @@ func (f *SessionStoreFactory) openWithClient(ctx context.Context, client inferen
 	// access wiring uses the HOME-derived workspace permission store and interactive
 	// gate evaluators. The selected access profile is fixed for the session; the TUI
 	// only displays it (SessionPresenter). New and restore share this one path.
-	return openRuntimeAgent(ctx, client, factory, cfg, f.stores, root, sel, true)
+	return openRuntimeAgent(ctx, client, factory, cfg, stores, root, sel, true)
 }

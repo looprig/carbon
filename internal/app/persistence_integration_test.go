@@ -39,6 +39,9 @@ func newIntegrationFactory(t *testing.T) *SessionStoreFactory {
 	if err != nil {
 		t.Fatalf("NewSessionStoreFactory: %v", err)
 	}
+	if _, err := f.List(context.Background()); err != nil {
+		t.Fatalf("initialize session-store factory: %v", err)
+	}
 	t.Cleanup(func() { _ = f.Close() })
 	return f
 }
@@ -253,8 +256,8 @@ func TestNewSessionStoreFactoryOpensAndCloses(t *testing.T) {
 // TestSessionStoreNewSessionBasics proves openWithClient with a ZERO selector builds a NEW
 // persisted session over the shared store: it has a non-zero SessionID (the factory minted +
 // injected it) and, being a fresh session, its cold-repaint backlog carries only the session
-// initialization events (SessionStarted + the primer's LoopStarted) — no turn or content
-// history to repaint.
+// initialization events (SessionStarted + the fixed roster's LoopStarted events) — no turn or
+// content history to repaint.
 func TestSessionStoreNewSessionBasics(t *testing.T) {
 	f := newIntegrationFactory(t)
 
@@ -272,7 +275,9 @@ func TestSessionStoreNewSessionBasics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new-session ReplayBacklog: %v", err)
 	}
-	if got := typeNames(backlog); !reflect.DeepEqual(got, []string{"event.SessionStarted", "event.LoopStarted"}) {
+	if got := typeNames(backlog); !reflect.DeepEqual(got, []string{
+		"event.SessionStarted", "event.LoopStarted", "event.LoopStarted", "event.LoopStarted",
+	}) {
 		t.Errorf("new-session ReplayBacklog = %v, want only the session initialization events", got)
 	}
 }

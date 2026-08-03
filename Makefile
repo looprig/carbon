@@ -8,8 +8,9 @@ GO_FILES := $(shell go list -f '{{range .GoFiles}}{{$$.Dir}}/{{.}} {{end}}{{rang
 build:
 	CGO_ENABLED=0 go build -trimpath -o bin/coderig ./cmd/coderig
 
-# Run the TUI directly. Loads .env (if present) so LLM_API_KEY and friends are
-# exported for the process.
+# Run the TUI directly. Optional .env values are launcher settings (for example,
+# ACP executable path overrides), never provider credentials; models and inline
+# keys belong only in the owner-only ~/.looprig/models.json.
 run:
 	set -a; [ -f .env ] && . ./.env; set +a; go run ./cmd/coderig
 

@@ -302,8 +302,15 @@ func (a *sessionAccess) Close() error {
 // read-only permission store (no HOME search) and headless gate evaluators that
 // never prompt. The interactive counterpart is reached through openRuntimeAgent's
 // interactive flag (buildSessionAccess with interactive=true).
-func buildHeadlessAccess(cfg Config, root string) (*sessionAccess, error) {
-	return buildSessionAccess(cfg, root, false)
+func buildHeadlessAccess(cfg Config, root string, explicitPermissionPath ...string) (*sessionAccess, error) {
+	if len(explicitPermissionPath) > 1 {
+		return nil, errors.New("coderig: headless access accepts at most one permission file")
+	}
+	permissionPath := ""
+	if len(explicitPermissionPath) == 1 {
+		permissionPath = explicitPermissionPath[0]
+	}
+	return buildSessionAccessWithPermissionFile(cfg, root, false, permissionPath)
 }
 
 // buildSessionAccess constructs the session's fixed access wiring. It builds the
@@ -313,6 +320,10 @@ func buildHeadlessAccess(cfg Config, root string) (*sessionAccess, error) {
 // failure it closes what it already built so no scratch HOME leaks. All role
 // gates share the one workspace permission store (one workspace, one file).
 func buildSessionAccess(cfg Config, root string, interactive bool) (*sessionAccess, error) {
+	return buildSessionAccessWithPermissionFile(cfg, root, interactive, "")
+}
+
+func buildSessionAccessWithPermissionFile(cfg Config, root string, interactive bool, explicitPermissionPath string) (*sessionAccess, error) {
 	profileName := cfg.AccessProfile
 	if profileName == "" {
 		profileName = DefaultAccessProfile
@@ -332,7 +343,7 @@ func buildSessionAccess(cfg Config, root string, interactive bool) (*sessionAcce
 		return nil, err
 	}
 
-	store, diagnostics, err := buildPermissionStore(root, interactive)
+	store, diagnostics, err := buildPermissionStore(root, interactive, explicitPermissionPath)
 	if err != nil {
 		return nil, err
 	}
@@ -420,15 +431,18 @@ func buildSessionAccess(cfg Config, root string, interactive bool) (*sessionAcce
 // interactive read/write store at the HOME-derived per-workspace path, or the
 // headless read-only store (an empty rule set with no HOME search). Both satisfy
 // the gate's RuleMatcher; only the interactive store is a RuleWriter.
-func buildPermissionStore(root string, interactive bool) (*permission.Store, []permission.Diagnostic, error) {
+func buildPermissionStore(root string, interactive bool, explicitPermissionPath string) (*permission.Store, []permission.Diagnostic, error) {
 	if interactive {
+		if explicitPermissionPath != "" {
+			return nil, nil, errors.New("coderig: interactive access cannot use an explicit read-only permission file")
+		}
 		config, err := interactivePermissionConfig(root)
 		if err != nil {
 			return nil, nil, err
 		}
 		return permission.NewWorkspaceStore(config)
 	}
-	config, err := headlessPermissionConfig("")
+	config, err := headlessPermissionConfig(explicitPermissionPath)
 	if err != nil {
 		return nil, nil, err
 	}

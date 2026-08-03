@@ -84,19 +84,6 @@ func TestModelsAreValid(t *testing.T) {
 	}
 }
 
-// TestDefaultModelIsKimiK26 proves the package default the whole swarm runs on is Chutes
-// Kimi K2.6 — the newest Kimi Chutes serves.
-func TestDefaultModelIsKimiK26(t *testing.T) {
-	t.Parallel()
-
-	if defaultModel.Name != "moonshotai/Kimi-K2.6-TEE" {
-		t.Errorf("default model = %q, want the Chutes Kimi K2.6 id %q", defaultModel.Name, "moonshotai/Kimi-K2.6-TEE")
-	}
-	if defaultModel.Provider != model.ProviderName(llm.ProviderChutes) {
-		t.Errorf("default model provider = %q, want %q", defaultModel.Provider, llm.ProviderChutes)
-	}
-}
-
 // TestMustValidModelRejectsMalformed proves mustValidModel fails loud (panics with a typed
 // *InvalidDefaultModelError) on a hardcoded descriptor that cannot pass the provider preset.
 func TestMustValidModelRejectsMalformed(t *testing.T) {

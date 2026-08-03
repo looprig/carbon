@@ -17,50 +17,29 @@ import (
 	"github.com/looprig/coderig/internal/catalog/reviewer"
 	"github.com/looprig/harness/pkg/identity"
 	"github.com/looprig/harness/pkg/loop"
-	"github.com/looprig/inference"
-	"github.com/looprig/inference/auth"
-	model "github.com/looprig/inference/model"
-	"github.com/looprig/llm/auto"
 )
 
 const (
-	acpAnthropicAPIKeyEnv    = "ANTHROPIC_API_KEY" // #nosec G101 -- environment variable name, not a credential value
-	acpOpenAIAPIKeyEnv       = "OPENAI_API_KEY"    // #nosec G101 -- environment variable name, not a credential value
-	acpClaudeExecutableEnv   = "CLAUDE_CODE_ACP_EXECUTABLE"
-	acpCodexExecutableEnv    = "CODEX_ACP_EXECUTABLE"
-	acpClaudeNativeModelsEnv = "CLAUDE_CODE_ACP_NATIVE_MODELS"
-	acpCodexNativeModelsEnv  = "CODEX_ACP_NATIVE_MODELS"
+	acpClaudeExecutableEnv = "CLAUDE_CODE_ACP_EXECUTABLE"
+	acpCodexExecutableEnv  = "CODEX_ACP_EXECUTABLE"
+	acpNativeProbeTimeout  = 5 * time.Second
+	acpNativeFieldLimit    = 128
 )
 
-// acpChildEnvAllowlist is deliberately limited to process configuration and
-// login-home location. Provider API keys and all other ambient secrets stay
-// outside the ACP child environment; gateway credentials are bound only to the
-// in-process provider clients.
+// Gateway-backed children inherit only process mechanics. Provider keys remain
+// bound to the already-constructed in-process inference clients.
+var acpGatewayEnvAllowlist = []string{
+	"LANG", "LC_ALL", "LOGNAME", "PATH", "TERM", "TMPDIR", "USER",
+}
+
+// Native-auth children receive only the bounded login/process environment when
+// an enabled native_acp profile has passed executable preflight.
 var acpNativeAuthEnvAllowlist = []string{
 	"HOME", "LANG", "LC_ALL", "LOGNAME", "PATH", "TERM", "TMPDIR", "USER",
 	"XDG_CONFIG_HOME", "XDG_DATA_HOME",
 }
 
-// Native model discovery is allowed to consume only the connector's bounded,
-// non-secret model projection in addition to the values that a native child
-// may receive. These variables are intentionally not part of the child
-// allowlist: discovery input and child process environment are separate
-// trust boundaries.
-var acpNativeDiscoveryEnvAllowlist = append(append([]string(nil), acpNativeAuthEnvAllowlist...),
-	acpClaudeNativeModelsEnv, acpCodexNativeModelsEnv,
-)
-
-// Gateway-backed children must not inherit harness login locations. Provider
-// credentials are bound only to the in-process gateway clients.
-var acpGatewayEnvAllowlist = []string{
-	"LANG", "LC_ALL", "LOGNAME", "PATH", "TERM", "TMPDIR", "USER",
-}
-
-// Compatibility name for callers that supplied one allowlist before the
-// credential-specific environment split.
-var acpChildEnvAllowlist = acpNativeAuthEnvAllowlist
-
-// ACPNativeAuthProbe is the secret-free input to native-login discovery.
+// ACPNativeAuthProbe remains the bounded lower-level ACP probe shape.
 type ACPNativeAuthProbe struct {
 	Harness       loop.AgentHarnessName
 	Executable    string
@@ -68,29 +47,8 @@ type ACPNativeAuthProbe struct {
 	Env           []string
 }
 
-type acpNativeAuthDiscoverer func(context.Context, ACPNativeAuthProbe) ([]ACPNativeAuthSource, error)
-
-type acpNativeModelMetadata struct {
-	alias string
-	name  string
-}
-
-type acpNativeSessionProbe func(context.Context, ACPNativeAuthProbe, []acpNativeModelMetadata) ([]acpNativeModelMetadata, error)
-
-const (
-	acpNativeProbeTimeout = 5 * time.Second
-	acpNativeModelLimit   = 32
-	acpNativeFieldLimit   = 128
-)
-
-// withProductionACPChildren installs the real process composition only at the
-// public production entry points. Test seams may continue to pass an explicit
-// composition (or nil) without reading ambient credentials or executable paths.
-func withProductionACPChildren(cfg Config) (Config, error) {
-	if cfg.ACPChildren != nil {
-		return cfg, nil
-	}
-	composition, err := newProductionACPComposition()
+func withProductionACPChildren(ctx context.Context, cfg Config, configured productionModels) (Config, error) {
+	composition, err := newProductionACPCompositionWithPreflight(ctx, configured, nil)
 	if err != nil {
 		return Config{}, err
 	}
@@ -98,99 +56,40 @@ func withProductionACPChildren(cfg Config) (Config, error) {
 	return cfg, nil
 }
 
-// newProductionACPComposition binds direct provider credentials to private
-// inference clients, compiles the current CodeRig role set, and preflights the
-// configured ACP executables. Missing credentials or executables simply yield
-// an empty/partial catalog; the resulting Subagent surface fails closed with a
-// bounded no-runtime result rather than advertising an unusable child.
-func newProductionACPComposition() (*ACPComposition, error) {
-	return newProductionACPCompositionWithDiscoveryAndPreflight(context.Background(), discoverProductionACPNativeAuth, nil)
-}
-
-func newProductionACPCompositionWithDiscovery(ctx context.Context, discover acpNativeAuthDiscoverer) (*ACPComposition, error) {
-	// This helper is an injectable discovery seam used by focused composition
-	// tests. Those tests replace native discovery but do not launch a real ACP
-	// executable; production uses newProductionACPComposition above, which
-	// keeps the real executable/session preflight enabled.
-	return newProductionACPCompositionWithDiscoveryAndPreflight(ctx, discover, func(_ context.Context, probe ACPExecutableProbe) ACPPreflightResult {
-		result := ACPPreflightResult{Ready: true}
-		if probe.Harness == "claude-code" {
-			result.AdvertisedModels = append([]string(nil), probe.Models...)
-		}
-		return result
-	})
-}
-
-func newProductionACPCompositionWithDiscoveryAndPreflight(ctx context.Context, discover acpNativeAuthDiscoverer, executablePreflight func(context.Context, ACPExecutableProbe) ACPPreflightResult) (*ACPComposition, error) {
-	clients := make(map[model.ProviderName]inference.Client)
-	anthropic, err := productionACPClient(
-		model.ProviderName("anthropic"), model.APIFormatAnthropic, "claude-sonnet-5", acpAnthropicAPIKeyEnv,
-	)
-	if err != nil {
-		return nil, err
-	}
-	if anthropic != nil {
-		clients[model.ProviderName("anthropic")] = anthropic
-	}
-	openai, err := productionACPClient(
-		model.ProviderName("openai"), model.APIFormatOpenAIResponses, "gpt-5.6-luna", acpOpenAIAPIKeyEnv,
-	)
-	if err != nil {
-		return nil, err
-	}
-	if openai != nil {
-		clients[model.ProviderName("openai")] = openai
-	}
+func newProductionACPCompositionWithPreflight(ctx context.Context, configured productionModels, executablePreflight func(context.Context, ACPExecutableProbe) ACPPreflightResult) (*ACPComposition, error) {
 	root, err := os.Getwd()
 	if err != nil {
 		return nil, fmt.Errorf("coderig: resolve ACP workspace root: %w", err)
 	}
-	executables := map[loop.AgentHarnessName]string{
-		"claude-code": os.Getenv(acpClaudeExecutableEnv),
-		"codex":       os.Getenv(acpCodexExecutableEnv),
-	}
-	if discover == nil {
-		discover = discoverProductionACPNativeAuth
-	}
-	native := make([]ACPNativeAuthSource, 0)
-	for _, harness := range []loop.AgentHarnessName{"claude-code", "codex"} {
-		sources, err := discover(ctx, ACPNativeAuthProbe{
-			Harness: harness, Executable: executables[harness], WorkspaceRoot: root,
-			Env: filterACPEnv(os.Environ(), acpNativeDiscoveryEnvAllowlist),
-		})
-		if err != nil {
-			// Native login/discovery is optional. Keep gateway-backed rows
-			// usable when a native probe cannot run, and never carry a raw
-			// child/login error into composition.
-			continue
-		}
-		native = append(native, sources...)
-	}
 	catalog, err := CompileACPCatalog(ACPCatalogInput{
 		SubagentTypes:  []identity.AgentName{planner.Name, builder.Name, reviewer.Name},
-		GatewayClients: clients,
-		NativeAuth:     native,
+		GatewayTargets: configured.ACP,
+		Defaults:       configured.Defaults,
+		ClaudeSmall:    configured.ClaudeSmall,
+		NativeACP:      configured.NativeACP,
 	})
 	if err != nil {
 		return nil, err
 	}
 	return NewACPComposition(ACPChildrenConfig{
-		Catalog:             catalog,
-		Executables:         executables,
+		Catalog: catalog,
+		Executables: map[loop.AgentHarnessName]string{
+			"claude-code": os.Getenv(acpClaudeExecutableEnv),
+			"codex":       os.Getenv(acpCodexExecutableEnv),
+		},
 		WorkspaceRoot:       root,
 		Env:                 os.Environ(),
-		EnvAllowlist:        acpChildEnvAllowlist,
 		NativeEnvAllowlist:  acpNativeAuthEnvAllowlist,
 		GatewayEnvAllowlist: acpGatewayEnvAllowlist,
+		preflightContext:    ctx,
 		executablePreflight: executablePreflight,
 	})
 }
 
-// preflightProductionACPExecutable proves that the configured file is an ACP
-// adapter, not merely an executable bit. It uses the same credential mode as
-// the eventual child: native-auth probes use NoProxy and native login env;
-// gateway probes borrow the caller's SharedProxy binding and gateway env.
-// Process/protocol failures collapse to a bounded false result here.
+// preflightProductionACPExecutable proves that the configured file speaks ACP
+// using the same credential path and exact configured model arguments as the
+// eventual child. Native probes use DialNative and therefore cannot carry a
+// gateway proxy binding.
 func preflightProductionACPExecutable(ctx context.Context, probe ACPExecutableProbe) ACPPreflightResult {
 	if !preflightACPExecutable(probe.Executable) || !cleanACPWorkspaceRoot(probe.WorkspaceRoot) {
 		return ACPPreflightResult{}
@@ -198,46 +97,74 @@ func preflightProductionACPExecutable(ctx context.Context, probe ACPExecutablePr
 	probeCtx, cancel := context.WithTimeout(ctx, acpNativeProbeTimeout)
 	defer cancel()
 	var connector launch.HarnessAdapter
+	var claude *launch.ClaudeConnector
 	switch probe.Harness {
 	case "claude-code":
-		model := probe.Model
-		if model == "" {
-			model = "sonnet-5"
-		}
-		small := model
-		if probe.Credential == loop.CredentialGatewayBacked {
-			small = "sonnet-5"
-		}
-		connector = launch.ClaudeCode(launch.ClaudeModels{Default: model, Small: small})
+		claude = launch.ClaudeCode(launch.ClaudeModels{Default: probe.Model, Small: probe.SmallModel})
+		connector = claude
 	case "codex":
-		if probe.Model == "" {
-			return ACPPreflightResult{}
-		}
 		codex := launch.Codex(probe.Model)
 		codex.Posture = launch.CodexPosture{ApprovalPolicy: "never", SandboxMode: "read-only"}
 		connector = codex
 	default:
 		return ACPPreflightResult{}
 	}
-	config := launch.Config{
-		Harness: connector,
-		Command: stdio.Command{Path: probe.Executable, Dir: probe.WorkspaceRoot, Env: probe.Env},
-		Client:  client.Options{},
-	}
+	command := stdio.Command{Path: probe.Executable, Dir: probe.WorkspaceRoot}
+	var managed *launch.ManagedClient
+	var err error
 	switch probe.Credential {
-	case loop.CredentialNativeAuth:
-		config.NoProxy = true
-		config.Command.Env = filterACPEnv(config.Command.Env, acpNativeAuthEnvAllowlist)
 	case loop.CredentialGatewayBacked:
+		switch probe.Harness {
+		case "claude-code":
+			if probe.Model == "" || probe.SmallModel == "" {
+				return ACPPreflightResult{}
+			}
+		case "codex":
+			if probe.Model == "" || probe.SmallModel != "" {
+				return ACPPreflightResult{}
+			}
+		default:
+			return ACPPreflightResult{}
+		}
 		if probe.SharedProxy == nil || probe.SharedProxy.BaseURL == "" || probe.SharedProxy.Token == "" {
 			return ACPPreflightResult{}
 		}
-		config.SharedProxy = probe.SharedProxy
-		config.Command.Env = filterACPEnv(config.Command.Env, acpGatewayEnvAllowlist)
+		command.Env = filterACPEnv(probe.Env, acpGatewayEnvAllowlist)
+		managed, err = launch.Dial(probeCtx, launch.Config{
+			Harness:     connector,
+			SharedProxy: probe.SharedProxy,
+			Command:     command,
+			Client:      client.Options{},
+		})
+	case loop.CredentialNativeAuth:
+		if probe.SharedProxy != nil {
+			return ACPPreflightResult{}
+		}
+		switch probe.Harness {
+		case "claude-code":
+			if (probe.Model == "") != (probe.SmallModel == "") {
+				return ACPPreflightResult{}
+			}
+		case "codex":
+			if probe.SmallModel != "" {
+				return ACPPreflightResult{}
+			}
+		default:
+			return ACPPreflightResult{}
+		}
+		native, ok := connector.(launch.NativeHarnessAdapter)
+		if !ok {
+			return ACPPreflightResult{}
+		}
+		command.Env = filterACPEnv(probe.Env, acpNativeAuthEnvAllowlist)
+		managed, err = launch.DialNative(probeCtx, launch.NativeConfig{
+			Harness: native,
+			Command: command,
+			Client:  client.Options{},
+		})
 	default:
 		return ACPPreflightResult{}
 	}
-	managed, err := launch.Dial(probeCtx, config)
 	if err != nil {
 		return ACPPreflightResult{}
 	}
@@ -249,6 +176,14 @@ func preflightProductionACPExecutable(ctx context.Context, probe ACPExecutablePr
 	session, err := managed.Client().NewSession(probeCtx, client.NewSessionParams{Cwd: probe.WorkspaceRoot})
 	if err != nil || probeCtx.Err() != nil {
 		return ACPPreflightResult{}
+	}
+	if probe.Credential == loop.CredentialNativeAuth && claude != nil && probe.Model != "" {
+		if err := claude.SelectDefaultModel(probeCtx, session); err != nil {
+			return ACPPreflightResult{}
+		}
+		if err := claude.SelectSmallModel(probeCtx, session); err != nil {
+			return ACPPreflightResult{}
+		}
 	}
 	result := ACPPreflightResult{Ready: true}
 	if probe.Harness == "claude-code" && session != nil {
@@ -266,115 +201,26 @@ func advertisedACPModelValues(options []protocol.SessionConfigOption) []string {
 		}
 		for _, item := range option.Select.Options.Ungrouped {
 			value := string(item.Value)
-			if !validACPNativeField(value) {
-				continue
-			}
-			if _, exists := seen[value]; !exists {
-				seen[value] = struct{}{}
-				values = append(values, value)
-			}
-		}
-		for _, group := range option.Select.Options.Grouped {
-			for _, item := range group.Options {
-				value := string(item.Value)
-				if !validACPNativeField(value) {
-					continue
-				}
+			if validACPNativeField(value) {
 				if _, exists := seen[value]; !exists {
 					seen[value] = struct{}{}
 					values = append(values, value)
 				}
 			}
 		}
+		for _, group := range option.Select.Options.Grouped {
+			for _, item := range group.Options {
+				value := string(item.Value)
+				if validACPNativeField(value) {
+					if _, exists := seen[value]; !exists {
+						seen[value] = struct{}{}
+						values = append(values, value)
+					}
+				}
+			}
+		}
 	}
 	return values
-}
-
-// discoverProductionACPNativeAuth treats the bounded model projection only as
-// candidates. It advertises them only after the configured executable starts,
-// initializes as ACP, and creates a native-auth session. Every process/login/
-// protocol failure is intentionally collapsed to an empty result: raw child
-// errors can contain login paths or credentials and must not cross into the
-// composition or model-facing surface.
-func discoverProductionACPNativeAuth(ctx context.Context, probe ACPNativeAuthProbe) ([]ACPNativeAuthSource, error) {
-	return discoverProductionACPNativeAuthWithSessionProbe(ctx, probe, probeProductionACPNativeSession)
-}
-
-func discoverProductionACPNativeAuthWithSessionProbe(ctx context.Context, probe ACPNativeAuthProbe, sessionProbe acpNativeSessionProbe) ([]ACPNativeAuthSource, error) {
-	envName := acpCodexNativeModelsEnv
-	provider := model.ProviderName("openai")
-	format := model.APIFormatOpenAIResponses
-	if probe.Harness == "claude-code" {
-		envName = acpClaudeNativeModelsEnv
-		provider = model.ProviderName("anthropic")
-		format = model.APIFormatAnthropic
-	}
-	value := lookupEnv(probe.Env, envName)
-	if strings.TrimSpace(value) == "" {
-		return nil, nil
-	}
-	candidates, ok := parseACPNativeModelMetadata(value)
-	if !ok || sessionProbe == nil {
-		return nil, nil
-	}
-	probeCtx, cancel := context.WithTimeout(ctx, acpNativeProbeTimeout)
-	defer cancel()
-	verified, err := sessionProbe(probeCtx, probe, candidates)
-	if err != nil || probeCtx.Err() != nil || len(verified) == 0 || len(verified) > acpNativeModelLimit {
-		return nil, nil
-	}
-	allowed := make(map[acpNativeModelMetadata]struct{}, len(candidates))
-	for _, candidate := range candidates {
-		allowed[candidate] = struct{}{}
-	}
-	result := make([]ACPNativeAuthSource, 0, len(verified))
-	var claudeSmall string
-	seen := make(map[acpNativeModelMetadata]struct{}, len(verified))
-	for _, metadata := range verified {
-		if _, ok := allowed[metadata]; !ok || !validACPNativeMetadata(metadata) {
-			return nil, nil
-		}
-		if _, duplicate := seen[metadata]; duplicate {
-			continue
-		}
-		seen[metadata] = struct{}{}
-		source := ACPNativeAuthSource{
-			Harness:       probe.Harness,
-			Alias:         loop.ModelAlias(metadata.alias),
-			Model:         model.CustomModel(provider, format, "", metadata.name, model.WithTools(), model.WithThinking()),
-			DefaultEffort: model.EffortNone,
-			Efforts:       []model.Effort{model.EffortNone},
-		}
-		if probe.Harness == "claude-code" {
-			if claudeSmall == "" {
-				claudeSmall = metadata.name
-			}
-			source.SmallModel = claudeSmall
-		}
-		result = append(result, source)
-	}
-	return result, nil
-}
-
-func parseACPNativeModelMetadata(value string) ([]acpNativeModelMetadata, bool) {
-	parts := strings.Split(value, ",")
-	if len(parts) == 0 || len(parts) > acpNativeModelLimit {
-		return nil, false
-	}
-	result := make([]acpNativeModelMetadata, 0, len(parts))
-	for _, raw := range parts {
-		alias, name, ok := strings.Cut(strings.TrimSpace(raw), "=")
-		metadata := acpNativeModelMetadata{alias: strings.TrimSpace(alias), name: strings.TrimSpace(name)}
-		if !ok || !validACPNativeMetadata(metadata) {
-			return nil, false
-		}
-		result = append(result, metadata)
-	}
-	return result, true
-}
-
-func validACPNativeMetadata(metadata acpNativeModelMetadata) bool {
-	return validACPNativeField(metadata.alias) && validACPNativeField(metadata.name)
 }
 
 func validACPNativeField(value string) bool {
@@ -391,123 +237,4 @@ func validACPNativeField(value string) bool {
 
 func cleanACPWorkspaceRoot(root string) bool {
 	return root != "" && filepath.IsAbs(root) && filepath.Clean(root) == root
-}
-
-func probeProductionACPNativeSession(ctx context.Context, probe ACPNativeAuthProbe, candidates []acpNativeModelMetadata) ([]acpNativeModelMetadata, error) {
-	if len(candidates) == 0 || !preflightACPExecutable(probe.Executable) || !cleanACPWorkspaceRoot(probe.WorkspaceRoot) {
-		return nil, fmt.Errorf("native ACP session probe has no candidates")
-	}
-	if probe.Harness == "codex" {
-		// Codex model selection is process-scoped rather than a stable ACP
-		// config option. Probe each candidate in its own process so a stale
-		// later value cannot be admitted merely because the first one worked.
-		verified := make([]acpNativeModelMetadata, 0, len(candidates))
-		for _, candidate := range candidates {
-			if ctx.Err() != nil {
-				return nil, ctx.Err()
-			}
-			if probeProductionACPCodexCandidate(ctx, probe, candidate) {
-				verified = append(verified, candidate)
-			}
-		}
-		return verified, nil
-	}
-	var connector launch.HarnessAdapter
-	switch probe.Harness {
-	case "claude-code":
-		connector = launch.ClaudeCode(launch.ClaudeModels{Default: candidates[0].name, Small: candidates[0].name})
-	default:
-		return nil, fmt.Errorf("unsupported native ACP harness")
-	}
-	managed, err := launch.Dial(ctx, launch.Config{
-		NoProxy: true,
-		Harness: connector,
-		Command: stdio.Command{Path: probe.Executable, Dir: probe.WorkspaceRoot, Env: filterACPEnv(probe.Env, acpNativeAuthEnvAllowlist)},
-		Client:  client.Options{},
-	})
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		_ = managed.Close(closeCtx)
-	}()
-	session, err := managed.Client().NewSession(ctx, client.NewSessionParams{Cwd: probe.WorkspaceRoot})
-	if err != nil {
-		return nil, err
-	}
-	return verifiedClaudeNativeModels(session.ConfigOptions(), candidates), nil
-}
-
-func probeProductionACPCodexCandidate(ctx context.Context, probe ACPNativeAuthProbe, candidate acpNativeModelMetadata) bool {
-	codex := launch.Codex(candidate.name)
-	codex.Posture = launch.CodexPosture{ApprovalPolicy: "never", SandboxMode: "read-only"}
-	managed, err := launch.Dial(ctx, launch.Config{
-		NoProxy: true,
-		Harness: codex,
-		Command: stdio.Command{Path: probe.Executable, Dir: probe.WorkspaceRoot, Env: filterACPEnv(probe.Env, acpNativeAuthEnvAllowlist)},
-		Client:  client.Options{},
-	})
-	if err != nil {
-		return false
-	}
-	defer func() {
-		closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		_ = managed.Close(closeCtx)
-	}()
-	_, err = managed.Client().NewSession(ctx, client.NewSessionParams{Cwd: probe.WorkspaceRoot})
-	return err == nil && ctx.Err() == nil
-}
-
-func verifiedClaudeNativeModels(options []protocol.SessionConfigOption, candidates []acpNativeModelMetadata) []acpNativeModelMetadata {
-	advertised := make(map[string]struct{})
-	for _, option := range options {
-		if option.Category == nil || *option.Category != protocol.SessionConfigOptionCategoryModel || option.Select == nil {
-			continue
-		}
-		for _, item := range option.Select.Options.Ungrouped {
-			if validACPNativeField(string(item.Value)) {
-				advertised[string(item.Value)] = struct{}{}
-			}
-		}
-		for _, group := range option.Select.Options.Grouped {
-			for _, item := range group.Options {
-				if validACPNativeField(string(item.Value)) {
-					advertised[string(item.Value)] = struct{}{}
-				}
-			}
-		}
-	}
-	verified := make([]acpNativeModelMetadata, 0, len(candidates))
-	for _, candidate := range candidates {
-		if _, ok := advertised[candidate.name]; ok {
-			verified = append(verified, candidate)
-		}
-	}
-	return verified
-}
-
-func lookupEnv(env []string, wanted string) string {
-	for _, entry := range env {
-		name, value, ok := strings.Cut(entry, "=")
-		if ok && name == wanted {
-			return value
-		}
-	}
-	return ""
-}
-
-func productionACPClient(provider model.ProviderName, format model.APIFormat, name, envName string) (inference.Client, error) {
-	key := os.Getenv(envName)
-	if strings.TrimSpace(key) == "" {
-		return nil, nil
-	}
-	selected := model.CustomModel(provider, format, "", name, model.WithTools(), model.WithThinking())
-	client, err := auto.New(selected, auth.APIKey(key))
-	if err != nil {
-		return nil, fmt.Errorf("coderig: configure ACP gateway client: %w", err)
-	}
-	return client, nil
 }

@@ -1,0 +1,194 @@
+package app
+
+import (
+	"errors"
+	"fmt"
+	"reflect"
+	"strings"
+	"testing"
+
+	"github.com/looprig/harness/pkg/identity"
+	"github.com/looprig/harness/pkg/loop"
+	"github.com/looprig/inference"
+	"github.com/looprig/inference/auth"
+	"github.com/looprig/inference/model"
+)
+
+func TestProductionModelsConstructsCredentialBoundClients(t *testing.T) {
+	const (
+		primerKey   = "test-secret-do-not-log-primer"
+		delegateKey = "test-secret-do-not-log-delegate"
+	)
+	primerModel := model.CustomModel("anthropic", model.APIFormatAnthropic, "", "primer-model", model.WithTools())
+	delegateModel := model.CustomModel("openai", model.APIFormatOpenAIResponses, "", "delegate-model", model.WithTools(), model.WithThinking())
+	localModel := model.CustomModel("ollama", model.APIFormatOpenAI, "http://localhost:11434/v1", "local-model", model.WithTools(), model.WithThinking())
+	config := normalizedModelConfig{
+		PrimerDefault:        "fixture-primer",
+		ClaudeCodeSmallModel: "fixture-local",
+		DelegateDefaults: []normalizedDelegateDefault{
+			{Role: "planner", Harness: "claude-code", Model: "fixture-delegate", Effort: model.EffortHigh},
+			{Role: "builder", Harness: "codex", Model: "fixture-local", Effort: model.EffortLow},
+			{Role: "reviewer", Harness: "codex", Model: "fixture-delegate", Effort: model.EffortMedium},
+		},
+		Models: []normalizedModelTarget{
+			{Alias: "fixture-primer", Model: primerModel, Uses: []string{"primer"}, Efforts: []model.Effort{model.EffortNone}, DefaultEffort: model.EffortNone, client: modelClientInput{APIKey: primerKey}},
+			{Alias: "fixture-delegate", Model: delegateModel, Uses: []string{"delegate"}, Efforts: []model.Effort{model.EffortLow, model.EffortMedium, model.EffortHigh}, DefaultEffort: model.EffortMedium, client: modelClientInput{APIKey: delegateKey}},
+			{Alias: "fixture-local", Model: localModel, Uses: []string{"delegate"}, Efforts: []model.Effort{model.EffortLow}, DefaultEffort: model.EffortLow},
+		},
+	}
+
+	type factoryCall struct {
+		model model.Model
+		key   auth.APIKey
+	}
+	var calls []factoryCall
+	clients := make([]inference.Client, 0, len(config.Models))
+	factory := func(gotModel model.Model, gotKey auth.APIKey) (inference.Client, error) {
+		calls = append(calls, factoryCall{model: gotModel, key: gotKey})
+		client := &fakeLLM{credential: string(gotKey)}
+		clients = append(clients, client)
+		return client, nil
+	}
+
+	got, err := compileProductionModels(config, factory)
+	if err != nil {
+		t.Fatalf("compileProductionModels() error = %v", err)
+	}
+	if len(calls) != len(config.Models) {
+		t.Fatalf("factory calls = %d, want %d", len(calls), len(config.Models))
+	}
+	wantKeys := []auth.APIKey{auth.APIKey(primerKey), auth.APIKey(delegateKey), ""}
+	for index := range calls {
+		if !reflect.DeepEqual(calls[index].model, config.Models[index].Model) {
+			t.Errorf("factory call %d model = %#v, want %#v", index, calls[index].model, config.Models[index].Model)
+		}
+		if calls[index].key != wantKeys[index] {
+			t.Errorf("factory call %d key mismatch", index)
+		}
+	}
+	if got.PrimerClient != clients[0] || !reflect.DeepEqual(got.PrimerModel, primerModel) {
+		t.Fatalf("primer binding did not match primer_default")
+	}
+	if got.PrimerAlias != "fixture-primer" {
+		t.Fatalf("PrimerAlias = %q, want fixture-primer", got.PrimerAlias)
+	}
+	if !reflect.DeepEqual(got.PrimerEfforts, []model.Effort{model.EffortNone}) {
+		t.Fatalf("PrimerEfforts = %v, want [none]", got.PrimerEfforts)
+	}
+	if len(got.ACP) != 2 {
+		t.Fatalf("ACP sources = %d, want 2 delegate-capable rows", len(got.ACP))
+	}
+	for index, source := range got.ACP {
+		want := config.Models[index+1]
+		if source.Alias != loop.ModelAlias(want.Alias) || source.Client != clients[index+1] || !reflect.DeepEqual(source.Model, want.Model) || source.DefaultEffort != want.DefaultEffort || !reflect.DeepEqual(source.Efforts, want.Efforts) {
+			t.Errorf("ACP source %d did not preserve normalized target", index)
+		}
+	}
+	wantDefaults := map[identity.AgentName]configuredDelegateDefault{
+		"planner":  {Harness: "claude-code", Model: "fixture-delegate", Effort: model.EffortHigh},
+		"builder":  {Harness: "codex", Model: "fixture-local", Effort: model.EffortLow},
+		"reviewer": {Harness: "codex", Model: "fixture-delegate", Effort: model.EffortMedium},
+	}
+	if !reflect.DeepEqual(got.Defaults, wantDefaults) {
+		t.Fatalf("defaults = %#v, want %#v", got.Defaults, wantDefaults)
+	}
+	if got.ClaudeSmall != "fixture-local" {
+		t.Fatalf("ClaudeSmall = %q, want fixture-local", got.ClaudeSmall)
+	}
+	wantRev, err := modelConfigDigest(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ConfigRev != wantRev {
+		t.Fatalf("ConfigRev = %q, want %q", got.ConfigRev, wantRev)
+	}
+	for _, formatted := range []string{fmt.Sprintf("%v", got), fmt.Sprintf("%+v", got), fmt.Sprintf("%#v", got)} {
+		if strings.Contains(formatted, primerKey) || strings.Contains(formatted, delegateKey) {
+			t.Fatalf("formatted productionModels exposed a key: %q", formatted)
+		}
+	}
+}
+
+func TestProductionModelsConstructionFailureIsSecretFree(t *testing.T) {
+	const sentinel = "test-secret-do-not-log"
+	config := normalizedModelConfig{
+		PrimerDefault: "fixture-a",
+		Models: []normalizedModelTarget{{
+			Alias: "fixture-a",
+			Model: model.CustomModel("openai", model.APIFormatOpenAIResponses, "", "provider-model", model.WithTools()),
+			Uses:  []string{"primer"}, Efforts: []model.Effort{model.EffortNone}, DefaultEffort: model.EffortNone,
+			client: modelClientInput{APIKey: sentinel},
+		}},
+	}
+	factory := func(model.Model, auth.APIKey) (inference.Client, error) {
+		return nil, errors.New("factory rejected " + sentinel)
+	}
+
+	got, err := compileProductionModels(config, factory)
+	if err == nil {
+		t.Fatal("compileProductionModels() succeeded")
+	}
+	if got.PrimerClient != nil || len(got.ACP) != 0 || len(got.Defaults) != 0 || got.ConfigRev != "" {
+		t.Fatalf("failure returned partial production models: %#v", got)
+	}
+	for _, formatted := range []string{err.Error(), fmt.Sprintf("%v", err), fmt.Sprintf("%+v", err), fmt.Sprintf("%#v", err)} {
+		if strings.Contains(formatted, sentinel) {
+			t.Fatalf("formatted error exposed key: %q", formatted)
+		}
+		if !strings.Contains(formatted, "fixture-a") || !strings.Contains(formatted, "openai") {
+			t.Fatalf("formatted error = %q, want alias and provider", formatted)
+		}
+	}
+}
+
+func TestProductionModelsCarriesNativeACPProfilesAndSources(t *testing.T) {
+	config := normalizedModelConfig{
+		PrimerDefault: "fixture-primer",
+		NativeACP: map[string]normalizedNativeACPProfile{
+			"claude-code": {Harness: "claude-code", Enabled: true},
+			"codex":       {Harness: "codex", Enabled: true, Models: []string{"native-a", "native-b"}},
+		},
+		DelegateDefaults: []normalizedDelegateDefault{
+			{Role: "planner", Harness: "codex", Source: loop.RuntimeSourceNative, Model: "native-a"},
+			{Role: "builder", Harness: "codex", Source: loop.RuntimeSourceNative},
+			{Role: "reviewer", Harness: "codex", Source: loop.RuntimeSourceNative},
+		},
+		Models: []normalizedModelTarget{{
+			Alias: "fixture-primer", Model: model.CustomModel("lmstudio", model.APIFormatOpenAI, "http://localhost:1234", "primer", model.WithTools()),
+			Uses: []string{"primer"}, Efforts: []model.Effort{model.EffortNone}, DefaultEffort: model.EffortNone,
+		}},
+	}
+
+	got, err := compileProductionModels(config, func(model.Model, auth.APIKey) (inference.Client, error) {
+		return &fakeLLM{}, nil
+	})
+	if err != nil {
+		t.Fatalf("compileProductionModels() error = %v", err)
+	}
+	if len(got.NativeACP) != len(config.NativeACP) {
+		t.Fatalf("NativeACP = %#v, want %#v", got.NativeACP, config.NativeACP)
+	}
+	for harness, want := range config.NativeACP {
+		gotProfile, ok := got.NativeACP[harness]
+		if !ok || gotProfile.Harness != loop.AgentHarnessName(want.Harness) || gotProfile.Enabled != want.Enabled || !reflect.DeepEqual(gotProfile.Models, aliasesToLoop(want.Models)) {
+			t.Fatalf("NativeACP[%q] = %#v, want %#v", harness, gotProfile, want)
+		}
+	}
+	if got.Defaults["planner"].Source != loop.RuntimeSourceNative || got.Defaults["planner"].Model != "native-a" {
+		t.Fatalf("native planner default = %#v", got.Defaults["planner"])
+	}
+	if got.Defaults["builder"].Source != loop.RuntimeSourceNative || got.Defaults["builder"].Model != "" {
+		t.Fatalf("native managed builder default = %#v", got.Defaults["builder"])
+	}
+}
+
+func aliasesToLoop(values []string) []loop.ModelAlias {
+	if values == nil {
+		return nil
+	}
+	result := make([]loop.ModelAlias, len(values))
+	for i, value := range values {
+		result[i] = loop.ModelAlias(value)
+	}
+	return result
+}

@@ -1,0 +1,360 @@
+package app
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"unicode/utf8"
+
+	"github.com/looprig/core/content"
+)
+
+const maxModelConfigBytes = 1 << 20
+
+const (
+	maxModelConfigErrorBytes          = 512
+	maxModelConfigErrorOperationBytes = 160
+	maxModelConfigErrorCauseBytes     = 256
+)
+
+var errDuplicateModelConfigKey = errors.New("duplicate JSON object key")
+
+type modelConfigFile struct {
+	Version              int                               `json:"version"`
+	PrimerDefault        string                            `json:"primer_default"`
+	ClaudeCodeSmallModel string                            `json:"claude_code_small_model"`
+	DelegateDefaults     map[string]delegateDefaultConfig  `json:"delegate_defaults"`
+	Models               []modelTargetConfig               `json:"models"`
+	NativeACP            map[string]nativeACPProfileConfig `json:"native_acp"`
+}
+
+type delegateDefaultConfig struct {
+	Harness string `json:"harness"`
+	Source  string `json:"source"`
+	Model   string `json:"model"`
+	Effort  string `json:"effort"`
+}
+
+// UnmarshalJSON keeps the optional source field distinct from an explicit
+// null, which must not be treated as the gateway default.
+func (c *delegateDefaultConfig) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		Harness string          `json:"harness"`
+		Source  json.RawMessage `json:"source"`
+		Model   string          `json:"model"`
+		Effort  string          `json:"effort"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&wire); err != nil {
+		return err
+	}
+
+	source := ""
+	if len(wire.Source) != 0 {
+		if bytes.Equal(bytes.TrimSpace(wire.Source), []byte("null")) {
+			return errors.New("delegate default source must be a string")
+		}
+		if err := json.Unmarshal(wire.Source, &source); err != nil {
+			return err
+		}
+	}
+	*c = delegateDefaultConfig{
+		Harness: wire.Harness,
+		Source:  source,
+		Model:   wire.Model,
+		Effort:  wire.Effort,
+	}
+	return nil
+}
+
+type nativeACPProfileConfig struct {
+	Enabled bool      `json:"enabled"`
+	Models  *[]string `json:"models"`
+}
+
+// UnmarshalJSON keeps the wire representation strict enough to distinguish
+// an omitted models field (the harness-managed mode) from an explicit null,
+// which is not an array and therefore is invalid configuration.
+func (c *nativeACPProfileConfig) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		Enabled bool            `json:"enabled"`
+		Models  json.RawMessage `json:"models"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&wire); err != nil {
+		return err
+	}
+	*c = nativeACPProfileConfig{Enabled: wire.Enabled}
+	if len(wire.Models) == 0 {
+		return nil
+	}
+	if bytes.Equal(bytes.TrimSpace(wire.Models), []byte("null")) {
+		return errors.New("native_acp models must be an array")
+	}
+	var models []string
+	if err := json.Unmarshal(wire.Models, &models); err != nil {
+		return err
+	}
+	c.Models = &models
+	return nil
+}
+
+type modelTargetConfig struct {
+	Alias         string                   `json:"alias"`
+	Provider      string                   `json:"provider"`
+	APIFormat     string                   `json:"api_format"`
+	BaseURL       string                   `json:"base_url"`
+	Model         string                   `json:"model"`
+	ContextLimits modelContextLimitsConfig `json:"context_limits"`
+	APIKey        string                   `json:"api_key"`
+	Uses          []string                 `json:"uses"`
+	Capabilities  modelCapabilitiesConfig  `json:"capabilities"`
+	Efforts       []string                 `json:"efforts"`
+	DefaultEffort string                   `json:"default_effort"`
+}
+
+type modelContextLimitsConfig struct {
+	WindowTokens    content.TokenCount `json:"window_tokens"`
+	MaxInputTokens  content.TokenCount `json:"max_input_tokens"`
+	MaxOutputTokens content.TokenCount `json:"max_output_tokens"`
+}
+
+type modelCapabilitiesConfig struct {
+	Tools                     bool `json:"tools"`
+	Thinking                  bool `json:"thinking"`
+	Images                    bool `json:"images"`
+	PromptCaching             bool `json:"prompt_caching"`
+	StructuredOutput          bool `json:"structured_output"`
+	StructuredOutputWithTools bool `json:"structured_output_with_tools"`
+}
+
+// ModelConfigError reports a failure to locate or read CodeRig's global model
+// configuration.
+type ModelConfigError struct {
+	operation string
+	cause     error
+}
+
+func (e *ModelConfigError) Error() string {
+	operation := boundedModelConfigText(e.operation, maxModelConfigErrorOperationBytes)
+	message := "coderig: model configuration " + operation + " failed"
+	if e.cause == nil {
+		return boundedModelConfigText(message, maxModelConfigErrorBytes)
+	}
+	message += ": " + boundedModelConfigText(e.cause.Error(), maxModelConfigErrorCauseBytes)
+	return boundedModelConfigText(message, maxModelConfigErrorBytes)
+}
+
+func (e *ModelConfigError) Unwrap() error { return e.cause }
+
+func decodeModelConfig(data []byte) (modelConfigFile, error) {
+	var config modelConfigFile
+	if !utf8.Valid(data) {
+		return config, modelConfigFailure("decode", errors.New("input is not valid UTF-8"))
+	}
+	if err := rejectDuplicateJSONKeys(data); err != nil {
+		return config, modelConfigFailure("decode", err)
+	}
+
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&config); err != nil {
+		return modelConfigFile{}, modelConfigFailure("decode", safeModelConfigDecodeError(err))
+	}
+	var trailing json.RawMessage
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			err = errors.New("multiple top-level JSON values")
+		} else {
+			err = safeModelConfigDecodeError(err)
+		}
+		return modelConfigFile{}, modelConfigFailure("decode", err)
+	}
+	if config.Version != 1 {
+		return modelConfigFile{}, modelConfigFailure("decode", errors.New("version must be exactly 1"))
+	}
+	return config, nil
+}
+
+func safeModelConfigDecodeError(err error) error {
+	if errors.Is(err, io.EOF) {
+		return errors.New("model configuration JSON is empty")
+	}
+	return errors.New("invalid JSON model configuration")
+}
+
+func rejectDuplicateJSONKeys(data []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	if err := walkModelConfigJSONValue(decoder); err != nil {
+		if errors.Is(err, errDuplicateModelConfigKey) {
+			return errDuplicateModelConfigKey
+		}
+		return errors.New("invalid JSON model configuration")
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		if err == nil {
+			return errors.New("multiple top-level JSON values")
+		}
+		return errors.New("invalid JSON model configuration")
+	}
+	return nil
+}
+
+func walkModelConfigJSONValue(decoder *json.Decoder) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	delim, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+	switch delim {
+	case '{':
+		seen := make(map[string]struct{})
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return errors.New("object key is not a string")
+			}
+			if _, exists := seen[key]; exists {
+				return errDuplicateModelConfigKey
+			}
+			seen[key] = struct{}{}
+			if err := walkModelConfigJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+		closing, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		if closing != json.Delim('}') {
+			return errors.New("malformed JSON object")
+		}
+	case '[':
+		for decoder.More() {
+			if err := walkModelConfigJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+		closing, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		if closing != json.Delim(']') {
+			return errors.New("malformed JSON array")
+		}
+	default:
+		return errors.New("unexpected JSON delimiter")
+	}
+	return nil
+}
+
+func modelConfigFailure(operation string, cause error) *ModelConfigError {
+	message := "unknown error"
+	if cause != nil {
+		message = boundedModelConfigText(cause.Error(), maxModelConfigErrorCauseBytes)
+	}
+	return &ModelConfigError{
+		operation: boundedModelConfigText(operation, maxModelConfigErrorOperationBytes),
+		cause:     errors.New(message),
+	}
+}
+
+func boundedModelConfigText(value string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	value = strings.ToValidUTF8(value, "�")
+	if len(value) <= limit {
+		return value
+	}
+	if limit <= 3 {
+		return value[:limit]
+	}
+	end := limit - 3
+	for end > 0 && !utf8.ValidString(value[:end]) {
+		end--
+	}
+	return value[:end] + "..."
+}
+
+func defaultModelConfigPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", modelConfigFailure("home lookup", err)
+	}
+	return filepath.Join(home, ".looprig", "models.json"), nil
+}
+
+func readModelConfigFile(path string) ([]byte, bool, error) {
+	return readModelConfigFileWithOpen(path, openModelConfigNoFollow)
+}
+
+func readModelConfigFileWithOpen(path string, openFile func(string) (*os.File, error)) ([]byte, bool, error) {
+	beforeOpen, err := os.Lstat(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, false, nil
+		}
+		return nil, false, modelConfigFailure("inspect "+path, err)
+	}
+	if beforeOpen.Mode()&os.ModeSymlink != 0 {
+		return nil, true, modelConfigFailure("validate "+path, errors.New("symbolic links are not allowed"))
+	}
+	if !beforeOpen.Mode().IsRegular() {
+		return nil, true, modelConfigFailure("validate "+path, errors.New("file is not regular"))
+	}
+	if modelConfigIsUnix() && beforeOpen.Mode().Perm()&0o077 != 0 {
+		return nil, true, modelConfigFailure("validate "+path, fmt.Errorf("permissions %04o allow group or other access", beforeOpen.Mode().Perm()))
+	}
+
+	file, err := openFile(path)
+	if err != nil {
+		return nil, true, modelConfigFailure("open "+path, err)
+	}
+	defer file.Close()
+
+	afterOpen, err := file.Stat()
+	if err != nil {
+		return nil, true, modelConfigFailure("inspect opened file "+path, err)
+	}
+	if !afterOpen.Mode().IsRegular() || !os.SameFile(beforeOpen, afterOpen) {
+		return nil, true, modelConfigFailure("validate opened file "+path, errors.New("file type or identity changed while opening"))
+	}
+	if modelConfigIsUnix() && afterOpen.Mode().Perm()&0o077 != 0 {
+		return nil, true, modelConfigFailure("validate opened file "+path, fmt.Errorf("permissions %04o allow group or other access", afterOpen.Mode().Perm()))
+	}
+
+	data, err := io.ReadAll(io.LimitReader(file, maxModelConfigBytes+1))
+	if err != nil {
+		return nil, true, modelConfigFailure("read "+path, err)
+	}
+	if len(data) > maxModelConfigBytes {
+		return nil, true, modelConfigFailure("read "+path, fmt.Errorf("file exceeds %d-byte limit", maxModelConfigBytes))
+	}
+	return data, true, nil
+}
+
+func modelConfigIsUnix() bool {
+	switch runtime.GOOS {
+	case "aix", "android", "darwin", "dragonfly", "freebsd", "hurd", "illumos", "ios", "linux", "netbsd", "openbsd", "solaris":
+		return true
+	default:
+		return false
+	}
+}

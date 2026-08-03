@@ -37,11 +37,25 @@ const skillToolName = "Skill"
 const managedSubagentToolName = "Subagent"
 const initialCodingMode = loop.ModeName("quick")
 
-func codingModes() []loop.Mode {
-	return []loop.Mode{
-		{Name: "quick", Effort: model.EffortLow, Instructions: "Prefer the shortest safe path. Keep investigation narrow and verification focused."},
-		{Name: "deep", Effort: model.EffortMax, Instructions: "Investigate broadly, challenge assumptions, and verify the result thoroughly."},
+func codingModes(admitted []model.Effort) []loop.Mode {
+	modes := make([]loop.Mode, 0, 2)
+	if len(admitted) == 0 || containsPrimerEffort(admitted, model.EffortLow) {
+		modes = append(modes, loop.Mode{Name: "quick", Effort: model.EffortLow, Instructions: "Prefer the shortest safe path. Keep investigation narrow and verification focused."})
 	}
+	if len(admitted) == 0 || containsPrimerEffort(admitted, model.EffortMax) {
+		modes = append(modes, loop.Mode{Name: "deep", Effort: model.EffortMax, Instructions: "Investigate broadly, challenge assumptions, and verify the result thoroughly."})
+	}
+	return modes
+}
+
+func initialCodingModeFor(admitted []model.Effort) loop.ModeName {
+	if len(admitted) == 0 || containsPrimerEffort(admitted, model.EffortLow) {
+		return initialCodingMode
+	}
+	if containsPrimerEffort(admitted, model.EffortMax) {
+		return loop.ModeName("deep")
+	}
+	return loop.ModeName("")
 }
 
 // The rig-injected managed Subagent tool prepares an empty access request, so the
@@ -222,8 +236,8 @@ func swarmDefinitionsWithContextPolicyAndExtras(client inference.Client, model m
 			loop.WithRuntimeContext(runtimeCtx),
 			loop.WithDelegates(delegates...),
 			loop.WithDelegation(loop.Delegation{Style: loop.DelegationManaged}),
-			loop.WithModes(codingModes()...),
-			loop.WithInitialMode(initialCodingMode),
+			loop.WithModes(codingModes(cfg.PrimerEfforts)...),
+			loop.WithInitialMode(initialCodingModeFor(cfg.PrimerEfforts)),
 		}
 		options = append(options, contextPolicy.options()...)
 		return loop.Define(options...)
@@ -245,22 +259,30 @@ func swarmDefinitionsWithContextPolicyAndExtras(client inference.Client, model m
 	return []loop.Definition{plannerDefinition, builderDefinition, reviewerDefinition}, nil
 }
 
-// New constructs the CodeRig headless and returns it as a tui.Agent driven by the
-// builder primer. It reads LLM_API_KEY (the only env-sourced value; fail-loud via
-// *MissingEnvError if a required key is missing), builds the shared provider client +
-// ModelFactory, and starts a session over a process-shared in-memory store with the current
-// checkout placed as the session's exclusive workspace. The caller owns the agent and must
-// Close it. cfg carries the human-set construction modes; the model never sets them.
+// New constructs the CodeRig headless from one models.json load and returns it
+// as a tui.Agent driven by the configured primer_default.
 func New(ctx context.Context, cfg Config) (tui.Agent, error) {
-	client, factory, err := buildClient()
+	return newWithProductionModelsLoader(ctx, cfg, loadProductionModels, headlessStores)
+}
+
+type productionModelsLoader func() (productionModels, error)
+
+func newWithProductionModelsLoader(ctx context.Context, cfg Config, loader productionModelsLoader, storesProvider swarmStoresProvider) (*RuntimeAgent, error) {
+	configured, err := loader()
 	if err != nil {
 		return nil, err
 	}
-	cfg, err = withProductionACPChildren(cfg)
+	if configured.PrimerClient == nil || configured.PrimerModel.Name == "" {
+		return nil, &ModelConfigCapabilityError{}
+	}
+	cfg.ModelConfigRev = configured.ConfigRev
+	cfg.PrimerAlias = configured.PrimerAlias
+	cfg.PrimerEfforts = append([]model.Effort(nil), configured.PrimerEfforts...)
+	cfg, err = withProductionACPChildren(ctx, cfg, configured)
 	if err != nil {
 		return nil, err
 	}
-	return newWithClient(ctx, client, factory, cfg)
+	return newWithClientUsingStores(ctx, configured.PrimerClient, newModelFactoryFor(configured.PrimerModel), cfg, storesProvider)
 }
 
 // newWithClient is the headless construction seam shared by New and tests: tests inject a
@@ -312,7 +334,7 @@ func newWithClientUsingStores(ctx context.Context, client inference.Client, fact
 		_ = access.Close()
 		return nil, err
 	}
-	return newRuntimeAgent(adapter, adapter.Controller(), root, access), nil
+	return newRuntimeAgentWithPrimerAlias(adapter, adapter.Controller(), root, access, cfg.PrimerAlias, cfg.PrimerEfforts), nil
 }
 
 // newSessionOverStores is the store-injecting construction seam shared by the headless New
@@ -355,7 +377,7 @@ func openRuntimeAgent(ctx context.Context, client inference.Client, factory Mode
 		_ = access.Close()
 		return nil, err
 	}
-	return newRuntimeAgent(adapter, adapter.Controller(), root, access), nil
+	return newRuntimeAgentWithPrimerAlias(adapter, adapter.Controller(), root, access, cfg.PrimerAlias, cfg.PrimerEfforts), nil
 }
 
 // openSessionWithDefinitions is CodeRig's single new-or-restore assembly path.

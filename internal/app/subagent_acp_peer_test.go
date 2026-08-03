@@ -16,13 +16,18 @@ import (
 	"github.com/looprig/acp/protocol"
 )
 
-const task33ACPHelperPath = "task33-acp-helper"
+const (
+	task33ACPHelperPath             = "task33-acp-helper"
+	task33NativeClaudeACPHelperPath = "task33-native-claude-acp-helper"
+	task33NativeCodexACPHelperPath  = "task33-native-codex-acp-helper"
+)
 
 // TestMain turns the test binary into a deterministic ACP protocol peer when
 // the production ACP child factory launches it. The parent test only supplies
 // a gateway-safe PATH marker, so ordinary package tests never enter this path.
 func TestMain(m *testing.M) {
-	if os.Getenv("PATH") == task33ACPHelperPath {
+	switch os.Getenv("PATH") {
+	case task33ACPHelperPath, task33NativeClaudeACPHelperPath, task33NativeCodexACPHelperPath:
 		os.Exit(runTask33ACPHelper())
 	}
 	os.Exit(m.Run())
@@ -42,19 +47,28 @@ type task33ACPHelperState struct {
 }
 
 func runTask33ACPHelper() int {
+	helperPath := os.Getenv("PATH")
+	native := helperPath == task33NativeClaudeACPHelperPath || helperPath == task33NativeCodexACPHelperPath
 	state := &task33ACPHelperState{
 		harness: "codex",
 		baseURL: strings.TrimSuffix(parseTask33Arg("model_providers.looprig.base_url"), "/v1"),
 		token:   os.Getenv("LOOPRIG_PROXY_TOKEN"),
 		cancel:  make(chan struct{}),
 	}
+	if helperPath == task33NativeClaudeACPHelperPath {
+		state.harness = "claude-code"
+	}
 	if baseURL := os.Getenv("ANTHROPIC_BASE_URL"); baseURL != "" {
 		state.harness = "claude-code"
 		state.baseURL = baseURL
 		state.token = os.Getenv("ANTHROPIC_AUTH_TOKEN")
 	}
-	if state.baseURL == "" || state.token == "" {
+	if !native && (state.baseURL == "" || state.token == "") {
 		fmt.Fprintln(os.Stderr, "task33 ACP helper: missing gateway binding")
+		return 1
+	}
+	if native && (state.baseURL != "" || state.token != "") {
+		fmt.Fprintln(os.Stderr, "task33 ACP helper: native launch received gateway binding")
 		return 1
 	}
 

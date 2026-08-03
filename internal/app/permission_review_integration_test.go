@@ -273,7 +273,7 @@ func permissionReviewIntegrationAgentWithClassifier(t *testing.T, cfg Config, op
 	if err != nil {
 		t.Fatalf("newSessionAdapter() error = %v", err)
 	}
-	agent := newRuntimeAgent(adapter, controller, root, access)
+	agent := newRuntimeAgentWithPrimerAlias(adapter, controller, root, access, "", nil)
 	t.Cleanup(func() { _ = agent.Close(context.Background()) })
 	return agent
 }

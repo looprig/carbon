@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/looprig/acp/launch"
+	"github.com/looprig/acp/protocol"
 	"github.com/looprig/coderig/internal/catalog/builder"
 	"github.com/looprig/coderig/internal/catalog/planner"
 	"github.com/looprig/coderig/internal/catalog/reviewer"
@@ -27,6 +29,76 @@ import (
 	inferenceStream "github.com/looprig/inference/stream"
 	"github.com/looprig/storage/memstore"
 )
+
+const task6ACPPermissionHelperPath = "task6-acp-permission-helper"
+
+func init() {
+	if os.Getenv("PATH") == task6ACPPermissionHelperPath {
+		os.Exit(runTask6ACPPermissionHelper())
+	}
+}
+
+func runTask6ACPPermissionHelper() int {
+	conn := protocol.NewConn(os.Stdin, os.Stdout, protocol.ConnOptions{})
+	peer := protocol.NewClientConn(conn)
+	defer conn.Close()
+	ready := make(chan struct{})
+	var workspace string
+	const sessionID protocol.SessionID = "task6-permission-session"
+
+	conn.Handle(string(protocol.MethodInitialize), func(context.Context, string, json.RawMessage) (any, error) {
+		<-ready
+		return protocol.InitializeResponse{ProtocolVersion: protocol.CurrentProtocolVersion}, nil
+	})
+	conn.Handle(string(protocol.MethodSessionNew), func(_ context.Context, _ string, params json.RawMessage) (any, error) {
+		var request protocol.NewSessionRequest
+		if err := json.Unmarshal(params, &request); err != nil {
+			return nil, protocol.InvalidParams("task6 session/new", nil)
+		}
+		workspace = request.Cwd
+		return protocol.NewSessionResponse{SessionID: sessionID}, nil
+	})
+	conn.Handle(string(protocol.MethodSessionPrompt), func(ctx context.Context, _ string, _ json.RawMessage) (any, error) {
+		kind := protocol.ToolKindEdit
+		title := "task6 outside-posture mutation"
+		response, err := peer.RequestPermission(ctx, protocol.RequestPermissionRequest{
+			SessionID: sessionID,
+			Options: []protocol.PermissionOption{
+				{Name: "Allow once", Kind: protocol.PermissionOptionKindAllowOnce, OptionID: "allow-once"},
+				{Name: "Reject once", Kind: protocol.PermissionOptionKindRejectOnce, OptionID: "reject-once"},
+			},
+			ToolCall: protocol.ToolCallUpdate{
+				Kind:  &kind,
+				Title: &title,
+				Content: []protocol.ToolCallContent{{Diff: &protocol.Diff{
+					Path: filepath.Join(filepath.Dir(workspace), "task6-outside.txt"),
+				}}},
+			},
+		})
+		if err != nil {
+			return nil, err
+		}
+		selected := ""
+		if response != nil && response.Outcome.Selected != nil {
+			selected = string(response.Outcome.Selected.OptionID)
+		}
+		if err := os.WriteFile(filepath.Join(workspace, "task6-permission.receipt"), []byte(selected), 0o600); err != nil {
+			return nil, err
+		}
+		if err := peer.SessionUpdate(ctx, protocol.SessionNotification{
+			SessionID: sessionID,
+			Update: protocol.SessionUpdate{AgentMessageChunk: &protocol.ContentChunk{
+				Content: protocol.ContentBlock{Text: &protocol.TextContent{Text: "task6 permission denied"}},
+			}},
+		}); err != nil {
+			return nil, err
+		}
+		return protocol.PromptResponse{StopReason: protocol.StopReasonEndTurn}, nil
+	})
+	close(ready)
+	<-conn.Done()
+	return 0
+}
 
 // task33QueuedResult is the model-facing result returned by a background start.
 // The runtime block is intentionally the advertised selector block: profile and
@@ -49,6 +121,142 @@ type task33StatusResult struct {
 		DelegateID string `json:"delegate_id"`
 		Status     string `json:"status"`
 	} `json:"children"`
+}
+
+func TestACPRequestPermissionDeniesOutsidePostureWithoutNativePermissionWrites(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("HTTPS_PROXY", "")
+	t.Setenv("HTTP_PROXY", "")
+	t.Setenv("NO_PROXY", "")
+	workspace := canonicalTempDir(t)
+
+	modelPath := filepath.Join(home, ".looprig", "models.json")
+	permissionPath, err := defaultPermissionsPath(workspace)
+	if err != nil {
+		t.Fatalf("defaultPermissionsPath: %v", err)
+	}
+	modelBytes := []byte(`{"version":1,"api_key":"task6-obvious-fake-provider-key"}`)
+	permissionBytes := []byte(`{"version":1,"rules":[]}`)
+	for path, data := range map[string][]byte{modelPath: modelBytes, permissionPath: permissionBytes} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatalf("create fixture directory: %v", err)
+		}
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatalf("write boundary fixture: %v", err)
+		}
+	}
+	modelBefore, _ := os.Stat(modelPath)
+	permissionBefore, _ := os.Stat(permissionPath)
+
+	provider := &task33InferenceClient{}
+	configured := configuredProductionModelsForTest("fixture-model")
+	configured.ACP[0].Client = provider
+	compiled, err := CompileACPCatalog(ACPCatalogInput{
+		SubagentTypes:  []identity.AgentName{builder.Name},
+		GatewayTargets: configured.ACP,
+		Defaults: map[identity.AgentName]configuredDelegateDefault{
+			builder.Name: configured.Defaults[builder.Name],
+		},
+	})
+	if err != nil {
+		t.Fatalf("CompileACPCatalog: %v", err)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	composition, err := NewACPComposition(ACPChildrenConfig{
+		Catalog:       compiled,
+		Executables:   map[loop.AgentHarnessName]string{"codex": executable},
+		WorkspaceRoot: workspace,
+		Env: []string{
+			"PATH=" + task6ACPPermissionHelperPath,
+			"TMPDIR=" + workspace,
+			"PROVIDER_SENTINEL=task6-obvious-fake-provider-key",
+			"MODELS_JSON_PATH=" + modelPath,
+			"MODELS_JSON_CONTENT=" + string(modelBytes),
+			"NATIVE_PERMISSION_PATH=" + permissionPath,
+			"NATIVE_PERMISSION_CONTENT=" + string(permissionBytes),
+			"ANTHROPIC_API_KEY=task6-obvious-fake-anthropic-key",
+			"OPENAI_API_KEY=task6-obvious-fake-openai-key",
+			"CLAUDE_CODE_ACP_NATIVE_MODELS=native=obsolete",
+			"CODEX_ACP_NATIVE_MODELS=native=obsolete",
+		},
+		GatewayEnvAllowlist: acpGatewayEnvAllowlist,
+		gatewayPreflightBinding: &launch.ProxyBinding{
+			BaseURL: "http://127.0.0.1:1",
+			Token:   "task6-preflight-token",
+		},
+		executablePreflight: func(_ context.Context, probe ACPExecutableProbe) ACPPreflightResult {
+			if len(probe.Env) != 2 || probe.Env[0] != "PATH="+task6ACPPermissionHelperPath || probe.Env[1] != "TMPDIR="+workspace {
+				t.Fatalf("ACP preflight env = %#v, want only explicit process values", probe.Env)
+			}
+			return ACPPreflightResult{Ready: true}
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewACPComposition: %v", err)
+	}
+
+	step := 0
+	parent := &managedScript{fn: func(_ context.Context, _ inference.Request) ([]content.Chunk, error) {
+		switch step {
+		case 0:
+			step++
+			return toolCall("task6-permission", `{"description":"permission posture","prompt":"request outside write","subagent_type":"builder","run_in_background":false}`), nil
+		case 1:
+			step++
+			return finalText("task6 parent complete"), nil
+		default:
+			return nil, fmt.Errorf("unexpected task6 parent step %d", step)
+		}
+	}}
+	access, cfg := headlessTestAccess(t, Config{ACPChildren: composition}, workspace)
+	definitions, err := swarmDefinitions(parent, testModel(), cfg, access)
+	if err != nil {
+		t.Fatalf("swarmDefinitions: %v", err)
+	}
+	stores, err := openStores(memstore.New())
+	if err != nil {
+		t.Fatal(err)
+	}
+	registration, err := newConversationHustleRegistration()
+	if err != nil {
+		t.Fatal(err)
+	}
+	assembly, err := buildRigWithRegistrationAndACP(definitions, stores, workspace, cfg, false,
+		rig.DelegationLimits{Depth: delegationSpawnDepth, Quota: delegationSpawnQuota},
+		registration, permissionReviewRegistration{}, composition)
+	if err != nil {
+		t.Fatalf("buildRigWithRegistrationAndACP: %v", err)
+	}
+	controller, err := assembly.NewSession(context.Background())
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	agent, err := newSessionAdapter(context.Background(), controller, stores.session, false)
+	if err != nil {
+		t.Fatalf("newSessionAdapter: %v", err)
+	}
+	t.Cleanup(func() { _ = agent.Close(context.Background()) })
+	if got := runManagedTurn(t, agent, "exercise ACP permission posture"); got != "task6 parent complete" {
+		t.Fatalf("parent result = %q", got)
+	}
+	if got, err := os.ReadFile(filepath.Join(workspace, "task6-permission.receipt")); err != nil || string(got) != "reject-once" {
+		t.Fatalf("permission receipt = %q, error = %v; want reject-once", got, err)
+	}
+
+	for path, before := range map[string]struct {
+		data []byte
+		info os.FileInfo
+	}{modelPath: {modelBytes, modelBefore}, permissionPath: {permissionBytes, permissionBefore}} {
+		afterBytes, readErr := os.ReadFile(path)
+		afterInfo, statErr := os.Stat(path)
+		if readErr != nil || statErr != nil || !bytes.Equal(afterBytes, before.data) || !afterInfo.ModTime().Equal(before.info.ModTime()) || afterInfo.Mode() != before.info.Mode() {
+			t.Fatalf("ACP permission flow modified %s", filepath.Base(path))
+		}
+	}
 }
 
 // task33InferenceClient is the fake provider behind each child-owned gateway.
@@ -90,10 +298,12 @@ func TestSubagentLunaMaxConcurrentEndToEnd(t *testing.T) {
 	anthropic := &task33InferenceClient{}
 	compiled, err := CompileACPCatalog(ACPCatalogInput{
 		SubagentTypes: []identity.AgentName{planner.Name, builder.Name, reviewer.Name},
-		GatewayClients: map[model.ProviderName]inference.Client{
+		GatewayTargets: legacyTestGatewayTargets(map[model.ProviderName]inference.Client{
 			"openai":    openAI,
 			"anthropic": anthropic,
-		},
+		}),
+		Defaults:    legacyTestDefaults([]identity.AgentName{planner.Name, builder.Name, reviewer.Name}),
+		ClaudeSmall: "sonnet-5",
 	})
 	if err != nil {
 		t.Fatalf("CompileACPCatalog() error = %v", err)
@@ -290,10 +500,12 @@ func assertTask33DurableEvents(t *testing.T, events []event.Event, codex, claude
 	want := map[identity.AgentName]event.AgentRuntime{
 		builder.Name: {
 			Harness: "codex", Profile: "acp/codex", CredentialMode: "gateway-backed",
+			Source: "gateway", SelectionKind: "explicit",
 			ModelAlias: "gpt-5.6-luna@max",
 		},
 		reviewer.Name: {
 			Harness: "claude-code", Profile: "acp/claude-code", CredentialMode: "gateway-backed",
+			Source: "gateway", SelectionKind: "explicit",
 			ModelAlias: "sonnet-5@high", SmallModelAlias: "sonnet-5",
 		},
 	}

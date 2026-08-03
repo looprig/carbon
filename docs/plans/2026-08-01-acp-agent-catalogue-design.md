@@ -13,15 +13,16 @@ starts every session with `builder` active. All three are native primer Loops an
 legal delegated roles. The existing TUI loop footer remains the agent switcher.
 
 Delegated children run through ACP using Claude Code or Codex. Gateway-backed
-and native primer model availability is machine configuration, not a compiled Go
-table. CodeRig loads it once from:
+and native-auth availability is machine configuration, not a compiled Go table.
+CodeRig loads it once from:
 
 ```text
 ~/.looprig/models.json
 ```
 
-The file may contain API keys in this iteration. OAuth and harness-native login
-discovery are deferred. CodeRig validates the file, binds credentials directly
+The file may contain API keys in this iteration. OAuth and login discovery are
+deferred; a native profile uses the harness login state already available to
+the launched process. CodeRig validates the file, binds credentials directly
 to provider clients, discards them from all public and durable projections, and
 compiles one immutable, secret-free runtime catalogue.
 
@@ -43,7 +44,9 @@ not redesign Task/Todo or the permission system.
   OS account. Permission approvals remain isolated per canonical workspace.
 - `models.json` supports API-key and no-auth targets. OAuth, subscription-login
   discovery, Bedrock SigV4, and other credential mechanisms are deferred until
-  they receive explicit schema and client-construction support.
+  they receive explicit schema and client-construction support. Native ACP
+  profiles use existing Claude Code or Codex login state and do not add a
+  provider-key or model-selection environment variable.
 - A missing `models.json` is valid: CodeRig has no configured gateway models and
   reports a bounded capability error when no usable primer/default exists.
 - A present but malformed or insecure `models.json` fails startup. CodeRig never
@@ -51,9 +54,17 @@ not redesign Task/Todo or the permission system.
 - All three native primers use one configured `primer_default` in this release.
   The schema marks other models as primer-capable for future selection, but the
   TUI must advertise only choices that the current runtime can actually switch.
-- Delegated children are ACP-backed only. Claude Code and Codex may use any
-  configured model marked for delegation when its connector and gateway route
-  pass preflight.
+- Delegated children are ACP-backed through either a gateway or a native-auth
+  source. Claude Code and Codex may use configured gateway models or an enabled
+  native profile when its source-specific preflight passes.
+- `native_acp` is optional. An absent or disabled profile contributes no native
+  runtime. An enabled profile with omitted `models` is harness-managed: the
+  child receives no model or effort selector. An explicit non-empty `models`
+  list is an alias allowlist, and every native delegate default must name one
+  of its aliases.
+- Defaults are source-aware. An omitted `source` remains gateway-backed;
+  native defaults must set `source: "native"`. Native aliases are preflighted
+  independently, so one unavailable alias does not remove other ready aliases.
 - ACP children remain posture-only in this release. They do not consult or
   modify CodeRig's interactive permission file. A role/harness combination is
   admitted only if the connector can enforce its non-interactive posture.
@@ -119,9 +130,13 @@ The canonical shape is:
   "primer_default": "local-builder",
   "claude_code_small_model": "claude-small",
   "delegate_defaults": {
-    "planner": {"harness": "codex", "model": "openai-planner", "effort": "high"},
-    "builder": {"harness": "claude-code", "model": "claude-builder", "effort": "high"},
-    "reviewer": {"harness": "claude-code", "model": "claude-reviewer", "effort": "medium"}
+    "planner": {"harness": "codex", "source": "gateway", "model": "openai-planner", "effort": "high"},
+    "builder": {"harness": "claude-code", "source": "gateway", "model": "claude-builder", "effort": "high"},
+    "reviewer": {"harness": "claude-code", "source": "gateway", "model": "claude-reviewer", "effort": "medium"}
+  },
+  "native_acp": {
+    "codex": {"enabled": true},
+    "claude-code": {"enabled": true, "models": ["claude-native"]}
   },
   "models": [
     {
@@ -142,6 +157,7 @@ The canonical shape is:
       "api_format": "openai",
       "base_url": "http://127.0.0.1:1234/v1",
       "model": "exact-loaded-model-id",
+      "context_limits": {"max_input_tokens": 256000},
       "uses": ["primer", "delegate"],
       "capabilities": {"tools": true},
       "efforts": ["none"],
@@ -163,6 +179,11 @@ Each model row has these rules:
 - `base_url`: optional provider default or an HTTPS URL; HTTP is allowed only
   for loopback, using the existing `model.Model.Validate` rules.
 - `model`: exact provider model ID; non-empty.
+- `context_limits`: optional known model capacity. Its `window_tokens`,
+  `max_input_tokens`, and `max_output_tokens` values are token counts; setting
+  `max_input_tokens` is sufficient when the provider exposes an input cap but
+  not a shared window. Unknown limits remain zero and are rejected at runtime
+  when an input limit is required.
 - `api_key`: required exactly when the provider requires API-key auth.
 - `uses`: non-empty unique subset of `primer` and `delegate`.
 - `capabilities`: conservative user assertions. `tools` must be true for every
@@ -175,7 +196,9 @@ Each model row has these rules:
 The loader rejects duplicate keys where detectable by typed decoding rules,
 duplicate aliases, unknown uses, invalid defaults, unsupported provider auth,
 missing Claude small-model requirements, and defaults referring to models not
-admitted for that use.
+admitted for that use. Native profiles distinguish omitted `models` from an
+explicit list: the former is harness-managed, while the latter must be
+non-empty and makes an omitted native default model invalid.
 
 ## Agent Roster and Native Permissions
 
@@ -206,10 +229,13 @@ Startup proceeds in this order:
 4. Validate provider/format/auth requirements through the LLM module.
 5. Bind each API key directly to its `inference.Client`.
 6. Build primer dependencies from the configured `primer_default`.
-7. Build gateway-backed `ACPGatewaySource` rows for delegate-capable models.
-8. Preflight configured ACP executables and remove unavailable harness choices.
+7. Build gateway-backed `ACPGatewaySource` rows for delegate-capable models
+   and optional native ACP profiles from the same normalized source-aware
+   defaults.
+8. Preflight gateway routes through the loopback proxy and native routes through
+   `DialNative` with no proxy; remove only unavailable sources or aliases.
 9. Compile one immutable Harness runtime catalogue and fixed-target gateway
-   registry.
+   registry, retaining harness-managed native entries without model identity.
 10. Compute a secret-free digest and enter session construction.
 
 No step after decoding needs the raw key. Errors identify a bounded field,
@@ -222,7 +248,7 @@ required.
 
 ## ACP Runtime and Permission Semantics
 
-Each delegated child selects one immutable tuple:
+Each delegated child selects one immutable, source-aware tuple:
 
 ```json
 {
@@ -236,9 +262,20 @@ Each delegated child selects one immutable tuple:
 }
 ```
 
-The selected alias resolves to a client-bound fixed gateway target. The child
-receives only its loopback gateway URL and ephemeral gateway token. It never
-receives the configured provider API key or the path/content of `models.json`.
+For a gateway source, the selected alias resolves to a client-bound fixed
+gateway target. The child receives only its loopback gateway URL and ephemeral
+gateway token, with a gateway-safe process environment. It never receives the
+configured provider API key or the path/content of `models.json`.
+
+For a native source, an explicit alias is passed to the harness only after that
+alias independently passes native preflight. A harness-managed native profile
+passes neither a model nor an effort override. Native preflight and child
+launch use `DialNative`, no gateway proxy, and a separate allowlist containing
+only bounded process and harness-login locations (for example `HOME` and
+`XDG_*` paths); gateway credentials and model aliases are not placed in that
+environment. A failed native child restore is isolated to that child: a
+non-active child becomes a closed tombstone while an active child still makes
+the session restore fail.
 
 Claude Code requires a configured `claude_code_small_model`. That alias must be
 delegate-capable and gateway-compatible whenever a Claude Code gateway profile
@@ -254,12 +291,13 @@ native interactive grants is deferred.
 
 The durable model-configuration digest includes only normalized secret-free
 fields: version, aliases, providers, formats, endpoints, exact model IDs, uses,
-capabilities, efforts, defaults, and whether required credentials were present.
+capabilities, efforts, defaults, native profile presence/enabled state and
+explicit aliases, and whether required credentials were present.
 It must never include API-key bytes or a hash of those bytes.
 
-ACP child identity remains secret-free: role, harness, credential mode, model
-alias, small-model alias where applicable, normalized effort, runtime-profile
-name, and ACP resume/session ID.
+ACP child identity remains secret-free: role, harness, source, selection kind,
+credential mode, model alias, small-model alias where applicable, normalized
+effort, runtime-profile name, catalogue revision, and ACP resume/session ID.
 
 On restore, a missing alias, changed target descriptor, unavailable harness, or
 configuration digest mismatch never silently falls back. Existing Harness
@@ -282,9 +320,14 @@ does, because it changes whether a route is executable.
 - Missing required API key: reject the row/file; never advertise it.
 - No usable `primer_default`: fail CodeRig session construction before opening
   persistence or starting a Loop.
-- Missing ACP executable/preflight failure: omit that harness; native primers
-  remain usable.
-- No delegated profiles: Subagent reports bounded no-runtime capability.
+- Missing ACP executable/preflight failure: omit only the affected source or
+  explicit alias; native primers remain usable. An absent or disabled native
+  profile contributes no native ACP runtime.
+- An entirely empty runtime catalogue is the harness-managed native ACP
+  fallback: Subagent may queue a child with the harness, model, and effort
+  selectors omitted, leaving model choice to the ACP harness.
+- A populated runtime catalogue with no entry for the requested role reports
+  bounded no-runtime capability; it must not fall back to native selection.
 - Gateway/ACP launch failure: release resources and return a bounded error.
 - Restore cannot resolve prior identity: configuration mismatch or child
   tombstone as dictated by the existing Harness restore boundary.
@@ -305,6 +348,11 @@ Tests must prove:
 - primer and delegate use/default validation;
 - Claude small-model validation;
 - exact effort admission and target-authoritative gateway enforcement;
+- absent/disabled native profiles, harness-managed omitted models, explicit
+  native alias constraints, source-aware defaults, and native login environment
+  isolation;
+- gateway/native preflight differences, including native `DialNative` without a
+  gateway proxy and per-alias Claude preflight failure isolation;
 - same- and cross-dialect routing through both available ACP harnesses;
 - native permission-store behavior and planner/reviewer restrictions do not
   regress;

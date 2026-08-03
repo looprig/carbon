@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/looprig/harness/pkg/identity"
+	"github.com/looprig/harness/pkg/loop"
 	"github.com/looprig/inference"
 	"github.com/looprig/inference/gateway"
 	model "github.com/looprig/inference/model"
@@ -116,6 +117,9 @@ func TestNewACPGatewayNativeAuthHasNoBinding(t *testing.T) {
 	t.Parallel()
 	compiled, err := CompileACPCatalog(ACPCatalogInput{
 		SubagentTypes: []identity.AgentName{"worker"},
+		Defaults: map[identity.AgentName]configuredDelegateDefault{
+			"worker": {Harness: "codex", Model: "native-model", Effort: model.EffortNone},
+		},
 		NativeAuth: []ACPNativeAuthSource{{
 			Harness: "codex", Alias: "native-model", Model: testModel(),
 			DefaultEffort: model.EffortNone, Efforts: []model.Effort{model.EffortNone},
@@ -165,13 +169,53 @@ func testACPGatewayCatalog(t *testing.T) ACPCompiledCatalog {
 	t.Helper()
 	compiled, err := CompileACPCatalog(ACPCatalogInput{
 		SubagentTypes: []identity.AgentName{"worker"},
-		GatewayClients: map[model.ProviderName]inference.Client{
+		GatewayTargets: legacyTestGatewayTargets(map[model.ProviderName]inference.Client{
 			"anthropic": &fakeLLM{},
 			"openai":    &fakeLLM{},
-		},
+		}),
+		Defaults:    legacyTestDefaults([]identity.AgentName{"worker"}),
+		ClaudeSmall: "sonnet-5",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return compiled
+}
+
+func legacyTestGatewayTargets(clients map[model.ProviderName]inference.Client) []ACPGatewaySource {
+	definitions := []struct {
+		alias    loop.ModelAlias
+		provider model.ProviderName
+		format   model.APIFormat
+		name     string
+		efforts  []model.Effort
+	}{
+		{alias: "fable-5", provider: "anthropic", format: model.APIFormatAnthropic, name: "claude-fable-5", efforts: []model.Effort{model.EffortLow, model.EffortMedium, model.EffortHigh, model.EffortMax}},
+		{alias: "sonnet-5", provider: "anthropic", format: model.APIFormatAnthropic, name: "claude-sonnet-5", efforts: []model.Effort{model.EffortLow, model.EffortMedium, model.EffortHigh, model.EffortMax}},
+		{alias: "opus-5", provider: "anthropic", format: model.APIFormatAnthropic, name: "claude-opus-5", efforts: []model.Effort{model.EffortLow, model.EffortMedium, model.EffortHigh, model.EffortMax}},
+		{alias: "gpt-5.6-sol", provider: "openai", format: model.APIFormatOpenAIResponses, name: "gpt-5.6-sol", efforts: []model.Effort{model.EffortNone, model.EffortLow, model.EffortMedium, model.EffortHigh, model.EffortMax}},
+		{alias: "gpt-5.6-terra", provider: "openai", format: model.APIFormatOpenAIResponses, name: "gpt-5.6-terra", efforts: []model.Effort{model.EffortNone, model.EffortLow, model.EffortMedium, model.EffortHigh, model.EffortMax}},
+		{alias: "gpt-5.6-luna", provider: "openai", format: model.APIFormatOpenAIResponses, name: "gpt-5.6-luna", efforts: []model.Effort{model.EffortNone, model.EffortLow, model.EffortMedium, model.EffortHigh, model.EffortMax}},
+	}
+	var targets []ACPGatewaySource
+	for _, definition := range definitions {
+		client := clients[definition.provider]
+		if client == nil {
+			continue
+		}
+		targets = append(targets, ACPGatewaySource{
+			Alias: definition.alias, Client: client,
+			Model:         model.CustomModel(definition.provider, definition.format, "", definition.name, model.WithTools(), model.WithThinking()),
+			DefaultEffort: model.EffortMedium, Efforts: append([]model.Effort(nil), definition.efforts...),
+		})
+	}
+	return targets
+}
+
+func legacyTestDefaults(roles []identity.AgentName) map[identity.AgentName]configuredDelegateDefault {
+	defaults := make(map[identity.AgentName]configuredDelegateDefault, len(roles))
+	for _, role := range roles {
+		defaults[role] = configuredDelegateDefault{Harness: "claude-code", Model: "sonnet-5", Effort: model.EffortMedium}
+	}
+	return defaults
 }

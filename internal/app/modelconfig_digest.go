@@ -1,0 +1,166 @@
+package app
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"sort"
+
+	model "github.com/looprig/inference/model"
+)
+
+type secretFreeModelConfig struct {
+	Version              int                          `json:"version"`
+	PrimerDefault        string                       `json:"primer_default"`
+	ClaudeCodeSmallModel string                       `json:"claude_code_small_model"`
+	DelegateDefaults     []secretFreeDelegateDefault  `json:"delegate_defaults"`
+	Models               []secretFreeModelTarget      `json:"models"`
+	NativeACP            []secretFreeNativeACPProfile `json:"native_acp"`
+}
+
+type secretFreeDelegateDefault struct {
+	Role    string `json:"role"`
+	Harness string `json:"harness"`
+	Source  string `json:"source"`
+	Model   string `json:"model,omitempty"`
+	Effort  string `json:"effort,omitempty"`
+}
+
+type secretFreeNativeACPProfile struct {
+	Harness string   `json:"harness"`
+	Enabled bool     `json:"enabled"`
+	Models  []string `json:"models,omitempty"`
+}
+
+type secretFreeModelTarget struct {
+	Alias         string                       `json:"alias"`
+	Provider      string                       `json:"provider"`
+	APIFormat     string                       `json:"api_format"`
+	BaseURL       string                       `json:"base_url"`
+	Model         string                       `json:"model"`
+	ContextLimits secretFreeModelContextLimits `json:"context_limits"`
+	Uses          []string                     `json:"uses"`
+	Capabilities  secretFreeModelCapabilities  `json:"capabilities"`
+	Efforts       []string                     `json:"efforts"`
+	DefaultEffort string                       `json:"default_effort"`
+}
+
+type secretFreeModelContextLimits struct {
+	WindowTokens    uint64 `json:"window_tokens,omitempty"`
+	MaxInputTokens  uint64 `json:"max_input_tokens,omitempty"`
+	MaxOutputTokens uint64 `json:"max_output_tokens,omitempty"`
+}
+
+type secretFreeModelCapabilities struct {
+	Tools                     bool `json:"tools"`
+	Thinking                  bool `json:"thinking"`
+	Images                    bool `json:"images"`
+	PromptCaching             bool `json:"prompt_caching"`
+	StructuredOutput          bool `json:"structured_output"`
+	StructuredOutputWithTools bool `json:"structured_output_with_tools"`
+}
+
+func modelConfigDigest(config normalizedModelConfig) (string, error) {
+	material, err := secretFreeModelConfigJSON(config)
+	if err != nil {
+		return "", modelConfigFailure("digest", err)
+	}
+	digest := sha256.Sum256(material)
+	return hex.EncodeToString(digest[:]), nil
+}
+
+func secretFreeModelConfigJSON(config normalizedModelConfig) ([]byte, error) {
+	projection := secretFreeModelConfig{
+		Version:              1,
+		PrimerDefault:        config.PrimerDefault,
+		ClaudeCodeSmallModel: config.ClaudeCodeSmallModel,
+		DelegateDefaults:     make([]secretFreeDelegateDefault, 0, len(config.DelegateDefaults)),
+		Models:               make([]secretFreeModelTarget, 0, len(config.Models)),
+		NativeACP:            make([]secretFreeNativeACPProfile, 0, len(config.NativeACP)),
+	}
+	for _, value := range config.DelegateDefaults {
+		projection.DelegateDefaults = append(projection.DelegateDefaults, secretFreeDelegateDefault{
+			Role: value.Role, Harness: value.Harness, Source: string(value.Source), Model: value.Model,
+			Effort: secretFreeDelegateEffort(value),
+		})
+	}
+	sort.Slice(projection.DelegateDefaults, func(i, j int) bool {
+		return modelConfigRoleRank(projection.DelegateDefaults[i].Role) < modelConfigRoleRank(projection.DelegateDefaults[j].Role)
+	})
+	for _, profile := range config.NativeACP {
+		models := append([]string(nil), profile.Models...)
+		sort.Strings(models)
+		projection.NativeACP = append(projection.NativeACP, secretFreeNativeACPProfile{
+			Harness: profile.Harness, Enabled: profile.Enabled, Models: models,
+		})
+	}
+	sort.Slice(projection.NativeACP, func(i, j int) bool {
+		return projection.NativeACP[i].Harness < projection.NativeACP[j].Harness
+	})
+	for _, target := range config.Models {
+		uses := append([]string(nil), target.Uses...)
+		sort.Strings(uses)
+		efforts := append([]model.Effort(nil), target.Efforts...)
+		sort.Slice(efforts, func(i, j int) bool {
+			return modelConfigEffortRank(efforts[i]) < modelConfigEffortRank(efforts[j])
+		})
+		effortNames := make([]string, len(efforts))
+		for i, effort := range efforts {
+			effortNames[i] = modelConfigEffortName(effort)
+		}
+		projection.Models = append(projection.Models, secretFreeModelTarget{
+			Alias: target.Alias, Provider: string(target.Model.Provider), APIFormat: string(target.Model.APIFormat),
+			BaseURL: target.Model.BaseURL, Model: target.Model.Name,
+			ContextLimits: secretFreeModelContextLimits{
+				WindowTokens: uint64(target.Model.Limits.WindowTokens), MaxInputTokens: uint64(target.Model.Limits.MaxInputTokens),
+				MaxOutputTokens: uint64(target.Model.Limits.MaxOutputTokens),
+			},
+			Uses: uses,
+			Capabilities: secretFreeModelCapabilities{
+				Tools: target.Model.Caps.Tools, Thinking: target.Model.Caps.Thinking,
+				Images: target.Model.Caps.AcceptsImages, PromptCaching: target.Model.Caps.PromptCaching,
+				StructuredOutput:          target.Model.Caps.StructuredOutput,
+				StructuredOutputWithTools: target.Model.Caps.StructuredOutputWithTools,
+			},
+			Efforts: effortNames, DefaultEffort: modelConfigEffortName(target.DefaultEffort),
+		})
+	}
+	sort.Slice(projection.Models, func(i, j int) bool {
+		return projection.Models[i].Alias < projection.Models[j].Alias
+	})
+	return json.Marshal(projection)
+}
+
+func secretFreeDelegateEffort(value normalizedDelegateDefault) string {
+	if value.Source == "native" {
+		return ""
+	}
+	return modelConfigEffortName(value.Effort)
+}
+
+func modelConfigEffortName(effort model.Effort) string {
+	if effort == model.EffortNone {
+		return "none"
+	}
+	return string(effort)
+}
+
+func modelConfigRoleRank(role string) int {
+	for index, known := range modelConfigDelegateRoleOrder {
+		if role == known {
+			return index
+		}
+	}
+	return len(modelConfigDelegateRoleOrder)
+}
+
+func (t normalizedModelTarget) String() string {
+	return fmt.Sprintf("model target alias=%q provider=%q model=%q", t.Alias, t.Model.Provider, t.Model.Name)
+}
+
+func (t normalizedModelTarget) GoString() string { return t.String() }
+
+func (modelClientInput) String() string { return "model client input (REDACTED)" }
+
+func (c modelClientInput) GoString() string { return c.String() }
