@@ -107,7 +107,7 @@ func TestCompileACPCatalogRejectsDuplicateAliasesAndInvalidDefaults(t *testing.T
 		{
 			name: "duplicate alias",
 			input: ACPCatalogInput{
-				AgentTypes:  []identity.AgentName{"worker"},
+				AgentTypes:     []identity.AgentName{"worker"},
 				GatewayTargets: []ACPGatewaySource{target, target},
 				Defaults: map[identity.AgentName]configuredDelegateDefault{
 					"worker": {Harness: "codex", Model: "fixture-a", Effort: model.EffortMedium},
@@ -190,7 +190,7 @@ func TestCompileACPCatalogErrorDoesNotEchoAliases(t *testing.T) {
 	target := fixtureGatewaySource("fixture-a", &fakeLLM{})
 	target.Alias = loop.ModelAlias(sentinel)
 	_, err := CompileACPCatalog(ACPCatalogInput{
-		AgentTypes:  []identity.AgentName{"worker"},
+		AgentTypes:     []identity.AgentName{"worker"},
 		GatewayTargets: []ACPGatewaySource{target, target},
 		Defaults: map[identity.AgentName]configuredDelegateDefault{
 			"worker": {Harness: "codex", Model: loop.ModelAlias(sentinel), Effort: model.EffortMedium},
@@ -208,7 +208,7 @@ func TestCompileACPCatalogErrorDoesNotEchoAliases(t *testing.T) {
 func compileFixtureACPCatalog(t *testing.T) ACPCompiledCatalog {
 	t.Helper()
 	compiled, err := CompileACPCatalog(ACPCatalogInput{
-		AgentTypes:  []identity.AgentName{"worker"},
+		AgentTypes:     []identity.AgentName{"worker"},
 		GatewayTargets: []ACPGatewaySource{fixtureGatewaySource("fixture-a", &fakeLLM{})},
 		Defaults: map[identity.AgentName]configuredDelegateDefault{
 			"worker": {Harness: "codex", Model: "fixture-a", Effort: model.EffortMedium},
