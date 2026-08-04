@@ -25,7 +25,7 @@ var errACPChildUnavailable = errors.New("coderig: ACP child unavailable")
 // boundedACPChildError is the model-facing error boundary for ACP startup and
 // restore. ACP launch/RPC/stdio errors can contain executable paths, login
 // locations, URLs, provider messages, or stderr; none of those details belong
-// in a Subagent result or durable Harness error. Keep cancellation recognizable
+// in an agent result or durable Harness error. Keep cancellation recognizable
 // for controller shutdown, but collapse every other cause to one fixed result.
 func boundedACPChildError(err error) error {
 	if err == nil {

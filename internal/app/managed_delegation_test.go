@@ -34,7 +34,7 @@ import (
 	"github.com/looprig/tui"
 )
 
-// managedScript is a deterministic provider fake that drives the model-facing Subagent
+// managedScript is a deterministic provider fake that drives the model-facing agent tools
 // tool. The callback receives the real bound inference request, including injected tools
 // and prior tool results; it therefore observes the composed CodeRig rig rather than replacing
 // delegation with a test spawner.
@@ -67,8 +67,20 @@ func (s *managedScript) Stream(ctx context.Context, req inference.Request) (*str
 	}, nil), nil
 }
 
-func toolCall(id, input string) []content.Chunk {
-	return namedToolCall(id, "Subagent", input)
+func startAgentCall(id, input string) []content.Chunk {
+	return namedToolCall(id, "StartAgent", input)
+}
+
+func messageAgentCall(id, input string) []content.Chunk {
+	return namedToolCall(id, "MessageAgent", input)
+}
+
+func listAgentsCall(id, input string) []content.Chunk {
+	return namedToolCall(id, "ListAgents", input)
+}
+
+func stopAgentCall(id, input string) []content.Chunk {
+	return namedToolCall(id, "StopAgent", input)
 }
 
 func namedToolCall(id, name, input string) []content.Chunk {
@@ -92,18 +104,19 @@ func lastToolText(req inference.Request) string {
 	return ""
 }
 
-type queuedHandle struct {
-	DelegateID string `json:"delegate_id"`
-	RequestID  string `json:"request_id"`
+type agentHandle struct {
+	AgentID string `json:"agent_id"`
+	Name    string `json:"name"`
+	State   string `json:"state"`
 }
 
-func parseQueued(text string) (queuedHandle, error) {
-	var got queuedHandle
+func parseAgentHandle(text string) (agentHandle, error) {
+	var got agentHandle
 	if err := json.Unmarshal([]byte(text), &got); err != nil {
-		return queuedHandle{}, fmt.Errorf("queued Subagent result %q: %w", text, err)
+		return agentHandle{}, fmt.Errorf("agent result %q: %w", text, err)
 	}
-	if got.DelegateID == "" || got.RequestID == "" {
-		return queuedHandle{}, fmt.Errorf("queued Subagent result missing ids: %q", text)
+	if got.AgentID == "" {
+		return agentHandle{}, fmt.Errorf("agent result missing id: %q", text)
 	}
 	return got, nil
 }
@@ -191,10 +204,10 @@ func (approveAllAccessGate) Authorize(context.Context, tool.Request) (gate.Resol
 	return gate.Resolution{Approved: true}, nil
 }
 
-// TestManagedSubagentAutoAllowed proves the rig-injected managed Subagent tool prepares
+// TestManagedAgentAutoAllowed proves the rig-injected managed agent tools prepare
 // an empty access request, so the role's combined access gate auto-allows it end to end:
 // a managed delegation turn completes without any permission prompt or denial.
-func TestManagedSubagentAutoAllowed(t *testing.T) {
+func TestManagedAgentAutoAllowed(t *testing.T) {
 	t.Parallel()
 	calls := 0
 	client := &managedScript{}
@@ -207,13 +220,13 @@ func TestManagedSubagentAutoAllowed(t *testing.T) {
 		}
 		calls++
 		if calls == 1 {
-			return toolCall("auto-allow", `{"action":"start","description":"review","prompt":"review","subagent_type":"reviewer","run_in_background":false}`), nil
+			return startAgentCall("auto-allow", `{"agent_type":"reviewer","instructions":"review"}`), nil
 		}
 		return finalText("parent done"), nil
 	}
 	agent := newTestAgent(t, client, Config{})
 	if got := runManagedTurn(t, agent, "go"); got != "parent done" {
-		t.Fatalf("managed turn final = %q, want the Subagent to be auto-allowed and the turn to complete", got)
+		t.Fatalf("managed turn final = %q, want the agent tool to be auto-allowed and the turn to complete", got)
 	}
 }
 
@@ -234,7 +247,7 @@ func TestManagedTaskToolsAreLoopScoped(t *testing.T) {
 				return namedToolCall("builder-create", "TaskCreate", `{"subject":"builder task","description":"builder work"}`), nil
 			case 1:
 				builderStep++
-				return toolCall("start-planner", `{"action":"start","description":"planner work","prompt":"planner work","subagent_type":"planner","run_in_background":false}`), nil
+				return startAgentCall("start-planner", `{"agent_type":"planner","instructions":"planner work"}`), nil
 			case 2:
 				builderStep++
 				return namedToolCall("builder-list", "TaskList", `{}`), nil
@@ -244,7 +257,7 @@ func TestManagedTaskToolsAreLoopScoped(t *testing.T) {
 					return nil, fmt.Errorf("builder TaskList result = %q, want only builder task", builderList)
 				}
 				builderStep++
-				return toolCall("builder-reviewer", `{"action":"start","description":"review","prompt":"review","subagent_type":"reviewer","run_in_background":false}`), nil
+				return startAgentCall("builder-reviewer", `{"agent_type":"reviewer","instructions":"review"}`), nil
 			case 4:
 				builderStep++
 				return finalText("builder done"), nil
@@ -318,7 +331,7 @@ func TestManagedTaskToolsAreLoopScoped(t *testing.T) {
 }
 
 // TestThreeRoleTopologyComposed proves the active builder and a delegated planner both receive
-// the managed Subagent surface and their own role-specific prompts.
+// the managed agent surface and their own role-specific prompts.
 func TestThreeRoleTopologyComposed(t *testing.T) {
 	t.Parallel()
 	var builderReq, plannerReq inference.Request
@@ -329,7 +342,7 @@ func TestThreeRoleTopologyComposed(t *testing.T) {
 			builderReq = req
 			builderCalls++
 			if builderCalls == 1 {
-				return toolCall("topology-start", `{"action":"start","description":"inspect","prompt":"inspect","subagent_type":"planner","run_in_background":false}`), nil
+				return startAgentCall("topology-start", `{"agent_type":"planner","instructions":"inspect"}`), nil
 			}
 			return finalText("topology done"), nil
 		}
@@ -346,11 +359,17 @@ func TestThreeRoleTopologyComposed(t *testing.T) {
 
 	builderTools := toolNamesFromRequest(builderReq)
 	plannerTools := toolNamesFromRequest(plannerReq)
-	if !slices.Contains(builderTools, "Subagent") {
-		t.Fatalf("bound builder tools = %v, want injected Subagent", builderTools)
+	wantAgents := []string{"ListAgents", "MessageAgent", "StartAgent", "StopAgent"}
+	for _, name := range wantAgents {
+		if !slices.Contains(builderTools, name) {
+			t.Fatalf("bound builder tools = %v, want injected %s", builderTools, name)
+		}
+		if !slices.Contains(plannerTools, name) {
+			t.Fatalf("bound planner tools = %v, want injected %s", plannerTools, name)
+		}
 	}
-	if !slices.Contains(plannerTools, "Subagent") {
-		t.Fatalf("bound planner tools = %v, want injected Subagent", plannerTools)
+	if slices.Contains(builderTools, "Subagent") || slices.Contains(plannerTools, "Subagent") {
+		t.Fatalf("legacy Subagent tool still advertised: builder=%v planner=%v", builderTools, plannerTools)
 	}
 	if !strings.Contains(builderReq.System, delegationGuidance) || !strings.Contains(plannerReq.System, delegationGuidance) {
 		t.Fatal("builder or planner system prompt omitted managed-delegation guidance")
@@ -360,9 +379,9 @@ func TestThreeRoleTopologyComposed(t *testing.T) {
 	}
 }
 
-// TestManagedSubagentComposed covers synchronous completion and start validation through the
+// TestManagedAgentComposed covers synchronous completion and start validation through the
 // actual injected tool. Refusals must not register a child or emit LoopStarted.
-func TestManagedSubagentComposed(t *testing.T) {
+func TestManagedAgentComposed(t *testing.T) {
 	t.Run("wait true returns child final text", func(t *testing.T) {
 		t.Parallel()
 		calls := 0
@@ -374,21 +393,27 @@ func TestManagedSubagentComposed(t *testing.T) {
 			}
 			calls++
 			if calls == 1 {
-				return toolCall("sync-start", `{"action":"start","description":"review","prompt":"review","subagent_type":"reviewer","run_in_background":false}`), nil
+				return startAgentCall("sync-start", `{"agent_type":"reviewer","instructions":"review"}`), nil
 			}
 			observed = lastToolText(req)
 			return finalText("parent final"), nil
 		}
 		agent := newTestAgent(t, client, Config{})
 		runManagedTurn(t, agent, "go")
-		if observed != "child final text" {
-			t.Fatalf("wait=true tool result = %q", observed)
+		var result struct {
+			Response string `json:"response"`
+		}
+		if err := json.Unmarshal([]byte(observed), &result); err != nil {
+			t.Fatalf("foreground StartAgent result = %q: %v", observed, err)
+		}
+		if result.Response != "child final text" {
+			t.Fatalf("foreground StartAgent response = %q", result.Response)
 		}
 	})
 
 	for _, tc := range []struct{ name, args, want string }{
-		{"unknown agent", `{"action":"start","description":"go","prompt":"go","subagent_type":"ghost","run_in_background":false}`, "error: subagent request failed"},
-		{"nonempty mode", `{"action":"start","description":"go","prompt":"go","subagent_type":"reviewer","mode":"build","run_in_background":false}`, "error: subagent request failed"},
+		{"unknown agent", `{"agent_type":"ghost","instructions":"go"}`, "error: tool preparation failed: agent preparation rejected: unknown_runtime"},
+		{"undeclared mode", `{"agent_type":"reviewer","instructions":"go","agent_mode":"build"}`, "error: tool preparation failed: agent preparation rejected: invalid_value"},
 	} {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
@@ -399,7 +424,7 @@ func TestManagedSubagentComposed(t *testing.T) {
 			client.fn = func(_ context.Context, req inference.Request) ([]content.Chunk, error) {
 				calls++
 				if calls == 1 {
-					return toolCall("invalid-start", tc.args), nil
+					return startAgentCall("invalid-start", tc.args), nil
 				}
 				result = lastToolText(req)
 				return finalText("done"), nil
@@ -416,13 +441,15 @@ func TestManagedSubagentComposed(t *testing.T) {
 	}
 }
 
-// TestAsyncDelegateComposed drives the full managed action surface and proves the start and
-// follow-up request ids resolve independently on the same owned child.
-func TestAsyncDelegateComposed(t *testing.T) {
+// TestAgentToolsComposed drives the persistent agent surface end to end: a background start
+// returns an agent handle, ListAgents reports the direct child, MessageAgent reuses it, and
+// StopAgent leaves the same agent available for a later message.
+func TestAgentToolsComposed(t *testing.T) {
 	t.Parallel()
 	step := 0
-	var started, sent queuedHandle
-	var statusResult, startWaitResult, sendWaitResult, interruptResult string
+	var started agentHandle
+	var childID string
+	var listResult, stopResult string
 	childTurn := 0
 	client := &managedScript{}
 	client.fn = func(_ context.Context, req inference.Request) ([]content.Chunk, error) {
@@ -434,63 +461,90 @@ func TestAsyncDelegateComposed(t *testing.T) {
 		switch step {
 		case 0:
 			step++
-			return toolCall("async-start", `{"action":"start","description":"first","prompt":"first","subagent_type":"planner","run_in_background":true}`), nil
+			return startAgentCall("agent-start", `{"agent_type":"planner","instructions":"first","wait_for_response":false}`), nil
 		case 1:
 			var err error
-			started, err = parseQueued(prior)
+			started, err = parseAgentHandle(prior)
 			if err != nil {
 				return nil, err
 			}
 			step++
-			return toolCall("async-status", fmt.Sprintf(`{"action":"status","delegate_id":%q}`, started.DelegateID)), nil
+			return listAgentsCall("agent-list", `{}`), nil
 		case 2:
-			statusResult = prior
+			listResult = prior
+			var listed struct {
+				Agents []struct {
+					AgentID string `json:"agent_id"`
+				} `json:"agents"`
+			}
+			if err := json.Unmarshal([]byte(prior), &listed); err != nil {
+				return nil, fmt.Errorf("list result: %w", err)
+			}
+			if len(listed.Agents) != 1 || listed.Agents[0].AgentID != started.AgentID {
+				return nil, fmt.Errorf("list result = %q, want direct child %s", prior, started.AgentID)
+			}
+			childID = started.AgentID
 			step++
-			return toolCall("async-send", fmt.Sprintf(`{"action":"send","delegate_id":%q,"prompt":"second","run_in_background":true}`, started.DelegateID)), nil
+			return messageAgentCall("agent-message", fmt.Sprintf(`{"agent_id":%q,"message":"second"}`, childID)), nil
 		case 3:
-			var err error
-			sent, err = parseQueued(prior)
-			if err != nil {
-				return nil, err
+			var result struct {
+				Response string `json:"response"`
+			}
+			if err := json.Unmarshal([]byte(prior), &result); err != nil {
+				return nil, fmt.Errorf("message result = %q: %w", prior, err)
+			}
+			if result.Response != "child answer 2" {
+				return nil, fmt.Errorf("message response = %q, want child answer 2", result.Response)
 			}
 			step++
-			return toolCall("async-wait-start", fmt.Sprintf(`{"action":"wait","delegate_id":%q,"request_id":%q}`, started.DelegateID, started.RequestID)), nil
+			return stopAgentCall("agent-stop", fmt.Sprintf(`{"agent_id":%q}`, childID)), nil
 		case 4:
-			startWaitResult = prior
+			stopResult = prior
+			var stopped map[string]json.RawMessage
+			if err := json.Unmarshal([]byte(prior), &stopped); err != nil {
+				return nil, fmt.Errorf("stop result: %w", err)
+			}
+			if _, ok := stopped["stopped"]; ok {
+				return nil, fmt.Errorf("stop result contains removed stopped field: %q", prior)
+			}
+			if _, ok := stopped["previous_state"]; !ok {
+				return nil, fmt.Errorf("stop result omitted previous_state: %q", prior)
+			}
 			step++
-			return toolCall("async-wait-send", fmt.Sprintf(`{"action":"wait","delegate_id":%q,"request_id":%q}`, sent.DelegateID, sent.RequestID)), nil
-		case 5:
-			sendWaitResult = prior
-			step++
-			return toolCall("async-interrupt", fmt.Sprintf(`{"action":"interrupt","delegate_id":%q}`, started.DelegateID)), nil
+			return messageAgentCall("agent-reuse", fmt.Sprintf(`{"agent_id":%q,"message":"third"}`, childID)), nil
 		default:
-			interruptResult = prior
-			return finalText("managed actions done"), nil
+			var result struct {
+				Response string `json:"response"`
+			}
+			if err := json.Unmarshal([]byte(prior), &result); err != nil {
+				return nil, fmt.Errorf("reused message result = %q: %w", prior, err)
+			}
+			if result.Response != "child answer 3" {
+				return nil, fmt.Errorf("reused message response = %q", result.Response)
+			}
+			return finalText("agent tools done"), nil
 		}
 	}
 	agent := newTestAgent(t, client, Config{})
-	if got := runManagedTurn(t, agent, "go"); got != "managed actions done" {
+	if got := runManagedTurn(t, agent, "go"); got != "agent tools done" {
 		t.Fatalf("final = %q", got)
 	}
-	if started.DelegateID != sent.DelegateID || started.RequestID == sent.RequestID {
-		t.Fatalf("start=%+v send=%+v; want same child and independent requests", started, sent)
+	if started.AgentID == "" || started.State != "working" {
+		t.Fatalf("background start result = %+v, want working agent handle", started)
 	}
-	if !strings.Contains(statusResult, started.DelegateID) {
-		t.Fatalf("status=%q, want delegate %s", statusResult, started.DelegateID)
+	if !strings.Contains(listResult, started.AgentID) {
+		t.Fatalf("list result = %q, want agent %s", listResult, started.AgentID)
 	}
-	if !strings.Contains(startWaitResult, "child answer 1") || !strings.Contains(sendWaitResult, "child answer 2") {
-		t.Fatalf("start wait=%q send wait=%q", startWaitResult, sendWaitResult)
-	}
-	if !strings.Contains(interruptResult, started.DelegateID) {
-		t.Fatalf("interrupt result = %q", interruptResult)
+	if !strings.Contains(stopResult, started.AgentID) {
+		t.Fatalf("stop result = %q, want agent %s", stopResult, started.AgentID)
 	}
 }
 
-// TestRestoredDelegateComposed proves a delegate started by the CodeRig primary remains owned
+// TestRestoredAgentComposed proves an agent started by the CodeRig primary remains owned
 // after rig restore: the restored primary can send a follow-up to it, while an unrelated id
 // is rejected without starting another loop. The fsstore restore matrix remains Task 7; this
 // is the Task 3 composed-consumer proof over the same memstore used by headless CodeRig.
-func TestRestoredDelegateComposed(t *testing.T) {
+func TestRestoredAgentComposed(t *testing.T) {
 	phase := "initial"
 	primaryStep := 0
 	var unrelatedResult string
@@ -506,20 +560,26 @@ func TestRestoredDelegateComposed(t *testing.T) {
 		if phase == "initial" {
 			if primaryStep == 0 {
 				primaryStep++
-				return toolCall("restore-start", `{"action":"start","description":"initial","prompt":"initial","subagent_type":"planner","run_in_background":false}`), nil
+				return startAgentCall("restore-start", `{"agent_type":"planner","instructions":"initial"}`), nil
 			}
 			return finalText("initial parent final"), nil
 		}
 		switch primaryStep {
 		case 0:
 			primaryStep++
-			return toolCall("restore-send", fmt.Sprintf(`{"action":"send","delegate_id":%q,"prompt":"follow up","run_in_background":false}`, childID.String())), nil
+			return messageAgentCall("restore-send", fmt.Sprintf(`{"agent_id":%q,"message":"follow up"}`, childID.String())), nil
 		case 1:
-			if got := lastToolText(req); got != "restored follow-up final" {
-				return nil, fmt.Errorf("restored follow-up result = %q", got)
+			var result struct {
+				Response string `json:"response"`
+			}
+			if err := json.Unmarshal([]byte(lastToolText(req)), &result); err != nil {
+				return nil, fmt.Errorf("restored follow-up result = %q: %w", lastToolText(req), err)
+			}
+			if result.Response != "restored follow-up final" {
+				return nil, fmt.Errorf("restored follow-up response = %q", result.Response)
 			}
 			primaryStep++
-			return toolCall("restore-unrelated", fmt.Sprintf(`{"action":"send","delegate_id":%q,"prompt":"intrude","run_in_background":false}`, uuid.MustParse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").String())), nil
+			return messageAgentCall("restore-unrelated", fmt.Sprintf(`{"agent_id":%q,"message":"intrude"}`, uuid.MustParse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").String())), nil
 		default:
 			unrelatedResult = lastToolText(req)
 			return finalText("restored parent final"), nil
@@ -576,15 +636,15 @@ func TestRestoredDelegateComposed(t *testing.T) {
 	if got := runManagedTurn(t, restored, "continue"); got != "restored parent final" {
 		t.Fatalf("restored primary final = %q", got)
 	}
-	if unrelatedResult != "error: subagent request failed" {
+	if unrelatedResult != "error: agent request failed" {
 		t.Fatalf("unrelated delegate result = %q, want bounded failure", unrelatedResult)
 	}
 }
 
-// TestManagedSubagentLimitsComposed captures the real parent-scoped controller that the rig
+// TestManagedAgentLimitsComposed captures the real parent-scoped controller that the rig
 // binds into a managed primer. Calling that controller directly observes typed session errors
-// before the model-facing Subagent tool intentionally renders them as text.
-func TestManagedSubagentLimitsComposed(t *testing.T) {
+// before the model-facing agent tools intentionally render them as text.
+func TestManagedAgentLimitsComposed(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		limits rig.DelegationLimits
@@ -600,10 +660,10 @@ func TestManagedSubagentLimitsComposed(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			_, err := controller.Execute(ctx, tool.DelegateRequest{
-				Operation: tool.DelegateStart,
-				Agent:     string(operator.Name),
-				Message:   "go",
-				Wait:      true,
+				Operation:       tool.DelegateStart,
+				AgentType:       string(operator.Name),
+				Message:         "go",
+				WaitForResponse: true,
 			})
 			var sessionErr *session.SessionError
 			if !errors.As(err, &sessionErr) || sessionErr.Kind != tc.want {
@@ -622,10 +682,10 @@ func TestManagedSubagentLimitsComposed(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		request := tool.DelegateRequest{
-			Operation: tool.DelegateStart,
-			Agent:     string(operator.Name),
-			Message:   "go",
-			Wait:      true,
+			Operation:       tool.DelegateStart,
+			AgentType:       string(operator.Name),
+			Message:         "go",
+			WaitForResponse: true,
 		}
 		if _, err := controller.Execute(ctx, request); err != nil {
 			t.Fatalf("first start: %v", err)
@@ -645,9 +705,9 @@ func TestManagedSubagentLimitsComposed(t *testing.T) {
 	})
 }
 
-// delegateProbe captures the rig-bound, parent-scoped delegate controller at bind. The
+// delegateProbe captures the rig-bound, parent-scoped agent controller at bind. The
 // probe tool declares RequiresDelegateController so the rig populates bindings.Delegate,
-// letting the test drive delegation through the same controller the managed Subagent tool
+// letting the test drive delegation through the same controller the managed agent tools
 // would use — without the removed permission-factory bind hook.
 type delegateProbe struct {
 	mu         sync.Mutex

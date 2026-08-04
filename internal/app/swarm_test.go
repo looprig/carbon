@@ -27,7 +27,7 @@ import (
 )
 
 // swarm_test.go proves the three-role managed-delegation topology: planner,
-// builder, and reviewer are all primers and legal managed Subagent targets;
+// builder, and reviewer are all primers and legal managed agent targets;
 // builder is the initially active primer; and each role keeps its own prompt,
 // tool, and access posture.
 

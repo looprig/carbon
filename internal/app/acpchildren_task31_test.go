@@ -182,7 +182,7 @@ func task31ProductionDefinitions(t *testing.T, client inference.Client, probe *d
 func gatewayRuntimeCatalogForTask31(t *testing.T, clients map[model.ProviderName]inference.Client) loop.RuntimeCatalog {
 	t.Helper()
 	compiled, err := CompileACPCatalog(ACPCatalogInput{
-		AgentTypes:  []identity.AgentName{planner.Name, builder.Name, reviewer.Name},
+		AgentTypes:     []identity.AgentName{planner.Name, builder.Name, reviewer.Name},
 		GatewayTargets: legacyTestGatewayTargets(clients),
 		Defaults:       legacyTestDefaults([]identity.AgentName{planner.Name, builder.Name, reviewer.Name}),
 		ClaudeSmall:    "sonnet-5",
@@ -298,12 +298,12 @@ func TestACPCompositionRestoresCodexRuntimeThroughCurrentCatalog(t *testing.T) {
 		t.Fatalf("active primer = %v, want builder root %v", live.ActiveLoop().ID(), rootID)
 	}
 	started, err := probe.captured().Execute(ctx, tool.DelegateRequest{
-		Operation: tool.DelegateStart, Agent: string(reviewer.Name), Message: "review", Wait: false, Runtime: codexMaxRuntime(),
+		Operation: tool.DelegateStart, AgentType: string(reviewer.Name), Message: "review", WaitForResponse: false, Runtime: codexMaxRuntime(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	childID := started.DelegateID
+	childID := started.AgentID
 	if childID.IsZero() {
 		t.Fatal("delegated child id is zero")
 	}
@@ -372,12 +372,12 @@ func TestACPCompositionMissingLunaTombstonesChildAndKeepsPrimer(t *testing.T) {
 		t.Fatalf("active primer = %v, want builder root %v", live.ActiveLoop().ID(), rootID)
 	}
 	started, err := probe.captured().Execute(ctx, tool.DelegateRequest{
-		Operation: tool.DelegateStart, Agent: string(reviewer.Name), Message: "review", Wait: false, Runtime: codexMaxRuntime(),
+		Operation: tool.DelegateStart, AgentType: string(reviewer.Name), Message: "review", WaitForResponse: false, Runtime: codexMaxRuntime(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	childID := started.DelegateID
+	childID := started.AgentID
 	if err := live.Shutdown(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -438,12 +438,12 @@ func TestACPCompositionWithoutProfilesUsesManagedNativeFallback(t *testing.T) {
 		}
 		if step == 0 {
 			for _, info := range req.Tools {
-				if info.Name == "Subagent" {
+				if info.Name == "StartAgent" {
 					schema = string(info.Schema)
 				}
 			}
 			step++
-			return toolCall("no-acp", `{"action":"start","description":"work","prompt":"do it","subagent_type":"reviewer","run_in_background":true}`), nil
+			return startAgentCall("no-acp", `{"agent_type":"reviewer","instructions":"do it","wait_for_response":false}`), nil
 		}
 		result = lastToolText(req)
 		return finalText("parent done"), nil
@@ -482,26 +482,22 @@ func TestACPCompositionWithoutProfilesUsesManagedNativeFallback(t *testing.T) {
 		Properties map[string]json.RawMessage `json:"properties"`
 	}
 	if err := json.Unmarshal([]byte(schema), &schemaDocument); err != nil {
-		t.Fatalf("Subagent schema is invalid JSON: %v", err)
+		t.Fatalf("StartAgent schema is invalid JSON: %v", err)
 	}
-	for _, field := range []string{"agent_harness", "model", "effort"} {
-		if _, ok := schemaDocument.Properties[field]; ok {
-			t.Errorf("empty catalog schema advertises %q", field)
+	for _, field := range []string{"model", "effort"} {
+		if _, ok := schemaDocument.Properties[field]; !ok {
+			t.Errorf("ordinary native catalog schema omitted %q", field)
 		}
 	}
 	var queued struct {
-		DelegateID string          `json:"delegate_id"`
-		RequestID  string          `json:"request_id"`
-		Status     string          `json:"status"`
-		Runtime    json.RawMessage `json:"runtime"`
+		AgentID string `json:"agent_id"`
+		Name    string `json:"name"`
+		State   string `json:"state"`
 	}
 	if err := json.Unmarshal([]byte(result), &queued); err != nil {
 		t.Fatalf("managed native fallback result = %q: %v", result, err)
 	}
-	if queued.DelegateID == "" || queued.RequestID == "" || queued.Status != "queued" {
-		t.Fatalf("managed native fallback result = %q, want queued delegate handle", result)
-	}
-	if len(queued.Runtime) != 0 && string(queued.Runtime) != "null" {
-		t.Fatalf("managed native fallback result advertises runtime selectors: %q", queued.Runtime)
+	if queued.AgentID == "" || queued.Name == "" || queued.State != "working" {
+		t.Fatalf("managed native fallback result = %q, want working agent handle", result)
 	}
 }

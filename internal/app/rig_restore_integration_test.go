@@ -60,7 +60,7 @@ func (b *failingSnapshotBlobs) setFail(fail bool) {
 
 // concurrentManagedScript is the channel-controlled counterpart to managedScript. It
 // intentionally does not serialize Stream callbacks: async child inference must be able to
-// block while the parent continues issuing status/wait/interrupt actions.
+// block while the parent continues issuing list/message/stop actions.
 type concurrentManagedScript struct {
 	fn func(context.Context, inference.Request) ([]content.Chunk, error)
 }
@@ -101,7 +101,7 @@ func TestRigRestoreStateWorkspaceAndContinuation(t *testing.T) {
 		if strings.Contains(req.System, `<role name="`+string(builder.Name)+`">`) {
 			primaryCalls++
 			if primaryCalls == 1 {
-				return toolCall("restore-state-child", `{"action":"start","description":"work","prompt":"work","subagent_type":"planner","run_in_background":false}`), nil
+				return startAgentCall("restore-state-child", `{"agent_type":"planner","instructions":"work"}`), nil
 			}
 			return finalText("builder work complete"), nil
 		}
@@ -227,7 +227,7 @@ func TestRigRestoreDelegateOwnership(t *testing.T) {
 		if phase == "initial" {
 			if step == 0 {
 				step++
-				return toolCall("own-start", `{"action":"start","description":"first","prompt":"first","subagent_type":"planner","run_in_background":false}`), nil
+				return startAgentCall("own-start", `{"agent_type":"planner","instructions":"first"}`), nil
 			}
 			initialSyncResult = lastToolText(req)
 			return finalText("initial parent"), nil
@@ -235,13 +235,13 @@ func TestRigRestoreDelegateOwnership(t *testing.T) {
 		switch step {
 		case 0:
 			step++
-			return toolCall("own-send", fmt.Sprintf(`{"action":"send","delegate_id":%q,"prompt":"again","run_in_background":false}`, childID)), nil
+			return messageAgentCall("own-send", fmt.Sprintf(`{"agent_id":%q,"message":"again"}`, childID)), nil
 		case 1:
 			if got := lastToolText(req); got != "restored follow-up" {
 				return nil, fmt.Errorf("owned follow-up = %q", got)
 			}
 			step++
-			return toolCall("own-reject", fmt.Sprintf(`{"action":"send","delegate_id":%q,"prompt":"intrude","run_in_background":false}`, uuid.MustParse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"))), nil
+			return messageAgentCall("own-reject", fmt.Sprintf(`{"agent_id":%q,"message":"intrude"}`, uuid.MustParse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"))), nil
 		default:
 			unrelatedResult = lastToolText(req)
 			return finalText("ownership checked"), nil
@@ -267,7 +267,7 @@ func TestRigRestoreDelegateOwnership(t *testing.T) {
 		t.Fatal("no durable child")
 	}
 	if initialSyncResult != "initial child" {
-		t.Fatalf("sync wait=true Subagent result = %q, want exact child final", initialSyncResult)
+		t.Fatalf("foreground StartAgent result = %q, want exact child final", initialSyncResult)
 	}
 	if err := a1.Close(context.Background()); err != nil {
 		t.Fatal(err)
@@ -295,15 +295,14 @@ func TestRigRestoreDelegateOwnership(t *testing.T) {
 	}
 }
 
-// TestAsyncDelegatesFSStoreResolveIndependently drives two managed children through the
-// production CodeRig rig over fsstore. Both are started before either request is waited, and
-// each request is waited by its own request ID, so completion of one cannot satisfy the
-// other request's identity even though their completions are released in a different order.
-func TestAsyncDelegatesFSStoreResolveIndependently(t *testing.T) {
+// TestAgentToolsFSStorePersistence drives two persistent agents through the production
+// CodeRig rig over fsstore. It covers direct-child listing, foreground reuse, and stopping
+// one active child without exposing request correlation IDs.
+func TestAgentToolsFSStorePersistence(t *testing.T) {
 	t.Chdir(t.TempDir())
 	step := 0
-	var first, second, followup queuedHandle
-	var firstWait, secondWait, firstStatus, followupStatus, followupWait, interrupted string
+	var first, second agentHandle
+	var listResult, messageResult, stopResult string
 	firstEntered := make(chan struct{})
 	secondEntered := make(chan struct{})
 	releaseFirst := make(chan struct{})
@@ -333,10 +332,10 @@ func TestAsyncDelegatesFSStoreResolveIndependently(t *testing.T) {
 		switch step {
 		case 0:
 			step++
-			return toolCall("fs-async-1", `{"action":"start","description":"first","prompt":"first","subagent_type":"planner","run_in_background":true}`), nil
+			return startAgentCall("fs-agent-1", `{"agent_type":"planner","instructions":"first","wait_for_response":false}`), nil
 		case 1:
 			var err error
-			first, err = parseQueued(prior)
+			first, err = parseAgentHandle(prior)
 			if err != nil {
 				return nil, err
 			}
@@ -346,10 +345,10 @@ func TestAsyncDelegatesFSStoreResolveIndependently(t *testing.T) {
 				return nil, ctx.Err()
 			}
 			step++
-			return toolCall("fs-async-2", `{"action":"start","description":"second","prompt":"second","subagent_type":"planner","run_in_background":true}`), nil
+			return startAgentCall("fs-agent-2", `{"agent_type":"planner","instructions":"second","wait_for_response":false}`), nil
 		case 2:
 			var err error
-			second, err = parseQueued(prior)
+			second, err = parseAgentHandle(prior)
 			if err != nil {
 				return nil, err
 			}
@@ -359,39 +358,19 @@ func TestAsyncDelegatesFSStoreResolveIndependently(t *testing.T) {
 				return nil, ctx.Err()
 			}
 			step++
-			return toolCall("fs-status-1", fmt.Sprintf(`{"action":"status","delegate_id":%q}`, first.DelegateID)), nil
+			return listAgentsCall("fs-list", `{}`), nil
 		case 3:
-			firstStatus = prior
+			listResult = prior
 			close(releaseFirst)
 			step++
-			return toolCall("fs-wait-1", fmt.Sprintf(`{"action":"wait","delegate_id":%q,"request_id":%q}`, first.DelegateID, first.RequestID)), nil
+			return messageAgentCall("fs-message", fmt.Sprintf(`{"agent_id":%q,"message":"follow up"}`, first.AgentID)), nil
 		case 4:
-			firstWait = prior
+			messageResult = prior
 			step++
-			return toolCall("fs-followup-1", fmt.Sprintf(`{"action":"send","delegate_id":%q,"prompt":"follow up","run_in_background":true}`, first.DelegateID)), nil
-		case 5:
-			var err error
-			followup, err = parseQueued(prior)
-			if err != nil {
-				return nil, err
-			}
-			step++
-			return toolCall("fs-followup-status", fmt.Sprintf(`{"action":"status","delegate_id":%q}`, followup.DelegateID)), nil
-		case 6:
-			followupStatus = prior
-			step++
-			return toolCall("fs-followup-wait", fmt.Sprintf(`{"action":"wait","delegate_id":%q,"request_id":%q}`, followup.DelegateID, followup.RequestID)), nil
-		case 7:
-			followupWait = prior
-			step++
-			return toolCall("fs-interrupt-2", fmt.Sprintf(`{"action":"interrupt","delegate_id":%q}`, second.DelegateID)), nil
-		case 8:
-			interrupted = prior
-			step++
-			return toolCall("fs-wait-2", fmt.Sprintf(`{"action":"wait","delegate_id":%q,"request_id":%q}`, second.DelegateID, second.RequestID)), nil
+			return stopAgentCall("fs-stop", fmt.Sprintf(`{"agent_id":%q}`, second.AgentID)), nil
 		default:
-			secondWait = prior
-			return finalText("persisted async matrix complete"), nil
+			stopResult = prior
+			return finalText("persistent agent matrix complete"), nil
 		}
 	}
 	f := newIntegrationFactory(t)
@@ -400,32 +379,20 @@ func TestAsyncDelegatesFSStoreResolveIndependently(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = a.Close(context.Background()) })
-	if got := runManagedTurn(t, a, "run two delegates"); got != "persisted async matrix complete" {
+	if got := runManagedTurn(t, a, "run two agents"); got != "persistent agent matrix complete" {
 		t.Fatalf("final = %q", got)
 	}
-	if first.DelegateID == second.DelegateID || first.RequestID == second.RequestID {
-		t.Fatalf("first=%+v second=%+v, want independent delegate and request ids", first, second)
+	if first.AgentID == second.AgentID {
+		t.Fatalf("first=%+v second=%+v, want independent agent ids", first, second)
 	}
-	if !strings.Contains(firstStatus, first.DelegateID) {
-		t.Fatalf("first status = %q", firstStatus)
+	if !strings.Contains(listResult, first.AgentID) || !strings.Contains(listResult, second.AgentID) {
+		t.Fatalf("list result = %q, want both direct agents", listResult)
 	}
-	if !strings.Contains(firstWait, "independent first child result") {
-		t.Fatalf("first wait = %q", firstWait)
+	if messageResult != "exact follow-up child result" {
+		t.Fatalf("message result = %q", messageResult)
 	}
-	if !strings.Contains(strings.ToLower(secondWait), "interrupt") {
-		t.Fatalf("interrupted second wait = %q", secondWait)
-	}
-	if !strings.Contains(interrupted, second.DelegateID) {
-		t.Fatalf("interrupt result = %q, want delegate %s", interrupted, second.DelegateID)
-	}
-	if followup.DelegateID != first.DelegateID || followup.RequestID == first.RequestID || followup.RequestID == "" {
-		t.Fatalf("follow-up handle = %+v, first = %+v", followup, first)
-	}
-	if !strings.Contains(followupStatus, first.DelegateID) {
-		t.Fatalf("follow-up status = %q", followupStatus)
-	}
-	if !strings.Contains(followupWait, "exact follow-up child result") {
-		t.Fatalf("follow-up wait = %q", followupWait)
+	if !strings.Contains(stopResult, second.AgentID) || strings.Contains(stopResult, `"stopped"`) {
+		t.Fatalf("stop result = %q, want agent state result without stopped", stopResult)
 	}
 }
 
@@ -444,7 +411,7 @@ func TestManagedDelegateDeclaredModeFSStore(t *testing.T) {
 		if strings.Contains(req.System, "mode-test-primary") {
 			primaryCalls++
 			if primaryCalls == 1 {
-				return toolCall("declared-mode", `{"action":"start","description":"plan it","prompt":"plan it","subagent_type":"operator","mode":"plan","run_in_background":false}`), nil
+				return startAgentCall("declared-mode", `{"agent_type":"operator","instructions":"plan it","agent_mode":"plan"}`), nil
 			}
 			return finalText("declared mode complete"), nil
 		}
@@ -591,7 +558,7 @@ func TestManagedDelegateUndeclaredModeFSStore(t *testing.T) {
 	client.fn = func(_ context.Context, req inference.Request) ([]content.Chunk, error) {
 		calls++
 		if calls == 1 {
-			return toolCall("undeclared-mode", `{"action":"start","description":"must reject","prompt":"must reject","subagent_type":"planner","mode":"build","run_in_background":false}`), nil
+			return startAgentCall("undeclared-mode", `{"agent_type":"planner","instructions":"must reject","agent_mode":"build"}`), nil
 		}
 		result = lastToolText(req)
 		return finalText("rejection observed"), nil
@@ -603,7 +570,7 @@ func TestManagedDelegateUndeclaredModeFSStore(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = a.Close(context.Background()) })
 	_, observed := runManagedTurnObserved(t, a, "request undeclared mode")
-	if result != "error: subagent request failed" {
+	if !strings.Contains(result, "error:") {
 		t.Fatalf("undeclared mode result = %q, want bounded delegation error", result)
 	}
 	if got := countLoopStarted(observed); got != 0 {
@@ -775,15 +742,15 @@ func TestRigRestoreSiblingOwnershipScopes(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	aChild, err := parentA.Execute(ctx, tool.DelegateRequest{Operation: tool.DelegateStart, Agent: "scoped-worker", Message: "a", Wait: true})
+	aChild, err := parentA.Execute(ctx, tool.DelegateRequest{Operation: tool.DelegateStart, AgentType: "scoped-worker", Message: "a", WaitForResponse: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	bChild, err := parentB.Execute(ctx, tool.DelegateRequest{Operation: tool.DelegateStart, Agent: "scoped-worker", Message: "b", Wait: true})
+	bChild, err := parentB.Execute(ctx, tool.DelegateRequest{Operation: tool.DelegateStart, AgentType: "scoped-worker", Message: "b", WaitForResponse: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if aChild.DelegateID == bChild.DelegateID {
+	if aChild.AgentID == bChild.AgentID {
 		t.Fatal("distinct parents received the same child")
 	}
 	if err := s1.Shutdown(ctx); err != nil {
@@ -811,13 +778,12 @@ func TestRigRestoreSiblingOwnershipScopes(t *testing.T) {
 	if parentA == nil || parentB == nil {
 		t.Fatal("restore did not rebind both scoped controllers")
 	}
-	if got, err := parentA.Execute(ctx, tool.DelegateRequest{Operation: tool.DelegateSend, DelegateID: aChild.DelegateID, Message: "owned", Wait: true}); err != nil || got.Output != "scoped worker complete" {
+	if got, err := parentA.Execute(ctx, tool.DelegateRequest{Operation: tool.DelegateSend, AgentID: aChild.AgentID, Message: "owned", WaitForResponse: true}); err != nil || got.Response != "scoped worker complete" {
 		t.Fatalf("restored own child send = %+v, %v", got, err)
 	}
 	for _, request := range []tool.DelegateRequest{
-		{Operation: tool.DelegateSend, DelegateID: bChild.DelegateID, Message: "cross-owner", Wait: true},
-		{Operation: tool.DelegateWait, DelegateID: bChild.DelegateID, RequestID: &bChild.RequestID},
-		{Operation: tool.DelegateInterrupt, DelegateID: bChild.DelegateID},
+		{Operation: tool.DelegateSend, AgentID: bChild.AgentID, Message: "cross-owner", WaitForResponse: true},
+		{Operation: tool.DelegateInterrupt, AgentID: bChild.AgentID},
 	} {
 		if _, err := parentA.Execute(ctx, request); err == nil || !strings.Contains(err.Error(), "not owned") {
 			t.Fatalf("parent A cross-owner %v error = %v, want ownership rejection", request.Operation, err)

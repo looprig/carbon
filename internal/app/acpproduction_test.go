@@ -113,7 +113,7 @@ func TestPreflightProductionACPExecutableEnforcesAdapterSpecificSelectors(t *tes
 	}
 }
 
-func TestProductionACPCompositionUsesOnlyConfiguredGatewayRows(t *testing.T) {
+func TestProductionACPCompositionKeepsConfiguredGatewayRowsAlongsideNativeRows(t *testing.T) {
 	executable, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
@@ -149,16 +149,28 @@ func TestProductionACPCompositionUsesOnlyConfiguredGatewayRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	entries := composition.Catalog.RuntimeCatalog.EntriesFor("builder")
-	if len(entries) != 2 {
-		t.Fatalf("builder entries = %#v, want configured Claude and Codex entries", entries)
+	if len(entries) != 3 {
+		t.Fatalf("builder entries = %#v, want native plus configured Claude and Codex entries", entries)
 	}
+	var gatewayRows, nativeRows int
 	for _, entry := range entries {
-		if entry.Credential != loop.CredentialGatewayBacked || entry.DefaultModel != "configured-only" {
-			t.Fatalf("production entry = %#v, want configured gateway default", entry)
+		if entry.Source == loop.RuntimeSourceNative {
+			nativeRows++
+			if entry.AgentHarness != "looprig" || entry.Profile != "looprig/native" || entry.DefaultModel != "configured-only" {
+				t.Fatalf("native production entry = %#v, want configured-only ordinary row", entry)
+			}
+		} else {
+			gatewayRows++
+			if entry.Credential != loop.CredentialGatewayBacked || entry.DefaultModel != "configured-only" {
+				t.Fatalf("production gateway entry = %#v, want configured gateway default", entry)
+			}
 		}
 		if len(entry.Models) != 1 || entry.Models[0].Alias != "configured-only" {
 			t.Fatalf("production models = %#v, want only configured-only", entry.Models)
 		}
+	}
+	if gatewayRows != 2 || nativeRows != 1 {
+		t.Fatalf("gateway rows=%d native rows=%d, want 2 and 1", gatewayRows, nativeRows)
 	}
 }
 
@@ -224,8 +236,9 @@ func TestProductionACPCompositionDoesNotFallbackWhenConfiguredDefaultHarnessIsUn
 	if composition == nil {
 		t.Fatal("unavailable configured default returned nil composition")
 	}
-	if entries := composition.Catalog.RuntimeCatalog.EntriesFor("builder"); len(entries) != 0 {
-		t.Fatalf("unavailable configured default fell back to another harness: %#v", entries)
+	entries := composition.Catalog.RuntimeCatalog.EntriesFor("builder")
+	if len(entries) != 1 || entries[0].AgentHarness != "looprig" || !entries[0].Default {
+		t.Fatalf("unavailable configured default did not retain the ordinary row: %#v", entries)
 	}
 }
 
