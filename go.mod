@@ -12,7 +12,7 @@ require (
 	github.com/looprig/classifiers v0.1.0
 	github.com/looprig/core v0.4.0
 	github.com/looprig/fsstore v0.3.0
-	github.com/looprig/harness v0.18.0
+	github.com/looprig/harness v0.19.0
 	github.com/looprig/inference v0.6.0
 	github.com/looprig/llm v0.4.0
 	github.com/looprig/sandbox v0.4.0
