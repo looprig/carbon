@@ -218,8 +218,10 @@ func TestSetModelResetsEffortWhenNewCandidateDoesNotAdmitCurrent(t *testing.T) {
 // whose Error() is plain-English only — no wrapped harness jargon reaches the
 // user (this error string is displayed verbatim by the TUI, which has no
 // stripping/classification layer of its own) — while the cause stays reachable
-// via Unwrap for any future errors.As/errors.Is caller, mirroring
-// runtimeGitError's split (runtime_context.go).
+// via Unwrap for any future errors.As/errors.Is caller. Unlike runtimeGitError
+// (runtime_context.go), which interpolates its cause into Error() and relies on
+// its one caller discarding the error before display, primerTransportSwitchError
+// withholds the cause at Error() itself, since this error is genuinely displayed.
 func TestSetModelCrossProviderCandidateFails(t *testing.T) {
 	a := testModel()
 	b := model.CustomModel("chutes", model.APIFormatOpenAI, "https://api.chutes.ai", "candidate-b", model.WithTools(), model.WithThinking())

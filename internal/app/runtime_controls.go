@@ -174,9 +174,12 @@ func (a *RuntimeAgent) SetModel(ctx context.Context, loopID uuid.UUID, id tui.Mo
 // TUI terminal verbatim (tui's handleRuntimeMutation wraps and displays it with no
 // stripping/classification layer) and harness's underlying wording ("loop: change
 // refused ...: loop: context model changes fixed transport field ...") is
-// redundant jargon once the friendly explanation and alternatives are stated. The
-// cause remains reachable via Unwrap for errors.As/errors.Is, mirroring
-// runtimeGitError's split (runtime_context.go).
+// redundant jargon once the friendly explanation and alternatives are stated. Unlike
+// runtimeGitError (runtime_context.go), whose Error() does interpolate its cause and
+// relies on its one caller discarding the error before display, this type withholds
+// the cause at Error() itself — appropriate here since, unlike the git case, this
+// error is genuinely displayed. The cause remains reachable via Unwrap for any
+// errors.As/errors.Is caller.
 type primerTransportSwitchError struct {
 	id           tui.ModelID
 	alternatives string
