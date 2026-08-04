@@ -40,6 +40,11 @@ type Config struct {
 	// PrimerEfforts is the exact normalized effort allowlist for the configured
 	// primer. Production composition copies it before runtime assembly.
 	PrimerEfforts []model.Effort
+	// PrimerCandidates is every configured primer-capable model
+	// (uses: ["primer", ...]), in models.json order. Production composition
+	// copies it from productionModels before runtime assembly; RuntimeAgent
+	// uses it to offer a real /model picker instead of one fixed choice.
+	PrimerCandidates []PrimerCandidate
 	// PermissionReviewEnabled turns on classifier-based automatic permission
 	// review (off by default — a zero Config never auto-approves anything).
 	// See internal/app/permission_review.go for the composition this enables.

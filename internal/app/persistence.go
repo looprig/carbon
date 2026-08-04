@@ -385,6 +385,7 @@ func (f *SessionStoreFactory) Open(ctx context.Context, sel SessionSelector, cfg
 		cfg.ModelConfigRev = configured.ConfigRev
 		cfg.PrimerAlias = configured.PrimerAlias
 		cfg.PrimerEfforts = append([]model.Effort(nil), configured.PrimerEfforts...)
+		cfg.PrimerCandidates = append([]PrimerCandidate(nil), configured.PrimerCandidates...)
 		cfg, err = withProductionACPChildren(ctx, cfg, configured)
 		if err != nil {
 			return nil, err
