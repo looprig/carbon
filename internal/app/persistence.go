@@ -377,7 +377,10 @@ func (f *SessionStoreFactory) Open(ctx context.Context, sel SessionSelector, cfg
 		if configured.PrimerClient == nil || configured.PrimerModel.Name == "" {
 			return nil, &ModelConfigCapabilityError{}
 		}
-		client = configured.PrimerClient
+		client = configured.RuntimeClient
+		if client == nil {
+			client = configured.PrimerClient
+		}
 		factory = newModelFactoryFor(configured.PrimerModel)
 		cfg.ModelConfigRev = configured.ConfigRev
 		cfg.PrimerAlias = configured.PrimerAlias

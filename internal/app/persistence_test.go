@@ -3,14 +3,22 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/looprig/coderig/internal/catalog/builder"
+	"github.com/looprig/coderig/internal/catalog/planner"
+	"github.com/looprig/coderig/internal/catalog/reviewer"
+	"github.com/looprig/core/content"
+	"github.com/looprig/harness/pkg/event"
+	"github.com/looprig/harness/pkg/identity"
 	"github.com/looprig/harness/pkg/loop"
 	"github.com/looprig/harness/pkg/rig"
+	"github.com/looprig/inference"
 	model "github.com/looprig/inference/model"
 	"github.com/looprig/storage/memstore"
 	"github.com/looprig/tui"
@@ -57,6 +65,115 @@ func TestProductionModelsPersistedOpenLoadsExactlyOnce(t *testing.T) {
 	}
 	if len(options.Efforts) != 1 || options.Efforts[0].ID != tui.EffortID(model.EffortHigh) {
 		t.Fatalf("runtime efforts = %#v, want only configured high effort", options.Efforts)
+	}
+}
+
+func TestPersistedOpenRoutesNativeAgentThroughRuntimeClientAcrossRestore(t *testing.T) {
+	primerModel := testModel()
+	delegateModel := model.CustomModel("openai", model.APIFormatOpenAIResponses, "", "persisted-delegate", model.WithTools(), model.WithThinking())
+	delegateModel.Limits = model.ContextLimits{WindowTokens: 128_000}
+	primer := &managedScript{}
+	delegate := &fakeLLM{chunks: finalText("native child complete")}
+	var phase string
+	var childID string
+	parentStep := 0
+	primer.fn = func(_ context.Context, req inference.Request) ([]content.Chunk, error) {
+		if !requestHasRole(req, builder.Name) {
+			return nil, fmt.Errorf("primer client received non-parent request")
+		}
+		switch phase {
+		case "":
+			switch parentStep {
+			case 0:
+				parentStep++
+				return startAgentCall("persisted-native-start", `{"agent_type":"planner","instructions":"initial","model":"persisted-delegate","effort":"low"}`), nil
+			case 1:
+				parentStep++
+				return finalText("initial parent complete"), nil
+			}
+		case "restored":
+			if parentStep == 0 {
+				parentStep++
+				return messageAgentCall("persisted-native-message", fmt.Sprintf(`{"agent_id":%q,"message":"continue"}`, childID)), nil
+			}
+			if parentStep == 1 {
+				parentStep++
+				return finalText("restored parent complete"), nil
+			}
+		}
+		return nil, fmt.Errorf("unexpected persisted parent step phase=%q step=%d", phase, parentStep)
+	}
+
+	runtimeClient, err := newModelRoutingClient([]modelBinding{
+		{Model: primerModel, Client: primer},
+		{Model: delegateModel, Client: delegate},
+	})
+	if err != nil {
+		t.Fatalf("newModelRoutingClient() error = %v", err)
+	}
+	configured := productionModels{
+		PrimerClient:  primer,
+		RuntimeClient: runtimeClient,
+		PrimerModel:   primerModel,
+		PrimerAlias:   "persisted-primer",
+		PrimerEfforts: []model.Effort{model.EffortNone},
+		ACP: []ACPGatewaySource{{
+			Alias: "persisted-delegate", Description: "Persisted delegate", Client: delegate,
+			Model: delegateModel, DefaultEffort: model.EffortLow,
+			Efforts: []model.Effort{model.EffortLow, model.EffortMedium},
+		}},
+		Defaults: map[identity.AgentName]configuredDelegateDefault{
+			planner.Name:  {Harness: "codex", Source: loop.RuntimeSourceGateway, Model: "persisted-delegate", Effort: model.EffortLow},
+			builder.Name:  {Harness: "codex", Source: loop.RuntimeSourceGateway, Model: "persisted-delegate", Effort: model.EffortLow},
+			reviewer.Name: {Harness: "codex", Source: loop.RuntimeSourceGateway, Model: "persisted-delegate", Effort: model.EffortLow},
+		},
+		ConfigRev: "persisted-runtime-client-rev",
+	}
+	factory := &SessionStoreFactory{
+		stores: mustHeadlessTestStores(t),
+		loadModels: func() (productionModels, error) {
+			return configured, nil
+		},
+	}
+
+	first, err := factory.Open(context.Background(), SessionSelector{}, Config{})
+	if err != nil {
+		t.Fatalf("initial Open() error = %v", err)
+	}
+	_, observed := runManagedTurnObserved(t, first, "start persisted native agent")
+	if err := first.Close(context.Background()); err != nil {
+		t.Fatalf("initial Close() error = %v", err)
+	}
+	for _, raw := range observed {
+		if started, ok := raw.(event.LoopStarted); ok && started.AgentName == planner.Name {
+			childID = started.LoopID.String()
+		}
+	}
+	if childID == "" {
+		t.Fatal("initial native start emitted no planner child")
+	}
+
+	phase = "restored"
+	parentStep = 0
+	restored, err := factory.Open(context.Background(), SessionSelector{Resume: first.SessionID()}, Config{})
+	if err != nil {
+		t.Fatalf("restored Open() error = %v", err)
+	}
+	if got := runManagedTurn(t, restored, "message persisted native agent"); got != "restored parent complete" {
+		t.Fatalf("restored parent final = %q", got)
+	}
+	if err := restored.Close(context.Background()); err != nil {
+		t.Fatalf("restored Close() error = %v", err)
+	}
+
+	streamRequests, _ := delegate.capturedRequests()
+	if len(streamRequests) != 2 {
+		t.Fatalf("delegate stream requests = %d, want initial and restored child turns", len(streamRequests))
+	}
+	for index, req := range streamRequests {
+		if req.Model.Name != delegateModel.Name || req.Model.Sampling.Effort != model.EffortLow {
+			t.Fatalf("delegate request %d model=%q effort=%q, want %q/low", index, req.Model.Name, req.Model.Sampling.Effort, delegateModel.Name)
+		}
 	}
 }
 
