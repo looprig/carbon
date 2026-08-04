@@ -171,9 +171,69 @@ func TestNormalizeModelConfigAcceptsMaximumLengthAlias(t *testing.T) {
 	}
 }
 
+func TestNormalizeModelConfigDescriptions(t *testing.T) {
+	t.Parallel()
+
+	t.Run("normalizes bounded presentation text", func(t *testing.T) {
+		config := validDecodedModelConfig(t)
+		config.Models[0].Description = "  Local\tmodel  for  focused\nwork.  "
+		// Newlines are not presentation whitespace: they must be rejected rather
+		// than silently turned into a multi-line model-facing description.
+		if _, err := normalizeModelConfig(config); err == nil {
+			t.Fatal("normalizeModelConfig() error = nil, want newline rejection")
+		}
+
+		config.Models[0].Description = "  Local\tmodel  for  focused work.  "
+		normalized, err := normalizeModelConfig(config)
+		if err != nil {
+			t.Fatalf("normalizeModelConfig() error = %v", err)
+		}
+		if got, want := normalized.Models[0].Description, "Local model for focused work."; got != want {
+			t.Fatalf("normalized description = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("delegate descriptions are required and secret-free", func(t *testing.T) {
+		cases := []struct {
+			name string
+			text string
+		}{
+			{name: "missing", text: ""},
+			{name: "blank", text: "   "},
+			{name: "nul", text: "model\x00guidance"},
+			{name: "newline", text: "model\nguidance"},
+			{name: "too long", text: strings.Repeat("a", 257)},
+			{name: "url", text: "See https://provider.example/model"},
+			{name: "path", text: "Run /usr/local/bin/model"},
+			{name: "credential", text: "Uses api_key credentials"},
+		}
+		for _, tt := range cases {
+			t.Run(tt.name, func(t *testing.T) {
+				config := validDecodedModelConfig(t)
+				config.Models[0].Description = tt.text
+				if _, err := normalizeModelConfig(config); err == nil {
+					t.Fatal("normalizeModelConfig() error = nil, want description validation error")
+				}
+			})
+		}
+	})
+
+	t.Run("non-delegate models may omit descriptions", func(t *testing.T) {
+		config := validDecodedModelConfig(t)
+		primerOnly := config.Models[0]
+		primerOnly.Alias = "primer-only"
+		primerOnly.Uses = []string{"primer"}
+		primerOnly.Description = ""
+		config.Models = append(config.Models, primerOnly)
+		if _, err := normalizeModelConfig(config); err != nil {
+			t.Fatalf("normalizeModelConfig() error = %v", err)
+		}
+	})
+}
+
 func TestNormalizeModelConfigPreservesOptionalFields(t *testing.T) {
 	input := `{
-		"version": 1,
+		"version": 2,
 		"primer_default": "local",
 		"delegate_defaults": {
 			"planner": {"harness":"codex","model":"local","effort":"none"},
@@ -182,6 +242,7 @@ func TestNormalizeModelConfigPreservesOptionalFields(t *testing.T) {
 		},
 		"models": [{
 			"alias": "local",
+			"description": "Local in-process coding model.",
 			"provider": "lmstudio",
 			"api_format": "openai",
 			"model": "qwen3-coder",

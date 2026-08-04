@@ -43,7 +43,7 @@ func TestDecodeModelConfigErrorBoundsCompleteMessage(t *testing.T) {
 func TestDecodeModelConfigBoundsUnknownFieldWithoutAPIKeyValue(t *testing.T) {
 	const secret = "test-secret-do-not-log"
 	field := strings.Repeat("future_field_", 256)
-	input := strings.Replace(validLMStudioModelConfig, `"version": 1`, `"version": 1, "`+field+`": true`, 1)
+	input := strings.Replace(validLMStudioModelConfig, `"version": 2`, `"version": 2, "`+field+`": true`, 1)
 	input = strings.Replace(input, `"api_key": ""`, `"api_key": "`+secret+`"`, 1)
 
 	_, err := decodeModelConfig([]byte(input))
@@ -62,7 +62,7 @@ func TestDecodeModelConfigBoundsUnknownFieldWithoutAPIKeyValue(t *testing.T) {
 }
 
 const validLMStudioModelConfig = `{
-  "version": 1,
+  "version": 2,
   "primer_default": "local",
   "claude_code_small_model": "",
   "delegate_defaults": {
@@ -72,6 +72,7 @@ const validLMStudioModelConfig = `{
   },
   "models": [{
     "alias": "local",
+    "description": "Local in-process coding model.",
     "provider": "lmstudio",
     "api_format": "openai",
     "base_url": "http://localhost:1234/v1",
@@ -97,7 +98,7 @@ func TestDecodeModelConfig(t *testing.T) {
 		if err != nil {
 			t.Fatalf("decodeModelConfig() error = %v", err)
 		}
-		if got.Version != 1 || len(got.Models) != 1 || got.Models[0].APIKey != "" {
+		if got.Version != 2 || len(got.Models) != 1 || got.Models[0].APIKey != "" {
 			t.Fatalf("decodeModelConfig() = %+v", got)
 		}
 	})
@@ -126,13 +127,14 @@ func TestDecodeModelConfig(t *testing.T) {
 		{name: "empty input", input: nil},
 		{name: "malformed JSON", input: []byte(`{"version":`)},
 		{name: "two top-level values", input: []byte(validLMStudioModelConfig + ` {}`)},
-		{name: "unknown top-level field", input: replaceOnce(t, validLMStudioModelConfig, `"version": 1`, `"version": 1, "future": true`)},
+		{name: "unknown top-level field", input: replaceOnce(t, validLMStudioModelConfig, `"version": 2`, `"version": 2, "future": true`)},
 		{name: "unknown model row field", input: replaceOnce(t, validLMStudioModelConfig, `"alias": "local"`, `"alias": "local", "future": true`)},
 		{name: "unknown default field", input: replaceOnce(t, validLMStudioModelConfig, `"harness":"codex"`, `"harness":"codex","future":true`)},
 		{name: "unknown capability field", input: replaceOnce(t, validLMStudioModelConfig, `"tools": true`, `"tools": true, "audio": true`)},
-		{name: "missing version", input: replaceOnce(t, validLMStudioModelConfig, `"version": 1,`, ``), want: "version"},
-		{name: "zero version", input: replaceOnce(t, validLMStudioModelConfig, `"version": 1`, `"version": 0`), want: "version"},
-		{name: "future version", input: replaceOnce(t, validLMStudioModelConfig, `"version": 1`, `"version": 2`), want: "version"},
+		{name: "missing version", input: replaceOnce(t, validLMStudioModelConfig, `"version": 2,`, ``), want: "version"},
+		{name: "zero version", input: replaceOnce(t, validLMStudioModelConfig, `"version": 2`, `"version": 0`), want: "version"},
+		{name: "version 1 is rejected", input: replaceOnce(t, validLMStudioModelConfig, `"version": 2`, `"version": 1`), want: "version"},
+		{name: "future version", input: replaceOnce(t, validLMStudioModelConfig, `"version": 2`, `"version": 3`), want: "version"},
 		{name: "invalid UTF-8", input: append([]byte(`{"version":1,"primer_default":"`), 0xff, '"', '}')},
 	}
 	for _, tt := range invalid {
@@ -156,12 +158,12 @@ func TestDecodeModelConfigRejectsDuplicateKeysAtEveryDepth(t *testing.T) {
 		input string
 		key   string
 	}{
-		{name: "top level", input: `{"version":1,"version":1}`, key: "version"},
-		{name: "delegate defaults object", input: `{"version":1,"delegate_defaults":{"planner":{},"planner":{}}}`, key: "planner"},
-		{name: "delegate default row", input: `{"version":1,"delegate_defaults":{"planner":{"harness":"codex","harness":"codex"}}}`, key: "harness"},
-		{name: "model row in array", input: `{"version":1,"models":[{"alias":"a","alias":"b"}]}`, key: "alias"},
-		{name: "capabilities", input: `{"version":1,"models":[{"capabilities":{"tools":true,"tools":false}}]}`, key: "tools"},
-		{name: "nested object in array", input: `{"version":1,"models":[{"uses":[{"deep":1,"deep":2}]}]}`, key: "deep"},
+		{name: "top level", input: `{"version":2,"version":2}`, key: "version"},
+		{name: "delegate defaults object", input: `{"version":2,"delegate_defaults":{"planner":{},"planner":{}}}`, key: "planner"},
+		{name: "delegate default row", input: `{"version":2,"delegate_defaults":{"planner":{"harness":"codex","harness":"codex"}}}`, key: "harness"},
+		{name: "model row in array", input: `{"version":2,"models":[{"alias":"a","alias":"b"}]}`, key: "alias"},
+		{name: "capabilities", input: `{"version":2,"models":[{"capabilities":{"tools":true,"tools":false}}]}`, key: "tools"},
+		{name: "nested object in array", input: `{"version":2,"models":[{"uses":[{"deep":1,"deep":2}]}]}`, key: "deep"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

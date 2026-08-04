@@ -41,6 +41,7 @@ type normalizedNativeACPProfile struct {
 
 type normalizedModelTarget struct {
 	Alias         string
+	Description   string
 	Model         model.Model
 	Uses          []string
 	Efforts       []model.Effort
@@ -54,8 +55,8 @@ type modelClientInput struct {
 
 func normalizeModelConfig(config modelConfigFile) (normalizedModelConfig, error) {
 	var normalized normalizedModelConfig
-	if config.Version != 1 {
-		return normalized, modelConfigValidationError("version must be exactly 1")
+	if config.Version != modelConfigVersion {
+		return normalized, modelConfigValidationError("version must be exactly 2")
 	}
 	if len(config.Models) == 0 {
 		return normalized, modelConfigValidationError("models must contain at least one entry")
@@ -252,6 +253,10 @@ func normalizeModelTarget(target modelTargetConfig) (normalizedModelTarget, erro
 		usesSeen[use] = struct{}{}
 		uses = append(uses, use)
 	}
+	description, err := normalizeModelDescription(target.Description, containsModelConfigUse(uses, "delegate"))
+	if err != nil {
+		return normalized, err
+	}
 	if !target.Capabilities.Tools {
 		return normalized, modelConfigValidationError("primer and delegate models must support tools")
 	}
@@ -324,9 +329,60 @@ func normalizeModelTarget(target modelTargetConfig) (normalizedModelTarget, erro
 		return modelConfigEffortRank(efforts[i]) < modelConfigEffortRank(efforts[j])
 	})
 	return normalizedModelTarget{
-		Alias: target.Alias, Model: constructed, Uses: uses, Efforts: efforts,
+		Alias: target.Alias, Description: description, Model: constructed, Uses: uses, Efforts: efforts,
 		DefaultEffort: defaultEffort, client: modelClientInput{APIKey: target.APIKey},
 	}, nil
+}
+
+const maxModelDescriptionBytes = 256
+
+func normalizeModelDescription(value string, required bool) (string, error) {
+	if value == "" {
+		if required {
+			return "", modelConfigValidationError("delegate model descriptions are required")
+		}
+		return "", nil
+	}
+	if !utf8.ValidString(value) {
+		return "", modelConfigValidationError("model description must be valid UTF-8")
+	}
+	for _, r := range value {
+		if r == 0 || r == '\r' || r == '\n' || (unicode.IsControl(r) && r != '\t') {
+			return "", modelConfigValidationError("model description contains forbidden control characters")
+		}
+	}
+	normalized := strings.Join(strings.Fields(value), " ")
+	if normalized == "" {
+		return "", modelConfigValidationError("model description must be nonblank")
+	}
+	if len(normalized) > maxModelDescriptionBytes {
+		return "", modelConfigValidationError("model description exceeds the maximum length")
+	}
+	if forbiddenModelDescriptionMaterial(normalized) {
+		return "", modelConfigValidationError("model description contains forbidden material")
+	}
+	return normalized, nil
+}
+
+func forbiddenModelDescriptionMaterial(value string) bool {
+	lower := strings.ToLower(value)
+	for _, marker := range []string{"api_key", "apikey", "access_key", "access token", "password", "secret", "credential", "bearer"} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	if strings.Contains(value, "://") {
+		return true
+	}
+	if strings.HasPrefix(value, "/") || strings.HasPrefix(value, `\`) || strings.HasPrefix(value, "./") || strings.HasPrefix(value, "../") || strings.HasPrefix(value, "~/") {
+		return true
+	}
+	for _, marker := range []string{"/bin/", "/sbin/", "/usr/", "/opt/", "/var/", `\bin\`, `\program files\`} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return len(value) >= 3 && value[1] == ':' && (value[2] == '/' || value[2] == '\\')
 }
 
 func modelConfigCapabilityOptions(capabilities modelCapabilitiesConfig) []model.ModelOption {

@@ -69,6 +69,7 @@ func TestDigestModelConfigCoversSecretFreeAdmissionFields(t *testing.T) {
 		}},
 		{name: "primer default", mutate: func(c *normalizedModelConfig) { c.PrimerDefault = "changed" }},
 		{name: "delegate default", mutate: func(c *normalizedModelConfig) { c.DelegateDefaults[0].Effort = model.EffortLow }},
+		{name: "description", mutate: func(c *normalizedModelConfig) { c.Models[0].Description = "different presentation guidance" }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

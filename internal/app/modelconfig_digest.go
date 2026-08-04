@@ -35,6 +35,7 @@ type secretFreeNativeACPProfile struct {
 
 type secretFreeModelTarget struct {
 	Alias         string                       `json:"alias"`
+	Description   string                       `json:"description,omitempty"`
 	Provider      string                       `json:"provider"`
 	APIFormat     string                       `json:"api_format"`
 	BaseURL       string                       `json:"base_url"`
@@ -72,7 +73,7 @@ func modelConfigDigest(config normalizedModelConfig) (string, error) {
 
 func secretFreeModelConfigJSON(config normalizedModelConfig) ([]byte, error) {
 	projection := secretFreeModelConfig{
-		Version:              1,
+		Version:              modelConfigVersion,
 		PrimerDefault:        config.PrimerDefault,
 		ClaudeCodeSmallModel: config.ClaudeCodeSmallModel,
 		DelegateDefaults:     make([]secretFreeDelegateDefault, 0, len(config.DelegateDefaults)),
@@ -110,7 +111,7 @@ func secretFreeModelConfigJSON(config normalizedModelConfig) ([]byte, error) {
 			effortNames[i] = modelConfigEffortName(effort)
 		}
 		projection.Models = append(projection.Models, secretFreeModelTarget{
-			Alias: target.Alias, Provider: string(target.Model.Provider), APIFormat: string(target.Model.APIFormat),
+			Alias: target.Alias, Description: target.Description, Provider: string(target.Model.Provider), APIFormat: string(target.Model.APIFormat),
 			BaseURL: target.Model.BaseURL, Model: target.Model.Name,
 			ContextLimits: secretFreeModelContextLimits{
 				WindowTokens: uint64(target.Model.Limits.WindowTokens), MaxInputTokens: uint64(target.Model.Limits.MaxInputTokens),

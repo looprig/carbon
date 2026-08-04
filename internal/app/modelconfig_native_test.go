@@ -213,7 +213,7 @@ func decodeModelConfigWithNativeACP(t *testing.T, nativeJSON string) modelConfig
 }
 
 func modelConfigJSONWithNativeACP(nativeJSON string) string {
-	return strings.Replace(validLMStudioModelConfig, `"version": 1,`, `"version": 1, "native_acp":`+nativeJSON+`,`, 1)
+	return strings.Replace(validLMStudioModelConfig, `"version": 2,`, `"version": 2, "native_acp":`+nativeJSON+`,`, 1)
 }
 
 func setAllCodexDefaults(config modelConfigFile, modelAlias, effort string) modelConfigFile {

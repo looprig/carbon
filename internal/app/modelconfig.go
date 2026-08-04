@@ -18,6 +18,8 @@ import (
 
 const maxModelConfigBytes = 1 << 20
 
+const modelConfigVersion = 2
+
 const (
 	maxModelConfigErrorBytes          = 512
 	maxModelConfigErrorOperationBytes = 160
@@ -110,6 +112,7 @@ func (c *nativeACPProfileConfig) UnmarshalJSON(data []byte) error {
 
 type modelTargetConfig struct {
 	Alias         string                   `json:"alias"`
+	Description   string                   `json:"description"`
 	Provider      string                   `json:"provider"`
 	APIFormat     string                   `json:"api_format"`
 	BaseURL       string                   `json:"base_url"`
@@ -179,8 +182,8 @@ func decodeModelConfig(data []byte) (modelConfigFile, error) {
 		}
 		return modelConfigFile{}, modelConfigFailure("decode", err)
 	}
-	if config.Version != 1 {
-		return modelConfigFile{}, modelConfigFailure("decode", errors.New("version must be exactly 1"))
+	if config.Version != modelConfigVersion {
+		return modelConfigFile{}, modelConfigFailure("decode", errors.New("version must be exactly 2"))
 	}
 	return config, nil
 }
