@@ -6,6 +6,15 @@
 
 **Status:** Approved
 
+> **Superseded (2026-08-03):** The model-facing collaboration contract and
+> version-2 model configuration described here are superseded by the approved
+> Harness specification in
+> `harness/docs/plans/2026-08-03-agent-collaboration-tools-design.md` and the
+> cross-repository implementation plan in
+> `docs/plans/2026-08-03-agent-collaboration-tools-implementation.md`. This
+> document remains the historical reference for CodeRig's ACP catalogue and
+> credential-bound composition decisions.
+
 ## Goal
 
 CodeRig has exactly three named agents—`planner`, `builder`, and `reviewer`—and

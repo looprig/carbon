@@ -82,7 +82,7 @@ func TestReadModelConfigFile(t *testing.T) {
 
 	t.Run("regular owner-only file", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "models.json")
-		want := []byte(`{"version":1}`)
+		want := []byte(`{"version":2}`)
 		writeModelConfigFixture(t, path, want, 0o600)
 
 		got, exists, err := readModelConfigFile(path)

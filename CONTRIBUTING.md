@@ -95,7 +95,7 @@ model; `FAKE_EXAMPLE_KEY_DO_NOT_USE` is deliberately unusable:
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "primer_default": "local-builder",
   "claude_code_small_model": "remote-delegate",
   "delegate_defaults": {
@@ -106,6 +106,7 @@ model; `FAKE_EXAMPLE_KEY_DO_NOT_USE` is deliberately unusable:
   "models": [
     {
       "alias": "local-builder",
+      "description": "Fast local coding model for implementation work.",
       "provider": "lmstudio",
       "api_format": "openai",
       "base_url": "http://localhost:1234/v1",
@@ -118,6 +119,7 @@ model; `FAKE_EXAMPLE_KEY_DO_NOT_USE` is deliberately unusable:
     },
     {
       "alias": "remote-delegate",
+      "description": "Reliable hosted model for delegated planning and review.",
       "provider": "openai",
       "api_format": "openai-responses",
       "base_url": "",
@@ -133,6 +135,10 @@ model; `FAKE_EXAMPLE_KEY_DO_NOT_USE` is deliberately unusable:
 ```
 
 The catalogue is authoritative for production model aliases and credentials.
+Version 2 is required; CodeRig does not rewrite or migrate an existing file.
+Every model that lists `delegate` in `uses` must include a bounded, single-line
+`description`. These descriptions are shown in the `StartAgent` tool's runtime
+catalogue, not repeated in the system prompt.
 The `.env` file, when used by `make run`, is only for launcher settings such as
 ACP executable path overrides; it is not a provider-key source.
 
