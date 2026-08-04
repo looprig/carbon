@@ -342,7 +342,7 @@ func newWithClientUsingStores(ctx context.Context, client inference.Client, fact
 		_ = access.Close()
 		return nil, err
 	}
-	return newRuntimeAgentWithPrimerAlias(adapter, adapter.Controller(), root, access, cfg.PrimerAlias, cfg.PrimerEfforts), nil
+	return newRuntimeAgentWithPrimerCandidates(adapter, adapter.Controller(), root, access, cfg.PrimerAlias, cfg.PrimerEfforts, cfg.PrimerCandidates), nil
 }
 
 // newSessionOverStores is the store-injecting construction seam shared by the headless New
@@ -385,7 +385,7 @@ func openRuntimeAgent(ctx context.Context, client inference.Client, factory Mode
 		_ = access.Close()
 		return nil, err
 	}
-	return newRuntimeAgentWithPrimerAlias(adapter, adapter.Controller(), root, access, cfg.PrimerAlias, cfg.PrimerEfforts), nil
+	return newRuntimeAgentWithPrimerCandidates(adapter, adapter.Controller(), root, access, cfg.PrimerAlias, cfg.PrimerEfforts, cfg.PrimerCandidates), nil
 }
 
 // openSessionWithDefinitions is CodeRig's single new-or-restore assembly path.

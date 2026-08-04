@@ -19,15 +19,24 @@ import (
 // profile is fixed at Open; there is no in-session authority mutation surface.
 type RuntimeAgent struct {
 	*sessionadapter.Adapter
-	sess          session.SessionController
-	root          string
-	access        *sessionAccess
-	primerAlias   string
-	primerEfforts []model.Effort
+	sess             session.SessionController
+	root             string
+	access           *sessionAccess
+	primerAlias      string
+	primerEfforts    []model.Effort
+	primerCandidates []PrimerCandidate
 }
 
-func newRuntimeAgentWithPrimerAlias(adapter *sessionadapter.Adapter, sess session.SessionController, root string, access *sessionAccess, primerAlias string, primerEfforts []model.Effort) *RuntimeAgent {
-	return &RuntimeAgent{Adapter: adapter, sess: sess, root: root, access: access, primerAlias: primerAlias, primerEfforts: append([]model.Effort(nil), primerEfforts...)}
+func newRuntimeAgentWithPrimerCandidates(adapter *sessionadapter.Adapter, sess session.SessionController, root string, access *sessionAccess, primerAlias string, primerEfforts []model.Effort, primerCandidates []PrimerCandidate) *RuntimeAgent {
+	return &RuntimeAgent{
+		Adapter:          adapter,
+		sess:             sess,
+		root:             root,
+		access:           access,
+		primerAlias:      primerAlias,
+		primerEfforts:    append([]model.Effort(nil), primerEfforts...),
+		primerCandidates: append([]PrimerCandidate(nil), primerCandidates...),
+	}
 }
 
 // Close shuts the session down and then releases the session's executor sets exactly once.
@@ -76,10 +85,19 @@ func (a *RuntimeAgent) LoopRuntimeOptions(_ context.Context, loopID uuid.UUID) (
 		}
 	}
 	selectedModel := handle.Model()
-	publicID := a.publicModelID(selectedModel)
-	options.Models = []tui.ModelOption{{ID: tui.ModelID(publicID), Label: publicID}}
+	if len(a.primerCandidates) == 0 {
+		publicID := a.publicModelID(selectedModel)
+		options.Models = []tui.ModelOption{{ID: tui.ModelID(publicID), Label: publicID}}
+	} else {
+		options.Models = make([]tui.ModelOption, 0, len(a.primerCandidates))
+		for _, c := range a.primerCandidates {
+			options.Models = append(options.Models, tui.ModelOption{ID: tui.ModelID(c.Alias), Label: c.Alias, Description: c.Description})
+		}
+	}
 	efforts := a.primerEfforts
-	if len(efforts) == 0 && selectedModel.Caps.Thinking {
+	if current, ok := currentPrimerCandidate(a.primerCandidates, selectedModel); ok {
+		efforts = current.Efforts
+	} else if len(efforts) == 0 && selectedModel.Caps.Thinking {
 		efforts = []model.Effort{model.EffortNone, model.EffortLow, model.EffortMedium, model.EffortHigh, model.EffortMax}
 	}
 	for _, effort := range efforts {
@@ -149,9 +167,31 @@ func containsPrimerEffort(efforts []model.Effort, wanted model.Effort) bool {
 	return false
 }
 
+//lint:ignore U1000 reserved for Task 4/5's SetModel/SetEffort roster lookups
+func findPrimerCandidate(candidates []PrimerCandidate, alias string) (PrimerCandidate, bool) {
+	for _, c := range candidates {
+		if c.Alias == alias {
+			return c, true
+		}
+	}
+	return PrimerCandidate{}, false
+}
+
+func currentPrimerCandidate(candidates []PrimerCandidate, current model.Model) (PrimerCandidate, bool) {
+	for _, c := range candidates {
+		if runtimeModelKeyFor(c.Model) == runtimeModelKeyFor(current) {
+			return c, true
+		}
+	}
+	return PrimerCandidate{}, false
+}
+
 func modelID(value model.Model) string { return string(value.Provider) + "/" + value.Name }
 
 func (a *RuntimeAgent) publicModelID(value model.Model) string {
+	if c, ok := currentPrimerCandidate(a.primerCandidates, value); ok {
+		return c.Alias
+	}
 	if a.primerAlias != "" {
 		return a.primerAlias
 	}
