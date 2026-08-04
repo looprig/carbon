@@ -38,8 +38,16 @@ func newModelRoutingClient(bindings []modelBinding) (inference.Client, error) {
 			return nil, errConfiguredRuntimeClientUnavailable
 		}
 		key := runtimeModelKeyFor(binding.Model)
-		if _, ok := router.clients[key]; ok {
-			return nil, errConfiguredRuntimeClientUnavailable
+		if existing, ok := router.clients[key]; ok {
+			// Multiple public aliases may intentionally point at the same
+			// provider target. They are routable when the composition root
+			// bound them to the same credential-bound client; distinct clients
+			// would be ambiguous because inference.Request carries the target
+			// descriptor, not the public alias.
+			if existing != binding.Client {
+				return nil, errConfiguredRuntimeClientUnavailable
+			}
+			continue
 		}
 		router.clients[key] = binding.Client
 	}

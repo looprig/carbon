@@ -220,7 +220,7 @@ func TestSecretRedactionAcrossModelCatalogueGatewayFingerprintAndDurableEvents(t
 	captureErrorFormats("client factory failure", factoryErr)
 
 	compiled, err := CompileACPCatalog(ACPCatalogInput{
-		AgentTypes:  []identity.AgentName{"planner", "builder", "reviewer"},
+		AgentTypes:     []identity.AgentName{"planner", "builder", "reviewer"},
 		GatewayTargets: configured.ACP,
 		Defaults:       configured.Defaults,
 		ClaudeSmall:    configured.ClaudeSmall,
@@ -234,7 +234,7 @@ func TestSecretRedactionAcrossModelCatalogueGatewayFingerprintAndDurableEvents(t
 	}
 	duplicateTargets := append(append([]ACPGatewaySource(nil), configured.ACP...), configured.ACP[0])
 	_, catalogueErr := CompileACPCatalog(ACPCatalogInput{
-		AgentTypes:  []identity.AgentName{"builder"},
+		AgentTypes:     []identity.AgentName{"builder"},
 		GatewayTargets: duplicateTargets,
 		Defaults: map[identity.AgentName]configuredDelegateDefault{
 			"builder": configured.Defaults["builder"],
@@ -396,7 +396,18 @@ func TestModelConfigInvalidatesAgentFingerprintWithoutCredentialRotation(t *test
 func TestAgentFingerprintCombinesModelAndRuntimeCatalogRevisionsAsValidIdentifier(t *testing.T) {
 	t.Parallel()
 
-	catalog := mustEmptyRuntimeCatalog()
+	catalog, err := loop.NewRuntimeCatalog([]loop.RuntimeCatalogEntry{{
+		AgentType:     "worker",
+		AgentHarness:  "codex",
+		Profile:       "acp/codex",
+		Source:        loop.RuntimeSourceNative,
+		Credential:    loop.CredentialNativeAuth,
+		SelectionKind: loop.RuntimeSelectionHarnessManaged,
+		Default:       true,
+	}})
+	if err != nil {
+		t.Fatalf("NewRuntimeCatalog() error = %v", err)
+	}
 	got := agentFingerprintFields(Config{
 		ModelConfigRev: "model-rev",
 		RuntimeCatalog: catalog,
@@ -414,7 +425,7 @@ func TestAgentFingerprintBoundsProductionLengthModelAndRuntimeCatalogRevisions(t
 	otherModelRevision := strings.Repeat("b", 64)
 	emptyCatalog := mustEmptyRuntimeCatalog()
 	populatedCatalog, err := loop.NewRuntimeCatalog([]loop.RuntimeCatalogEntry{{
-		AgentType:  "worker",
+		AgentType:     "worker",
 		AgentHarness:  "codex",
 		Profile:       "acp/codex",
 		Credential:    loop.CredentialNativeAuth,

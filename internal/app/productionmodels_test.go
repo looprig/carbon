@@ -69,6 +69,9 @@ func TestProductionModelsConstructsCredentialBoundClients(t *testing.T) {
 	if got.PrimerClient != clients[0] || !reflect.DeepEqual(got.PrimerModel, primerModel) {
 		t.Fatalf("primer binding did not match primer_default")
 	}
+	if got.RuntimeClient == nil {
+		t.Fatal("RuntimeClient is nil, want credential-bound model router")
+	}
 	if got.PrimerAlias != "fixture-primer" {
 		t.Fatalf("PrimerAlias = %q, want fixture-primer", got.PrimerAlias)
 	}
@@ -80,7 +83,7 @@ func TestProductionModelsConstructsCredentialBoundClients(t *testing.T) {
 	}
 	for index, source := range got.ACP {
 		want := config.Models[index+1]
-		if source.Alias != loop.ModelAlias(want.Alias) || source.Client != clients[index+1] || !reflect.DeepEqual(source.Model, want.Model) || source.DefaultEffort != want.DefaultEffort || !reflect.DeepEqual(source.Efforts, want.Efforts) {
+		if source.Alias != loop.ModelAlias(want.Alias) || source.Description != want.Description || source.Client != clients[index+1] || !reflect.DeepEqual(source.Model, want.Model) || source.DefaultEffort != want.DefaultEffort || !reflect.DeepEqual(source.Efforts, want.Efforts) {
 			t.Errorf("ACP source %d did not preserve normalized target", index)
 		}
 	}

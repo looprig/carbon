@@ -19,6 +19,11 @@ type configuredDelegateDefault struct {
 	Effort  model.Effort
 }
 
+type configuredClientCacheKey struct {
+	Target runtimeModelKey
+	APIKey string
+}
+
 // productionModels is the one-way result of binding credentials to clients.
 // It deliberately cannot reproduce the normalized input or any credential.
 type productionModels struct {
@@ -41,13 +46,19 @@ func compileProductionModels(config normalizedModelConfig, factory configuredCli
 	}
 
 	clients := make(map[string]inference.Client, len(config.Models))
+	boundClients := make(map[configuredClientCacheKey]inference.Client, len(config.Models))
 	delegateSources := make([]ACPGatewaySource, 0, len(config.Models))
 	models := make(map[string]model.Model, len(config.Models))
 	var primerEfforts []model.Effort
 	for _, target := range config.Models {
-		client, err := factory(target.Model, auth.APIKey(target.client.APIKey))
-		if err != nil {
-			return productionModels{}, fmt.Errorf("coderig: construct configured model alias %q provider %q", target.Alias, target.Model.Provider)
+		cacheKey := configuredClientCacheKey{Target: runtimeModelKeyFor(target.Model), APIKey: target.client.APIKey}
+		client, ok := boundClients[cacheKey]
+		if !ok {
+			client, err = factory(target.Model, auth.APIKey(target.client.APIKey))
+			if err != nil {
+				return productionModels{}, fmt.Errorf("coderig: construct configured model alias %q provider %q", target.Alias, target.Model.Provider)
+			}
+			boundClients[cacheKey] = client
 		}
 		clients[target.Alias] = client
 		models[target.Alias] = target.Model.Clone()
