@@ -116,7 +116,7 @@ func TestBuildACPGatewayPlanSeparatesClaudeMainAndSmallEffortAliases(t *testing.
 func TestNewACPGatewayNativeAuthHasNoBinding(t *testing.T) {
 	t.Parallel()
 	compiled, err := CompileACPCatalog(ACPCatalogInput{
-		SubagentTypes: []identity.AgentName{"worker"},
+		AgentTypes: []identity.AgentName{"worker"},
 		Defaults: map[identity.AgentName]configuredDelegateDefault{
 			"worker": {Harness: "codex", Model: "native-model", Effort: model.EffortNone},
 		},
@@ -168,7 +168,7 @@ func TestNewACPGatewayCloseIsIdempotent(t *testing.T) {
 func testACPGatewayCatalog(t *testing.T) ACPCompiledCatalog {
 	t.Helper()
 	compiled, err := CompileACPCatalog(ACPCatalogInput{
-		SubagentTypes: []identity.AgentName{"worker"},
+		AgentTypes: []identity.AgentName{"worker"},
 		GatewayTargets: legacyTestGatewayTargets(map[model.ProviderName]inference.Client{
 			"anthropic": &fakeLLM{},
 			"openai":    &fakeLLM{},

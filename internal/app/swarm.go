@@ -282,7 +282,11 @@ func newWithProductionModelsLoader(ctx context.Context, cfg Config, loader produ
 	if err != nil {
 		return nil, err
 	}
-	return newWithClientUsingStores(ctx, configured.PrimerClient, newModelFactoryFor(configured.PrimerModel), cfg, storesProvider)
+	runtimeClient := configured.RuntimeClient
+	if runtimeClient == nil {
+		runtimeClient = configured.PrimerClient
+	}
+	return newWithClientUsingStores(ctx, runtimeClient, newModelFactoryFor(configured.PrimerModel), cfg, storesProvider)
 }
 
 // newWithClient is the headless construction seam shared by New and tests: tests inject a

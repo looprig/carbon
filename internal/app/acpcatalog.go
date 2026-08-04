@@ -16,6 +16,7 @@ import (
 // catalogue or the model-facing runtime selection.
 type ACPGatewaySource struct {
 	Alias         loop.ModelAlias
+	Description   string
 	Client        inference.Client
 	Model         model.Model
 	DefaultEffort model.Effort
@@ -50,7 +51,7 @@ type ACPNativeProfile struct {
 // NativeAuth remains only for lower-level compatibility while its production
 // discovery is removed in the next composition-root phase.
 type ACPCatalogInput struct {
-	SubagentTypes  []identity.AgentName
+	AgentTypes     []identity.AgentName
 	GatewayTargets []ACPGatewaySource
 	Defaults       map[identity.AgentName]configuredDelegateDefault
 	ClaudeSmall    loop.ModelAlias
@@ -73,7 +74,7 @@ type ACPCompiledCatalog struct {
 // optional native ACP profiles. When no roles are supplied, the product's
 // three roles are used.
 func CompileACPCatalog(input ACPCatalogInput) (ACPCompiledCatalog, error) {
-	roles := normalizedACPSubagentTypes(input.SubagentTypes)
+	roles := normalizedAgentTypes(input.AgentTypes)
 	rows, gatewayRows, err := compileACPGatewayRows(input.GatewayTargets)
 	if err != nil {
 		return ACPCompiledCatalog{}, err
@@ -185,8 +186,9 @@ func CompileACPCatalog(input ACPCatalogInput) (ACPCompiledCatalog, error) {
 				}
 				sort.Slice(models, func(i, j int) bool { return models[i].Alias < models[j].Alias })
 				entry := loop.RuntimeCatalogEntry{
-					SubagentType: role, AgentHarness: harness, Profile: loop.RuntimeProfileName("acp/" + string(harness)),
-					Source: loop.RuntimeSourceGateway, Credential: loop.CredentialGatewayBacked,
+					AgentType: role, AgentHarness: harness, Profile: loop.RuntimeProfileName("acp/" + string(harness)),
+					Description: runtimeHarnessDescription(harness),
+					Source:      loop.RuntimeSourceGateway, Credential: loop.CredentialGatewayBacked,
 					SelectionKind: loop.RuntimeSelectionExplicit, Default: isDefault,
 					DefaultModel: defaultModel, Models: models,
 				}
@@ -212,8 +214,9 @@ func CompileACPCatalog(input ACPCatalogInput) (ACPCompiledCatalog, error) {
 					return ACPCompiledCatalog{}, fmt.Errorf("coderig: invalid ACP configured native default")
 				}
 				entry := loop.RuntimeCatalogEntry{
-					SubagentType: role, AgentHarness: harness, Profile: loop.RuntimeProfileName("acp/" + string(harness)),
-					Source: loop.RuntimeSourceNative, Credential: loop.CredentialNativeAuth,
+					AgentType: role, AgentHarness: harness, Profile: loop.RuntimeProfileName("acp/" + string(harness)),
+					Description: runtimeHarnessDescription(harness),
+					Source:      loop.RuntimeSourceNative, Credential: loop.CredentialNativeAuth,
 					SelectionKind: loop.RuntimeSelectionHarnessManaged, Default: isDefault,
 				}
 				defaultFound = defaultFound || isDefault
@@ -233,8 +236,9 @@ func CompileACPCatalog(input ACPCatalogInput) (ACPCompiledCatalog, error) {
 				defaultModel = configuredDefault.Model
 			}
 			entries = append(entries, loop.RuntimeCatalogEntry{
-				SubagentType: role, AgentHarness: harness, Profile: loop.RuntimeProfileName("acp/" + string(harness)),
-				Source: loop.RuntimeSourceNative, Credential: loop.CredentialNativeAuth,
+				AgentType: role, AgentHarness: harness, Profile: loop.RuntimeProfileName("acp/" + string(harness)),
+				Description: runtimeHarnessDescription(harness),
+				Source:      loop.RuntimeSourceNative, Credential: loop.CredentialNativeAuth,
 				SelectionKind: loop.RuntimeSelectionExplicit, Default: isDefault,
 				DefaultModel: defaultModel, Models: options,
 			})
@@ -304,7 +308,7 @@ func compileACPNativeProfiles(profiles []ACPNativeProfile) ([]ACPNativeProfile, 
 
 func runtimeOptionFromNativeAlias(harness loop.AgentHarnessName, alias loop.ModelAlias) loop.RuntimeModelOption {
 	return loop.RuntimeModelOption{
-		Alias: alias, Source: loop.RuntimeSourceNative, Credential: loop.CredentialNativeAuth,
+		Alias: alias, Description: runtimeHarnessDescription(harness), Source: loop.RuntimeSourceNative, Credential: loop.CredentialNativeAuth,
 		Target:        model.CustomModel("native-acp", model.APIFormat("native-acp"), "", "native-acp:"+string(harness)+":"+string(alias), model.WithTools()),
 		DefaultEffort: model.EffortNone,
 		Efforts:       []model.Effort{model.EffortNone},
@@ -332,7 +336,7 @@ func mustEmptyRuntimeCatalog() loop.RuntimeCatalog {
 	return catalog
 }
 
-func normalizedACPSubagentTypes(input []identity.AgentName) []identity.AgentName {
+func normalizedAgentTypes(input []identity.AgentName) []identity.AgentName {
 	if len(input) == 0 {
 		return []identity.AgentName{"planner", "builder", "reviewer"}
 	}
@@ -384,7 +388,10 @@ func addGatewaySource(rows []loop.RuntimeModelOption, sources map[loop.ModelAlia
 	source.Model = modelCopy
 	source.Efforts = append([]model.Effort(nil), source.Efforts...)
 	sources[source.Alias] = source
-	rows = append(rows, loop.RuntimeModelOption{Alias: source.Alias, Target: modelCopy, DefaultEffort: source.DefaultEffort, Efforts: source.Efforts})
+	rows = append(rows, loop.RuntimeModelOption{
+		Alias: source.Alias, Description: source.Description, Target: modelCopy,
+		DefaultEffort: source.DefaultEffort, Efforts: source.Efforts,
+	})
 	return rows, nil
 }
 
@@ -421,6 +428,7 @@ func setACPDefaultEffort(options []loop.RuntimeModelOption, alias loop.ModelAlia
 func runtimeOptionFromNative(source ACPNativeAuthSource) loop.RuntimeModelOption {
 	return loop.RuntimeModelOption{
 		Alias:            source.Alias,
+		Description:      runtimeHarnessDescription(source.Harness),
 		Source:           loop.RuntimeSourceNative,
 		Credential:       loop.CredentialNativeAuth,
 		NativeSmallModel: source.SmallModel,
@@ -524,13 +532,13 @@ func (c ACPCompiledCatalog) filterProfiles(allowed map[loop.RuntimeProfileName]s
 	defaultByRole := make(map[identity.AgentName]bool)
 	for _, entry := range entries {
 		if entry.Default {
-			defaultByRole[entry.SubagentType] = true
+			defaultByRole[entry.AgentType] = true
 		}
 	}
 	for i := range entries {
-		if !defaultByRole[entries[i].SubagentType] {
+		if !defaultByRole[entries[i].AgentType] {
 			entries[i].Default = true
-			defaultByRole[entries[i].SubagentType] = true
+			defaultByRole[entries[i].AgentType] = true
 		}
 	}
 	catalog, err := loop.NewRuntimeCatalog(entries)

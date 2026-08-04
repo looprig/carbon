@@ -182,7 +182,7 @@ func task31ProductionDefinitions(t *testing.T, client inference.Client, probe *d
 func gatewayRuntimeCatalogForTask31(t *testing.T, clients map[model.ProviderName]inference.Client) loop.RuntimeCatalog {
 	t.Helper()
 	compiled, err := CompileACPCatalog(ACPCatalogInput{
-		SubagentTypes:  []identity.AgentName{planner.Name, builder.Name, reviewer.Name},
+		AgentTypes:  []identity.AgentName{planner.Name, builder.Name, reviewer.Name},
 		GatewayTargets: legacyTestGatewayTargets(clients),
 		Defaults:       legacyTestDefaults([]identity.AgentName{planner.Name, builder.Name, reviewer.Name}),
 		ClaudeSmall:    "sonnet-5",

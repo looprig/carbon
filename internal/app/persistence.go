@@ -124,11 +124,25 @@ func agentFingerprintFields(cfg Config) rig.ConfigFingerprintFields {
 		AppFields:                 accessAppFields(cfg.AccessProfile),
 	}
 	fields.RuntimeCatalogRev = cfg.ModelConfigRev
-	if cfg.ACPChildren != nil {
-		catalogRev := cfg.ACPChildren.Catalog.RuntimeCatalog.Digest()
+	catalog := effectiveRuntimeCatalog(cfg)
+	if catalog.HasEntries() {
+		catalogRev := catalog.Digest()
 		fields.RuntimeCatalogRev = combineRuntimeCatalogRevisions(fields.RuntimeCatalogRev, catalogRev)
 	}
 	return fields
+}
+
+// effectiveRuntimeCatalog keeps focused pre-general-catalogue fixtures
+// source-compatible while production always supplies RuntimeCatalog directly.
+// The ACP fallback is intentionally not used by production composition.
+func effectiveRuntimeCatalog(cfg Config) loop.RuntimeCatalog {
+	if cfg.RuntimeCatalog.HasEntries() {
+		return cfg.RuntimeCatalog
+	}
+	if cfg.ACPChildren != nil {
+		return cfg.ACPChildren.Catalog.RuntimeCatalog
+	}
+	return cfg.RuntimeCatalog
 }
 
 // combineRuntimeCatalogRevisions derives the one durable runtime revision from
@@ -219,8 +233,10 @@ func buildRigWithRegistrationAndACP(definitions []loop.Definition, stores *swarm
 		rig.WithFingerprintFields(agentFingerprintFields(cfg)),
 		rig.WithOffloadGC(rig.OffloadGCPolicy{Interval: offloadGCInterval, Timeout: offloadGCTimeout}),
 	}
+	if catalog := effectiveRuntimeCatalog(cfg); catalog.HasEntries() {
+		options = append(options, rig.WithRuntimeCatalog(catalog))
+	}
 	if acpChildren != nil {
-		options = append(options, rig.WithRuntimeCatalog(acpChildren.Catalog.RuntimeCatalog))
 		if acpChildren.Live != nil && acpChildren.Restored != nil {
 			options = append(options, rig.WithForeignBuilders(acpChildren.Live, acpChildren.Restored))
 		}

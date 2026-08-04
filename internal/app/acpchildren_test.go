@@ -154,7 +154,7 @@ func TestNewACPCompositionBuildsNativeAuthProfileWithoutGateway(t *testing.T) {
 		t.Fatal(err)
 	}
 	compiled, err := CompileACPCatalog(ACPCatalogInput{
-		SubagentTypes: []identity.AgentName{"worker"},
+		AgentTypes: []identity.AgentName{"worker"},
 		Defaults: map[identity.AgentName]configuredDelegateDefault{
 			"worker": {Harness: "codex", Model: "native-model", Effort: model.EffortNone},
 		},
@@ -353,7 +353,7 @@ func TestNewACPCompositionNativePreflightKeepsNativeEnvironment(t *testing.T) {
 		t.Fatal(err)
 	}
 	compiled, err := CompileACPCatalog(ACPCatalogInput{
-		SubagentTypes: []identity.AgentName{"worker"},
+		AgentTypes: []identity.AgentName{"worker"},
 		Defaults: map[identity.AgentName]configuredDelegateDefault{
 			"worker": {Harness: "codex", Model: "native-model", Effort: model.EffortNone},
 		},
@@ -431,7 +431,7 @@ func TestACPChildModelAliasesUseConcreteGatewayTargetsAndNativeModels(t *testing
 	}
 
 	nativeCatalog, err := CompileACPCatalog(ACPCatalogInput{
-		SubagentTypes: []identity.AgentName{"worker"},
+		AgentTypes: []identity.AgentName{"worker"},
 		Defaults: map[identity.AgentName]configuredDelegateDefault{
 			"worker": {Harness: "codex", Model: "native-model", Effort: model.EffortNone},
 		},
@@ -459,7 +459,7 @@ func TestACPChildModelAliasesUseConcreteGatewayTargetsAndNativeModels(t *testing
 func TestACPBoundRuntimeResolutionUsesPinnedSelectors(t *testing.T) {
 	t.Parallel()
 	compiled, err := CompileACPCatalog(ACPCatalogInput{
-		SubagentTypes: []identity.AgentName{"builder"},
+		AgentTypes: []identity.AgentName{"builder"},
 		GatewayTargets: legacyTestGatewayTargets(map[model.ProviderName]inference.Client{
 			"anthropic": &fakeLLM{}, "openai": &fakeLLM{},
 		}),

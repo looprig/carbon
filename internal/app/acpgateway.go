@@ -106,7 +106,7 @@ func buildACPGatewayPlan(catalog ACPCompiledCatalog, resolved loop.Resolved) (ac
 	routes := map[gateway.RouteKey]gateway.Target{{Ingress: ingress, Model: string(mainAlias)}: mainTarget}
 	if resolved.AgentHarness == "claude-code" && resolved.SmallModel != "" {
 		smallResolved, err := catalog.RuntimeCatalog.ResolveWithExplicitEffort(
-			resolved.SubagentType, resolved.AgentHarness, resolved.SmallModel, model.EffortNone, false,
+			resolved.AgentType, resolved.AgentHarness, resolved.SmallModel, model.EffortNone, false,
 		)
 		if err != nil {
 			return acpGatewayPlan{}, fmt.Errorf("coderig: resolve ACP small model: %w", err)

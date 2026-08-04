@@ -23,6 +23,7 @@ type configuredDelegateDefault struct {
 // It deliberately cannot reproduce the normalized input or any credential.
 type productionModels struct {
 	PrimerClient  inference.Client
+	RuntimeClient inference.Client
 	PrimerModel   model.Model
 	PrimerAlias   string
 	PrimerEfforts []model.Effort
@@ -56,12 +57,17 @@ func compileProductionModels(config normalizedModelConfig, factory configuredCli
 		if containsModelConfigUse(target.Uses, "delegate") {
 			delegateSources = append(delegateSources, ACPGatewaySource{
 				Alias:         loop.ModelAlias(target.Alias),
+				Description:   target.Description,
 				Client:        client,
 				Model:         target.Model.Clone(),
 				DefaultEffort: target.DefaultEffort,
 				Efforts:       append([]model.Effort(nil), target.Efforts...),
 			})
 		}
+	}
+	runtimeClient, err := newModelRoutingClient(configuredModelBindings(config, clients))
+	if err != nil {
+		return productionModels{}, err
 	}
 
 	defaults := make(map[identity.AgentName]configuredDelegateDefault, len(config.DelegateDefaults))
@@ -92,6 +98,7 @@ func compileProductionModels(config normalizedModelConfig, factory configuredCli
 
 	return productionModels{
 		PrimerClient:  clients[config.PrimerDefault],
+		RuntimeClient: runtimeClient,
 		PrimerModel:   models[config.PrimerDefault],
 		PrimerAlias:   config.PrimerDefault,
 		PrimerEfforts: primerEfforts,
@@ -101,6 +108,14 @@ func compileProductionModels(config normalizedModelConfig, factory configuredCli
 		ClaudeSmall:   loop.ModelAlias(config.ClaudeCodeSmallModel),
 		ConfigRev:     configRev,
 	}, nil
+}
+
+func configuredModelBindings(config normalizedModelConfig, clients map[string]inference.Client) []modelBinding {
+	bindings := make([]modelBinding, 0, len(config.Models))
+	for _, target := range config.Models {
+		bindings = append(bindings, modelBinding{Model: target.Model, Client: clients[target.Alias]})
+	}
+	return bindings
 }
 
 func (p productionModels) String() string {

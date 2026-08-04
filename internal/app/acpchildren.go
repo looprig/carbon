@@ -370,7 +370,7 @@ func acpGatewayTargetAliases(catalog ACPCompiledCatalog, runtimeModel acpRuntime
 	seen := make(map[string]struct{}, len(runtimeModel.option.Efforts))
 	for _, effort := range runtimeModel.option.Efforts {
 		resolved, err := catalog.RuntimeCatalog.ResolveWithExplicitEffort(
-			runtimeModel.entry.SubagentType,
+			runtimeModel.entry.AgentType,
 			runtimeModel.entry.AgentHarness,
 			runtimeModel.option.Alias,
 			effort,
@@ -431,7 +431,7 @@ func firstACPGatewayResolved(catalog ACPCompiledCatalog, harness loop.AgentHarne
 			if credential != loop.CredentialGatewayBacked {
 				continue
 			}
-			resolved, err := catalog.RuntimeCatalog.ResolveWithExplicitEffort(entry.SubagentType, harness, option.Alias, option.DefaultEffort, true)
+			resolved, err := catalog.RuntimeCatalog.ResolveWithExplicitEffort(entry.AgentType, harness, option.Alias, option.DefaultEffort, true)
 			if err == nil && resolved.Credential == loop.CredentialGatewayBacked {
 				return resolved, true
 			}
@@ -443,6 +443,10 @@ func firstACPGatewayResolved(catalog ACPCompiledCatalog, harness loop.AgentHarne
 func filterACPPreflightCatalog(catalog ACPCompiledCatalog, decisions map[loop.AgentHarnessName]acpPreflightDecision) (ACPCompiledCatalog, error) {
 	entries := make([]loop.RuntimeCatalogEntry, 0, len(catalog.entries))
 	for _, source := range catalog.entries {
+		if source.AgentHarness == looprigRuntimeHarness && source.Profile == looprigRuntimeProfile {
+			entries = append(entries, cloneACPEntry(source))
+			continue
+		}
 		decision, ok := decisions[source.AgentHarness]
 		if !ok {
 			continue
@@ -468,7 +472,7 @@ func filterACPPreflightCatalog(catalog ACPCompiledCatalog, decisions map[loop.Ag
 				}
 				retainedEfforts := make([]model.Effort, 0, len(option.Efforts))
 				for _, effort := range option.Efforts {
-					resolved, err := catalog.RuntimeCatalog.ResolveWithExplicitEffort(entry.SubagentType, entry.AgentHarness, option.Alias, effort, true)
+					resolved, err := catalog.RuntimeCatalog.ResolveWithExplicitEffort(entry.AgentType, entry.AgentHarness, option.Alias, effort, true)
 					if err != nil {
 						continue
 					}
@@ -526,7 +530,7 @@ func filterACPPreflightCatalog(catalog ACPCompiledCatalog, decisions map[loop.Ag
 		}
 		entries = append(entries, entry)
 	}
-	entries = retainACPSubagentsWithConfiguredDefault(entries)
+	entries = retainRuntimeEntriesWithConfiguredDefault(entries)
 	catalogRuntime, err := loop.NewRuntimeCatalog(entries)
 	if err != nil {
 		return ACPCompiledCatalog{}, err
@@ -543,17 +547,42 @@ func filterACPPreflightCatalog(catalog ACPCompiledCatalog, decisions map[loop.Ag
 	}, nil
 }
 
-func retainACPSubagentsWithConfiguredDefault(entries []loop.RuntimeCatalogEntry) []loop.RuntimeCatalogEntry {
-	defaultCount := make(map[identity.AgentName]int)
-	for _, entry := range entries {
-		if entry.Default {
-			defaultCount[entry.SubagentType]++
-		}
+func retainRuntimeEntriesWithConfiguredDefault(entries []loop.RuntimeCatalogEntry) []loop.RuntimeCatalogEntry {
+	byRole := make(map[identity.AgentName][]int)
+	for index, entry := range entries {
+		byRole[entry.AgentType] = append(byRole[entry.AgentType], index)
 	}
+	roles := make([]identity.AgentName, 0, len(byRole))
+	for role := range byRole {
+		roles = append(roles, role)
+	}
+	sort.Slice(roles, func(i, j int) bool { return roles[i] < roles[j] })
 	retained := make([]loop.RuntimeCatalogEntry, 0, len(entries))
-	for _, entry := range entries {
-		if defaultCount[entry.SubagentType] == 1 {
-			retained = append(retained, entry)
+	for _, role := range roles {
+		indexes := byRole[role]
+		defaultCount := 0
+		acpDefault := false
+		ordinaryIndex := -1
+		for _, index := range indexes {
+			entry := entries[index]
+			if entry.AgentHarness == looprigRuntimeHarness && entry.Profile == looprigRuntimeProfile {
+				ordinaryIndex = index
+			}
+			if entry.Default {
+				defaultCount++
+				acpDefault = acpDefault || entry.AgentHarness != looprigRuntimeHarness
+			}
+		}
+		if defaultCount == 0 {
+			if ordinaryIndex < 0 {
+				continue
+			}
+			entries[ordinaryIndex].Default = true
+		} else if acpDefault && ordinaryIndex >= 0 {
+			entries[ordinaryIndex].Default = false
+		}
+		for _, index := range indexes {
+			retained = append(retained, entries[index])
 		}
 	}
 	return retained
@@ -576,7 +605,7 @@ func hasACPDefaultModel(entry loop.RuntimeCatalogEntry, catalog loop.RuntimeCata
 		if option.Alias != entry.SmallModel {
 			continue
 		}
-		resolved, err := catalog.ResolveWithExplicitEffort(entry.SubagentType, entry.AgentHarness, option.Alias, option.DefaultEffort, true)
+		resolved, err := catalog.ResolveWithExplicitEffort(entry.AgentType, entry.AgentHarness, option.Alias, option.DefaultEffort, true)
 		if err != nil {
 			return false
 		}

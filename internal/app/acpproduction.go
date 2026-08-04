@@ -53,6 +53,7 @@ func withProductionACPChildren(ctx context.Context, cfg Config, configured produ
 		return Config{}, err
 	}
 	cfg.ACPChildren = composition
+	cfg.RuntimeCatalog = composition.Catalog.RuntimeCatalog
 	return cfg, nil
 }
 
@@ -61,12 +62,21 @@ func newProductionACPCompositionWithPreflight(ctx context.Context, configured pr
 	if err != nil {
 		return nil, fmt.Errorf("coderig: resolve ACP workspace root: %w", err)
 	}
-	catalog, err := CompileACPCatalog(ACPCatalogInput{
-		SubagentTypes:  []identity.AgentName{planner.Name, builder.Name, reviewer.Name},
+	acpCatalog, err := CompileACPCatalog(ACPCatalogInput{
+		AgentTypes:     []identity.AgentName{planner.Name, builder.Name, reviewer.Name},
 		GatewayTargets: configured.ACP,
 		Defaults:       configured.Defaults,
 		ClaudeSmall:    configured.ClaudeSmall,
 		NativeACP:      configured.NativeACP,
+	})
+	if err != nil {
+		return nil, err
+	}
+	catalog, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
+		AgentTypes:     []identity.AgentName{planner.Name, builder.Name, reviewer.Name},
+		GatewayTargets: configured.ACP,
+		Defaults:       configured.Defaults,
+		ACP:            acpCatalog,
 	})
 	if err != nil {
 		return nil, err

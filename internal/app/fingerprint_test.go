@@ -220,7 +220,7 @@ func TestSecretRedactionAcrossModelCatalogueGatewayFingerprintAndDurableEvents(t
 	captureErrorFormats("client factory failure", factoryErr)
 
 	compiled, err := CompileACPCatalog(ACPCatalogInput{
-		SubagentTypes:  []identity.AgentName{"planner", "builder", "reviewer"},
+		AgentTypes:  []identity.AgentName{"planner", "builder", "reviewer"},
 		GatewayTargets: configured.ACP,
 		Defaults:       configured.Defaults,
 		ClaudeSmall:    configured.ClaudeSmall,
@@ -234,7 +234,7 @@ func TestSecretRedactionAcrossModelCatalogueGatewayFingerprintAndDurableEvents(t
 	}
 	duplicateTargets := append(append([]ACPGatewaySource(nil), configured.ACP...), configured.ACP[0])
 	_, catalogueErr := CompileACPCatalog(ACPCatalogInput{
-		SubagentTypes:  []identity.AgentName{"builder"},
+		AgentTypes:  []identity.AgentName{"builder"},
 		GatewayTargets: duplicateTargets,
 		Defaults: map[identity.AgentName]configuredDelegateDefault{
 			"builder": configured.Defaults["builder"],
@@ -297,7 +297,7 @@ func TestSecretRedactionAcrossModelCatalogueGatewayFingerprintAndDurableEvents(t
 
 	fingerprintFields := agentFingerprintFields(Config{
 		ModelConfigRev: configured.ConfigRev,
-		ACPChildren:    &ACPComposition{Catalog: compiled},
+		RuntimeCatalog: compiled.RuntimeCatalog,
 	})
 	capture("fingerprint fields", fingerprintFields)
 	capture("fingerprint formats", fmt.Sprintf("%v|%+v|%#v", fingerprintFields, fingerprintFields, fingerprintFields))
@@ -399,9 +399,7 @@ func TestAgentFingerprintCombinesModelAndRuntimeCatalogRevisionsAsValidIdentifie
 	catalog := mustEmptyRuntimeCatalog()
 	got := agentFingerprintFields(Config{
 		ModelConfigRev: "model-rev",
-		ACPChildren: &ACPComposition{Catalog: ACPCompiledCatalog{
-			RuntimeCatalog: catalog,
-		}},
+		RuntimeCatalog: catalog,
 	})
 	want := "model-rev/" + catalog.Digest()
 	if got.RuntimeCatalogRev != want {
@@ -416,7 +414,7 @@ func TestAgentFingerprintBoundsProductionLengthModelAndRuntimeCatalogRevisions(t
 	otherModelRevision := strings.Repeat("b", 64)
 	emptyCatalog := mustEmptyRuntimeCatalog()
 	populatedCatalog, err := loop.NewRuntimeCatalog([]loop.RuntimeCatalogEntry{{
-		SubagentType:  "worker",
+		AgentType:  "worker",
 		AgentHarness:  "codex",
 		Profile:       "acp/codex",
 		Credential:    loop.CredentialNativeAuth,
@@ -431,9 +429,7 @@ func TestAgentFingerprintBoundsProductionLengthModelAndRuntimeCatalogRevisions(t
 	fields := func(modelRevision string, catalog loop.RuntimeCatalog) rig.ConfigFingerprintFields {
 		return agentFingerprintFields(Config{
 			ModelConfigRev: modelRevision,
-			ACPChildren: &ACPComposition{Catalog: ACPCompiledCatalog{
-				RuntimeCatalog: catalog,
-			}},
+			RuntimeCatalog: catalog,
 		})
 	}
 	base := fields(modelRevision, emptyCatalog).RuntimeCatalogRev

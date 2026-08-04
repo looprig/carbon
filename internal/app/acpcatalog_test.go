@@ -107,7 +107,7 @@ func TestCompileACPCatalogRejectsDuplicateAliasesAndInvalidDefaults(t *testing.T
 		{
 			name: "duplicate alias",
 			input: ACPCatalogInput{
-				SubagentTypes:  []identity.AgentName{"worker"},
+				AgentTypes:  []identity.AgentName{"worker"},
 				GatewayTargets: []ACPGatewaySource{target, target},
 				Defaults: map[identity.AgentName]configuredDelegateDefault{
 					"worker": {Harness: "codex", Model: "fixture-a", Effort: model.EffortMedium},
@@ -118,13 +118,13 @@ func TestCompileACPCatalogRejectsDuplicateAliasesAndInvalidDefaults(t *testing.T
 		{
 			name: "missing default",
 			input: ACPCatalogInput{
-				SubagentTypes: []identity.AgentName{"worker"}, GatewayTargets: []ACPGatewaySource{target}, ClaudeSmall: "fixture-a",
+				AgentTypes: []identity.AgentName{"worker"}, GatewayTargets: []ACPGatewaySource{target}, ClaudeSmall: "fixture-a",
 			},
 		},
 		{
 			name: "extra default",
 			input: ACPCatalogInput{
-				SubagentTypes: []identity.AgentName{"worker"}, GatewayTargets: []ACPGatewaySource{target}, ClaudeSmall: "fixture-a",
+				AgentTypes: []identity.AgentName{"worker"}, GatewayTargets: []ACPGatewaySource{target}, ClaudeSmall: "fixture-a",
 				Defaults: map[identity.AgentName]configuredDelegateDefault{
 					"worker": {Harness: "codex", Model: "fixture-a", Effort: model.EffortMedium},
 					"other":  {Harness: "codex", Model: "fixture-a", Effort: model.EffortMedium},
@@ -134,7 +134,7 @@ func TestCompileACPCatalogRejectsDuplicateAliasesAndInvalidDefaults(t *testing.T
 		{
 			name: "unavailable default harness",
 			input: ACPCatalogInput{
-				SubagentTypes: []identity.AgentName{"worker"}, GatewayTargets: []ACPGatewaySource{target},
+				AgentTypes: []identity.AgentName{"worker"}, GatewayTargets: []ACPGatewaySource{target},
 				Defaults: map[identity.AgentName]configuredDelegateDefault{
 					"worker": {Harness: "claude-code", Model: "fixture-a", Effort: model.EffortMedium},
 				},
@@ -154,7 +154,7 @@ func TestACPGatewayTargetReturnsExactClientAndAuthoritativeEffort(t *testing.T) 
 	client := &fakeLLM{}
 	targetModel := model.CustomModel("openai", model.APIFormatOpenAIResponses, "", "provider-a", model.WithTools(), model.WithThinking())
 	compiled, err := CompileACPCatalog(ACPCatalogInput{
-		SubagentTypes: []identity.AgentName{"worker"},
+		AgentTypes: []identity.AgentName{"worker"},
 		GatewayTargets: []ACPGatewaySource{{
 			Alias: "fixture-a", Client: client, Model: targetModel,
 			DefaultEffort: model.EffortMedium, Efforts: []model.Effort{model.EffortLow, model.EffortMedium, model.EffortHigh},
@@ -190,7 +190,7 @@ func TestCompileACPCatalogErrorDoesNotEchoAliases(t *testing.T) {
 	target := fixtureGatewaySource("fixture-a", &fakeLLM{})
 	target.Alias = loop.ModelAlias(sentinel)
 	_, err := CompileACPCatalog(ACPCatalogInput{
-		SubagentTypes:  []identity.AgentName{"worker"},
+		AgentTypes:  []identity.AgentName{"worker"},
 		GatewayTargets: []ACPGatewaySource{target, target},
 		Defaults: map[identity.AgentName]configuredDelegateDefault{
 			"worker": {Harness: "codex", Model: loop.ModelAlias(sentinel), Effort: model.EffortMedium},
@@ -208,7 +208,7 @@ func TestCompileACPCatalogErrorDoesNotEchoAliases(t *testing.T) {
 func compileFixtureACPCatalog(t *testing.T) ACPCompiledCatalog {
 	t.Helper()
 	compiled, err := CompileACPCatalog(ACPCatalogInput{
-		SubagentTypes:  []identity.AgentName{"worker"},
+		AgentTypes:  []identity.AgentName{"worker"},
 		GatewayTargets: []ACPGatewaySource{fixtureGatewaySource("fixture-a", &fakeLLM{})},
 		Defaults: map[identity.AgentName]configuredDelegateDefault{
 			"worker": {Harness: "codex", Model: "fixture-a", Effort: model.EffortMedium},

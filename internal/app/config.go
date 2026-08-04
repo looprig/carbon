@@ -1,6 +1,7 @@
 package app
 
 import (
+	"github.com/looprig/harness/pkg/loop"
 	model "github.com/looprig/inference/model"
 )
 
@@ -13,6 +14,10 @@ type Config struct {
 	// composition. Native primer operation remains available when it is nil or
 	// when its catalog has no executable profiles.
 	ACPChildren *ACPComposition
+	// RuntimeCatalog is the complete parent-scoped catalogue of selectable
+	// child runtimes. It remains available when ACP is disabled; ACPChildren
+	// contributes only executable foreign builders and preflighted ACP rows.
+	RuntimeCatalog loop.RuntimeCatalog
 	// RuntimeSkills enables the untrusted, human-gated workspace skill source.
 	RuntimeSkills bool
 	// AccessProfile is the selected product access profile (readonly by

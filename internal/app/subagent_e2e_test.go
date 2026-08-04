@@ -153,7 +153,7 @@ func TestACPRequestPermissionDeniesOutsidePostureWithoutNativePermissionWrites(t
 	configured := configuredProductionModelsForTest("fixture-model")
 	configured.ACP[0].Client = provider
 	compiled, err := CompileACPCatalog(ACPCatalogInput{
-		SubagentTypes:  []identity.AgentName{builder.Name},
+		AgentTypes:  []identity.AgentName{builder.Name},
 		GatewayTargets: configured.ACP,
 		Defaults: map[identity.AgentName]configuredDelegateDefault{
 			builder.Name: configured.Defaults[builder.Name],
@@ -297,7 +297,7 @@ func TestSubagentLunaMaxConcurrentEndToEnd(t *testing.T) {
 	openAI := &task33InferenceClient{}
 	anthropic := &task33InferenceClient{}
 	compiled, err := CompileACPCatalog(ACPCatalogInput{
-		SubagentTypes: []identity.AgentName{planner.Name, builder.Name, reviewer.Name},
+		AgentTypes: []identity.AgentName{planner.Name, builder.Name, reviewer.Name},
 		GatewayTargets: legacyTestGatewayTargets(map[model.ProviderName]inference.Client{
 			"openai":    openAI,
 			"anthropic": anthropic,

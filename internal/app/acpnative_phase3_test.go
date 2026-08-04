@@ -14,7 +14,7 @@ import (
 func TestCompileACPCatalogCompilesNativeProfilesAlongsideGateway(t *testing.T) {
 	gateway := fixtureGatewaySource("gateway-model", &fakeLLM{})
 	compiled, err := CompileACPCatalog(ACPCatalogInput{
-		SubagentTypes:  []identity.AgentName{"planner", "builder", "reviewer"},
+		AgentTypes:  []identity.AgentName{"planner", "builder", "reviewer"},
 		GatewayTargets: []ACPGatewaySource{gateway},
 		NativeProfiles: []ACPNativeProfile{
 			{Harness: "codex", Enabled: true, Models: []loop.ModelAlias{"native-z", "native-a"}},
@@ -59,7 +59,7 @@ func TestCompileACPCatalogCompilesNativeProfilesAlongsideGateway(t *testing.T) {
 
 func TestCompileACPCatalogRejectsNativeAliasCollisionWithGateway(t *testing.T) {
 	_, err := CompileACPCatalog(ACPCatalogInput{
-		SubagentTypes:  []identity.AgentName{"worker"},
+		AgentTypes:  []identity.AgentName{"worker"},
 		GatewayTargets: []ACPGatewaySource{fixtureGatewaySource("shared", &fakeLLM{})},
 		NativeProfiles: []ACPNativeProfile{{Harness: "codex", Enabled: true, Models: []loop.ModelAlias{"shared"}}},
 		Defaults: map[identity.AgentName]configuredDelegateDefault{
@@ -78,7 +78,7 @@ func TestNewACPCompositionPreflightsManagedNativeWithoutProxyOrModel(t *testing.
 		t.Fatal(err)
 	}
 	compiled, err := CompileACPCatalog(ACPCatalogInput{
-		SubagentTypes: []identity.AgentName{"worker"},
+		AgentTypes: []identity.AgentName{"worker"},
 		NativeACP: map[string]ACPNativeProfile{
 			"codex": {Harness: "codex", Enabled: true},
 		},
@@ -125,7 +125,7 @@ func TestNewACPCompositionPreflightsExplicitNativeAliasesWithoutGateway(t *testi
 		t.Fatal(err)
 	}
 	compiled, err := CompileACPCatalog(ACPCatalogInput{
-		SubagentTypes: []identity.AgentName{"worker"},
+		AgentTypes: []identity.AgentName{"worker"},
 		NativeACP: map[string]ACPNativeProfile{
 			"codex": {Harness: "codex", Enabled: true, Models: []loop.ModelAlias{"native-z", "native-a"}},
 		},
@@ -167,7 +167,7 @@ func TestNewACPCompositionPreflightsClaudeNativeAliasesIndependently(t *testing.
 		t.Fatal(err)
 	}
 	compiled, err := CompileACPCatalog(ACPCatalogInput{
-		SubagentTypes: []identity.AgentName{"worker"},
+		AgentTypes: []identity.AgentName{"worker"},
 		NativeACP: map[string]ACPNativeProfile{
 			"claude-code": {Harness: "claude-code", Enabled: true, Models: []loop.ModelAlias{"seed-fails", "later-ready"}},
 		},
@@ -208,7 +208,7 @@ func TestNewACPCompositionPreflightsClaudeNativeAliasesIndependently(t *testing.
 
 func TestACPChildModelAliasesUseNativeSelectionKind(t *testing.T) {
 	managedCatalog, err := CompileACPCatalog(ACPCatalogInput{
-		SubagentTypes: []identity.AgentName{"worker"},
+		AgentTypes: []identity.AgentName{"worker"},
 		NativeACP:     map[string]ACPNativeProfile{"codex": {Harness: "codex", Enabled: true}},
 		Defaults: map[identity.AgentName]configuredDelegateDefault{
 			"worker": {Harness: "codex", Source: loop.RuntimeSourceNative},
@@ -230,7 +230,7 @@ func TestACPChildModelAliasesUseNativeSelectionKind(t *testing.T) {
 	}
 
 	explicitCatalog, err := CompileACPCatalog(ACPCatalogInput{
-		SubagentTypes: []identity.AgentName{"worker"},
+		AgentTypes: []identity.AgentName{"worker"},
 		NativeACP:     map[string]ACPNativeProfile{"codex": {Harness: "codex", Enabled: true, Models: []loop.ModelAlias{"native-a"}}},
 		Defaults: map[identity.AgentName]configuredDelegateDefault{
 			"worker": {Harness: "codex", Source: loop.RuntimeSourceNative, Model: "native-a"},
@@ -254,7 +254,7 @@ func TestACPChildModelAliasesUseNativeSelectionKind(t *testing.T) {
 
 func TestACPChildConfigResolvesManagedNativeWithoutGateway(t *testing.T) {
 	catalog, err := CompileACPCatalog(ACPCatalogInput{
-		SubagentTypes: []identity.AgentName{"builder"},
+		AgentTypes: []identity.AgentName{"builder"},
 		NativeACP:     map[string]ACPNativeProfile{"codex": {Harness: "codex", Enabled: true}},
 		Defaults: map[identity.AgentName]configuredDelegateDefault{
 			"builder": {Harness: "codex", Source: loop.RuntimeSourceNative},
