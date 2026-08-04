@@ -2,8 +2,10 @@ package app
 
 import (
 	"context"
+	"errors"
 	"testing"
 
+	"github.com/looprig/harness/pkg/loop"
 	model "github.com/looprig/inference/model"
 	"github.com/looprig/tui"
 )
@@ -44,9 +46,16 @@ func TestSessionPresentationReportsFixedProfile(t *testing.T) {
 	}
 }
 
+// multiPrimerCandidates' two candidates deliberately share candidate-a's transport
+// (provider/APIFormat/BaseURL) and differ only by model Name — a live SetModel/
+// ChangeModel is transport-locked to the loop's anchor model whenever a context
+// counter is bound (harness's validateContextTransportBinding, pkg/loop/
+// compaction_policy.go), and CodeRig's compaction.go unconditionally binds one on
+// every native loop. See TestSetModelCrossProviderCandidateFails for the case this
+// deliberately excludes, and its doc comment for the full story.
 func multiPrimerCandidates() []PrimerCandidate {
 	a := testModel()
-	b := model.CustomModel("chutes", model.APIFormatOpenAI, "https://api.chutes.ai", "candidate-b", model.WithTools(), model.WithThinking())
+	b := model.CustomModel(a.Provider, a.APIFormat, a.BaseURL, "candidate-b", model.WithTools(), model.WithThinking())
 	return []PrimerCandidate{
 		{Alias: "candidate-a", Description: "Candidate A", Model: a, Efforts: []model.Effort{model.EffortNone}, DefaultEffort: model.EffortNone},
 		{Alias: "candidate-b", Description: "Candidate B", Model: b, Efforts: []model.Effort{model.EffortNone, model.EffortLow, model.EffortMedium, model.EffortHigh}, DefaultEffort: model.EffortLow},
@@ -128,5 +137,99 @@ func TestRuntimeControllerRejectsUnknownTypedChoices(t *testing.T) {
 	}
 	if err := agent.SetEffort(context.Background(), agent.ActiveLoopID(), tui.EffortID("impossible")); err == nil {
 		t.Fatal("SetEffort(unknown) succeeded")
+	}
+}
+
+func TestSetModelSwitchesToConfiguredCandidate(t *testing.T) {
+	agent, _ := openAcceptanceAgentWithPrimerCandidates(t)
+	ctx := context.Background()
+	loopID := agent.ActiveLoopID()
+
+	if err := agent.SetModel(ctx, loopID, tui.ModelID("candidate-b")); err != nil {
+		t.Fatalf("SetModel(candidate-b) error = %v", err)
+	}
+
+	options, err := agent.LoopRuntimeOptions(ctx, loopID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// candidate-b's efforts are [none, low, medium, high]; switching TO it from
+	// candidate-a's current effort (none, which candidate-b also admits) must
+	// NOT force a reset, so the loop's effort stays at "none".
+	found := false
+	for _, e := range options.Efforts {
+		if e.ID == tui.EffortID(model.EffortNone) {
+			found = true
+		}
+	}
+	if !found || len(options.Efforts) != 4 {
+		t.Fatalf("efforts after switch = %#v, want candidate-b's 4 options including none", options.Efforts)
+	}
+}
+
+func TestSetModelUnknownCandidateFails(t *testing.T) {
+	agent, _ := openAcceptanceAgentWithPrimerCandidates(t)
+	if err := agent.SetModel(context.Background(), agent.ActiveLoopID(), tui.ModelID("does-not-exist")); err == nil {
+		t.Fatal("SetModel(does-not-exist) succeeded, want error")
+	}
+}
+
+func TestSetModelResetsEffortWhenNewCandidateDoesNotAdmitCurrent(t *testing.T) {
+	agent, _ := openAcceptanceAgentWithPrimerCandidates(t)
+	ctx := context.Background()
+	loopID := agent.ActiveLoopID()
+
+	// Move candidate-a (efforts: [none]) into candidate-b's range first isn't
+	// possible directly, so instead: switch to candidate-b, raise its effort
+	// to "high" (which candidate-a does NOT admit), then switch back to
+	// candidate-a and confirm the effort was reset instead of left stale.
+	if err := agent.SetModel(ctx, loopID, tui.ModelID("candidate-b")); err != nil {
+		t.Fatalf("SetModel(candidate-b) error = %v", err)
+	}
+	if err := agent.SetEffort(ctx, loopID, tui.EffortID(model.EffortHigh)); err != nil {
+		t.Fatalf("SetEffort(high) error = %v", err)
+	}
+	if err := agent.SetModel(ctx, loopID, tui.ModelID("candidate-a")); err != nil {
+		t.Fatalf("SetModel(candidate-a) error = %v", err)
+	}
+
+	options, err := agent.LoopRuntimeOptions(ctx, loopID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(options.Efforts) != 1 || options.Efforts[0].ID != tui.EffortID(model.EffortNone) {
+		t.Fatalf("efforts after reset-switch = %#v, want candidate-a's [none]", options.Efforts)
+	}
+}
+
+// TestSetModelCrossProviderCandidateFails documents a real, deliberate harness
+// limitation uncovered while implementing SetModel: harness's live ChangeModel path
+// (internal/loopruntime's applyChangeInference -> loop.Definition.ValidateContextModel
+// -> validateContextTransportBinding, pkg/loop/compaction_policy.go) rejects any model
+// change that alters Provider/APIFormat/BaseURL from the loop's anchor model whenever a
+// context counter is bound. CodeRig's compaction.go installs one unconditionally on
+// every native loop (loop.WithContextCounter in conversationContextPolicy.options()),
+// so this check is always active in CodeRig, and only the model Name may vary across a
+// live SetModel switch. Two primer candidates naming genuinely different providers
+// (as multiPrimerCandidates deliberately avoids, see its doc comment) can be listed
+// side by side but can never be switched between at runtime; SetModel translates the
+// resulting *loop.ContextTransportBindingError into a clearer coderig-level message
+// rather than surfacing harness's internal field name.
+func TestSetModelCrossProviderCandidateFails(t *testing.T) {
+	a := testModel()
+	b := model.CustomModel("chutes", model.APIFormatOpenAI, "https://api.chutes.ai", "candidate-b", model.WithTools(), model.WithThinking())
+	candidates := []PrimerCandidate{
+		{Alias: "candidate-a", Description: "Candidate A", Model: a, Efforts: []model.Effort{model.EffortNone}, DefaultEffort: model.EffortNone},
+		{Alias: "candidate-b", Description: "Candidate B", Model: b, Efforts: []model.Effort{model.EffortNone, model.EffortLow, model.EffortMedium, model.EffortHigh}, DefaultEffort: model.EffortLow},
+	}
+	agent, _ := openAcceptanceAgentSelectingPrimerCandidate(t, candidates, a)
+
+	err := agent.SetModel(context.Background(), agent.ActiveLoopID(), tui.ModelID("candidate-b"))
+	if err == nil {
+		t.Fatal("SetModel(candidate-b) succeeded across providers, want error")
+	}
+	var transportErr *loop.ContextTransportBindingError
+	if !errors.As(err, &transportErr) {
+		t.Fatalf("SetModel(candidate-b) error = %v, want it to wrap *loop.ContextTransportBindingError", err)
 	}
 }

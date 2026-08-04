@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/looprig/core/uuid"
@@ -136,11 +137,29 @@ func (a *RuntimeAgent) SetModel(ctx context.Context, loopID uuid.UUID, id tui.Mo
 	if !ok {
 		return fmt.Errorf("coderig: loop %s is unavailable", loopID)
 	}
-	selectedModel := controller.Model()
-	if a.publicModelID(selectedModel) != string(id) {
+	if len(a.primerCandidates) == 0 {
+		selectedModel := controller.Model()
+		if a.publicModelID(selectedModel) != string(id) {
+			return fmt.Errorf("coderig: model choice %q is stale or unknown", id)
+		}
+		return controller.Change(ctx, loop.ChangeModel(selectedModel))
+	}
+	candidate, ok := findPrimerCandidate(a.primerCandidates, string(id))
+	if !ok {
 		return fmt.Errorf("coderig: model choice %q is stale or unknown", id)
 	}
-	return controller.Change(ctx, loop.ChangeModel(selectedModel))
+	changes := []loop.Change{loop.ChangeModel(candidate.Model)}
+	if currentEffort := controller.Model().Sampling.Effort; !containsPrimerEffort(candidate.Efforts, currentEffort) {
+		changes = append(changes, loop.ChangeEffort(candidate.DefaultEffort))
+	}
+	if err := controller.Change(ctx, changes...); err != nil {
+		var transportErr *loop.ContextTransportBindingError
+		if errors.As(err, &transportErr) {
+			return fmt.Errorf("coderig: model choice %q uses a different provider/endpoint than the active session; switching transports mid-session is not supported: %w", id, err)
+		}
+		return err
+	}
+	return nil
 }
 
 func (a *RuntimeAgent) SetEffort(ctx context.Context, loopID uuid.UUID, id tui.EffortID) error {
@@ -167,7 +186,6 @@ func containsPrimerEffort(efforts []model.Effort, wanted model.Effort) bool {
 	return false
 }
 
-//lint:ignore U1000 reserved for Task 4/5's SetModel/SetEffort roster lookups
 func findPrimerCandidate(candidates []PrimerCandidate, alias string) (PrimerCandidate, bool) {
 	for _, c := range candidates {
 		if c.Alias == alias {
