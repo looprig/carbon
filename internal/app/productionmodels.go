@@ -61,6 +61,7 @@ func compileProductionModels(config normalizedModelConfig, factory configuredCli
 	boundClients := make(map[configuredClientCacheKey]inference.Client, len(config.Models))
 	delegateSources := make([]ACPGatewaySource, 0, len(config.Models))
 	primerCandidates := make([]PrimerCandidate, 0, len(config.Models))
+	primerCandidateTargets := make(map[runtimeModelKey]string, len(config.Models))
 	models := make(map[string]model.Model, len(config.Models))
 	var primerEfforts []model.Effort
 	for _, target := range config.Models {
@@ -79,6 +80,11 @@ func compileProductionModels(config normalizedModelConfig, factory configuredCli
 			primerEfforts = append([]model.Effort(nil), target.Efforts...)
 		}
 		if containsModelConfigUse(target.Uses, "primer") {
+			key := runtimeModelKeyFor(target.Model)
+			if _, dup := primerCandidateTargets[key]; dup {
+				return productionModels{}, modelConfigValidationError("primer-capable models must not share the same provider target")
+			}
+			primerCandidateTargets[key] = target.Alias
 			primerCandidates = append(primerCandidates, PrimerCandidate{
 				Alias:         target.Alias,
 				Description:   target.Description,

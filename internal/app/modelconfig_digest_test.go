@@ -157,9 +157,15 @@ func digestModelConfigFixture(t *testing.T, apiKey string) modelConfigFile {
 		value.Effort = "high"
 		config.DelegateDefaults[role] = value
 	}
+	// alpha shares zeta's provider target but is delegate-only (not primer):
+	// compileProductionModels rejects two primer-tagged aliases resolving to
+	// the identical provider target (see
+	// TestProductionModelsRejectsSharedPrimerProviderTargets), while a
+	// delegate-only alias sharing a target with a primer is still the
+	// explicitly supported multi-alias-per-target shape (newModelRoutingClient).
 	alpha := config.Models[0]
 	alpha.Alias = "alpha"
-	alpha.Uses = []string{"delegate", "primer"}
+	alpha.Uses = []string{"delegate"}
 	config.Models = append(config.Models, alpha)
 	return config
 }

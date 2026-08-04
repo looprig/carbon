@@ -53,16 +53,27 @@ func multiPrimerCandidates() []PrimerCandidate {
 	}
 }
 
-func openAcceptanceAgentWithPrimerCandidates(t *testing.T) (*RuntimeAgent, *swarmStores) {
+// openAcceptanceAgentSelectingPrimerCandidate opens a headless session over the
+// given roster with the session's CURRENT model fixed to selected (via the
+// injected ModelFactory), independent of where selected sits in candidates.
+// This lets tests distinguish "keyed off the current model" from "keyed off
+// roster position 0" — see TestRuntimeCatalogEffortsReflectCurrentModelNotRosterOrder.
+func openAcceptanceAgentSelectingPrimerCandidate(t *testing.T, candidates []PrimerCandidate, selected model.Model) (*RuntimeAgent, *swarmStores) {
 	t.Helper()
 	stores := mustHeadlessTestStores(t)
-	cfg := Config{PrimerCandidates: multiPrimerCandidates()}
-	agent, err := newSessionOverStores(context.Background(), &fakeLLM{}, newModelFactoryFor(testModel()), cfg, stores, t.TempDir())
+	cfg := Config{PrimerCandidates: candidates}
+	agent, err := newSessionOverStores(context.Background(), &fakeLLM{}, newModelFactoryFor(selected), cfg, stores, t.TempDir())
 	if err != nil {
 		t.Fatalf("newSessionOverStores() error = %v", err)
 	}
 	t.Cleanup(func() { _ = agent.Close(context.Background()) })
 	return agent, stores
+}
+
+func openAcceptanceAgentWithPrimerCandidates(t *testing.T) (*RuntimeAgent, *swarmStores) {
+	t.Helper()
+	candidates := multiPrimerCandidates()
+	return openAcceptanceAgentSelectingPrimerCandidate(t, candidates, candidates[0].Model)
 }
 
 func TestRuntimeCatalogListsAllPrimerCandidates(t *testing.T) {
@@ -82,6 +93,31 @@ func TestRuntimeCatalogListsAllPrimerCandidates(t *testing.T) {
 	// options must reflect candidate-a, not candidate-b.
 	if len(options.Efforts) != 1 || options.Efforts[0].ID != tui.EffortID(model.EffortNone) {
 		t.Fatalf("efforts = %#v, want candidate-a's [none]", options.Efforts)
+	}
+}
+
+// TestRuntimeCatalogEffortsReflectCurrentModelNotRosterOrder proves efforts are
+// derived from whichever candidate matches the CURRENT model, not from roster
+// position 0. candidate-a is still listed first in Config.PrimerCandidates, but
+// the session is opened on candidate-b's model — a stub that instead returned
+// primerCandidates[0].Efforts would pass TestRuntimeCatalogListsAllPrimerCandidates
+// but fail here.
+func TestRuntimeCatalogEffortsReflectCurrentModelNotRosterOrder(t *testing.T) {
+	candidates := multiPrimerCandidates()
+	agent, _ := openAcceptanceAgentSelectingPrimerCandidate(t, candidates, candidates[1].Model)
+
+	options, err := agent.LoopRuntimeOptions(context.Background(), agent.ActiveLoopID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []tui.EffortID{tui.EffortID(model.EffortNone), tui.EffortID(model.EffortLow), tui.EffortID(model.EffortMedium), tui.EffortID(model.EffortHigh)}
+	if len(options.Efforts) != len(want) {
+		t.Fatalf("efforts = %#v, want candidate-b's %v", options.Efforts, want)
+	}
+	for i, effort := range options.Efforts {
+		if effort.ID != want[i] {
+			t.Fatalf("efforts = %#v, want candidate-b's %v", options.Efforts, want)
+		}
 	}
 }
 

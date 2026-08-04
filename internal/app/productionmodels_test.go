@@ -219,6 +219,57 @@ func TestProductionModelsCollectsAllPrimerCapableCandidates(t *testing.T) {
 	}
 }
 
+// TestProductionModelsRejectsSharedPrimerProviderTargets proves compileProductionModels
+// rejects two primer-tagged aliases that resolve to the identical provider target
+// (provider+api_format+base_url+name), since currentPrimerCandidate/publicModelID
+// key primer candidates by that identity and a collision would make them
+// indistinguishable at runtime. Sharing a target is still explicitly permitted
+// for non-primer aliasing (newModelRoutingClient's own documented shape), so
+// primer+delegate and delegate+delegate collisions on the same target remain allowed.
+func TestProductionModelsRejectsSharedPrimerProviderTargets(t *testing.T) {
+	sharedModel := model.CustomModel("chutes", model.APIFormatOpenAI, "https://api.chutes.ai", "shared-target", model.WithTools())
+	primaryModel := model.CustomModel("lmstudio", model.APIFormatOpenAI, "http://localhost:1234/v1", "primary", model.WithTools())
+	factory := func(model.Model, auth.APIKey) (inference.Client, error) { return &fakeLLM{}, nil }
+
+	tests := []struct {
+		name    string
+		usesA   []string
+		usesB   []string
+		wantErr bool
+	}{
+		{name: "two primer-tagged aliases sharing a provider target", usesA: []string{"primer"}, usesB: []string{"primer"}, wantErr: true},
+		{name: "primer and delegate-only aliases sharing a provider target", usesA: []string{"primer"}, usesB: []string{"delegate"}, wantErr: false},
+		{name: "two delegate-only aliases sharing a provider target", usesA: []string{"delegate"}, usesB: []string{"delegate"}, wantErr: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := normalizedModelConfig{
+				PrimerDefault: "fixture-primary",
+				Models: []normalizedModelTarget{
+					{Alias: "fixture-primary", Description: "Primary", Model: primaryModel, Uses: []string{"primer"}, Efforts: []model.Effort{model.EffortNone}, DefaultEffort: model.EffortNone},
+					{Alias: "fixture-a", Description: "A", Model: sharedModel, Uses: tt.usesA, Efforts: []model.Effort{model.EffortNone}, DefaultEffort: model.EffortNone},
+					{Alias: "fixture-b", Description: "B", Model: sharedModel, Uses: tt.usesB, Efforts: []model.Effort{model.EffortNone}, DefaultEffort: model.EffortNone},
+				},
+			}
+
+			_, err := compileProductionModels(config, factory)
+			if tt.wantErr && err == nil {
+				t.Fatal("compileProductionModels() succeeded, want error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("compileProductionModels() error = %v", err)
+			}
+			if tt.wantErr {
+				var configErr *ModelConfigError
+				if !errors.As(err, &configErr) {
+					t.Fatalf("error = %#v, want *ModelConfigError", err)
+				}
+			}
+		})
+	}
+}
+
 func aliasesToLoop(values []string) []loop.ModelAlias {
 	if values == nil {
 		return nil
