@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/looprig/harness/pkg/loop"
@@ -231,5 +232,64 @@ func TestSetModelCrossProviderCandidateFails(t *testing.T) {
 	var transportErr *loop.ContextTransportBindingError
 	if !errors.As(err, &transportErr) {
 		t.Fatalf("SetModel(candidate-b) error = %v, want it to wrap *loop.ContextTransportBindingError", err)
+	}
+}
+
+// crossTransportPrimerCandidates builds a three-candidate roster spanning two
+// transport groups: candidate-a and candidate-c share one transport (both
+// lmstudio, distinct model Name), candidate-b sits alone on a different one
+// (chutes). This is a separate fixture from multiPrimerCandidates so that
+// fixture's tests stay unaffected by the extra roster member.
+func crossTransportPrimerCandidates() []PrimerCandidate {
+	a := testModel()
+	b := model.CustomModel("chutes", model.APIFormatOpenAI, "https://api.chutes.ai", "candidate-b", model.WithTools(), model.WithThinking())
+	c := model.CustomModel(a.Provider, a.APIFormat, a.BaseURL, "candidate-c-model", model.WithTools())
+	return []PrimerCandidate{
+		{Alias: "candidate-a", Description: "Candidate A", Model: a, Efforts: []model.Effort{model.EffortNone}, DefaultEffort: model.EffortNone},
+		{Alias: "candidate-b", Description: "Candidate B", Model: b, Efforts: []model.Effort{model.EffortNone, model.EffortLow, model.EffortMedium, model.EffortHigh}, DefaultEffort: model.EffortLow},
+		{Alias: "candidate-c", Description: "Candidate C", Model: c, Efforts: []model.Effort{model.EffortNone}, DefaultEffort: model.EffortNone},
+	}
+}
+
+// TestSetModelCrossProviderErrorNamesLiveAlternatives proves the rejection message
+// for a cross-transport SetModel names the OTHER configured candidates that share
+// the CURRENT model's transport (here, candidate-c, which shares candidate-a's
+// lmstudio provider/format/base_url) as live-switchable alternatives, instead of
+// just saying the switch isn't supported. The rejected target (candidate-b) and
+// the current candidate itself (candidate-a) must not be named as alternatives.
+func TestSetModelCrossProviderErrorNamesLiveAlternatives(t *testing.T) {
+	candidates := crossTransportPrimerCandidates()
+	agent, _ := openAcceptanceAgentSelectingPrimerCandidate(t, candidates, candidates[0].Model)
+
+	err := agent.SetModel(context.Background(), agent.ActiveLoopID(), tui.ModelID("candidate-b"))
+	if err == nil {
+		t.Fatal("SetModel(candidate-b) succeeded across providers, want error")
+	}
+	if !strings.Contains(err.Error(), "candidate-c") {
+		t.Fatalf("error = %q, want it to name candidate-c as a live-switchable alternative", err.Error())
+	}
+	if strings.Contains(err.Error(), "candidate-a") {
+		t.Fatalf("error = %q, must not name the current candidate (candidate-a) as an alternative", err.Error())
+	}
+}
+
+// TestSetModelCrossProviderErrorReportsNoAlternatives proves the rejection message
+// says plainly that no alternative exists when the current candidate is the only
+// one on its transport, rather than silently omitting the topic.
+func TestSetModelCrossProviderErrorReportsNoAlternatives(t *testing.T) {
+	a := testModel()
+	b := model.CustomModel("chutes", model.APIFormatOpenAI, "https://api.chutes.ai", "solo-candidate", model.WithTools(), model.WithThinking())
+	candidates := []PrimerCandidate{
+		{Alias: "candidate-a", Description: "Candidate A", Model: a, Efforts: []model.Effort{model.EffortNone}, DefaultEffort: model.EffortNone},
+		{Alias: "solo", Description: "Solo", Model: b, Efforts: []model.Effort{model.EffortNone}, DefaultEffort: model.EffortNone},
+	}
+	agent, _ := openAcceptanceAgentSelectingPrimerCandidate(t, candidates, a)
+
+	err := agent.SetModel(context.Background(), agent.ActiveLoopID(), tui.ModelID("solo"))
+	if err == nil {
+		t.Fatal("SetModel(solo) succeeded across providers, want error")
+	}
+	if !strings.Contains(err.Error(), "no other configured model shares this session's provider/endpoint") {
+		t.Fatalf("error = %q, want the explicit no-alternatives message", err.Error())
 	}
 }

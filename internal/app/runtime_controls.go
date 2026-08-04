@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/looprig/core/uuid"
 	"github.com/looprig/harness/pkg/loop"
@@ -148,14 +149,16 @@ func (a *RuntimeAgent) SetModel(ctx context.Context, loopID uuid.UUID, id tui.Mo
 	if !ok {
 		return fmt.Errorf("coderig: model choice %q is stale or unknown", id)
 	}
+	currentModel := controller.Model()
 	changes := []loop.Change{loop.ChangeModel(candidate.Model)}
-	if currentEffort := controller.Model().Sampling.Effort; !containsPrimerEffort(candidate.Efforts, currentEffort) {
+	if !containsPrimerEffort(candidate.Efforts, currentModel.Sampling.Effort) {
 		changes = append(changes, loop.ChangeEffort(candidate.DefaultEffort))
 	}
 	if err := controller.Change(ctx, changes...); err != nil {
 		var transportErr *loop.ContextTransportBindingError
 		if errors.As(err, &transportErr) {
-			return fmt.Errorf("coderig: model choice %q uses a different provider/endpoint than the active session; switching transports mid-session is not supported: %w", id, err)
+			return fmt.Errorf("coderig: model choice %q uses a different provider/endpoint than the active session; switching transports mid-session is not supported (%s): %w",
+				id, liveSwitchAlternativesMessage(a.primerCandidates, currentModel, candidate.Alias), err)
 		}
 		return err
 	}
@@ -202,6 +205,40 @@ func currentPrimerCandidate(candidates []PrimerCandidate, current model.Model) (
 		}
 	}
 	return PrimerCandidate{}, false
+}
+
+// sameTransport reports whether a and b would resolve to the same inference
+// transport (Provider+APIFormat+BaseURL) — the identity harness's live ChangeModel
+// path requires to stay fixed for the loop's bound context counter, ignoring Name
+// (the one field a live switch may still vary). It is runtimeModelKeyFor's
+// comparison minus Name.
+func sameTransport(a, b model.Model) bool {
+	return a.Provider == b.Provider && a.APIFormat == b.APIFormat && a.BaseURL == b.BaseURL
+}
+
+// liveSwitchAlternativesMessage names the other configured primer candidates a
+// live SetModel could actually reach from current — the ones sharing current's
+// transport (Provider+APIFormat+BaseURL), excluding current's own candidate and
+// the rejected target. It never claims none exist without checking: an empty
+// result says so explicitly rather than omitting the topic.
+func liveSwitchAlternativesMessage(candidates []PrimerCandidate, current model.Model, rejectedAlias string) string {
+	currentAlias := ""
+	if c, ok := currentPrimerCandidate(candidates, current); ok {
+		currentAlias = c.Alias
+	}
+	var alternatives []string
+	for _, c := range candidates {
+		if c.Alias == currentAlias || c.Alias == rejectedAlias {
+			continue
+		}
+		if sameTransport(c.Model, current) {
+			alternatives = append(alternatives, c.Alias)
+		}
+	}
+	if len(alternatives) == 0 {
+		return "no other configured model shares this session's provider/endpoint"
+	}
+	return "live-switchable alternatives on this session's provider/endpoint: " + strings.Join(alternatives, ", ")
 }
 
 func modelID(value model.Model) string { return string(value.Provider) + "/" + value.Name }
