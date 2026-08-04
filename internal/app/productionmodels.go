@@ -24,19 +24,31 @@ type configuredClientCacheKey struct {
 	APIKey string
 }
 
+// PrimerCandidate is one models.json entry tagged primer-capable
+// (uses: ["primer", ...]). RuntimeAgent uses the roster of these to list
+// and switch the primer loop's model at runtime.
+type PrimerCandidate struct {
+	Alias         string
+	Description   string
+	Model         model.Model
+	Efforts       []model.Effort
+	DefaultEffort model.Effort
+}
+
 // productionModels is the one-way result of binding credentials to clients.
 // It deliberately cannot reproduce the normalized input or any credential.
 type productionModels struct {
-	PrimerClient  inference.Client
-	RuntimeClient inference.Client
-	PrimerModel   model.Model
-	PrimerAlias   string
-	PrimerEfforts []model.Effort
-	ACP           []ACPGatewaySource
-	NativeACP     map[string]ACPNativeProfile
-	Defaults      map[identity.AgentName]configuredDelegateDefault
-	ClaudeSmall   loop.ModelAlias
-	ConfigRev     string
+	PrimerClient     inference.Client
+	RuntimeClient    inference.Client
+	PrimerModel      model.Model
+	PrimerAlias      string
+	PrimerEfforts    []model.Effort
+	PrimerCandidates []PrimerCandidate
+	ACP              []ACPGatewaySource
+	NativeACP        map[string]ACPNativeProfile
+	Defaults         map[identity.AgentName]configuredDelegateDefault
+	ClaudeSmall      loop.ModelAlias
+	ConfigRev        string
 }
 
 func compileProductionModels(config normalizedModelConfig, factory configuredClientFactory) (productionModels, error) {
@@ -48,6 +60,7 @@ func compileProductionModels(config normalizedModelConfig, factory configuredCli
 	clients := make(map[string]inference.Client, len(config.Models))
 	boundClients := make(map[configuredClientCacheKey]inference.Client, len(config.Models))
 	delegateSources := make([]ACPGatewaySource, 0, len(config.Models))
+	primerCandidates := make([]PrimerCandidate, 0, len(config.Models))
 	models := make(map[string]model.Model, len(config.Models))
 	var primerEfforts []model.Effort
 	for _, target := range config.Models {
@@ -64,6 +77,15 @@ func compileProductionModels(config normalizedModelConfig, factory configuredCli
 		models[target.Alias] = target.Model.Clone()
 		if target.Alias == config.PrimerDefault {
 			primerEfforts = append([]model.Effort(nil), target.Efforts...)
+		}
+		if containsModelConfigUse(target.Uses, "primer") {
+			primerCandidates = append(primerCandidates, PrimerCandidate{
+				Alias:         target.Alias,
+				Description:   target.Description,
+				Model:         target.Model.Clone(),
+				Efforts:       append([]model.Effort(nil), target.Efforts...),
+				DefaultEffort: target.DefaultEffort,
+			})
 		}
 		if containsModelConfigUse(target.Uses, "delegate") {
 			delegateSources = append(delegateSources, ACPGatewaySource{
@@ -108,16 +130,17 @@ func compileProductionModels(config normalizedModelConfig, factory configuredCli
 	}
 
 	return productionModels{
-		PrimerClient:  clients[config.PrimerDefault],
-		RuntimeClient: runtimeClient,
-		PrimerModel:   models[config.PrimerDefault],
-		PrimerAlias:   config.PrimerDefault,
-		PrimerEfforts: primerEfforts,
-		ACP:           delegateSources,
-		NativeACP:     nativeACP,
-		Defaults:      defaults,
-		ClaudeSmall:   loop.ModelAlias(config.ClaudeCodeSmallModel),
-		ConfigRev:     configRev,
+		PrimerClient:     clients[config.PrimerDefault],
+		RuntimeClient:    runtimeClient,
+		PrimerModel:      models[config.PrimerDefault],
+		PrimerAlias:      config.PrimerDefault,
+		PrimerEfforts:    primerEfforts,
+		PrimerCandidates: primerCandidates,
+		ACP:              delegateSources,
+		NativeACP:        nativeACP,
+		Defaults:         defaults,
+		ClaudeSmall:      loop.ModelAlias(config.ClaudeCodeSmallModel),
+		ConfigRev:        configRev,
 	}, nil
 }
 

@@ -185,6 +185,40 @@ func TestProductionModelsCarriesNativeACPProfilesAndSources(t *testing.T) {
 	}
 }
 
+func TestProductionModelsCollectsAllPrimerCapableCandidates(t *testing.T) {
+	primaryModel := model.CustomModel("lmstudio", model.APIFormatOpenAI, "http://localhost:1234/v1", "primary", model.WithTools())
+	altModel := model.CustomModel("chutes", model.APIFormatOpenAI, "https://api.chutes.ai", "alt-primer", model.WithTools(), model.WithThinking())
+	delegateOnlyModel := model.CustomModel("openai", model.APIFormatOpenAIResponses, "", "delegate-only", model.WithTools())
+	config := normalizedModelConfig{
+		PrimerDefault: "fixture-primary",
+		DelegateDefaults: []normalizedDelegateDefault{
+			{Role: "planner", Harness: "codex", Model: "fixture-delegate-only", Effort: model.EffortNone},
+			{Role: "builder", Harness: "codex", Model: "fixture-delegate-only", Effort: model.EffortNone},
+			{Role: "reviewer", Harness: "codex", Model: "fixture-delegate-only", Effort: model.EffortNone},
+		},
+		Models: []normalizedModelTarget{
+			{Alias: "fixture-primary", Description: "Primary", Model: primaryModel, Uses: []string{"primer"}, Efforts: []model.Effort{model.EffortNone}, DefaultEffort: model.EffortNone},
+			{Alias: "fixture-alt-primer", Description: "Alternate primer", Model: altModel, Uses: []string{"primer", "delegate"}, Efforts: []model.Effort{model.EffortNone, model.EffortLow, model.EffortHigh}, DefaultEffort: model.EffortLow},
+			{Alias: "fixture-delegate-only", Description: "Delegate only", Model: delegateOnlyModel, Uses: []string{"delegate"}, Efforts: []model.Effort{model.EffortNone}, DefaultEffort: model.EffortNone},
+		},
+	}
+
+	got, err := compileProductionModels(config, func(model.Model, auth.APIKey) (inference.Client, error) {
+		return &fakeLLM{}, nil
+	})
+	if err != nil {
+		t.Fatalf("compileProductionModels() error = %v", err)
+	}
+
+	want := []PrimerCandidate{
+		{Alias: "fixture-primary", Description: "Primary", Model: primaryModel, Efforts: []model.Effort{model.EffortNone}, DefaultEffort: model.EffortNone},
+		{Alias: "fixture-alt-primer", Description: "Alternate primer", Model: altModel, Efforts: []model.Effort{model.EffortNone, model.EffortLow, model.EffortHigh}, DefaultEffort: model.EffortLow},
+	}
+	if !reflect.DeepEqual(got.PrimerCandidates, want) {
+		t.Fatalf("PrimerCandidates = %#v, want %#v", got.PrimerCandidates, want)
+	}
+}
+
 func aliasesToLoop(values []string) []loop.ModelAlias {
 	if values == nil {
 		return nil
