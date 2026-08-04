@@ -9,7 +9,7 @@ tool (
 )
 
 require (
-	github.com/looprig/classifiers v0.1.0
+	github.com/looprig/classifiers v0.1.1
 	github.com/looprig/core v0.5.0
 	github.com/looprig/fsstore v0.3.0
 	github.com/looprig/harness v0.19.0
@@ -17,8 +17,8 @@ require (
 	github.com/looprig/llm v0.4.0
 	github.com/looprig/sandbox v0.4.0
 	github.com/looprig/storage v0.3.0
-	github.com/looprig/tools v0.5.0
-	github.com/looprig/tui v0.12.0
+	github.com/looprig/tools v0.5.1
+	github.com/looprig/tui v0.12.1
 )
 
 require (
