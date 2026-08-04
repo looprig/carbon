@@ -263,12 +263,6 @@ func (c *task33InferenceClient) Stream(_ context.Context, req inference.Request)
 	return inferenceStream.NewStreamReader(func() (content.Chunk, error) { return nil, io.EOF }, nil), nil
 }
 
-func (c *task33InferenceClient) capturedRequests() []inference.Request {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return append([]inference.Request(nil), c.requests...)
-}
-
 func TestAgentRuntimeChoicesEndToEnd(t *testing.T) {
 	openAI := &task33InferenceClient{}
 	anthropic := &task33InferenceClient{}
@@ -393,21 +387,6 @@ func TestAgentRuntimeChoicesEndToEnd(t *testing.T) {
 }
 
 var task33SensitivePayloadPattern = regexp.MustCompile(`(?i)(https?://|(?:^|[\s"'])/[^\s"']*|[A-Za-z]:[\\/]|secret|token|api[_-]?key)`)
-
-func assertTask33ProviderRequests(t *testing.T, requests []inference.Request, effort model.Effort, provider string) {
-	t.Helper()
-	if len(requests) == 0 {
-		t.Fatalf("fake %s provider saw no requests", provider)
-	}
-	for _, request := range requests {
-		if request.Override == nil {
-			t.Fatalf("fake %s request has no ingress sampling override", provider)
-		}
-		if request.Override.Effort != effort {
-			t.Errorf("fake %s effective override effort = %q, want %q", provider, request.Override.Effort, effort)
-		}
-	}
-}
 
 func assertTask33DurableEvents(t *testing.T, events []event.Event, claude agentHandle) {
 	t.Helper()

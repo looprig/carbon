@@ -2,7 +2,6 @@ package app
 
 import (
 	"fmt"
-	"sort"
 
 	"github.com/looprig/harness/pkg/identity"
 	"github.com/looprig/harness/pkg/loop"
@@ -203,17 +202,4 @@ func (c ACPCompiledCatalog) ResolveNativeTarget(agent identity.AgentName, alias 
 		return nil, model.Model{}, err
 	}
 	return c.NativeTarget(resolved)
-}
-
-// runtimeCatalogEntries is a deterministic test and composition inspection
-// seam kept private so callers cannot mutate the immutable Harness catalogue.
-func (c ACPCompiledCatalog) runtimeCatalogEntries() []loop.RuntimeCatalogEntry {
-	result := cloneACPEntries(c.entries)
-	sort.Slice(result, func(i, j int) bool {
-		if result[i].AgentType != result[j].AgentType {
-			return result[i].AgentType < result[j].AgentType
-		}
-		return result[i].AgentHarness < result[j].AgentHarness
-	})
-	return result
 }
