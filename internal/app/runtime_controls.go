@@ -157,13 +157,37 @@ func (a *RuntimeAgent) SetModel(ctx context.Context, loopID uuid.UUID, id tui.Mo
 	if err := controller.Change(ctx, changes...); err != nil {
 		var transportErr *loop.ContextTransportBindingError
 		if errors.As(err, &transportErr) {
-			return fmt.Errorf("coderig: model choice %q uses a different provider/endpoint than the active session; switching transports mid-session is not supported (%s): %w",
-				id, liveSwitchAlternativesMessage(a.primerCandidates, currentModel, candidate.Alias), err)
+			return &primerTransportSwitchError{
+				id:           id,
+				alternatives: liveSwitchAlternativesMessage(a.primerCandidates, currentModel, candidate.Alias),
+				cause:        err,
+			}
 		}
 		return err
 	}
 	return nil
 }
+
+// primerTransportSwitchError reports a live SetModel rejected because the target
+// candidate sits on a different transport than the active session (see
+// liveSwitchAlternativesMessage). Error() is plain-English only — it reaches the
+// TUI terminal verbatim (tui's handleRuntimeMutation wraps and displays it with no
+// stripping/classification layer) and harness's underlying wording ("loop: change
+// refused ...: loop: context model changes fixed transport field ...") is
+// redundant jargon once the friendly explanation and alternatives are stated. The
+// cause remains reachable via Unwrap for errors.As/errors.Is, mirroring
+// runtimeGitError's split (runtime_context.go).
+type primerTransportSwitchError struct {
+	id           tui.ModelID
+	alternatives string
+	cause        error
+}
+
+func (e *primerTransportSwitchError) Error() string {
+	return fmt.Sprintf("coderig: model choice %q uses a different provider/endpoint than the active session; switching transports mid-session is not supported (%s)", e.id, e.alternatives)
+}
+
+func (e *primerTransportSwitchError) Unwrap() error { return e.cause }
 
 func (a *RuntimeAgent) SetEffort(ctx context.Context, loopID uuid.UUID, id tui.EffortID) error {
 	controller, ok := a.sess.LoopController(loopID)

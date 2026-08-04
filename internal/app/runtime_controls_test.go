@@ -214,8 +214,12 @@ func TestSetModelResetsEffortWhenNewCandidateDoesNotAdmitCurrent(t *testing.T) {
 // live SetModel switch. Two primer candidates naming genuinely different providers
 // (as multiPrimerCandidates deliberately avoids, see its doc comment) can be listed
 // side by side but can never be switched between at runtime; SetModel translates the
-// resulting *loop.ContextTransportBindingError into a clearer coderig-level message
-// rather than surfacing harness's internal field name.
+// resulting *loop.ContextTransportBindingError into a *primerTransportSwitchError
+// whose Error() is plain-English only — no wrapped harness jargon reaches the
+// user (this error string is displayed verbatim by the TUI, which has no
+// stripping/classification layer of its own) — while the cause stays reachable
+// via Unwrap for any future errors.As/errors.Is caller, mirroring
+// runtimeGitError's split (runtime_context.go).
 func TestSetModelCrossProviderCandidateFails(t *testing.T) {
 	a := testModel()
 	b := model.CustomModel("chutes", model.APIFormatOpenAI, "https://api.chutes.ai", "candidate-b", model.WithTools(), model.WithThinking())
@@ -232,6 +236,14 @@ func TestSetModelCrossProviderCandidateFails(t *testing.T) {
 	var transportErr *loop.ContextTransportBindingError
 	if !errors.As(err, &transportErr) {
 		t.Fatalf("SetModel(candidate-b) error = %v, want it to wrap *loop.ContextTransportBindingError", err)
+	}
+	// The displayed string must stay friendly: no raw harness jargon, but still
+	// the plain-English explanation of what happened.
+	if strings.Contains(err.Error(), "loop: change refused") || strings.Contains(err.Error(), "loop: context model changes fixed transport field") {
+		t.Fatalf("error = %q, must not surface raw harness wording to the user", err.Error())
+	}
+	if !strings.Contains(err.Error(), "different provider/endpoint") {
+		t.Fatalf("error = %q, want the friendly explanation", err.Error())
 	}
 }
 
