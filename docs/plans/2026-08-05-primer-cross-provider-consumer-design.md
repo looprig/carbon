@@ -187,21 +187,75 @@ separate harness's own login state (see `coderig/CLAUDE.md`, "Model
 catalogue and credentials"), never bind to a CodeRig-owned
 `loop.Definition`, and so never participate in this check.
 
-Fix: generalize `primerContextTransports`'s dedup core into
+Fix, revised after an independent second-opinion review found two further
+defects in the first draft of this fix:
+
+**Revision 1 — provider capability was too narrow, and the user overruled
+the narrower option.** `inferenceCapabilityForModel` only classifies
+chutes/phala/lmstudio; everything else is a hard `UnsupportedInferenceProviderError`.
+Applied naively to delegate models, this makes the *fix* fail the motivating
+test even harder (an `"openai"` delegate would now fail at `Open()`, not
+just at restore), and real `models.json` configs already allow ~50
+providers for `uses:["delegate"]` rows (any provider `llm.Provider`
+recognizes — `modelconfig_normalize.go` validates every configured model
+against `llm.Provider(...).RequiredAuth()` at load time). Asked directly,
+the user's decision: **people should be able to switch to any provider and
+model mentioned in models.json** — not just the three reviewed ones. Fix:
+`inferenceCapabilityForModel`'s default branch no longer hard-rejects.
+Instead it calls the same `llm.Provider(...).RequiredAuth()` models.json
+normalization already uses as its validity gate — a provider that passes it
+gets a conservative, unreviewed-tier capability
+(`contextcount.InferenceTransportTLS` + `contextcount.RetentionUnknown`).
+**Correction found during implementation:** `contextcount.InferenceCapability.Validate()`
+requires a non-zero `SecurityIdentity` for any transport at or above `TLS` —
+a zero `SecurityIdentity` only validates for `InferenceTransportLocal`. The
+generic tier therefore derives one exactly like chutes/phala already do, via
+the existing `transportSecurityIdentity(model, policyRevision)` helper, with
+a new `genericInferenceIdentityRevision` revision constant distinguishing it
+from the two *reviewed* provider-specific revisions — `SecurityIdentity`'s
+role is a stable comparison fingerprint of transport identity + revision,
+not literally "proof of review"; the "no TEE-attestation review exists for
+it" distinction remains fully carried by `Transport`/`Retention` (TLS +
+RetentionUnknown vs chutes/phala's EndToEndEncrypted), not by
+`SecurityIdentity` zero-ness. A provider `RequiredAuth` itself doesn't
+recognize (a typo, a bogus test value) still hard-fails with
+`UnsupportedInferenceProviderError` — this keeps CLAUDE.md's fail-closed
+posture for genuinely unknown input while extending trust to exactly what
+models.json's own normalization already trusts, no further. This change
+benefits every caller of `inferenceCapabilityForModel`, not just delegates —
+the primer roster gets the same broadened support.
+
+**Revision 2 — base-transport membership.** Harness's `validateContextDefinition`
+(`pkg/loop/definition.go`) requires a non-empty declared `ContextTransport`
+set to contain a member matching the loop's own base `WithInference` model,
+with `Capability` **exactly equal** to `WithInferenceCapability`, or
+`Define()` itself rejects (`DefinitionInvalidContextTransport`) — this is
+not a restore-only check. The first draft's `declaredContextTransports(primerCandidates, delegateModels)`
+had no guaranteed base-model membership (the failing test's shape — empty
+`PrimerCandidates`, non-empty delegates — hits exactly this gap). Fix:
+`declaredContextTransports` takes the base `model.Model` as an explicit
+first parameter and always seeds it first in the model list passed to the
+shared dedup core, replacing the fragile "callers already guarantee this"
+comment from the first draft. Capability equality with `WithInferenceCapability`
+holds automatically: both are derived by calling the same
+`inferenceCapabilityForModel` on the same model value.
+
+**Consequently, `primerContextTransports` (Task 1) is retired**, not kept
+alongside the new function — once every real call site needs the
+base-model-seeded, delegate-merged set, a separate primer-only entry point
+with no base-membership guarantee has no legitimate caller left and would
+just be dead, confusing surface area. Its dedup core survives as
 `contextTransportsForModels(models []model.Model) ([]loop.ContextTransport, error)`,
-keep `primerContextTransports` as a thin wrapper over it (no signature
-change, no re-review of already-approved Task 1 needed), and add a sibling
-`declaredContextTransports(primerCandidates []PrimerCandidate, delegateModels []model.Model) ([]loop.ContextTransport, error)`
-that merges both sources through the same dedup. `Config` gains
-`DelegateModels []model.Model`, populated at both `Config`-assembly call
-sites (`newWithProductionModelsLoader` in `swarm.go`,
-`SessionStoreFactory.Open` in `persistence.go`) by mapping
-`configured.ACP` (`[]ACPGatewaySource`) to their `.Model` fields — the same
-two-call-site shape `PrimerCandidates` already uses.
-`newConversationContextPolicy` takes the extra `delegateModels []model.Model`
-parameter and calls `declaredContextTransports` instead of
-`primerContextTransports` directly. Both `swarmDefinitions` call sites pass
-`cfg.DelegateModels` through alongside `cfg.PrimerCandidates`.
+now the single shared primitive under `declaredContextTransports`.
+
+`Config` gains `DelegateModels []model.Model`, populated at both
+`Config`-assembly call sites (`newWithProductionModelsLoader` in `swarm.go`,
+`SessionStoreFactory.Open` in `persistence.go`) by mapping `configured.ACP`
+(`[]ACPGatewaySource`) to their `.Model` fields — the same two-call-site
+shape `PrimerCandidates` already uses. `newConversationContextPolicy` calls
+`declaredContextTransports(model, primerCandidates, delegateModels)`. Both
+`swarmDefinitions` call sites pass `cfg.DelegateModels` through alongside
+`cfg.PrimerCandidates`.
 
 ## Out of scope
 
@@ -213,3 +267,6 @@ parameter and calls `declaredContextTransports` instead of
   subject to this check).
 - `Config.PermissionReviewModel` — not demonstrated to hit this restore path;
   not preemptively touched (YAGNI). Revisit only if a real failure surfaces.
+  Independently re-confirmed during the second-opinion review: it's bound
+  via `commandsafety.New`/harness `pkg/hustle`, which has its own
+  `hustle.Definition` and no loop-restore path — genuinely unaffected.

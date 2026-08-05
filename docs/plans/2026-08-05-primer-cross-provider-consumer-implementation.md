@@ -485,19 +485,14 @@ git commit -m "feat: declare primer roster's transports on every native loop def
 
 ---
 
-## Task 2.5: Also declare gateway-backed delegate models' transports (restore regression fix)
+## Task 2.4: Generalize `inferenceCapabilityForModel` to any models.json-configured provider
 
-**Discovered while running Task 2's verification**, not part of the original design: `TestPersistedOpenRoutesNativeAgentThroughRuntimeClientAcrossRestore` fails on restore with harness's `RestoreTransportMismatchError`. This is a real regression from adopting harness's new `main` (not caused by Tasks 0-2's own changes — confirmed present before Task 2's wiring too), but this plan's scope now covers closing it. See the design doc's "Addendum (2026-08-06)" section (`docs/plans/2026-08-05-primer-cross-provider-consumer-design.md`) for the full diagnosis.
+**Revised after a second-opinion review** found the first draft of Task 2.5 (below) would make the motivating regression test fail even harder: applying the existing `inferenceCapabilityForModel` (chutes/phala/lmstudio only, hard `UnsupportedInferenceProviderError` otherwise) to delegate models means an `"openai"` delegate — a real, already-supported `models.json` configuration — would now fail at `Open()` itself. Asked directly, the product decision is: **any provider and model listed in `models.json` should be usable**, not just the three specially-reviewed ones. See the design doc's addendum "Revision 1" for the full reasoning.
 
-CodeRig's native (in-process, `RuntimeClient`-routed) delegate loops — spawned via `StartAgent` against a `configuredDelegateDefault`/`ACPGatewaySource` entry (models.json's gateway-backed delegate catalog, distinct from `uses:["primer"]`) — are ordinary harness `loop.Definition` instances, subject to the same declared-transport restore check as the three primer roles. Their models were never part of `PrimerCandidates`, so their transports were never declared. `NativeACP` delegates are unaffected (separate harness's own login state, never bind to a CodeRig-owned `loop.Definition` — see `coderig/CLAUDE.md`) and stay out of scope.
+`internal/app/modelconfig_normalize.go` already validates every configured model's provider via `llm.Provider(target.Provider).RequiredAuth()` at load time — a provider that function doesn't recognize can never reach production code as a `model.Model`. Reusing that exact function as the validity gate here means: any provider real enough to pass models.json normalization gets a conservative, generically-correct capability; a provider that function itself doesn't recognize (typo, bogus test value) still hard-fails, preserving CLAUDE.md's fail-closed posture for genuinely unknown input.
 
 **Files:**
-- Modify: `internal/app/inference_policy.go` (generalize the dedup core; add `declaredContextTransports`)
-- Modify: `internal/app/compaction.go` (`newConversationContextPolicy` gains a `delegateModels` parameter)
-- Modify: `internal/app/config.go` (new `Config.DelegateModels []model.Model` field)
-- Modify: `internal/app/swarm.go` (both call sites; `newWithProductionModelsLoader` populates `cfg.DelegateModels`)
-- Modify: `internal/app/persistence.go` (`SessionStoreFactory.Open` populates `cfg.DelegateModels`)
-- Modify: `internal/app/fingerprint_test.go`, `internal/app/persistence_test.go` (existing `newConversationContextPolicy` call sites gain a third `nil` arg)
+- Modify: `internal/app/inference_policy.go`
 - Test: `internal/app/inference_policy_test.go`
 
 **Step 1: Write the failing test**
@@ -505,17 +500,194 @@ CodeRig's native (in-process, `RuntimeClient`-routed) delegate loops — spawned
 Append to `internal/app/inference_policy_test.go`:
 
 ```go
-func TestDeclaredContextTransportsMergesPrimerAndDelegateModels(t *testing.T) {
+func TestInferenceCapabilityForModelSupportsAnyKnownProvider(t *testing.T) {
+	t.Parallel()
+
+	t.Run("a provider outside the reviewed three gets a conservative default", func(t *testing.T) {
+		t.Parallel()
+		m := model.CustomModel(model.ProviderName(llm.ProviderOpenAI), model.APIFormatOpenAIResponses, "", "gpt-test", model.WithTools())
+
+		capability, err := inferenceCapabilityForModel(m)
+		if err != nil {
+			t.Fatalf("inferenceCapabilityForModel() error = %v", err)
+		}
+		if err := capability.Validate(); err != nil {
+			t.Fatalf("capability.Validate() error = %v", err)
+		}
+		if capability.Transport != contextcount.InferenceTransportTLS {
+			t.Errorf("Transport = %v, want InferenceTransportTLS", capability.Transport)
+		}
+		if capability.Retention != contextcount.RetentionUnknown {
+			t.Errorf("Retention = %v, want RetentionUnknown", capability.Retention)
+		}
+		if capability.SecurityIdentity == (contextcount.SecurityIdentity{}) {
+			t.Errorf("SecurityIdentity is zero, want a derived non-zero identity (contextcount.InferenceCapability.Validate() requires non-zero SecurityIdentity for any transport at or above TLS)")
+		}
+	})
+
+	t.Run("a provider llm itself doesn't recognize still fails closed", func(t *testing.T) {
+		t.Parallel()
+		m := model.CustomModel(model.ProviderName("not-a-real-provider"), model.APIFormatOpenAI, "https://bad.example.test", "bad-model", model.WithTools())
+
+		_, err := inferenceCapabilityForModel(m)
+		var target *UnsupportedInferenceProviderError
+		if !errors.As(err, &target) {
+			t.Fatalf("inferenceCapabilityForModel() error = %T %v, want *UnsupportedInferenceProviderError", err, err)
+		}
+	})
+}
+```
+
+**Step 2: Run test to verify it fails**
+
+```bash
+go test ./internal/app/... -run TestInferenceCapabilityForModelSupportsAnyKnownProvider -v
+```
+
+Expected: FAIL — the first subtest gets `*UnsupportedInferenceProviderError` instead of a valid capability (current default branch rejects `openai` unconditionally).
+
+**Step 3: Implement**
+
+In `internal/app/inference_policy.go`, add a new revision constant next to the existing two:
+
+```go
+const (
+	chutesInferenceIdentityRevision  = "chutes-e2ee-tee-v1"
+	phalaInferenceIdentityRevision   = "phala-aci-e2ee-v1"
+	genericInferenceIdentityRevision = "generic-tls-v1"
+)
+```
+
+Then change `inferenceCapabilityForModel`'s default branch:
+
+```go
+func inferenceCapabilityForModel(model model.Model) (contextcount.InferenceCapability, error) {
+	provider := llm.Provider(model.Provider)
+	switch provider {
+	case llm.ProviderChutes:
+		return protectedInferenceCapability(model, chutesInferenceIdentityRevision), nil
+	case llm.ProviderPhala:
+		return protectedInferenceCapability(model, phalaInferenceIdentityRevision), nil
+	case llm.ProviderLMStudio:
+		return contextcount.InferenceCapability{
+			Provider:  contextcount.ProviderID(model.Provider),
+			Transport: contextcount.InferenceTransportLocal,
+			Retention: contextcount.RetentionNone,
+		}, nil
+	default:
+		// Any provider modelconfig_normalize.go's llm.Provider(...).RequiredAuth()
+		// gate would also accept gets the same conservative, unreviewed-tier
+		// capability: plain TLS to a remote endpoint, retention unknown. A
+		// provider RequiredAuth itself doesn't recognize still fails closed —
+		// this keeps the fail-closed posture for genuinely unknown input
+		// while extending trust to exactly what models.json's own
+		// normalization already trusts, no further. SecurityIdentity is
+		// still derived (contextcount.InferenceCapability.Validate() requires
+		// non-zero SecurityIdentity for any transport at or above TLS) using
+		// the same transportSecurityIdentity helper chutes/phala use, with a
+		// revision string marking this tier as generic/unreviewed rather than
+		// naming a specific reviewed provider policy — SecurityIdentity's
+		// role is a stable comparison fingerprint of transport identity plus
+		// revision, not a claim of review; the "no TEE-attestation review"
+		// distinction is fully carried by Transport/Retention, not by this
+		// field's zero-ness.
+		if _, err := provider.RequiredAuth(); err != nil {
+			return contextcount.InferenceCapability{}, &UnsupportedInferenceProviderError{Provider: model.Provider}
+		}
+		return contextcount.InferenceCapability{
+			Provider:         contextcount.ProviderID(model.Provider),
+			Transport:        contextcount.InferenceTransportTLS,
+			SecurityIdentity: transportSecurityIdentity(model, genericInferenceIdentityRevision),
+			Retention:        contextcount.RetentionUnknown,
+		}, nil
+	}
+}
+```
+
+**Step 4: Run tests to verify they pass**
+
+```bash
+go build ./... && go test ./internal/app/... -run 'TestInferenceCapabilityForModelSupportsAnyKnownProvider|TestNewModelInferencePolicy|TestPrimerContextTransports' -v
+```
+
+Expected: PASS on all — including the pre-existing `TestNewModelInferencePolicy`'s "unknown provider fails closed" case (it uses `model.ProviderName("unknown")`, which `llm.Provider.RequiredAuth()` doesn't recognize either, so it still correctly fails closed) and `TestPrimerContextTransports` (unaffected — it never exercised the default branch with a real-but-unreviewed provider).
+
+**Step 5: Commit**
+
+```bash
+git add internal/app/inference_policy.go internal/app/inference_policy_test.go
+git commit -m "feat: support any models.json-configured provider's inference capability"
+```
+
+---
+
+## Task 2.5: Also declare gateway-backed delegate models' transports (restore regression fix)
+
+**Discovered while running Task 2's verification**, not part of the original design: `TestPersistedOpenRoutesNativeAgentThroughRuntimeClientAcrossRestore` fails on restore with harness's `RestoreTransportMismatchError`. This is a real regression from adopting harness's new `main` (not caused by Tasks 0-2's own changes — confirmed present before Task 2's wiring too), but this plan's scope now covers closing it. See the design doc's "Addendum (2026-08-06)" section (`docs/plans/2026-08-05-primer-cross-provider-consumer-design.md`) for the full diagnosis, including "Revision 2" — a second, independent bug a second-opinion review found in the first draft of this task, described below.
+
+CodeRig's native (in-process, `RuntimeClient`-routed) delegate loops — spawned via `StartAgent` against a `configuredDelegateDefault`/`ACPGatewaySource` entry (models.json's gateway-backed delegate catalog, distinct from `uses:["primer"]`) — are ordinary harness `loop.Definition` instances, subject to the same declared-transport restore check as the three primer roles. Their models were never part of `PrimerCandidates`, so their transports were never declared. `NativeACP` delegates are unaffected (separate harness's own login state, never bind to a CodeRig-owned `loop.Definition` — see `coderig/CLAUDE.md`) and stay out of scope.
+
+**Base-transport membership.** Harness's `validateContextDefinition` (`pkg/loop/definition.go`) requires a non-empty declared `ContextTransport` set to contain a member matching the loop's own base `WithInference` model, with `Capability` exactly equal to `WithInferenceCapability`, or `Define()` itself rejects with `DefinitionInvalidContextTransport` — this is a *build-time* check, not restore-only. The failing test's shape (empty `PrimerCandidates`, one delegate) has no guaranteed base-model membership if the merged set is built from candidates+delegates alone. Fix: the merge function takes the base model as an explicit first parameter and always seeds it first.
+
+**`primerContextTransports` (Task 1) is retired, not kept alongside the new function.** Once every real call site needs the base-model-seeded, delegate-merged set, a primer-only entry point with no base-membership guarantee has no legitimate caller left. Its dedup core survives as `contextTransportsForModels`; the function itself and its dedicated test (`TestPrimerContextTransports`) are deleted in this task. This is a normal mid-plan revision, not a redo of Task 1's review — Task 1's function was correct for the scope it was reviewed against; new information changed what shape the real call site needs.
+
+**Files:**
+- Modify: `internal/app/inference_policy.go` (retire `primerContextTransports`; add `declaredContextTransports`)
+- Modify: `internal/app/compaction.go` (`newConversationContextPolicy` gains a `delegateModels` parameter)
+- Modify: `internal/app/config.go` (new `Config.DelegateModels []model.Model` field)
+- Modify: `internal/app/swarm.go` (both call sites; `newWithProductionModelsLoader` populates `cfg.DelegateModels`)
+- Modify: `internal/app/persistence.go` (`SessionStoreFactory.Open` populates `cfg.DelegateModels`)
+- Modify: `internal/app/fingerprint_test.go`, `internal/app/persistence_test.go` (existing `newConversationContextPolicy` call sites gain a third `nil` arg)
+- Test: `internal/app/inference_policy_test.go` (remove `TestPrimerContextTransports`, add the new test below)
+
+**Step 1: Write the failing test**
+
+In `internal/app/inference_policy_test.go`, **delete `TestPrimerContextTransports` entirely** (it tests a function this task retires) and append:
+
+```go
+func TestDeclaredContextTransportsMergesBasePrimerAndDelegateModels(t *testing.T) {
 	t.Parallel()
 
 	primer := testModel() // lmstudio
 	primerCandidates := []PrimerCandidate{{Alias: "primer", Model: primer}}
 
+	t.Run("base model is always included even with no candidates or delegates", func(t *testing.T) {
+		t.Parallel()
+		transports, err := declaredContextTransports(primer, nil, nil)
+		if err != nil {
+			t.Fatalf("declaredContextTransports() error = %v", err)
+		}
+		if len(transports) != 1 || transports[0].Provider != primer.Provider || transports[0].APIFormat != primer.APIFormat || transports[0].BaseURL != primer.BaseURL {
+			t.Fatalf("transports = %#v, want exactly the base model's transport", transports)
+		}
+	})
+
+	t.Run("base model is included even when absent from PrimerCandidates", func(t *testing.T) {
+		t.Parallel()
+		// PrimerCandidates deliberately does NOT include primer here — this is
+		// the exact shape that broke the first draft of this fix (empty
+		// PrimerCandidates, base model only implied by the definition's own
+		// WithInference call).
+		transports, err := declaredContextTransports(primer, nil, nil)
+		if err != nil {
+			t.Fatalf("declaredContextTransports() error = %v", err)
+		}
+		found := false
+		for _, tr := range transports {
+			if tr.Provider == primer.Provider && tr.APIFormat == primer.APIFormat && tr.BaseURL == primer.BaseURL {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("transports = %#v, want base model's own transport included", transports)
+		}
+	})
+
 	t.Run("delegate on a foreign transport is included", func(t *testing.T) {
 		t.Parallel()
-		delegate := model.CustomModel("openai", model.APIFormatOpenAIResponses, "", "delegate-model", model.WithTools(), model.WithThinking())
+		delegate := model.CustomModel(model.ProviderName(llm.ProviderOpenAI), model.APIFormatOpenAIResponses, "", "delegate-model", model.WithTools(), model.WithThinking())
 
-		transports, err := declaredContextTransports(primerCandidates, []model.Model{delegate})
+		transports, err := declaredContextTransports(primer, primerCandidates, []model.Model{delegate})
 		if err != nil {
 			t.Fatalf("declaredContextTransports() error = %v", err)
 		}
@@ -537,7 +709,7 @@ func TestDeclaredContextTransportsMergesPrimerAndDelegateModels(t *testing.T) {
 		t.Parallel()
 		delegate := model.CustomModel(primer.Provider, primer.APIFormat, primer.BaseURL, "delegate-same-transport", model.WithTools())
 
-		transports, err := declaredContextTransports(primerCandidates, []model.Model{delegate})
+		transports, err := declaredContextTransports(primer, primerCandidates, []model.Model{delegate})
 		if err != nil {
 			t.Fatalf("declaredContextTransports() error = %v", err)
 		}
@@ -546,26 +718,11 @@ func TestDeclaredContextTransportsMergesPrimerAndDelegateModels(t *testing.T) {
 		}
 	})
 
-	t.Run("no delegate models behaves like primerContextTransports alone", func(t *testing.T) {
-		t.Parallel()
-		got, err := declaredContextTransports(primerCandidates, nil)
-		if err != nil {
-			t.Fatalf("declaredContextTransports() error = %v", err)
-		}
-		want, err := primerContextTransports(primerCandidates)
-		if err != nil {
-			t.Fatalf("primerContextTransports() error = %v", err)
-		}
-		if len(got) != len(want) || len(got) != 1 || got[0] != want[0] {
-			t.Fatalf("declaredContextTransports(nil) = %#v, want %#v", got, want)
-		}
-	})
-
 	t.Run("propagates unsupported delegate provider", func(t *testing.T) {
 		t.Parallel()
-		bad := model.CustomModel("unknown", model.APIFormatOpenAI, "https://bad.example.test", "bad-delegate", model.WithTools())
+		bad := model.CustomModel("not-a-real-provider", model.APIFormatOpenAI, "https://bad.example.test", "bad-delegate", model.WithTools())
 
-		_, err := declaredContextTransports(primerCandidates, []model.Model{bad})
+		_, err := declaredContextTransports(primer, primerCandidates, []model.Model{bad})
 		var target *UnsupportedInferenceProviderError
 		if !errors.As(err, &target) {
 			t.Fatalf("declaredContextTransports() error = %T %v, want *UnsupportedInferenceProviderError", err, err)
@@ -577,21 +734,20 @@ func TestDeclaredContextTransportsMergesPrimerAndDelegateModels(t *testing.T) {
 **Step 2: Run test to verify it fails**
 
 ```bash
-go test ./internal/app/... -run TestDeclaredContextTransportsMergesPrimerAndDelegateModels -v
+go test ./internal/app/... -run TestDeclaredContextTransportsMergesBasePrimerAndDelegateModels -v
 ```
 
-Expected: FAIL with `undefined: declaredContextTransports`.
+Expected: FAIL with `undefined: declaredContextTransports`. (`TestPrimerContextTransports` is gone, so no separate failure there — its deletion is part of this same commit's diff, not a separate step.)
 
 **Step 3: Implement**
 
-In `internal/app/inference_policy.go`, hoist the dedup core out of `primerContextTransports` into a shared function, and add `declaredContextTransports`:
+In `internal/app/inference_policy.go`, remove `primerContextTransports` entirely and add:
 
 ```go
 // contextTransportsForModels derives the deduplicated loop-declarable
 // transport set (by Provider, APIFormat, BaseURL) across models, in order,
-// keeping the first occurrence of each distinct transport. Shared by both
-// primerContextTransports (primer roster only) and declaredContextTransports
-// (primer roster + gateway-backed delegate models).
+// keeping the first occurrence of each distinct transport. The sole
+// primitive behind declaredContextTransports.
 func contextTransportsForModels(models []model.Model) ([]loop.ContextTransport, error) {
 	type transportKey struct {
 		Provider  model.ProviderName
@@ -620,29 +776,26 @@ func contextTransportsForModels(models []model.Model) ([]loop.ContextTransport, 
 	return transports, nil
 }
 
-// primerContextTransports derives the loop-declarable transport set from the
-// configured primer roster alone. See contextTransportsForModels for the
-// dedup/capability rules.
-func primerContextTransports(candidates []PrimerCandidate) ([]loop.ContextTransport, error) {
-	models := make([]model.Model, len(candidates))
-	for i, c := range candidates {
-		models[i] = c.Model
-	}
-	return contextTransportsForModels(models)
-}
-
 // declaredContextTransports derives the full loop-declarable transport set:
-// every configured primer candidate's transport plus every configured
-// gateway-backed delegate model's transport (native, in-process,
-// RuntimeClient-routed StartAgent delegates — NOT NativeACP, which runs via
-// a separate harness's own login state and never binds to a CodeRig-owned
-// loop.Definition). Native delegate loops are ordinary harness Loop
-// instances subject to the same declared-transport restore check as the
-// primer roles, so omitting their transport here would make restoring a
-// session with an active/prior delegate on a foreign transport fail
-// harness's RestoreTransportMismatchError.
-func declaredContextTransports(primerCandidates []PrimerCandidate, delegateModels []model.Model) ([]loop.ContextTransport, error) {
-	models := make([]model.Model, 0, len(primerCandidates)+len(delegateModels))
+// the loop's own base model, every configured primer candidate's transport,
+// and every configured gateway-backed delegate model's transport (native,
+// in-process, RuntimeClient-routed StartAgent delegates — NOT NativeACP,
+// which runs via a separate harness's own login state and never binds to a
+// CodeRig-owned loop.Definition). base is always seeded first so harness's
+// build-time base-transport-membership requirement
+// (pkg/loop/definition.go's validateContextDefinition: a non-empty declared
+// set must contain a member matching the loop's own WithInference model,
+// with Capability exactly equal to WithInferenceCapability) holds
+// regardless of whether base happens to also appear in primerCandidates —
+// equality is automatic since both are derived by calling
+// inferenceCapabilityForModel on the same model value. Native delegate
+// loops are ordinary harness Loop instances subject to the same
+// declared-transport restore check as the primer roles, so omitting their
+// transport here would make restoring a session with an active/prior
+// delegate on a foreign transport fail harness's RestoreTransportMismatchError.
+func declaredContextTransports(base model.Model, primerCandidates []PrimerCandidate, delegateModels []model.Model) ([]loop.ContextTransport, error) {
+	models := make([]model.Model, 0, 1+len(primerCandidates)+len(delegateModels))
+	models = append(models, base)
 	for _, c := range primerCandidates {
 		models = append(models, c.Model)
 	}
@@ -654,10 +807,10 @@ func declaredContextTransports(primerCandidates []PrimerCandidate, delegateModel
 **Step 4: Run test to verify it passes**
 
 ```bash
-go build ./... && go test ./internal/app/... -run 'TestDeclaredContextTransportsMergesPrimerAndDelegateModels|TestPrimerContextTransports' -v
+go build ./... && go test ./internal/app/... -run TestDeclaredContextTransportsMergesBasePrimerAndDelegateModels -v
 ```
 
-Expected: PASS (all subtests in both tests — confirms the refactor didn't change `primerContextTransports`'s existing behavior).
+Expected: PASS (all 5 subtests).
 
 **Step 5: Wire `Config.DelegateModels` and thread it through**
 
@@ -682,7 +835,7 @@ func newConversationContextPolicy(model model.Model, primerCandidates []PrimerCa
 	if err != nil {
 		return conversationContextPolicy{}, err
 	}
-	transports, err := declaredContextTransports(primerCandidates, delegateModels)
+	transports, err := declaredContextTransports(model, primerCandidates, delegateModels)
 	if err != nil {
 		return conversationContextPolicy{}, err
 	}
@@ -760,7 +913,7 @@ Expected: `TestPersistedOpenRoutesNativeAgentThroughRuntimeClientAcrossRestore` 
 **Step 7: Commit**
 
 ```bash
-git add internal/app/inference_policy.go internal/app/compaction.go internal/app/config.go internal/app/swarm.go internal/app/persistence.go internal/app/fingerprint_test.go internal/app/persistence_test.go
+git add internal/app/inference_policy.go internal/app/inference_policy_test.go internal/app/compaction.go internal/app/config.go internal/app/swarm.go internal/app/persistence.go internal/app/fingerprint_test.go internal/app/persistence_test.go
 git commit -m "fix: declare gateway-backed delegate models' transports alongside the primer roster"
 ```
 
