@@ -198,6 +198,27 @@ func TestSetModelResetsEffortWhenNewCandidateDoesNotAdmitCurrent(t *testing.T) {
 	}
 }
 
+func TestSetEffortAdmitsCurrentCandidateOnly(t *testing.T) {
+	agent, _ := openAcceptanceAgentWithPrimerCandidates(t)
+	ctx := context.Background()
+	loopID := agent.ActiveLoopID()
+
+	// Still on candidate-a (efforts: [none]) — "high" belongs to candidate-b,
+	// not the currently selected candidate, and must be refused.
+	if err := agent.SetEffort(ctx, loopID, tui.EffortID(model.EffortHigh)); err == nil {
+		t.Fatal("SetEffort(high) succeeded on candidate-a, want error")
+	}
+
+	if err := agent.SetModel(ctx, loopID, tui.ModelID("candidate-b")); err != nil {
+		t.Fatalf("SetModel(candidate-b) error = %v", err)
+	}
+	// Now on candidate-b (efforts: [none, low, medium, high]) — "high" must
+	// be admitted.
+	if err := agent.SetEffort(ctx, loopID, tui.EffortID(model.EffortHigh)); err != nil {
+		t.Fatalf("SetEffort(high) error = %v, want success on candidate-b", err)
+	}
+}
+
 // TestSetModelSwitchesAcrossProviders proves the limitation documented at
 // this test's previous incarnation (TestSetModelCrossProviderCandidateFails)
 // no longer holds: harness's loop.WithContextTransports (see

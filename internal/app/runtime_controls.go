@@ -167,7 +167,11 @@ func (a *RuntimeAgent) SetEffort(ctx context.Context, loopID uuid.UUID, id tui.E
 	if !effort.Valid() {
 		return fmt.Errorf("coderig: effort choice %q is unknown", id)
 	}
-	if len(a.primerEfforts) != 0 && !containsPrimerEffort(a.primerEfforts, effort) {
+	admitted := a.primerEfforts
+	if current, ok := currentPrimerCandidate(a.primerCandidates, controller.Model()); ok {
+		admitted = current.Efforts
+	}
+	if len(admitted) != 0 && !containsPrimerEffort(admitted, effort) {
 		return fmt.Errorf("coderig: effort choice %q is not admitted by the configured primer", id)
 	}
 	return controller.Change(ctx, loop.ChangeEffort(effort))
