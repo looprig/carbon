@@ -485,6 +485,287 @@ git commit -m "feat: declare primer roster's transports on every native loop def
 
 ---
 
+## Task 2.5: Also declare gateway-backed delegate models' transports (restore regression fix)
+
+**Discovered while running Task 2's verification**, not part of the original design: `TestPersistedOpenRoutesNativeAgentThroughRuntimeClientAcrossRestore` fails on restore with harness's `RestoreTransportMismatchError`. This is a real regression from adopting harness's new `main` (not caused by Tasks 0-2's own changes — confirmed present before Task 2's wiring too), but this plan's scope now covers closing it. See the design doc's "Addendum (2026-08-06)" section (`docs/plans/2026-08-05-primer-cross-provider-consumer-design.md`) for the full diagnosis.
+
+CodeRig's native (in-process, `RuntimeClient`-routed) delegate loops — spawned via `StartAgent` against a `configuredDelegateDefault`/`ACPGatewaySource` entry (models.json's gateway-backed delegate catalog, distinct from `uses:["primer"]`) — are ordinary harness `loop.Definition` instances, subject to the same declared-transport restore check as the three primer roles. Their models were never part of `PrimerCandidates`, so their transports were never declared. `NativeACP` delegates are unaffected (separate harness's own login state, never bind to a CodeRig-owned `loop.Definition` — see `coderig/CLAUDE.md`) and stay out of scope.
+
+**Files:**
+- Modify: `internal/app/inference_policy.go` (generalize the dedup core; add `declaredContextTransports`)
+- Modify: `internal/app/compaction.go` (`newConversationContextPolicy` gains a `delegateModels` parameter)
+- Modify: `internal/app/config.go` (new `Config.DelegateModels []model.Model` field)
+- Modify: `internal/app/swarm.go` (both call sites; `newWithProductionModelsLoader` populates `cfg.DelegateModels`)
+- Modify: `internal/app/persistence.go` (`SessionStoreFactory.Open` populates `cfg.DelegateModels`)
+- Modify: `internal/app/fingerprint_test.go`, `internal/app/persistence_test.go` (existing `newConversationContextPolicy` call sites gain a third `nil` arg)
+- Test: `internal/app/inference_policy_test.go`
+
+**Step 1: Write the failing test**
+
+Append to `internal/app/inference_policy_test.go`:
+
+```go
+func TestDeclaredContextTransportsMergesPrimerAndDelegateModels(t *testing.T) {
+	t.Parallel()
+
+	primer := testModel() // lmstudio
+	primerCandidates := []PrimerCandidate{{Alias: "primer", Model: primer}}
+
+	t.Run("delegate on a foreign transport is included", func(t *testing.T) {
+		t.Parallel()
+		delegate := model.CustomModel("openai", model.APIFormatOpenAIResponses, "", "delegate-model", model.WithTools(), model.WithThinking())
+
+		transports, err := declaredContextTransports(primerCandidates, []model.Model{delegate})
+		if err != nil {
+			t.Fatalf("declaredContextTransports() error = %v", err)
+		}
+		if len(transports) != 2 {
+			t.Fatalf("transports = %#v, want 2 (primer + delegate)", transports)
+		}
+		found := false
+		for _, tr := range transports {
+			if tr.Provider == delegate.Provider && tr.APIFormat == delegate.APIFormat && tr.BaseURL == delegate.BaseURL {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("transports = %#v, want delegate's transport included", transports)
+		}
+	})
+
+	t.Run("delegate sharing the primer's transport does not duplicate", func(t *testing.T) {
+		t.Parallel()
+		delegate := model.CustomModel(primer.Provider, primer.APIFormat, primer.BaseURL, "delegate-same-transport", model.WithTools())
+
+		transports, err := declaredContextTransports(primerCandidates, []model.Model{delegate})
+		if err != nil {
+			t.Fatalf("declaredContextTransports() error = %v", err)
+		}
+		if len(transports) != 1 {
+			t.Fatalf("transports = %#v, want 1 (shared transport deduped)", transports)
+		}
+	})
+
+	t.Run("no delegate models behaves like primerContextTransports alone", func(t *testing.T) {
+		t.Parallel()
+		got, err := declaredContextTransports(primerCandidates, nil)
+		if err != nil {
+			t.Fatalf("declaredContextTransports() error = %v", err)
+		}
+		want, err := primerContextTransports(primerCandidates)
+		if err != nil {
+			t.Fatalf("primerContextTransports() error = %v", err)
+		}
+		if len(got) != len(want) || len(got) != 1 || got[0] != want[0] {
+			t.Fatalf("declaredContextTransports(nil) = %#v, want %#v", got, want)
+		}
+	})
+
+	t.Run("propagates unsupported delegate provider", func(t *testing.T) {
+		t.Parallel()
+		bad := model.CustomModel("unknown", model.APIFormatOpenAI, "https://bad.example.test", "bad-delegate", model.WithTools())
+
+		_, err := declaredContextTransports(primerCandidates, []model.Model{bad})
+		var target *UnsupportedInferenceProviderError
+		if !errors.As(err, &target) {
+			t.Fatalf("declaredContextTransports() error = %T %v, want *UnsupportedInferenceProviderError", err, err)
+		}
+	})
+}
+```
+
+**Step 2: Run test to verify it fails**
+
+```bash
+go test ./internal/app/... -run TestDeclaredContextTransportsMergesPrimerAndDelegateModels -v
+```
+
+Expected: FAIL with `undefined: declaredContextTransports`.
+
+**Step 3: Implement**
+
+In `internal/app/inference_policy.go`, hoist the dedup core out of `primerContextTransports` into a shared function, and add `declaredContextTransports`:
+
+```go
+// contextTransportsForModels derives the deduplicated loop-declarable
+// transport set (by Provider, APIFormat, BaseURL) across models, in order,
+// keeping the first occurrence of each distinct transport. Shared by both
+// primerContextTransports (primer roster only) and declaredContextTransports
+// (primer roster + gateway-backed delegate models).
+func contextTransportsForModels(models []model.Model) ([]loop.ContextTransport, error) {
+	type transportKey struct {
+		Provider  model.ProviderName
+		APIFormat model.APIFormat
+		BaseURL   string
+	}
+	seen := make(map[transportKey]struct{}, len(models))
+	transports := make([]loop.ContextTransport, 0, len(models))
+	for _, m := range models {
+		key := transportKey{Provider: m.Provider, APIFormat: m.APIFormat, BaseURL: m.BaseURL}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		capability, err := inferenceCapabilityForModel(m)
+		if err != nil {
+			return nil, err
+		}
+		transports = append(transports, loop.ContextTransport{
+			Provider:   m.Provider,
+			APIFormat:  m.APIFormat,
+			BaseURL:    m.BaseURL,
+			Capability: capability,
+		})
+	}
+	return transports, nil
+}
+
+// primerContextTransports derives the loop-declarable transport set from the
+// configured primer roster alone. See contextTransportsForModels for the
+// dedup/capability rules.
+func primerContextTransports(candidates []PrimerCandidate) ([]loop.ContextTransport, error) {
+	models := make([]model.Model, len(candidates))
+	for i, c := range candidates {
+		models[i] = c.Model
+	}
+	return contextTransportsForModels(models)
+}
+
+// declaredContextTransports derives the full loop-declarable transport set:
+// every configured primer candidate's transport plus every configured
+// gateway-backed delegate model's transport (native, in-process,
+// RuntimeClient-routed StartAgent delegates — NOT NativeACP, which runs via
+// a separate harness's own login state and never binds to a CodeRig-owned
+// loop.Definition). Native delegate loops are ordinary harness Loop
+// instances subject to the same declared-transport restore check as the
+// primer roles, so omitting their transport here would make restoring a
+// session with an active/prior delegate on a foreign transport fail
+// harness's RestoreTransportMismatchError.
+func declaredContextTransports(primerCandidates []PrimerCandidate, delegateModels []model.Model) ([]loop.ContextTransport, error) {
+	models := make([]model.Model, 0, len(primerCandidates)+len(delegateModels))
+	for _, c := range primerCandidates {
+		models = append(models, c.Model)
+	}
+	models = append(models, delegateModels...)
+	return contextTransportsForModels(models)
+}
+```
+
+**Step 4: Run test to verify it passes**
+
+```bash
+go build ./... && go test ./internal/app/... -run 'TestDeclaredContextTransportsMergesPrimerAndDelegateModels|TestPrimerContextTransports' -v
+```
+
+Expected: PASS (all subtests in both tests — confirms the refactor didn't change `primerContextTransports`'s existing behavior).
+
+**Step 5: Wire `Config.DelegateModels` and thread it through**
+
+In `internal/app/config.go`, add a field next to `PrimerCandidates`:
+
+```go
+	// DelegateModels is every configured gateway-backed delegate model
+	// (models.json's ACPGatewaySource catalog) — the models StartAgent can
+	// bind a native, in-process delegate loop to. Every native loop declares
+	// these transports alongside PrimerCandidates' so a session with an
+	// active or prior delegate on a different transport than the primer can
+	// still restore. NativeACP delegates are not included: they never bind
+	// to a CodeRig-owned loop.Definition.
+	DelegateModels []model.Model
+```
+
+In `internal/app/compaction.go`, change `newConversationContextPolicy`'s signature and body:
+
+```go
+func newConversationContextPolicy(model model.Model, primerCandidates []PrimerCandidate, delegateModels []model.Model) (conversationContextPolicy, error) {
+	inferencePolicy, err := newModelInferencePolicy(model)
+	if err != nil {
+		return conversationContextPolicy{}, err
+	}
+	transports, err := declaredContextTransports(primerCandidates, delegateModels)
+	if err != nil {
+		return conversationContextPolicy{}, err
+	}
+	compaction := conversationCompactionPolicy()
+	if err := compaction.Validate(inferencePolicy.ContextCounter().CounterCapability()); err != nil {
+		return conversationContextPolicy{}, err
+	}
+	return conversationContextPolicy{
+		counter:         inferencePolicy.ContextCounter(),
+		capability:      inferencePolicy.InferenceCapability(),
+		transports:      transports,
+		compaction:      compaction,
+		summaryFragment: conversationSummaryConsumptionFragment,
+		summaryRevision: conversationSummaryConsumptionRevision,
+	}, nil
+}
+```
+
+(`options()` is unchanged — it already installs `p.transports` via `loop.WithContextTransports`, regardless of which function derived them.)
+
+In `internal/app/swarm.go`, update both call sites to pass the new argument:
+
+```go
+	contextPolicy, err := newConversationContextPolicy(model, cfg.PrimerCandidates, cfg.DelegateModels)
+```
+
+(both in `swarmDefinitions` and `swarmDefinitionsWithAdditionalTools`).
+
+In the same file, `newWithProductionModelsLoader` (where `cfg.PrimerCandidates` is set from `configured.PrimerCandidates`) gains one more line:
+
+```go
+	cfg.PrimerCandidates = append([]PrimerCandidate(nil), configured.PrimerCandidates...)
+	cfg.DelegateModels = delegateModelsFrom(configured.ACP)
+```
+
+Add the small mapper near `PrimerCandidate`/`ACPGatewaySource`'s definitions (`internal/app/inference_policy.go` is a reasonable home, next to `declaredContextTransports`, or `productionmodels.go` next to `ACPGatewaySource` — pick whichever the codebase's existing convention favors after a quick look; either is fine):
+
+```go
+func delegateModelsFrom(sources []ACPGatewaySource) []model.Model {
+	models := make([]model.Model, len(sources))
+	for i, s := range sources {
+		models[i] = s.Model
+	}
+	return models
+}
+```
+
+In `internal/app/persistence.go`'s `SessionStoreFactory.Open` (the second, independent place `cfg.PrimerCandidates` is set — see line ~388), add the matching line:
+
+```go
+	cfg.PrimerCandidates = append([]PrimerCandidate(nil), configured.PrimerCandidates...)
+	cfg.DelegateModels = delegateModelsFrom(configured.ACP)
+```
+
+Fix the two pre-existing test call sites (`fingerprint_test.go`, `persistence_test.go`) to pass a third `nil` argument:
+
+```go
+	basePolicy, err := newConversationContextPolicy(testModel(), nil, nil)
+```
+
+```go
+				policy, err := newConversationContextPolicy(testModel(), nil, nil)
+```
+
+**Step 6: Run tests to verify the regression is fixed**
+
+```bash
+go build ./... && go vet ./...
+go test ./internal/app/... -run TestPersistedOpenRoutesNativeAgentThroughRuntimeClientAcrossRestore -v
+go test ./internal/app/... 2>&1 | tail -60
+```
+
+Expected: `TestPersistedOpenRoutesNativeAgentThroughRuntimeClientAcrossRestore` now PASSES. Full package run has no new failures beyond the three `TestSetModelCrossProvider*` tests (still expected to differ/fail until Task 3 lands — do not touch them here).
+
+**Step 7: Commit**
+
+```bash
+git add internal/app/inference_policy.go internal/app/compaction.go internal/app/config.go internal/app/swarm.go internal/app/persistence.go internal/app/fingerprint_test.go internal/app/persistence_test.go
+git commit -m "fix: declare gateway-backed delegate models' transports alongside the primer roster"
+```
+
+---
+
 ## Task 3: Simplify `SetModel`, delete the now-dead cross-transport-rejection machinery, prove cross-provider switching works
 
 **Files:**

@@ -165,9 +165,51 @@ friendly "switching transports mid-session is not supported" message — will
 start **working**, since all three become declared transports on the same
 loop.
 
+## Addendum (2026-08-06): gateway-backed delegate models must also be declared
+
+Discovered while implementing Task 2 (consumer-wiring implementation plan):
+`TestPersistedOpenRoutesNativeAgentThroughRuntimeClientAcrossRestore` fails on
+restore with harness's `RestoreTransportMismatchError` — a regression from
+adopting harness's new `main`, not caused by this plan's own Tasks 1-3, but
+one this plan's scope needs to close before the branch's test suite is clean.
+
+CodeRig's native (in-process, `RuntimeClient`-routed) delegate loops —
+spawned via `StartAgent` against a `configuredDelegateDefault`/
+`ACPGatewaySource` entry (models.json's gateway-backed delegate catalog,
+distinct from `uses:["primer"]`) — are ordinary harness `loop.Definition`
+instances, subject to the exact same declared-transport restore check as the
+three primer roles. Their models were never part of `PrimerCandidates`, so
+their transports were never declared, and restoring a session with a prior
+delegate on a foreign transport now hard-fails.
+
+`NativeACP` delegates are unaffected and stay out of scope: they run via a
+separate harness's own login state (see `coderig/CLAUDE.md`, "Model
+catalogue and credentials"), never bind to a CodeRig-owned
+`loop.Definition`, and so never participate in this check.
+
+Fix: generalize `primerContextTransports`'s dedup core into
+`contextTransportsForModels(models []model.Model) ([]loop.ContextTransport, error)`,
+keep `primerContextTransports` as a thin wrapper over it (no signature
+change, no re-review of already-approved Task 1 needed), and add a sibling
+`declaredContextTransports(primerCandidates []PrimerCandidate, delegateModels []model.Model) ([]loop.ContextTransport, error)`
+that merges both sources through the same dedup. `Config` gains
+`DelegateModels []model.Model`, populated at both `Config`-assembly call
+sites (`newWithProductionModelsLoader` in `swarm.go`,
+`SessionStoreFactory.Open` in `persistence.go`) by mapping
+`configured.ACP` (`[]ACPGatewaySource`) to their `.Model` fields — the same
+two-call-site shape `PrimerCandidates` already uses.
+`newConversationContextPolicy` takes the extra `delegateModels []model.Model`
+parameter and calls `declaredContextTransports` instead of
+`primerContextTransports` directly. Both `swarmDefinitions` call sites pass
+`cfg.DelegateModels` through alongside `cfg.PrimerCandidates`.
+
 ## Out of scope
 
 - Any TUI-level consent/confirmation UX for a transport-crossing switch
   (settled in the harness design: none required).
 - Changing which models are `uses:["primer"]`-tagged in `models.json`
   (operator-configured, unchanged).
+- `NativeACP` delegate models (see addendum above — architecturally never
+  subject to this check).
+- `Config.PermissionReviewModel` — not demonstrated to hit this restore path;
+  not preemptively touched (YAGNI). Revisit only if a real failure surfaces.
