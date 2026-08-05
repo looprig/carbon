@@ -1066,6 +1066,85 @@ git add internal/app/runtime_controls.go internal/app/runtime_controls_test.go
 git commit -m "feat: allow live SetModel across every declared primer transport"
 ```
 
+**Step 6: Add a persistence round-trip test (cross-provider switch survives restore)**
+
+Added per a second-opinion review's recommendation: everything above proves a LIVE cross-provider switch works, but the feature's actual end-to-end story is "switch, then the session survives a close/restore cycle" — and that's exactly the shape the whole Task 2.5 detour was fixing. `internal/app/persistence_test.go` already has the fixtures for this pattern (see `TestPersistedOpenRoutesNativeAgentThroughRuntimeClientAcrossRestore` for the close/reopen idiom via `SessionStoreFactory`/`SessionSelector`).
+
+**Files:**
+- Modify: `internal/app/persistence_test.go`
+
+Add a new test:
+
+```go
+// TestSetModelCrossProviderSwitchSurvivesRestore proves the actual end-to-end
+// story this plan exists for: a live cross-provider SetModel isn't just
+// accepted in the moment (TestSetModelSwitchesAcrossProviders) — the session
+// it changed can close and restore afterward, because declaredContextTransports
+// (internal/app/inference_policy.go) declares the full configured roster's
+// transports on every native loop, not just the one active at Open time.
+func TestSetModelCrossProviderSwitchSurvivesRestore(t *testing.T) {
+	a := testModel() // lmstudio
+	b := model.CustomModel("chutes", model.APIFormatOpenAI, "https://api.chutes.ai", "candidate-b", model.WithTools(), model.WithThinking())
+	candidates := []PrimerCandidate{
+		{Alias: "candidate-a", Description: "Candidate A", Model: a, Efforts: []model.Effort{model.EffortNone}, DefaultEffort: model.EffortNone},
+		{Alias: "candidate-b", Description: "Candidate B", Model: b, Efforts: []model.Effort{model.EffortNone, model.EffortLow, model.EffortMedium, model.EffortHigh}, DefaultEffort: model.EffortLow},
+	}
+
+	stores := mustHeadlessTestStores(t)
+	cfg := Config{PrimerCandidates: candidates}
+	first, err := newSessionOverStores(context.Background(), &fakeLLM{}, newModelFactoryFor(a), cfg, stores, t.TempDir())
+	if err != nil {
+		t.Fatalf("newSessionOverStores() error = %v", err)
+	}
+	sessionID := first.SessionID()
+	loopID := first.ActiveLoopID()
+
+	if err := first.SetModel(context.Background(), loopID, tui.ModelID("candidate-b")); err != nil {
+		t.Fatalf("SetModel(candidate-b) error = %v, want cross-provider switch to succeed", err)
+	}
+	if err := first.Close(context.Background()); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	restored, err := newSessionOverStoresRestoring(context.Background(), &fakeLLM{}, newModelFactoryFor(a), cfg, stores, t.TempDir(), sessionID)
+	if err != nil {
+		t.Fatalf("restore after cross-provider switch error = %v, want restore to succeed", err)
+	}
+	t.Cleanup(func() { _ = restored.Close(context.Background()) })
+
+	options, err := restored.LoopRuntimeOptions(context.Background(), restored.ActiveLoopID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, m := range options.Models {
+		if m.ID == tui.ModelID("candidate-b") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("models after restore = %#v, want candidate-b still listed", options.Models)
+	}
+}
+```
+
+`newSessionOverStoresRestoring` may not exist yet under that exact name — grep the file first (`grep -n "func newSessionOverStores" internal/app/persistence_test.go` and `grep -n "SessionSelector{" internal/app/persistence_test.go`) to find the actual restore-path helper/pattern this test file already uses (likely a `SessionSelector{SessionID: sessionID}` passed to the same construction helper, or a dedicated restore helper). Adapt the restore call to match whatever helper already exists rather than inventing a new one — this test should follow the exact idiom `TestPersistedOpenRoutesNativeAgentThroughRuntimeClientAcrossRestore` already uses for its own close/reopen step.
+
+Run:
+
+```bash
+go build ./... && go test ./internal/app/... -run TestSetModelCrossProviderSwitchSurvivesRestore -v
+```
+
+Expected: PASS. If it fails, that's a real gap this task needs to close (not a pre-existing/deferred failure) — the whole point of Task 2.5 was to make exactly this scenario work.
+
+Commit:
+
+```bash
+git add internal/app/persistence_test.go
+git commit -m "test: prove a cross-provider SetModel switch survives session restore"
+```
+
 ---
 
 ## Task 4: Full regression pass + verification gate
@@ -1090,6 +1169,16 @@ make secure 2>&1 | tail -100
 ```
 
 This runs `gofmt` check, `go vet`, staticcheck, gosec, `go mod verify`, govulncheck — per `coderig/CLAUDE.md`. Note: `go mod verify` may complain about the worktree's local `go.work` harness replace (an expected, temporary artifact of the prerequisite section above, not a real vendoring problem) — if so, verify manually that the *only* discrepancy is the harness replace, and record that clearly rather than silently ignoring a `make secure` failure.
+
+**Step 2b: Run the integration suite**
+
+Added per a second-opinion review: `coderig/CLAUDE.md` explicitly requires `make test-integration` "before any release touching permission review, restore, or access-profile behavior" — this branch touches restore behavior directly (Task 2.5's whole point). Not run by `make test`/CI by default, so it must be run explicitly here.
+
+```bash
+make test-integration 2>&1 | tail -100
+```
+
+Expected: passes. If any failure is unrelated to this branch's changes (a genuinely pre-existing/environmental issue, e.g. requiring live network/credentials this sandbox doesn't have), investigate enough to confirm that before treating it as acceptable — don't assume any integration failure is unrelated without checking.
 
 **Step 3: Manual review of the diff**
 
