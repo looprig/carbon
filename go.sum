@@ -125,6 +125,8 @@ github.com/looprig/fsstore v0.3.0 h1:RFvjN8SucOjQfan7FUF9rspK40Q3cJvSLgFfM63dsKI
 github.com/looprig/fsstore v0.3.0/go.mod h1:rwhG+DRFqg8+MxfnwGNOht7EPKvE8OqMVmbrmhCKRng=
 github.com/looprig/harness v0.19.0 h1:N8caBlUDD+FANhzTD4Iu3z+bitQup/Ajjv0bUW+bJLI=
 github.com/looprig/harness v0.19.0/go.mod h1:dLAJNLA6nQnWP3fhxkdwNRnxAhpxOHmHVUeqeFSMLSw=
+github.com/looprig/harness v0.20.0 h1:BcOOJ+sGVl44UoGJxzyVae/Fh7d1i02TwfzIHX75S5w=
+github.com/looprig/harness v0.20.0/go.mod h1:ggPP6BrA7dKDXYNrpFaBoix65AcSK+swCr/gKmlZUUk=
 github.com/looprig/inference v0.7.0 h1:O59oOF1Prl8NG+ZHBGkiQb+O92rBm0NN2vZH3oNCvgs=
 github.com/looprig/inference v0.7.0/go.mod h1:OWy/4zw2vveXXYgJMa1bWLTR1kHTeAv7RS+4RVCMZfI=
 github.com/looprig/llm v0.10.0 h1:kh+SBGTDgXNG7jFNGJF/EMZ/g4W7X+01cmmOBQ5yxJ0=
