@@ -17,9 +17,9 @@ require (
 	github.com/looprig/harness v0.20.0
 	github.com/looprig/inference v0.7.0
 	github.com/looprig/llm v0.10.0
-	github.com/looprig/sandbox v0.5.0
+	github.com/looprig/sandbox v0.5.1
 	github.com/looprig/storage v0.3.0
-	github.com/looprig/tools v0.5.1
+	github.com/looprig/tools v0.6.0
 	github.com/looprig/tui v0.12.1
 	golang.org/x/sys v0.47.0
 )

@@ -13,7 +13,10 @@ import (
 	"github.com/looprig/sandbox"
 	"github.com/looprig/tools"
 	"github.com/looprig/tools/bash"
+	"github.com/looprig/tools/glob"
+	"github.com/looprig/tools/grep"
 	"github.com/looprig/tools/permission"
+	"github.com/looprig/tools/readfile"
 	"github.com/looprig/tools/skill"
 	"github.com/looprig/tools/websearch"
 )
@@ -54,7 +57,14 @@ var errNoLoopProvenance = errors.New("coderig: access gate consulted without loo
 // coderigReadGuard is CodeRig's in-process read guard for the direct read tools.
 // It denies no path lexically — sandbox profile access is the read-authority
 // source of truth, enforced by the gate on filesystem.read requirements and by
-// the OS for confined commands — and applies the fixed per-file byte cap.
+// the OS for confined commands — and applies the fixed per-file byte cap. This
+// is only true end-to-end because ReadFile/Grep/Glob are constructed with
+// tools' WithHostReads() below: without it, a host (out-of-workspace) path
+// never reaches the gate at all, since the tools package's own workspace
+// containment check rejects it first. With it, an out-of-workspace path still
+// reaches the SAME filesystem.read requirement/gate/profile as a spawned Bash
+// command's host reads, so the two never disagree about what a given profile
+// allows.
 type coderigReadGuard struct{}
 
 func (coderigReadGuard) DeniedRead(string) bool { return false }
@@ -181,11 +191,11 @@ func bashDefinition(set *sandbox.ExecutorSet) tool.Definition {
 func builderToolDefinitions(set *sandbox.ExecutorSet, client *http.Client, skillTool tool.Definition) []tool.Definition {
 	guard := coderigReadGuard{}
 	definitions := []tool.Definition{
-		tools.ReadFileDefinition(guard),
+		tools.ReadFileDefinition(guard, readfile.WithHostReads()),
 		tools.WriteFileDefinition(),
 		tools.EditFileDefinition(),
-		tools.GlobDefinition(guard),
-		tools.GrepDefinition(guard),
+		tools.GlobDefinition(guard, glob.WithHostReads()),
+		tools.GrepDefinition(guard, grep.WithHostReads()),
 		bashDefinition(set),
 		tools.WebSearchDefinition(websearch.NewDuckDuckGoProvider(client)),
 		tools.FetchDefinition(client),
@@ -212,9 +222,9 @@ func operatorToolDefinitions(set *sandbox.ExecutorSet, client *http.Client, skil
 func plannerToolDefinitions(set *sandbox.ExecutorSet, client *http.Client, skillTool tool.Definition) []tool.Definition {
 	guard := coderigReadGuard{}
 	definitions := []tool.Definition{
-		tools.ReadFileDefinition(guard),
-		tools.GlobDefinition(guard),
-		tools.GrepDefinition(guard),
+		tools.ReadFileDefinition(guard, readfile.WithHostReads()),
+		tools.GlobDefinition(guard, glob.WithHostReads()),
+		tools.GrepDefinition(guard, grep.WithHostReads()),
 		bashDefinition(set),
 		tools.WebSearchDefinition(websearch.NewDuckDuckGoProvider(client)),
 		tools.FetchDefinition(client),
@@ -234,9 +244,9 @@ func plannerToolDefinitions(set *sandbox.ExecutorSet, client *http.Client, skill
 func reviewerToolDefinitions(set *sandbox.ExecutorSet, skillTool tool.Definition) []tool.Definition {
 	guard := coderigReadGuard{}
 	definitions := []tool.Definition{
-		tools.ReadFileDefinition(guard),
-		tools.GlobDefinition(guard),
-		tools.GrepDefinition(guard),
+		tools.ReadFileDefinition(guard, readfile.WithHostReads()),
+		tools.GlobDefinition(guard, glob.WithHostReads()),
+		tools.GrepDefinition(guard, grep.WithHostReads()),
 		bashDefinition(set),
 		tools.TaskDefinitions(),
 		tools.AskUserDefinition(),
