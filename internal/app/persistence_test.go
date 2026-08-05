@@ -177,6 +177,70 @@ func TestPersistedOpenRoutesNativeAgentThroughRuntimeClientAcrossRestore(t *test
 	}
 }
 
+// TestSetModelCrossProviderSwitchSurvivesRestore proves the actual end-to-end
+// story this plan exists for: a live cross-provider SetModel isn't just
+// accepted in the moment (TestSetModelSwitchesAcrossProviders,
+// runtime_controls_test.go) — the session it changed can close and restore
+// afterward, because declaredContextTransports (internal/app/inference_policy.go)
+// declares the full configured roster's transports on every native loop, not
+// just the one active at Open time. Restore reuses the SAME store and
+// workspace root as the original open (see
+// TestCompactionWiringSurvivesHeadlessNewRestoreAndClear elsewhere in this
+// file): new and restore over the same checkout fold the same access digest,
+// so this must NOT use a fresh t.TempDir() for the restored session.
+func TestSetModelCrossProviderSwitchSurvivesRestore(t *testing.T) {
+	a := testModel() // lmstudio
+	b := model.CustomModel("chutes", model.APIFormatOpenAI, "https://api.chutes.ai", "candidate-b", model.WithTools(), model.WithThinking())
+	candidates := []PrimerCandidate{
+		{Alias: "candidate-a", Description: "Candidate A", Model: a, Efforts: []model.Effort{model.EffortNone}, DefaultEffort: model.EffortNone},
+		{Alias: "candidate-b", Description: "Candidate B", Model: b, Efforts: []model.Effort{model.EffortNone, model.EffortLow, model.EffortMedium, model.EffortHigh}, DefaultEffort: model.EffortLow},
+	}
+
+	ctx := context.Background()
+	stores := mustHeadlessTestStores(t)
+	root := t.TempDir()
+	cfg := Config{PrimerCandidates: candidates}
+	factory := newModelFactoryFor(a)
+
+	first, err := newSessionOverStores(ctx, &fakeLLM{}, factory, cfg, stores, root)
+	if err != nil {
+		t.Fatalf("newSessionOverStores() error = %v", err)
+	}
+	sessionID := first.SessionID()
+	loopID := first.ActiveLoopID()
+
+	if err := first.SetModel(ctx, loopID, tui.ModelID("candidate-b")); err != nil {
+		t.Fatalf("SetModel(candidate-b) error = %v, want cross-provider switch to succeed", err)
+	}
+	if err := first.Close(ctx); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	// openRuntimeAgent (swarm.go) is the shared construction seam newSessionOverStores
+	// itself wraps with a hardcoded SessionSelector{}; there is no separate "restoring"
+	// helper, so the restore leg calls it directly with a Resume selector, matching the
+	// production restore path (SessionStoreFactory.openWithClient).
+	restored, err := openRuntimeAgent(ctx, &fakeLLM{}, factory, cfg, stores, root, SessionSelector{Resume: sessionID}, false)
+	if err != nil {
+		t.Fatalf("restore after cross-provider switch error = %v, want restore to succeed", err)
+	}
+	t.Cleanup(func() { _ = restored.Close(ctx) })
+
+	options, err := restored.LoopRuntimeOptions(ctx, restored.ActiveLoopID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, m := range options.Models {
+		if m.ID == tui.ModelID("candidate-b") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("models after restore = %#v, want candidate-b still listed", options.Models)
+	}
+}
+
 func TestProductionOpenRejectsInvalidModelsBeforeOpeningPersistence(t *testing.T) {
 	home := t.TempDir()
 	setProcessHome(t, home)
