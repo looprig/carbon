@@ -97,7 +97,7 @@ func compactionDefinitionForFingerprint(t *testing.T, promptRevision, parserRevi
 func TestCompactionCompositionFingerprintSensitivityAndSecretExclusion(t *testing.T) {
 	t.Parallel()
 
-	basePolicy, err := newConversationContextPolicy(testModel(), nil)
+	basePolicy, err := newConversationContextPolicy(testModel(), nil, nil)
 	if err != nil {
 		t.Fatalf("newConversationContextPolicy() error = %v", err)
 	}
@@ -151,7 +151,7 @@ func TestConversationContextPolicyDeclaresPrimerTransports(t *testing.T) {
 		{Alias: "candidate-b", Model: b, Efforts: []model.Effort{model.EffortNone}, DefaultEffort: model.EffortNone},
 	}
 
-	policy, err := newConversationContextPolicy(a, candidates)
+	policy, err := newConversationContextPolicy(a, candidates, nil)
 	if err != nil {
 		t.Fatalf("newConversationContextPolicy() error = %v", err)
 	}
@@ -183,7 +183,7 @@ func TestConversationContextPolicyWithNoPrimerCandidatesStaysSingleTransport(t *
 	t.Parallel()
 
 	a := testModel()
-	policy, err := newConversationContextPolicy(a, nil)
+	policy, err := newConversationContextPolicy(a, nil, nil)
 	if err != nil {
 		t.Fatalf("newConversationContextPolicy() error = %v", err)
 	}

@@ -71,17 +71,23 @@ type conversationContextPolicy struct {
 // secret-free context contract before any session is opened. primerCandidates
 // is the full configured roster (may be nil/empty outside the primer-picker
 // path, or when no candidates are configured) — its distinct transports
-// become the loop's declared ContextTransport set, so a live SetModel can
-// move between any of them. model must itself resolve to one of those
-// transports when primerCandidates is non-empty (swarmDefinitions' callers
-// already guarantee this: model is always drawn from PrimerCandidates or is
-// the sole configured model).
-func newConversationContextPolicy(model model.Model, primerCandidates []PrimerCandidate) (conversationContextPolicy, error) {
+// become part of the loop's declared ContextTransport set, so a live
+// SetModel can move between any of them. delegateModels is every configured
+// gateway-backed delegate model (models.json's ACPGatewaySource catalog,
+// distinct from NativeACP): native, in-process, RuntimeClient-routed
+// StartAgent delegates are ordinary harness loop.Definition instances
+// subject to the same declared-transport restore check as the primer roles,
+// so their transports must be declared too or restoring a session with an
+// active/prior delegate on a foreign transport fails harness's
+// RestoreTransportMismatchError. model is always seeded first in the merged
+// set (see declaredContextTransports), so it is always a legal base model
+// regardless of whether it also appears in primerCandidates.
+func newConversationContextPolicy(model model.Model, primerCandidates []PrimerCandidate, delegateModels []model.Model) (conversationContextPolicy, error) {
 	inferencePolicy, err := newModelInferencePolicy(model)
 	if err != nil {
 		return conversationContextPolicy{}, err
 	}
-	transports, err := primerContextTransports(primerCandidates)
+	transports, err := declaredContextTransports(model, primerCandidates, delegateModels)
 	if err != nil {
 		return conversationContextPolicy{}, err
 	}

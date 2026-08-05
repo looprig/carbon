@@ -45,6 +45,14 @@ type Config struct {
 	// copies it from productionModels before runtime assembly; RuntimeAgent
 	// uses it to offer a real /model picker instead of one fixed choice.
 	PrimerCandidates []PrimerCandidate
+	// DelegateModels is every configured gateway-backed delegate model
+	// (models.json's ACPGatewaySource catalog) — the models StartAgent can
+	// bind a native, in-process delegate loop to. Every native loop declares
+	// these transports alongside PrimerCandidates' so a session with an
+	// active or prior delegate on a different transport than the primer can
+	// still restore. NativeACP delegates are not included: they never bind
+	// to a CodeRig-owned loop.Definition.
+	DelegateModels []model.Model
 	// PermissionReviewEnabled turns on classifier-based automatic permission
 	// review (off by default — a zero Config never auto-approves anything).
 	// See internal/app/permission_review.go for the composition this enables.

@@ -106,41 +106,74 @@ func inferenceCapabilityForModel(model model.Model) (contextcount.InferenceCapab
 	}
 }
 
-// primerContextTransports derives the loop-declarable transport set from the
-// configured primer roster, deduplicating by (Provider, APIFormat, BaseURL) —
-// harness's loop.WithContextTransports rejects duplicate-keyed members
-// outright, and multiple candidates commonly share one endpoint (e.g.
-// chutes-kimi-k3 and chutes-glm-5.2). Each distinct transport's capability is
-// derived by the same inferenceCapabilityForModel used for the single-model
-// case, so a live switch and a fresh Open resolve identical capability for
-// the same transport. UnsupportedInferenceProviderError propagates exactly
-// as it does for the single-model path, now checked against the whole roster.
-func primerContextTransports(candidates []PrimerCandidate) ([]loop.ContextTransport, error) {
+// contextTransportsForModels derives the deduplicated loop-declarable
+// transport set (by Provider, APIFormat, BaseURL) across models, in order,
+// keeping the first occurrence of each distinct transport. The sole
+// primitive behind declaredContextTransports.
+func contextTransportsForModels(models []model.Model) ([]loop.ContextTransport, error) {
 	type transportKey struct {
 		Provider  model.ProviderName
 		APIFormat model.APIFormat
 		BaseURL   string
 	}
-	seen := make(map[transportKey]struct{}, len(candidates))
-	transports := make([]loop.ContextTransport, 0, len(candidates))
-	for _, c := range candidates {
-		key := transportKey{Provider: c.Model.Provider, APIFormat: c.Model.APIFormat, BaseURL: c.Model.BaseURL}
+	seen := make(map[transportKey]struct{}, len(models))
+	transports := make([]loop.ContextTransport, 0, len(models))
+	for _, m := range models {
+		key := transportKey{Provider: m.Provider, APIFormat: m.APIFormat, BaseURL: m.BaseURL}
 		if _, ok := seen[key]; ok {
 			continue
 		}
 		seen[key] = struct{}{}
-		capability, err := inferenceCapabilityForModel(c.Model)
+		capability, err := inferenceCapabilityForModel(m)
 		if err != nil {
 			return nil, err
 		}
 		transports = append(transports, loop.ContextTransport{
-			Provider:   c.Model.Provider,
-			APIFormat:  c.Model.APIFormat,
-			BaseURL:    c.Model.BaseURL,
+			Provider:   m.Provider,
+			APIFormat:  m.APIFormat,
+			BaseURL:    m.BaseURL,
 			Capability: capability,
 		})
 	}
 	return transports, nil
+}
+
+// declaredContextTransports derives the full loop-declarable transport set:
+// the loop's own base model, every configured primer candidate's transport,
+// and every configured gateway-backed delegate model's transport (native,
+// in-process, RuntimeClient-routed StartAgent delegates — NOT NativeACP,
+// which runs via a separate harness's own login state and never binds to a
+// CodeRig-owned loop.Definition). base is always seeded first so harness's
+// build-time base-transport-membership requirement
+// (pkg/loop/definition.go's validateContextDefinition: a non-empty declared
+// set must contain a member matching the loop's own WithInference model,
+// with Capability exactly equal to WithInferenceCapability) holds
+// regardless of whether base happens to also appear in primerCandidates —
+// equality is automatic since both are derived by calling
+// inferenceCapabilityForModel on the same model value. Native delegate
+// loops are ordinary harness Loop instances subject to the same
+// declared-transport restore check as the primer roles, so omitting their
+// transport here would make restoring a session with an active/prior
+// delegate on a foreign transport fail harness's RestoreTransportMismatchError.
+func declaredContextTransports(base model.Model, primerCandidates []PrimerCandidate, delegateModels []model.Model) ([]loop.ContextTransport, error) {
+	models := make([]model.Model, 0, 1+len(primerCandidates)+len(delegateModels))
+	models = append(models, base)
+	for _, c := range primerCandidates {
+		models = append(models, c.Model)
+	}
+	models = append(models, delegateModels...)
+	return contextTransportsForModels(models)
+}
+
+// delegateModelsFrom projects the configured gateway-backed delegate catalog
+// down to the bare models declaredContextTransports needs. It carries no
+// client or credential.
+func delegateModelsFrom(sources []ACPGatewaySource) []model.Model {
+	models := make([]model.Model, len(sources))
+	for i, s := range sources {
+		models[i] = s.Model
+	}
+	return models
 }
 
 func protectedInferenceCapability(model model.Model, policyRevision string) contextcount.InferenceCapability {

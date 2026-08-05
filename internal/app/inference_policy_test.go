@@ -193,77 +193,87 @@ func TestInferencePolicyTransportBinding(t *testing.T) {
 	}
 }
 
-func TestPrimerContextTransports(t *testing.T) {
+func TestDeclaredContextTransportsMergesBasePrimerAndDelegateModels(t *testing.T) {
 	t.Parallel()
 
-	t.Run("dedups by provider/api-format/base-url", func(t *testing.T) {
-		t.Parallel()
-		a := chutesKimiK26()
-		b := phalaGLM52()
-		// c shares a's transport (same provider/format/base_url) but a different Name.
-		c := model.CustomModel(a.Provider, a.APIFormat, a.BaseURL, "another-chutes-model", model.WithTools())
-		candidates := []PrimerCandidate{
-			{Alias: "a", Model: a},
-			{Alias: "b", Model: b},
-			{Alias: "c", Model: c},
-		}
+	primer := testModel() // lmstudio
+	primerCandidates := []PrimerCandidate{{Alias: "primer", Model: primer}}
 
-		transports, err := primerContextTransports(candidates)
+	t.Run("base model is always included even with no candidates or delegates", func(t *testing.T) {
+		t.Parallel()
+		transports, err := declaredContextTransports(primer, nil, nil)
 		if err != nil {
-			t.Fatalf("primerContextTransports() error = %v", err)
+			t.Fatalf("declaredContextTransports() error = %v", err)
 		}
-		if len(transports) != 2 {
-			t.Fatalf("transports = %#v, want 2 distinct transports (a/c share one)", transports)
+		if len(transports) != 1 || transports[0].Provider != primer.Provider || transports[0].APIFormat != primer.APIFormat || transports[0].BaseURL != primer.BaseURL {
+			t.Fatalf("transports = %#v, want exactly the base model's transport", transports)
 		}
-		for _, transport := range transports {
-			if err := transport.Capability.Validate(); err != nil {
-				t.Errorf("transport %+v Capability.Validate() error = %v", transport, err)
+	})
+
+	t.Run("base model is included even when absent from PrimerCandidates", func(t *testing.T) {
+		t.Parallel()
+		// PrimerCandidates deliberately does NOT include primer here — this is
+		// the exact shape that broke the first draft of this fix (empty
+		// PrimerCandidates, base model only implied by the definition's own
+		// WithInference call).
+		transports, err := declaredContextTransports(primer, nil, nil)
+		if err != nil {
+			t.Fatalf("declaredContextTransports() error = %v", err)
+		}
+		found := false
+		for _, tr := range transports {
+			if tr.Provider == primer.Provider && tr.APIFormat == primer.APIFormat && tr.BaseURL == primer.BaseURL {
+				found = true
 			}
 		}
+		if !found {
+			t.Fatalf("transports = %#v, want base model's own transport included", transports)
+		}
 	})
 
-	t.Run("propagates unsupported provider", func(t *testing.T) {
+	t.Run("delegate on a foreign transport is included", func(t *testing.T) {
 		t.Parallel()
-		bad := chutesKimiK26()
-		bad.Provider = model.ProviderName("unknown")
-		candidates := []PrimerCandidate{{Alias: "bad", Model: bad}}
+		delegate := model.CustomModel(model.ProviderName(llm.ProviderOpenAI), model.APIFormatOpenAIResponses, "", "delegate-model", model.WithTools(), model.WithThinking())
 
-		_, err := primerContextTransports(candidates)
+		transports, err := declaredContextTransports(primer, primerCandidates, []model.Model{delegate})
+		if err != nil {
+			t.Fatalf("declaredContextTransports() error = %v", err)
+		}
+		if len(transports) != 2 {
+			t.Fatalf("transports = %#v, want 2 (primer + delegate)", transports)
+		}
+		found := false
+		for _, tr := range transports {
+			if tr.Provider == delegate.Provider && tr.APIFormat == delegate.APIFormat && tr.BaseURL == delegate.BaseURL {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("transports = %#v, want delegate's transport included", transports)
+		}
+	})
+
+	t.Run("delegate sharing the primer's transport does not duplicate", func(t *testing.T) {
+		t.Parallel()
+		delegate := model.CustomModel(primer.Provider, primer.APIFormat, primer.BaseURL, "delegate-same-transport", model.WithTools())
+
+		transports, err := declaredContextTransports(primer, primerCandidates, []model.Model{delegate})
+		if err != nil {
+			t.Fatalf("declaredContextTransports() error = %v", err)
+		}
+		if len(transports) != 1 {
+			t.Fatalf("transports = %#v, want 1 (shared transport deduped)", transports)
+		}
+	})
+
+	t.Run("propagates unsupported delegate provider", func(t *testing.T) {
+		t.Parallel()
+		bad := model.CustomModel("not-a-real-provider", model.APIFormatOpenAI, "https://bad.example.test", "bad-delegate", model.WithTools())
+
+		_, err := declaredContextTransports(primer, primerCandidates, []model.Model{bad})
 		var target *UnsupportedInferenceProviderError
 		if !errors.As(err, &target) {
-			t.Fatalf("primerContextTransports() error = %T %v, want *UnsupportedInferenceProviderError", err, err)
-		}
-	})
-
-	t.Run("empty roster returns empty set", func(t *testing.T) {
-		t.Parallel()
-		transports, err := primerContextTransports(nil)
-		if err != nil {
-			t.Fatalf("primerContextTransports(nil) error = %v", err)
-		}
-		if len(transports) != 0 {
-			t.Fatalf("transports = %#v, want empty", transports)
-		}
-	})
-
-	t.Run("capability matches inferenceCapabilityForModel for the same model", func(t *testing.T) {
-		t.Parallel()
-		m := chutesKimiK26()
-		candidates := []PrimerCandidate{{Alias: "a", Model: m}}
-
-		transports, err := primerContextTransports(candidates)
-		if err != nil {
-			t.Fatalf("primerContextTransports() error = %v", err)
-		}
-		want, err := inferenceCapabilityForModel(m)
-		if err != nil {
-			t.Fatalf("inferenceCapabilityForModel() error = %v", err)
-		}
-		if len(transports) != 1 || transports[0].Capability != want {
-			t.Fatalf("transports = %#v, want one entry with capability %+v", transports, want)
-		}
-		if transports[0].Provider != m.Provider || transports[0].APIFormat != m.APIFormat || transports[0].BaseURL != m.BaseURL {
-			t.Fatalf("transport identity = %+v, want it to match model %+v", transports[0], m)
+			t.Fatalf("declaredContextTransports() error = %T %v, want *UnsupportedInferenceProviderError", err, err)
 		}
 	})
 }
