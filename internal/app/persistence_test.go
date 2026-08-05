@@ -230,14 +230,22 @@ func TestSetModelCrossProviderSwitchSurvivesRestore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// options.Models unconditionally lists every configured candidate regardless
+	// of which one is actually selected (LoopRuntimeOptions, runtime_controls.go),
+	// so it would list candidate-b whether or not the switch survived restore —
+	// asserting on it here would be a tautology. options.Efforts IS selection-aware
+	// (keyed off currentPrimerCandidate(a.primerCandidates, handle.Model())), so
+	// candidate-b's 4-option effort set only appears if the restored loop's model
+	// genuinely resolved back to candidate-b, not candidate-a's single-effort set.
+	// Mirrors the live-switch assertion in TestSetModelSwitchesAcrossProviders.
 	found := false
-	for _, m := range options.Models {
-		if m.ID == tui.ModelID("candidate-b") {
+	for _, e := range options.Efforts {
+		if e.ID == tui.EffortID(model.EffortHigh) {
 			found = true
 		}
 	}
-	if !found {
-		t.Fatalf("models after restore = %#v, want candidate-b still listed", options.Models)
+	if !found || len(options.Efforts) != 4 {
+		t.Fatalf("efforts after restore = %#v, want candidate-b's 4 options (including high), proving the cross-provider switch survived restore", options.Efforts)
 	}
 }
 

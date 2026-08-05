@@ -260,6 +260,12 @@ func crossTransportPrimerCandidates() []PrimerCandidate {
 	}
 }
 
+// TestSetModelSwitchesAcrossAllConfiguredTransports proves the full 3-candidate,
+// 2-transport roster from crossTransportPrimerCandidates is live-switchable end
+// to end, not just the 2-candidate pair TestSetModelSwitchesAcrossProviders
+// covers: every candidate, including the two (candidate-a, candidate-c) that
+// share a transport with each other but not with candidate-b, is reachable
+// from wherever the session currently sits.
 func TestSetModelSwitchesAcrossAllConfiguredTransports(t *testing.T) {
 	candidates := crossTransportPrimerCandidates()
 	agent, _ := openAcceptanceAgentSelectingPrimerCandidate(t, candidates, candidates[0].Model)
