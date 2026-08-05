@@ -215,10 +215,17 @@ func TestDeclaredContextTransportsMergesBasePrimerAndDelegateModels(t *testing.T
 		// PrimerCandidates deliberately does NOT include primer here — this is
 		// the exact shape that broke the first draft of this fix (empty
 		// PrimerCandidates, base model only implied by the definition's own
-		// WithInference call).
-		transports, err := declaredContextTransports(primer, nil, nil)
+		// WithInference call). Use a non-empty roster that excludes primer so
+		// this subtest is genuinely distinct from the base-only case above.
+		other := model.CustomModel(model.ProviderName(llm.ProviderOpenAI), model.APIFormatOpenAIResponses, "", "other-candidate", model.WithTools())
+		candidatesExcludingBase := []PrimerCandidate{{Alias: "other", Model: other}}
+
+		transports, err := declaredContextTransports(primer, candidatesExcludingBase, nil)
 		if err != nil {
 			t.Fatalf("declaredContextTransports() error = %v", err)
+		}
+		if len(transports) != 2 {
+			t.Fatalf("transports = %#v, want 2 (base + other candidate)", transports)
 		}
 		found := false
 		for _, tr := range transports {
@@ -227,7 +234,7 @@ func TestDeclaredContextTransportsMergesBasePrimerAndDelegateModels(t *testing.T
 			}
 		}
 		if !found {
-			t.Fatalf("transports = %#v, want base model's own transport included", transports)
+			t.Fatalf("transports = %#v, want base model's own transport included even though it's absent from primerCandidates", transports)
 		}
 	})
 
