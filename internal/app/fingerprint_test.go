@@ -97,7 +97,7 @@ func compactionDefinitionForFingerprint(t *testing.T, promptRevision, parserRevi
 func TestCompactionCompositionFingerprintSensitivityAndSecretExclusion(t *testing.T) {
 	t.Parallel()
 
-	basePolicy, err := newConversationContextPolicy(testModel())
+	basePolicy, err := newConversationContextPolicy(testModel(), nil)
 	if err != nil {
 		t.Fatalf("newConversationContextPolicy() error = %v", err)
 	}
@@ -138,6 +138,75 @@ func TestCompactionCompositionFingerprintSensitivityAndSecretExclusion(t *testin
 				t.Errorf("ConfigFingerprint.Equal(base) = %v, want %v\ngot=%+v\nbase=%+v", equal, tt.wantEqual, got, base)
 			}
 		})
+	}
+}
+
+func TestConversationContextPolicyDeclaresPrimerTransports(t *testing.T) {
+	t.Parallel()
+
+	a := testModel()
+	b := model.CustomModel("chutes", model.APIFormatOpenAI, "https://api.chutes.ai", "candidate-b", model.WithTools(), model.WithThinking())
+	candidates := []PrimerCandidate{
+		{Alias: "candidate-a", Model: a, Efforts: []model.Effort{model.EffortNone}, DefaultEffort: model.EffortNone},
+		{Alias: "candidate-b", Model: b, Efforts: []model.Effort{model.EffortNone}, DefaultEffort: model.EffortNone},
+	}
+
+	policy, err := newConversationContextPolicy(a, candidates)
+	if err != nil {
+		t.Fatalf("newConversationContextPolicy() error = %v", err)
+	}
+
+	// policy.options() already installs a complete, valid context policy
+	// (WithContextCounter/WithInferenceCapability/WithContextTransports/
+	// WithCompaction); WithContextObservation is a mutually exclusive
+	// alternative admission policy and must not also be supplied here.
+	definition, err := loop.Define(append(
+		[]loop.Option{
+			loop.WithName(identity.AgentName("policy-test")),
+			loop.WithInference(&fakeLLM{}, a),
+		},
+		policy.options()...,
+	)...)
+	if err != nil {
+		t.Fatalf("loop.Define() error = %v", err)
+	}
+
+	// b's transport must now be declared: ValidateContextModel must accept it,
+	// where before this change (no WithContextTransports) it would reject any
+	// transport other than a's own.
+	if err := definition.ValidateContextModel(b); err != nil {
+		t.Fatalf("ValidateContextModel(b) error = %v, want b's transport accepted", err)
+	}
+}
+
+func TestConversationContextPolicyWithNoPrimerCandidatesStaysSingleTransport(t *testing.T) {
+	t.Parallel()
+
+	a := testModel()
+	policy, err := newConversationContextPolicy(a, nil)
+	if err != nil {
+		t.Fatalf("newConversationContextPolicy() error = %v", err)
+	}
+
+	// policy.options() already installs a complete, valid context policy
+	// (WithContextCounter/WithInferenceCapability/WithContextTransports/
+	// WithCompaction); WithContextObservation is a mutually exclusive
+	// alternative admission policy and must not also be supplied here.
+	definition, err := loop.Define(append(
+		[]loop.Option{
+			loop.WithName(identity.AgentName("policy-test")),
+			loop.WithInference(&fakeLLM{}, a),
+		},
+		policy.options()...,
+	)...)
+	if err != nil {
+		t.Fatalf("loop.Define() error = %v", err)
+	}
+
+	other := model.CustomModel("chutes", model.APIFormatOpenAI, "https://api.chutes.ai", "other-model", model.WithTools())
+	var target *loop.ContextTransportNotDeclaredError
+	if err := definition.ValidateContextModel(other); !errors.As(err, &target) {
+		t.Fatalf("ValidateContextModel(other) error = %v, want *loop.ContextTransportNotDeclaredError (no primer candidates -> single-transport default)", err)
 	}
 }
 

@@ -298,7 +298,7 @@ func TestInvalidCompactionCompositionDoesNotOpenSession(t *testing.T) {
 		{
 			name: "invalid loop compaction policy",
 			attempt: func(t *testing.T, _ *swarmStores) error {
-				policy, err := newConversationContextPolicy(testModel())
+				policy, err := newConversationContextPolicy(testModel(), nil)
 				if err != nil {
 					t.Fatalf("newConversationContextPolicy() error = %v", err)
 				}

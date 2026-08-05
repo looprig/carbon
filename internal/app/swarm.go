@@ -170,7 +170,7 @@ func skillDefinitionFor(loader skill.SkillLoader, b leafBuiltin, cfg Config) too
 // the active primer by rig assembly. Native tools and access gates remain
 // role-specific, while the delegation guidance and legal delegate set are shared.
 func swarmDefinitions(client inference.Client, model model.Model, cfg Config, access *sessionAccess) ([]loop.Definition, error) {
-	contextPolicy, err := newConversationContextPolicy(model)
+	contextPolicy, err := newConversationContextPolicy(model, cfg.PrimerCandidates)
 	if err != nil {
 		return nil, err
 	}
@@ -183,7 +183,7 @@ func swarmDefinitions(client inference.Client, model model.Model, cfg Config, ac
 // swarmDefinitions; the extra definitions are appended only to the requested
 // role and never used by a production composition root.
 func swarmDefinitionsWithAdditionalTools(client inference.Client, model model.Model, cfg Config, access *sessionAccess, extras map[identity.AgentName][]tool.Definition) ([]loop.Definition, error) {
-	contextPolicy, err := newConversationContextPolicy(model)
+	contextPolicy, err := newConversationContextPolicy(model, cfg.PrimerCandidates)
 	if err != nil {
 		return nil, err
 	}
