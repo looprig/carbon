@@ -214,7 +214,7 @@ func TestSetModelResetsEffortWhenNewCandidateDoesNotAdmitCurrent(t *testing.T) {
 // live SetModel switch. Two primer candidates naming genuinely different providers
 // (as multiPrimerCandidates deliberately avoids, see its doc comment) can be listed
 // side by side but can never be switched between at runtime; SetModel translates the
-// resulting *loop.ContextTransportBindingError into a *primerTransportSwitchError
+// resulting *loop.ContextTransportNotDeclaredError into a *primerTransportSwitchError
 // whose Error() is plain-English only — no wrapped harness jargon reaches the
 // user (this error string is displayed verbatim by the TUI, which has no
 // stripping/classification layer of its own) — while the cause stays reachable
@@ -235,9 +235,9 @@ func TestSetModelCrossProviderCandidateFails(t *testing.T) {
 	if err == nil {
 		t.Fatal("SetModel(candidate-b) succeeded across providers, want error")
 	}
-	var transportErr *loop.ContextTransportBindingError
+	var transportErr *loop.ContextTransportNotDeclaredError
 	if !errors.As(err, &transportErr) {
-		t.Fatalf("SetModel(candidate-b) error = %v, want it to wrap *loop.ContextTransportBindingError", err)
+		t.Fatalf("SetModel(candidate-b) error = %v, want it to wrap *loop.ContextTransportNotDeclaredError", err)
 	}
 	// The displayed string must stay friendly: no raw harness jargon, but still
 	// the plain-English explanation of what happened.

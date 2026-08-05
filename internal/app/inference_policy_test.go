@@ -158,36 +158,36 @@ func TestInferencePolicyTransportBinding(t *testing.T) {
 	allowed.Name = "another-model"
 	allowed.Limits = model.ContextLimits{WindowTokens: 64_000}
 	tests := []struct {
-		name      string
-		candidate model.Model
-		wantField string
+		name         string
+		candidate    model.Model
+		wantRejected bool
 	}{
 		{name: "model-local change is allowed", candidate: allowed},
 		{name: "provider change is rejected", candidate: func() model.Model {
 			value := allowed
 			value.Provider = model.ProviderName(llm.ProviderPhala)
 			return value
-		}(), wantField: "Provider"},
-		{name: "api format change is rejected", candidate: func() model.Model { value := allowed; value.APIFormat = model.APIFormatAnthropic; return value }(), wantField: "APIFormat"},
-		{name: "base url change is rejected", candidate: func() model.Model { value := allowed; value.BaseURL = "https://other.example.test"; return value }(), wantField: "BaseURL"},
+		}(), wantRejected: true},
+		{name: "api format change is rejected", candidate: func() model.Model { value := allowed; value.APIFormat = model.APIFormatAnthropic; return value }(), wantRejected: true},
+		{name: "base url change is rejected", candidate: func() model.Model { value := allowed; value.BaseURL = "https://other.example.test"; return value }(), wantRejected: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
 			err := definition.ValidateContextModel(tt.candidate)
-			if tt.wantField == "" {
+			if !tt.wantRejected {
 				if err != nil {
 					t.Fatalf("ValidateContextModel() error = %v", err)
 				}
 				return
 			}
-			var target *loop.ContextTransportBindingError
+			var target *loop.ContextTransportNotDeclaredError
 			if !errors.As(err, &target) {
-				t.Fatalf("ValidateContextModel() error = %T %v, want *loop.ContextTransportBindingError", err, err)
+				t.Fatalf("ValidateContextModel() error = %T %v, want *loop.ContextTransportNotDeclaredError", err, err)
 			}
-			if target.Field != tt.wantField {
-				t.Errorf("Field = %q, want %q", target.Field, tt.wantField)
+			if target.Provider != tt.candidate.Provider || target.APIFormat != tt.candidate.APIFormat || target.BaseURL != tt.candidate.BaseURL {
+				t.Errorf("error transport = {%q %q %q}, want candidate's {%q %q %q}", target.Provider, target.APIFormat, target.BaseURL, tt.candidate.Provider, tt.candidate.APIFormat, tt.candidate.BaseURL)
 			}
 		})
 	}

@@ -155,7 +155,7 @@ func (a *RuntimeAgent) SetModel(ctx context.Context, loopID uuid.UUID, id tui.Mo
 		changes = append(changes, loop.ChangeEffort(candidate.DefaultEffort))
 	}
 	if err := controller.Change(ctx, changes...); err != nil {
-		var transportErr *loop.ContextTransportBindingError
+		var transportErr *loop.ContextTransportNotDeclaredError
 		if errors.As(err, &transportErr) {
 			return &primerTransportSwitchError{
 				id:           id,
