@@ -2,11 +2,8 @@ package app
 
 import (
 	"context"
-	"errors"
-	"strings"
 	"testing"
 
-	"github.com/looprig/harness/pkg/loop"
 	model "github.com/looprig/inference/model"
 	"github.com/looprig/tui"
 )
@@ -48,12 +45,10 @@ func TestSessionPresentationReportsFixedProfile(t *testing.T) {
 }
 
 // multiPrimerCandidates' two candidates deliberately share candidate-a's transport
-// (provider/APIFormat/BaseURL) and differ only by model Name — a live SetModel/
-// ChangeModel is transport-locked to the loop's anchor model whenever a context
-// counter is bound (harness's validateContextTransportBinding, pkg/loop/
-// compaction_policy.go), and CodeRig's compaction.go unconditionally binds one on
-// every native loop. See TestSetModelCrossProviderCandidateFails for the case this
-// deliberately excludes, and its doc comment for the full story.
+// (provider/APIFormat/BaseURL) and differ only by model Name. This keeps the
+// same-transport switch case covered on its own; TestSetModelSwitchesAcrossProviders
+// and TestSetModelSwitchesAcrossAllConfiguredTransports separately cover switching
+// between candidates naming genuinely different providers.
 func multiPrimerCandidates() []PrimerCandidate {
 	a := testModel()
 	b := model.CustomModel(a.Provider, a.APIFormat, a.BaseURL, "candidate-b", model.WithTools(), model.WithThinking())
@@ -203,26 +198,16 @@ func TestSetModelResetsEffortWhenNewCandidateDoesNotAdmitCurrent(t *testing.T) {
 	}
 }
 
-// TestSetModelCrossProviderCandidateFails documents a real, deliberate harness
-// limitation uncovered while implementing SetModel: harness's live ChangeModel path
-// (internal/loopruntime's applyChangeInference -> loop.Definition.ValidateContextModel
-// -> validateContextTransportBinding, pkg/loop/compaction_policy.go) rejects any model
-// change that alters Provider/APIFormat/BaseURL from the loop's anchor model whenever a
-// context counter is bound. CodeRig's compaction.go installs one unconditionally on
-// every native loop (loop.WithContextCounter in conversationContextPolicy.options()),
-// so this check is always active in CodeRig, and only the model Name may vary across a
-// live SetModel switch. Two primer candidates naming genuinely different providers
-// (as multiPrimerCandidates deliberately avoids, see its doc comment) can be listed
-// side by side but can never be switched between at runtime; SetModel translates the
-// resulting *loop.ContextTransportNotDeclaredError into a *primerTransportSwitchError
-// whose Error() is plain-English only — no wrapped harness jargon reaches the
-// user (this error string is displayed verbatim by the TUI, which has no
-// stripping/classification layer of its own) — while the cause stays reachable
-// via Unwrap for any future errors.As/errors.Is caller. Unlike runtimeGitError
-// (runtime_context.go), which interpolates its cause into Error() and relies on
-// its one caller discarding the error before display, primerTransportSwitchError
-// withholds the cause at Error() itself, since this error is genuinely displayed.
-func TestSetModelCrossProviderCandidateFails(t *testing.T) {
+// TestSetModelSwitchesAcrossProviders proves the limitation documented at
+// this test's previous incarnation (TestSetModelCrossProviderCandidateFails)
+// no longer holds: harness's loop.WithContextTransports (see
+// docs/plans/2026-08-05-primer-cross-provider-consumer-design.md) lets a
+// loop definition declare more than one admitted transport, and
+// conversationContextPolicy now declares every configured PrimerCandidates
+// transport. A live SetModel between two candidates naming genuinely
+// different providers (lmstudio candidate-a -> chutes candidate-b) now
+// succeeds instead of being rejected.
+func TestSetModelSwitchesAcrossProviders(t *testing.T) {
 	a := testModel()
 	b := model.CustomModel("chutes", model.APIFormatOpenAI, "https://api.chutes.ai", "candidate-b", model.WithTools(), model.WithThinking())
 	candidates := []PrimerCandidate{
@@ -230,30 +215,40 @@ func TestSetModelCrossProviderCandidateFails(t *testing.T) {
 		{Alias: "candidate-b", Description: "Candidate B", Model: b, Efforts: []model.Effort{model.EffortNone, model.EffortLow, model.EffortMedium, model.EffortHigh}, DefaultEffort: model.EffortLow},
 	}
 	agent, _ := openAcceptanceAgentSelectingPrimerCandidate(t, candidates, a)
+	ctx := context.Background()
+	loopID := agent.ActiveLoopID()
 
-	err := agent.SetModel(context.Background(), agent.ActiveLoopID(), tui.ModelID("candidate-b"))
-	if err == nil {
-		t.Fatal("SetModel(candidate-b) succeeded across providers, want error")
+	if err := agent.SetModel(ctx, loopID, tui.ModelID("candidate-b")); err != nil {
+		t.Fatalf("SetModel(candidate-b) error = %v, want cross-provider switch to succeed", err)
 	}
-	var transportErr *loop.ContextTransportNotDeclaredError
-	if !errors.As(err, &transportErr) {
-		t.Fatalf("SetModel(candidate-b) error = %v, want it to wrap *loop.ContextTransportNotDeclaredError", err)
+
+	options, err := agent.LoopRuntimeOptions(ctx, loopID)
+	if err != nil {
+		t.Fatal(err)
 	}
-	// The displayed string must stay friendly: no raw harness jargon, but still
-	// the plain-English explanation of what happened.
-	if strings.Contains(err.Error(), "loop: change refused") || strings.Contains(err.Error(), "loop: context model changes fixed transport field") {
-		t.Fatalf("error = %q, must not surface raw harness wording to the user", err.Error())
+	// candidate-a's effort (none) is admitted by candidate-b's effort set too,
+	// so the switch must not force a reset.
+	found := false
+	for _, e := range options.Efforts {
+		if e.ID == tui.EffortID(model.EffortNone) {
+			found = true
+		}
 	}
-	if !strings.Contains(err.Error(), "different provider/endpoint") {
-		t.Fatalf("error = %q, want the friendly explanation", err.Error())
+	if !found || len(options.Efforts) != 4 {
+		t.Fatalf("efforts after cross-provider switch = %#v, want candidate-b's 4 options including none", options.Efforts)
+	}
+
+	// Switch back, proving the transport declaration works both directions.
+	if err := agent.SetModel(ctx, loopID, tui.ModelID("candidate-a")); err != nil {
+		t.Fatalf("SetModel(candidate-a) error = %v, want switching back to succeed", err)
 	}
 }
 
 // crossTransportPrimerCandidates builds a three-candidate roster spanning two
-// transport groups: candidate-a and candidate-c share one transport (both
+// transports: candidate-a and candidate-c share one transport (both
 // lmstudio, distinct model Name), candidate-b sits alone on a different one
-// (chutes). This is a separate fixture from multiPrimerCandidates so that
-// fixture's tests stay unaffected by the extra roster member.
+// (chutes). All three are live-switchable from one another now that
+// conversationContextPolicy declares every configured transport.
 func crossTransportPrimerCandidates() []PrimerCandidate {
 	a := testModel()
 	b := model.CustomModel("chutes", model.APIFormatOpenAI, "https://api.chutes.ai", "candidate-b", model.WithTools(), model.WithThinking())
@@ -265,45 +260,15 @@ func crossTransportPrimerCandidates() []PrimerCandidate {
 	}
 }
 
-// TestSetModelCrossProviderErrorNamesLiveAlternatives proves the rejection message
-// for a cross-transport SetModel names the OTHER configured candidates that share
-// the CURRENT model's transport (here, candidate-c, which shares candidate-a's
-// lmstudio provider/format/base_url) as live-switchable alternatives, instead of
-// just saying the switch isn't supported. The rejected target (candidate-b) and
-// the current candidate itself (candidate-a) must not be named as alternatives.
-func TestSetModelCrossProviderErrorNamesLiveAlternatives(t *testing.T) {
+func TestSetModelSwitchesAcrossAllConfiguredTransports(t *testing.T) {
 	candidates := crossTransportPrimerCandidates()
 	agent, _ := openAcceptanceAgentSelectingPrimerCandidate(t, candidates, candidates[0].Model)
+	ctx := context.Background()
+	loopID := agent.ActiveLoopID()
 
-	err := agent.SetModel(context.Background(), agent.ActiveLoopID(), tui.ModelID("candidate-b"))
-	if err == nil {
-		t.Fatal("SetModel(candidate-b) succeeded across providers, want error")
-	}
-	if !strings.Contains(err.Error(), "candidate-c") {
-		t.Fatalf("error = %q, want it to name candidate-c as a live-switchable alternative", err.Error())
-	}
-	if strings.Contains(err.Error(), "candidate-a") {
-		t.Fatalf("error = %q, must not name the current candidate (candidate-a) as an alternative", err.Error())
-	}
-}
-
-// TestSetModelCrossProviderErrorReportsNoAlternatives proves the rejection message
-// says plainly that no alternative exists when the current candidate is the only
-// one on its transport, rather than silently omitting the topic.
-func TestSetModelCrossProviderErrorReportsNoAlternatives(t *testing.T) {
-	a := testModel()
-	b := model.CustomModel("chutes", model.APIFormatOpenAI, "https://api.chutes.ai", "solo-candidate", model.WithTools(), model.WithThinking())
-	candidates := []PrimerCandidate{
-		{Alias: "candidate-a", Description: "Candidate A", Model: a, Efforts: []model.Effort{model.EffortNone}, DefaultEffort: model.EffortNone},
-		{Alias: "solo", Description: "Solo", Model: b, Efforts: []model.Effort{model.EffortNone}, DefaultEffort: model.EffortNone},
-	}
-	agent, _ := openAcceptanceAgentSelectingPrimerCandidate(t, candidates, a)
-
-	err := agent.SetModel(context.Background(), agent.ActiveLoopID(), tui.ModelID("solo"))
-	if err == nil {
-		t.Fatal("SetModel(solo) succeeded across providers, want error")
-	}
-	if !strings.Contains(err.Error(), "no other configured model shares this session's provider/endpoint") {
-		t.Fatalf("error = %q, want the explicit no-alternatives message", err.Error())
+	for _, alias := range []string{"candidate-b", "candidate-c", "candidate-a"} {
+		if err := agent.SetModel(ctx, loopID, tui.ModelID(alias)); err != nil {
+			t.Fatalf("SetModel(%s) error = %v, want every declared candidate reachable", alias, err)
+		}
 	}
 }
