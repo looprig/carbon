@@ -192,3 +192,78 @@ func TestInferencePolicyTransportBinding(t *testing.T) {
 		})
 	}
 }
+
+func TestPrimerContextTransports(t *testing.T) {
+	t.Parallel()
+
+	t.Run("dedups by provider/api-format/base-url", func(t *testing.T) {
+		t.Parallel()
+		a := chutesKimiK26()
+		b := phalaGLM52()
+		// c shares a's transport (same provider/format/base_url) but a different Name.
+		c := model.CustomModel(a.Provider, a.APIFormat, a.BaseURL, "another-chutes-model", model.WithTools())
+		candidates := []PrimerCandidate{
+			{Alias: "a", Model: a},
+			{Alias: "b", Model: b},
+			{Alias: "c", Model: c},
+		}
+
+		transports, err := primerContextTransports(candidates)
+		if err != nil {
+			t.Fatalf("primerContextTransports() error = %v", err)
+		}
+		if len(transports) != 2 {
+			t.Fatalf("transports = %#v, want 2 distinct transports (a/c share one)", transports)
+		}
+		for _, transport := range transports {
+			if err := transport.Capability.Validate(); err != nil {
+				t.Errorf("transport %+v Capability.Validate() error = %v", transport, err)
+			}
+		}
+	})
+
+	t.Run("propagates unsupported provider", func(t *testing.T) {
+		t.Parallel()
+		bad := chutesKimiK26()
+		bad.Provider = model.ProviderName("unknown")
+		candidates := []PrimerCandidate{{Alias: "bad", Model: bad}}
+
+		_, err := primerContextTransports(candidates)
+		var target *UnsupportedInferenceProviderError
+		if !errors.As(err, &target) {
+			t.Fatalf("primerContextTransports() error = %T %v, want *UnsupportedInferenceProviderError", err, err)
+		}
+	})
+
+	t.Run("empty roster returns empty set", func(t *testing.T) {
+		t.Parallel()
+		transports, err := primerContextTransports(nil)
+		if err != nil {
+			t.Fatalf("primerContextTransports(nil) error = %v", err)
+		}
+		if len(transports) != 0 {
+			t.Fatalf("transports = %#v, want empty", transports)
+		}
+	})
+
+	t.Run("capability matches inferenceCapabilityForModel for the same model", func(t *testing.T) {
+		t.Parallel()
+		m := chutesKimiK26()
+		candidates := []PrimerCandidate{{Alias: "a", Model: m}}
+
+		transports, err := primerContextTransports(candidates)
+		if err != nil {
+			t.Fatalf("primerContextTransports() error = %v", err)
+		}
+		want, err := inferenceCapabilityForModel(m)
+		if err != nil {
+			t.Fatalf("inferenceCapabilityForModel() error = %v", err)
+		}
+		if len(transports) != 1 || transports[0].Capability != want {
+			t.Fatalf("transports = %#v, want one entry with capability %+v", transports, want)
+		}
+		if transports[0].Provider != m.Provider || transports[0].APIFormat != m.APIFormat || transports[0].BaseURL != m.BaseURL {
+			t.Fatalf("transport identity = %+v, want it to match model %+v", transports[0], m)
+		}
+	})
+}

@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"strconv"
 
+	"github.com/looprig/harness/pkg/loop"
 	"github.com/looprig/inference/contextcount"
 
 	model "github.com/looprig/inference/model"
@@ -79,6 +80,43 @@ func inferenceCapabilityForModel(model model.Model) (contextcount.InferenceCapab
 	default:
 		return contextcount.InferenceCapability{}, &UnsupportedInferenceProviderError{Provider: model.Provider}
 	}
+}
+
+// primerContextTransports derives the loop-declarable transport set from the
+// configured primer roster, deduplicating by (Provider, APIFormat, BaseURL) —
+// harness's loop.WithContextTransports rejects duplicate-keyed members
+// outright, and multiple candidates commonly share one endpoint (e.g.
+// chutes-kimi-k3 and chutes-glm-5.2). Each distinct transport's capability is
+// derived by the same inferenceCapabilityForModel used for the single-model
+// case, so a live switch and a fresh Open resolve identical capability for
+// the same transport. UnsupportedInferenceProviderError propagates exactly
+// as it does for the single-model path, now checked against the whole roster.
+func primerContextTransports(candidates []PrimerCandidate) ([]loop.ContextTransport, error) {
+	type transportKey struct {
+		Provider  model.ProviderName
+		APIFormat model.APIFormat
+		BaseURL   string
+	}
+	seen := make(map[transportKey]struct{}, len(candidates))
+	transports := make([]loop.ContextTransport, 0, len(candidates))
+	for _, c := range candidates {
+		key := transportKey{Provider: c.Model.Provider, APIFormat: c.Model.APIFormat, BaseURL: c.Model.BaseURL}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		capability, err := inferenceCapabilityForModel(c.Model)
+		if err != nil {
+			return nil, err
+		}
+		transports = append(transports, loop.ContextTransport{
+			Provider:   c.Model.Provider,
+			APIFormat:  c.Model.APIFormat,
+			BaseURL:    c.Model.BaseURL,
+			Capability: capability,
+		})
+	}
+	return transports, nil
 }
 
 func protectedInferenceCapability(model model.Model, policyRevision string) contextcount.InferenceCapability {
