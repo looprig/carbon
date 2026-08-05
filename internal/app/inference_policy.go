@@ -44,8 +44,9 @@ func (e *UnsupportedInferenceProviderError) Error() string {
 }
 
 const (
-	chutesInferenceIdentityRevision = "chutes-e2ee-tee-v1"
-	phalaInferenceIdentityRevision  = "phala-aci-e2ee-v1"
+	chutesInferenceIdentityRevision  = "chutes-e2ee-tee-v1"
+	phalaInferenceIdentityRevision   = "phala-aci-e2ee-v1"
+	genericInferenceIdentityRevision = "generic-tls-v1"
 )
 
 // newModelInferencePolicy resolves the fixed, I/O-free counter and inference
@@ -78,7 +79,30 @@ func inferenceCapabilityForModel(model model.Model) (contextcount.InferenceCapab
 			Retention: contextcount.RetentionNone,
 		}, nil
 	default:
-		return contextcount.InferenceCapability{}, &UnsupportedInferenceProviderError{Provider: model.Provider}
+		// Any provider modelconfig_normalize.go's llm.Provider(...).RequiredAuth()
+		// gate would also accept gets the same conservative, unreviewed-tier
+		// capability: plain TLS to a remote endpoint, retention unknown. It
+		// still gets a SecurityIdentity — derived by the same
+		// transportSecurityIdentity helper chutes/phala use, just under the
+		// generic/unreviewed revision string above rather than a specific
+		// reviewed provider policy — because contextcount.InferenceCapability's
+		// Validate() requires non-zero SecurityIdentity for any transport at
+		// or above TLS. The "no TEE-attestation review" distinction stays
+		// fully carried by Transport/Retention (TLS + RetentionUnknown vs.
+		// chutes/phala's EndToEndEncrypted), not by this field being zero. A
+		// provider RequiredAuth itself doesn't recognize still fails closed —
+		// this keeps the fail-closed posture for genuinely unknown input
+		// while extending trust to exactly what models.json's own
+		// normalization already trusts, no further.
+		if _, err := provider.RequiredAuth(); err != nil {
+			return contextcount.InferenceCapability{}, &UnsupportedInferenceProviderError{Provider: model.Provider}
+		}
+		return contextcount.InferenceCapability{
+			Provider:         contextcount.ProviderID(model.Provider),
+			Transport:        contextcount.InferenceTransportTLS,
+			SecurityIdentity: transportSecurityIdentity(model, genericInferenceIdentityRevision),
+			Retention:        contextcount.RetentionUnknown,
+		}, nil
 	}
 }
 

@@ -267,3 +267,40 @@ func TestPrimerContextTransports(t *testing.T) {
 		}
 	})
 }
+
+func TestInferenceCapabilityForModelSupportsAnyKnownProvider(t *testing.T) {
+	t.Parallel()
+
+	t.Run("a provider outside the reviewed three gets a conservative default", func(t *testing.T) {
+		t.Parallel()
+		m := model.CustomModel(model.ProviderName(llm.ProviderOpenAI), model.APIFormatOpenAIResponses, "", "gpt-test", model.WithTools())
+
+		capability, err := inferenceCapabilityForModel(m)
+		if err != nil {
+			t.Fatalf("inferenceCapabilityForModel() error = %v", err)
+		}
+		if err := capability.Validate(); err != nil {
+			t.Fatalf("capability.Validate() error = %v", err)
+		}
+		if capability.Transport != contextcount.InferenceTransportTLS {
+			t.Errorf("Transport = %v, want InferenceTransportTLS", capability.Transport)
+		}
+		if capability.Retention != contextcount.RetentionUnknown {
+			t.Errorf("Retention = %v, want RetentionUnknown", capability.Retention)
+		}
+		if capability.SecurityIdentity == (contextcount.SecurityIdentity{}) {
+			t.Errorf("SecurityIdentity is zero, want a derived non-zero identity (contextcount.InferenceCapability.Validate() requires non-zero SecurityIdentity for any transport at or above TLS)")
+		}
+	})
+
+	t.Run("a provider llm itself doesn't recognize still fails closed", func(t *testing.T) {
+		t.Parallel()
+		m := model.CustomModel(model.ProviderName("not-a-real-provider"), model.APIFormatOpenAI, "https://bad.example.test", "bad-model", model.WithTools())
+
+		_, err := inferenceCapabilityForModel(m)
+		var target *UnsupportedInferenceProviderError
+		if !errors.As(err, &target) {
+			t.Fatalf("inferenceCapabilityForModel() error = %T %v, want *UnsupportedInferenceProviderError", err, err)
+		}
+	})
+}
