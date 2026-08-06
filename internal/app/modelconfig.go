@@ -26,8 +26,6 @@ const (
 	maxModelConfigErrorCauseBytes     = 256
 )
 
-var errDuplicateModelConfigKey = errors.New("duplicate JSON object key")
-
 type modelConfigFile struct {
 	Version              int                               `json:"version"`
 	PrimerDefault        string                            `json:"primer_default"`
@@ -252,78 +250,6 @@ func rejectNullPermissionReview(data []byte) error {
 	}
 	if bytes.Equal(bytes.TrimSpace(probe.PermissionReview), []byte("null")) {
 		return errors.New("permission_review must be an object")
-	}
-	return nil
-}
-
-func rejectDuplicateJSONKeys(data []byte) error {
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	if err := walkModelConfigJSONValue(decoder); err != nil {
-		if errors.Is(err, errDuplicateModelConfigKey) {
-			return errDuplicateModelConfigKey
-		}
-		return errors.New("invalid JSON model configuration")
-	}
-	if _, err := decoder.Token(); err != io.EOF {
-		if err == nil {
-			return errors.New("multiple top-level JSON values")
-		}
-		return errors.New("invalid JSON model configuration")
-	}
-	return nil
-}
-
-func walkModelConfigJSONValue(decoder *json.Decoder) error {
-	token, err := decoder.Token()
-	if err != nil {
-		return err
-	}
-	delim, ok := token.(json.Delim)
-	if !ok {
-		return nil
-	}
-	switch delim {
-	case '{':
-		seen := make(map[string]struct{})
-		for decoder.More() {
-			keyToken, err := decoder.Token()
-			if err != nil {
-				return err
-			}
-			key, ok := keyToken.(string)
-			if !ok {
-				return errors.New("object key is not a string")
-			}
-			if _, exists := seen[key]; exists {
-				return errDuplicateModelConfigKey
-			}
-			seen[key] = struct{}{}
-			if err := walkModelConfigJSONValue(decoder); err != nil {
-				return err
-			}
-		}
-		closing, err := decoder.Token()
-		if err != nil {
-			return err
-		}
-		if closing != json.Delim('}') {
-			return errors.New("malformed JSON object")
-		}
-	case '[':
-		for decoder.More() {
-			if err := walkModelConfigJSONValue(decoder); err != nil {
-				return err
-			}
-		}
-		closing, err := decoder.Token()
-		if err != nil {
-			return err
-		}
-		if closing != json.Delim(']') {
-			return errors.New("malformed JSON array")
-		}
-	default:
-		return errors.New("unexpected JSON delimiter")
 	}
 	return nil
 }
