@@ -6,7 +6,8 @@ GO_FILES := $(shell go list -f '{{range .GoFiles}}{{$$.Dir}}/{{.}} {{end}}{{rang
 
 # Build the CodeRig binary.
 build:
-	CGO_ENABLED=0 go build -trimpath -o bin/coderig ./cmd/coderig
+	mkdir -p $(HOME)/.looprig/bin
+	CGO_ENABLED=0 go build -trimpath -o $(HOME)/.looprig/bin/coderig ./cmd/coderig
 
 # Run the TUI directly. Optional .env values are launcher settings (for example,
 # ACP executable path overrides), never provider credentials; models and inline
