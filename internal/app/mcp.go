@@ -1,9 +1,13 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"sort"
+	"sync"
 
+	"github.com/looprig/harness/pkg/gate"
+	"github.com/looprig/harness/pkg/session"
 	mcpauth "github.com/looprig/mcp/pkg/auth"
 	mcpclient "github.com/looprig/mcp/pkg/client"
 	mcpharness "github.com/looprig/mcp/pkg/harness"
@@ -209,3 +213,221 @@ func mcpVisibilityRoles(specRoles []string) []string {
 	}
 	return specRoles
 }
+
+// mcpGateOpener routes MCP elicitation to the session's host-owned gate
+// (session.GateHost, obtained by asserting the controller rig.NewSession
+// returns). It is late-binding: the mcpharness.Manager this feeds is built
+// before the session exists -- ConfigDigest must enter the rig fingerprint
+// before rig.NewSession is even called (design
+// docs/plans/2026-08-05-coderig-mcp-and-permission-review-design.md
+// section 1.2.3) -- so there is necessarily a window in which an
+// elicitation could arrive with nowhere to go. Bind installs the host once
+// the session is live (Task 10's job, not this one's); before that, and
+// permanently for a headless composition, which never calls Bind at all
+// (matching the headless permission posture: MCP elicitation is exactly
+// the kind of human-input request headless mode has nothing to answer
+// with), every OpenGate call refuses with a typed error rather than
+// blocking forever or silently succeeding.
+type mcpGateOpener struct {
+	mu   sync.Mutex
+	host session.GateHost // nil until Bind
+}
+
+// Bind installs the live session's host-owned gate surface. It is
+// mutex-guarded so a concurrent OpenGate can never observe a half-written
+// host, even though Task 10's wiring calls it exactly once, right after
+// rig.NewSession.
+func (o *mcpGateOpener) Bind(h session.GateHost) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.host = h
+}
+
+// OpenGate maps one MCP elicitation onto session.GateHost.OpenHostGate and
+// blocks until it is answered. This is the FAITHFUL mapping, not a
+// refuse-with-reason placeholder: every gate.Gate field GateRequest does
+// not supply directly is set from something read in harness's own
+// published contract for this exact call, never guessed --
+//
+//   - Resolver is ALWAYS gate.ResolverSession. session.GateHost's doc
+//     comment (harness/pkg/session/session.go) states the contract is
+//     "host-owned gates ONLY (gate.KindForm and gate.KindOpenURL with
+//     gate.ResolverSession)", and OpenHostGate refuses
+//     (*session.GateError{Kind: GateKindMismatch}) anything else before it
+//     is ever journaled -- there is no other legal value here.
+//   - Blocks/Effect are gate.BlocksToolCall/gate.EffectResume. This
+//     matches harness's own external-consumer proof for this exact call --
+//     harness/pkg/rig/gate_host_test.go's formGate/openURLGate helpers,
+//     exercised against the real rig.NewSession + OpenHostGate path -- not
+//     an invented value: an MCP elicitation blocks the tool call that
+//     raised it, and resolving it resumes that call, the same semantics
+//     those helpers encode for every host-owned gate harness itself tests.
+//   - Criticality and ResponsePolicy are left at their zero values. Every
+//     gate constructor in production harness code today -- both loop-owned
+//     (internal/loopruntime/gate.go's permissionGate/askUserGate) and the
+//     host-owned pair above -- also leaves Criticality unset, so zero is
+//     the established convention, not an omission. ResponsePolicy's zero
+//     value resolves to gate.PolicyWait (pkg/gate/policy.go's
+//     EffectiveAction), which sessionruntime's resolveGatePolicy accepts
+//     unconditionally: an MCP elicitation carries no timeout policy of its
+//     own through this call, so "leave the gate open until answered or
+//     closed" is correct, not a default standing in for a real value.
+//   - Subject is left zero. pkg/event/validate.go's gateIdentityProfile
+//     documents that a ResolverSession gate's LoopID/TurnID/StepID are
+//     OPTIONAL ("a loop-attributed elicitation carries a LoopID, startup
+//     carries none") -- exactly GateRequest.LoopID's own doc comment -- and
+//     GateRequest carries no TurnID/StepID at all, so there is nothing to
+//     put there.
+//   - Prompt and Restorable are forwarded from req unchanged. Prompt is
+//     already a gate.Prompt (the identical type), and Restorable is the
+//     caller's own already-enforced invariant
+//     (mcpharness.GateRequest.Restorable's doc: "an open-url gate must
+//     never be restorable"); forwarding it means that if it were ever
+//     violated, gate.ValidateGate rejects the open on the host side too,
+//     instead of this adapter silently dropping the flag.
+//
+// Kind and Payload are req.Kind/req.Payload unchanged: both are already
+// the exact harness gate types (gate.Kind, gate.Payload), so there is no
+// translation to get wrong.
+//
+// A failure awaiting the answer (including ctx cancellation -- OpenGate
+// must honor ctx per mcpharness.GateOpener's doc) withdraws the gate
+// (CloseGate) before returning, so a caller that gives up never leaves an
+// orphaned open gate a human could still answer into the void. The close
+// uses context.WithoutCancel: the gate is durable state the original,
+// possibly-cancelled ctx has no further say over, the same idiom this
+// module's own harness dependency uses for identical cleanup-after-
+// cancellation calls (e.g. internal/sessionruntime/session.go's shutdown
+// path, internal/sessionruntime/review_adapter.go's fault reporting).
+func (o *mcpGateOpener) OpenGate(ctx context.Context, req mcpharness.GateRequest) (mcpharness.GateResponse, error) {
+	o.mu.Lock()
+	host := o.host
+	o.mu.Unlock()
+	if host == nil {
+		return mcpharness.GateResponse{}, &mcpGateOpenerUnboundError{Binding: req.Binding}
+	}
+
+	g := gate.Gate{
+		Kind:       req.Kind,
+		Resolver:   gate.ResolverSession,
+		Blocks:     gate.BlocksToolCall,
+		Effect:     gate.EffectResume,
+		Prompt:     req.Prompt,
+		Restorable: req.Restorable,
+	}
+
+	id, err := host.OpenHostGate(ctx, req.LoopID, g, req.Payload)
+	if err != nil {
+		return mcpharness.GateResponse{}, fmt.Errorf("mcp gate opener: open host gate for binding %q: %w", req.Binding, err)
+	}
+
+	answer, err := host.AwaitGateAnswer(ctx, id)
+	if err != nil {
+		_ = host.CloseGate(context.WithoutCancel(ctx), id, gate.CloseAbandoned)
+		return mcpharness.GateResponse{}, fmt.Errorf("mcp gate opener: await answer for binding %q: %w", req.Binding, err)
+	}
+
+	return mcpharness.GateResponse{Action: answer.Action, Values: answer.Values}, nil
+}
+
+var _ mcpharness.GateOpener = (*mcpGateOpener)(nil)
+
+// mcpGateOpenerUnboundError reports an mcpGateOpener whose host has not
+// been bound: either the session has not finished construction yet (a
+// transient state Task 10's binding order should make unreachable in
+// practice), or -- the permanent case -- the session is headless, whose
+// composition never calls Bind at all (design section 1.2.3: "Headless
+// sessions install an always-refusing opener, matching the headless
+// permission posture"). Both refuse identically and by construction rather
+// than through a headless-only special case, so this is also exactly what
+// a genuine startup race would produce: there is no silent success to
+// accidentally rely on either way.
+type mcpGateOpenerUnboundError struct {
+	// Binding names the MCP binding whose elicitation could not be routed.
+	Binding string
+}
+
+func (e *mcpGateOpenerUnboundError) Error() string {
+	return fmt.Sprintf("mcp gate opener: no session gate host bound (binding %q); MCP elicitation cannot be answered", e.Binding)
+}
+
+// maxMCPNoticeBacklog bounds mcpNoticeRecorder's retained history so a
+// long-lived session cannot grow it without limit. Once full, Report drops
+// the oldest retained notice and counts the drop instead of blocking or
+// growing further.
+const maxMCPNoticeBacklog = 256
+
+// mcpNoticeRecorder is coderig's mcpharness.Reporter: a bounded, in-memory,
+// always-usable sink for the adapter's own notices (tool-name collisions,
+// adoption failures, and so on -- see mcpharness.NoticeKind).
+//
+// # Why this is NOT late-binding, unlike mcpGateOpener
+//
+// A late-binding shape earns its complexity only when something real
+// exists to eventually bind to. mcpGateOpener binds to session.GateHost, a
+// published capability session.SessionController genuinely exposes once
+// rig.NewSession returns. No equivalent exists for a Reporter as of this
+// task: session.Session's whole public surface is SubscribeEvents
+// (read-only, and scoped to harness's own sealed event.Event set --
+// mcpharness.Notice is explicitly NOT a member; see
+// mcp/pkg/harness/deps.go's Notice doc for why it can't be) and
+// RespondGate. There is no method anywhere an external package can call to
+// inject an out-of-band notice onto a live session, at bind time or any
+// other time. internal/app's one existing PublishEvent-shaped seam
+// (foreign.EventPublisher, internal/app/acpchildren.go) is reached deep
+// inside per-child-loop construction, well after a Loop already exists --
+// the same "the Manager exists before the thing it would bind to" timing
+// problem the GateOpener has, except here there is nothing waiting at the
+// other end of a Bind either.
+//
+// So: a plain, always-live, bounded in-memory recorder, safe to construct
+// standalone and safe to leave permanently disconnected. Task 10 decides
+// whether to wire an *mcpNoticeRecorder in as Deps.Reporter or leave
+// Deps.Reporter nil -- both are sanctioned outcomes for that task -- and
+// either choice leaves this type unchanged.
+type mcpNoticeRecorder struct {
+	mu      sync.Mutex
+	notices []mcpharness.Notice
+	dropped uint64
+}
+
+// newMCPNoticeRecorder returns an empty recorder, ready to use.
+func newMCPNoticeRecorder() *mcpNoticeRecorder {
+	return &mcpNoticeRecorder{}
+}
+
+// Report implements mcpharness.Reporter. It never blocks and never panics:
+// Manager.report calls it "on the goroutine that discovered the fact"
+// (mcp/pkg/harness/deps.go's Reporter doc), so this only ever takes an
+// uncontended mutex and appends. Once maxMCPNoticeBacklog notices are
+// held, the oldest is dropped and Dropped's count increments -- a Reporter
+// that grew without bound would be exactly the kind of resource a
+// long-lived headless server exhausts first.
+func (r *mcpNoticeRecorder) Report(n mcpharness.Notice) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.notices) >= maxMCPNoticeBacklog {
+		r.notices = r.notices[1:]
+		r.dropped++
+	}
+	r.notices = append(r.notices, n)
+}
+
+// Notices returns a copy of the retained backlog, oldest first.
+func (r *mcpNoticeRecorder) Notices() []mcpharness.Notice {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]mcpharness.Notice, len(r.notices))
+	copy(out, r.notices)
+	return out
+}
+
+// Dropped reports how many notices were evicted for exceeding the backlog
+// bound.
+func (r *mcpNoticeRecorder) Dropped() uint64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.dropped
+}
+
+var _ mcpharness.Reporter = (*mcpNoticeRecorder)(nil)
