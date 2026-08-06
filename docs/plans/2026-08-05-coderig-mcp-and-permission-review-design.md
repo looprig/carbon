@@ -365,3 +365,9 @@ valid v2; no version bump):
 - In-session reconfiguration of MCP servers (the mcp module supports it; no
   CodeRig surface for it in v1).
 - CLI flags for any of the above.
+- The exported library construction path (`New()`/`newWithClient`) does not
+  compose MCP — only `SessionStoreFactory.Open` → `openRuntimeAgent` does,
+  and `cmd/coderig` exclusively uses that path. This is a real, pre-existing
+  gap (not introduced by this plan); it is flagged in code comments
+  (`runtime_controls.go`, `swarm.go`) but has no dedicated fix here because
+  nothing in `cmd/coderig` exercises `New()`/`newWithClient` today.
