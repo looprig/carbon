@@ -92,6 +92,59 @@ func TestNewACPCompositionPreflightsProfilesAndFiltersEnv(t *testing.T) {
 	}
 }
 
+func TestNewACPCompositionDiagnosticsReducedModels(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiled := testACPGatewayCatalog(t)
+	before := 0
+	for _, entry := range compiled.entries {
+		if entry.AgentHarness == "claude-code" {
+			before += len(entry.Models)
+		}
+	}
+	if before < 2 {
+		t.Fatalf("fixture does not configure enough claude-code models to exercise a partial reduction: %d", before)
+	}
+	composition, err := NewACPComposition(ACPChildrenConfig{
+		Catalog:                 compiled,
+		Executables:             map[loop.AgentHarnessName]string{"claude-code": executable, "codex": executable},
+		WorkspaceRoot:           t.TempDir(),
+		gatewayPreflightBinding: &launch.ProxyBinding{BaseURL: "http://127.0.0.1:1", Token: "test-token"},
+		executablePreflight: func(context.Context, ACPExecutableProbe) ACPPreflightResult {
+			// sonnet-5 remains the default alias for claude-code (per
+			// legacyTestDefaults), so omitting only fable-5 keeps claude-code
+			// admitted while genuinely reducing its surviving model count.
+			return ACPPreflightResult{Ready: true, AdvertisedModels: []string{"sonnet-5", "opus-5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"}}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !composition.Catalog.HasProfile("acp/claude-code") {
+		t.Fatal("claude-code profile should still be admitted with a reduced model set")
+	}
+	after := 0
+	for _, entry := range composition.Catalog.entries {
+		if entry.AgentHarness == "claude-code" {
+			after += len(entry.Models)
+		}
+	}
+	if after == 0 || after >= before {
+		t.Fatalf("expected a genuine partial reduction for claude-code, before=%d after=%d", before, after)
+	}
+	found := false
+	for _, line := range composition.Diagnostics {
+		if strings.Contains(line, "claude-code:") && strings.Contains(line, "not advertised") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a reduced-models diagnostic for claude-code, got %v", composition.Diagnostics)
+	}
+}
+
 func TestACPChildEnvIsCredentialScoped(t *testing.T) {
 	config := ACPChildrenConfig{
 		Env: []string{

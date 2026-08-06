@@ -145,6 +145,7 @@ func NewACPComposition(config ACPChildrenConfig) (*ACPComposition, error) {
 	if err != nil {
 		return nil, err
 	}
+	diagnostics = append(diagnostics, acpDiagnosticsReducedModels(config.Catalog, filtered)...)
 	config.Catalog = filtered
 	factory := &acpChildFactory{config: config}
 	for _, profile := range []loop.RuntimeProfileName{"acp/claude-code", "acp/codex"} {
@@ -190,6 +191,56 @@ func acpDiagnosticPreflightFailed(harness loop.AgentHarnessName, decision acpPre
 		mode = "native"
 	}
 	return fmt.Sprintf("acp: %s unavailable: preflight failed (%s)", harness, mode)
+}
+
+// acpDiagnosticsReducedModels reports, per harness, how many distinct
+// configured model aliases were dropped by preflight filtering. A harness
+// with zero surviving models already produced a preflight-failed or
+// no-executable diagnostic above and is skipped here to avoid a duplicate,
+// contradictory line.
+func acpDiagnosticsReducedModels(before, after ACPCompiledCatalog) []string {
+	beforeCounts := acpDistinctModelCountsByHarness(before)
+	afterCounts := acpDistinctModelCountsByHarness(after)
+	harnesses := make([]string, 0, len(beforeCounts))
+	for harness := range beforeCounts {
+		harnesses = append(harnesses, string(harness))
+	}
+	sort.Strings(harnesses)
+	var diagnostics []string
+	for _, harnessName := range harnesses {
+		harness := loop.AgentHarnessName(harnessName)
+		beforeCount := beforeCounts[harness]
+		afterCount := afterCounts[harness]
+		if afterCount == 0 || afterCount >= beforeCount {
+			continue
+		}
+		diagnostics = append(diagnostics, fmt.Sprintf(
+			"acp: %s: %d configured model(s) not advertised by the adapter", harness, beforeCount-afterCount,
+		))
+	}
+	return diagnostics
+}
+
+func acpDistinctModelCountsByHarness(catalog ACPCompiledCatalog) map[loop.AgentHarnessName]int {
+	seen := make(map[loop.AgentHarnessName]map[loop.ModelAlias]struct{})
+	for _, entry := range catalog.entries {
+		if entry.AgentHarness == looprigRuntimeHarness {
+			continue
+		}
+		set, ok := seen[entry.AgentHarness]
+		if !ok {
+			set = make(map[loop.ModelAlias]struct{})
+			seen[entry.AgentHarness] = set
+		}
+		for _, option := range entry.Models {
+			set[option.Alias] = struct{}{}
+		}
+	}
+	counts := make(map[loop.AgentHarnessName]int, len(seen))
+	for harness, set := range seen {
+		counts[harness] = len(set)
+	}
+	return counts
 }
 
 type acpPreflightDecision struct {
