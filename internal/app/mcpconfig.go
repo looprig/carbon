@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"sort"
 	"unicode/utf8"
 
@@ -68,6 +69,13 @@ const (
 	maxMCPConfigErrorFieldBytes   = 64
 	maxMCPConfigErrorCauseBytes   = 256
 )
+
+// maxMCPConfigBytes is mcp.json's size cap. It is identical to
+// maxModelConfigBytes (models.json's own cap) per the design doc: mcp.json
+// may carry the same class of secret (bearer tokens, headers, env values)
+// that models.json carries as inline API keys, so it gets the same file
+// hygiene, including the same size limit.
+const maxMCPConfigBytes = 1 << 20
 
 // MCPConfigError reports an invalid mcp.json binding, following
 // *ModelConfigError's bounded, secret-free style: every component is
@@ -311,4 +319,46 @@ func copyMCPServerStringMap(src map[string]string) map[string]string {
 		dst[k] = v
 	}
 	return dst
+}
+
+// loadMCPConfig loads, validates, and normalizes <home>/mcp.json, where home
+// is looprigHome(cfg)'s result (honoring Config.HomeDir the same way every
+// other CodeRig config file under the looprig home does). An absent file
+// means the mcp.json feature is off entirely: (nil, nil), not an error --
+// the same "absence is not failure" contract loadProductionModels applies to
+// models.json. File hygiene is identical to models.json's (see
+// readHygienicConfigFile), because mcp.json headers/env may carry
+// credentials just as models.json's inline api_key fields do.
+func loadMCPConfig(cfg Config) ([]mcpServerSpec, error) {
+	home, err := looprigHome(cfg)
+	if err != nil {
+		return nil, err
+	}
+	path := filepath.Join(home, "mcp.json")
+
+	data, exists, err := readMCPConfigFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, nil
+	}
+
+	file, err := decodeMCPConfig(data)
+	if err != nil {
+		return nil, err
+	}
+	return normalizeMCPConfig(file)
+}
+
+// readMCPConfigFile applies mcp.json's file hygiene: it shares
+// readHygienicConfigFile and openModelConfigNoFollow with models.json (both
+// are generic despite their model-scoped names -- see confighygiene.go and
+// modelconfig_open_unix.go) and supplies its own byte cap and its own typed
+// *MCPConfigError, matching modelConfigFailure's discipline for the
+// equivalent models.json path.
+func readMCPConfigFile(path string) ([]byte, bool, error) {
+	return readHygienicConfigFile(path, maxMCPConfigBytes, openModelConfigNoFollow, func(op string, cause error) error {
+		return mcpConfigFailure("", "", fmt.Errorf("%s: %w", op, cause))
+	})
 }

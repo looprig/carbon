@@ -1,7 +1,10 @@
 package app
 
 import (
+	"bytes"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -406,4 +409,165 @@ func assertMCPConfigDecodeError(t *testing.T, err error) {
 	if strings.Contains(err.Error(), mcpConfigTestSecret) {
 		t.Errorf("decodeMCPConfig() leaked secret: %v", err)
 	}
+}
+
+// TestReadMCPConfigFile exercises mcp.json's file hygiene directly, at the
+// same level modelconfig_test.go's TestReadModelConfigFile exercises
+// models.json's -- both ultimately call the shared readHygienicConfigFile,
+// but this proves maxMCPConfigBytes and the mcp.json wiring are correct on
+// their own, independent of loadMCPConfig's higher-level behavior.
+func TestReadMCPConfigFile(t *testing.T) {
+	t.Run("absent", func(t *testing.T) {
+		got, exists, err := readMCPConfigFile(filepath.Join(t.TempDir(), "missing.json"))
+		if err != nil || exists || got != nil {
+			t.Fatalf("readMCPConfigFile(absent) = (%q, %v, %v), want (nil, false, nil)", got, exists, err)
+		}
+	})
+
+	t.Run("exact size limit", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "mcp.json")
+		want := bytes.Repeat([]byte{'x'}, maxMCPConfigBytes)
+		writeModelConfigFixture(t, path, want, 0o600)
+
+		got, exists, err := readMCPConfigFile(path)
+		if err != nil || !exists || !bytes.Equal(got, want) {
+			t.Fatalf("readMCPConfigFile(exact limit) = (%d bytes, %v, %v), want (%d bytes, true, nil)", len(got), exists, err, len(want))
+		}
+	})
+
+	t.Run("over size limit", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "mcp.json")
+		content := make([]byte, maxMCPConfigBytes+1)
+		writeModelConfigFixture(t, path, content, 0o600)
+
+		got, exists, err := readMCPConfigFile(path)
+		if err == nil || !exists || got != nil {
+			t.Fatalf("readMCPConfigFile(over limit) = (%q, %v, %v), want (nil, true, error)", got, exists, err)
+		}
+		var configErr *MCPConfigError
+		if !errors.As(err, &configErr) {
+			t.Errorf("readMCPConfigFile(over limit) error type = %T, want *MCPConfigError", err)
+		}
+	})
+}
+
+// TestLoadMCPConfig covers Task 7's file-hygiene-plus-boundary entry point:
+// absent file means the feature is off, hygiene violations produce a typed
+// error identical in kind to models.json's, and the happy path proves the
+// full disk -> decode -> normalize chain, not just that hygiene passed.
+func TestLoadMCPConfig(t *testing.T) {
+	t.Run("absent file means the feature is off", func(t *testing.T) {
+		home := t.TempDir()
+		specs, err := loadMCPConfig(Config{HomeDir: home})
+		if err != nil || specs != nil {
+			t.Fatalf("loadMCPConfig(absent) = (%v, %v), want (nil, nil)", specs, err)
+		}
+	})
+
+	t.Run("mode 0644 is rejected", func(t *testing.T) {
+		if !modelConfigTestIsUnix() {
+			t.Skip("Unix permission bits are not supported on this platform")
+		}
+		home := t.TempDir()
+		path := filepath.Join(home, "mcp.json")
+		writeModelConfigFixture(t, path, []byte(validMCPConfigJSON), 0o644)
+
+		specs, err := loadMCPConfig(Config{HomeDir: home})
+		if err == nil || specs != nil {
+			t.Fatalf("loadMCPConfig(mode 0644) = (%v, %v), want (nil, error)", specs, err)
+		}
+		var configErr *MCPConfigError
+		if !errors.As(err, &configErr) {
+			t.Errorf("loadMCPConfig(mode 0644) error type = %T, want *MCPConfigError", err)
+		}
+	})
+
+	t.Run("symlink is rejected", func(t *testing.T) {
+		home := t.TempDir()
+		target := filepath.Join(home, "target.json")
+		writeModelConfigFixture(t, target, []byte(validMCPConfigJSON), 0o600)
+		path := filepath.Join(home, "mcp.json")
+		if err := os.Symlink(target, path); err != nil {
+			t.Skipf("symlinks unsupported: %v", err)
+		}
+
+		specs, err := loadMCPConfig(Config{HomeDir: home})
+		if err == nil || specs != nil {
+			t.Fatalf("loadMCPConfig(symlink) = (%v, %v), want (nil, error)", specs, err)
+		}
+		var configErr *MCPConfigError
+		if !errors.As(err, &configErr) {
+			t.Errorf("loadMCPConfig(symlink) error type = %T, want *MCPConfigError", err)
+		}
+	})
+
+	t.Run("over size limit is rejected", func(t *testing.T) {
+		home := t.TempDir()
+		path := filepath.Join(home, "mcp.json")
+		content := make([]byte, maxMCPConfigBytes+1)
+		writeModelConfigFixture(t, path, content, 0o600)
+
+		specs, err := loadMCPConfig(Config{HomeDir: home})
+		if err == nil || specs != nil {
+			t.Fatalf("loadMCPConfig(over limit) = (%v, %v), want (nil, error)", specs, err)
+		}
+		var configErr *MCPConfigError
+		if !errors.As(err, &configErr) {
+			t.Errorf("loadMCPConfig(over limit) error type = %T, want *MCPConfigError", err)
+		}
+	})
+
+	t.Run("happy path returns the full disk-to-spec chain", func(t *testing.T) {
+		home := t.TempDir()
+		path := filepath.Join(home, "mcp.json")
+		writeModelConfigFixture(t, path, []byte(validMCPConfigJSON), 0o600)
+
+		specs, err := loadMCPConfig(Config{HomeDir: home})
+		if err != nil {
+			t.Fatalf("loadMCPConfig() error = %v", err)
+		}
+		if len(specs) != 2 {
+			t.Fatalf("loadMCPConfig() specs = %d, want 2", len(specs))
+		}
+
+		context7, docsLocal := specs[0], specs[1]
+		if context7.name != "context7" || context7.kind != "http" || context7.url != "https://mcp.context7.com/mcp" {
+			t.Errorf("specs[0] = %+v", context7)
+		}
+		if context7.headers["CONTEXT7_API_KEY"] != mcpConfigTestSecret {
+			t.Errorf("specs[0].headers = %+v", context7.headers)
+		}
+		if docsLocal.name != "docs-local" || docsLocal.kind != "stdio" || docsLocal.command != "npx" {
+			t.Errorf("specs[1] = %+v", docsLocal)
+		}
+		if strings.Join(docsLocal.roles, ",") != "builder,planner" {
+			t.Errorf("specs[1].roles = %v, want sorted [builder planner]", docsLocal.roles)
+		}
+	})
+
+	t.Run("HomeDir override changes where mcp.json is read from", func(t *testing.T) {
+		processHome := t.TempDir()
+		setProcessHome(t, processHome)
+
+		override := t.TempDir()
+		path := filepath.Join(override, "mcp.json")
+		writeModelConfigFixture(t, path, []byte(validMCPConfigJSON), 0o600)
+
+		specs, err := loadMCPConfig(Config{HomeDir: override})
+		if err != nil {
+			t.Fatalf("loadMCPConfig(HomeDir override) error = %v", err)
+		}
+		if len(specs) != 2 {
+			t.Fatalf("loadMCPConfig(HomeDir override) specs = %d, want 2", len(specs))
+		}
+
+		// The process HOME default (~/.looprig/mcp.json) was never written, so
+		// if loadMCPConfig had ignored HomeDir and fallen back to it instead of
+		// honoring the override, this would also return (nil, nil) -- proving
+		// the first call above really did read from the override.
+		specs, err = loadMCPConfig(Config{})
+		if err != nil || specs != nil {
+			t.Fatalf("loadMCPConfig(process HOME default) = (%v, %v), want (nil, nil)", specs, err)
+		}
+	})
 }

@@ -4,9 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -298,48 +296,9 @@ func readModelConfigFile(path string) ([]byte, bool, error) {
 }
 
 func readModelConfigFileWithOpen(path string, openFile func(string) (*os.File, error)) ([]byte, bool, error) {
-	beforeOpen, err := os.Lstat(path)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil, false, nil
-		}
-		return nil, false, modelConfigFailure("inspect "+path, err)
-	}
-	if beforeOpen.Mode()&os.ModeSymlink != 0 {
-		return nil, true, modelConfigFailure("validate "+path, errors.New("symbolic links are not allowed"))
-	}
-	if !beforeOpen.Mode().IsRegular() {
-		return nil, true, modelConfigFailure("validate "+path, errors.New("file is not regular"))
-	}
-	if modelConfigIsUnix() && beforeOpen.Mode().Perm()&0o077 != 0 {
-		return nil, true, modelConfigFailure("validate "+path, fmt.Errorf("permissions %04o allow group or other access", beforeOpen.Mode().Perm()))
-	}
-
-	file, err := openFile(path)
-	if err != nil {
-		return nil, true, modelConfigFailure("open "+path, err)
-	}
-	defer file.Close()
-
-	afterOpen, err := file.Stat()
-	if err != nil {
-		return nil, true, modelConfigFailure("inspect opened file "+path, err)
-	}
-	if !afterOpen.Mode().IsRegular() || !os.SameFile(beforeOpen, afterOpen) {
-		return nil, true, modelConfigFailure("validate opened file "+path, errors.New("file type or identity changed while opening"))
-	}
-	if modelConfigIsUnix() && afterOpen.Mode().Perm()&0o077 != 0 {
-		return nil, true, modelConfigFailure("validate opened file "+path, fmt.Errorf("permissions %04o allow group or other access", afterOpen.Mode().Perm()))
-	}
-
-	data, err := io.ReadAll(io.LimitReader(file, maxModelConfigBytes+1))
-	if err != nil {
-		return nil, true, modelConfigFailure("read "+path, err)
-	}
-	if len(data) > maxModelConfigBytes {
-		return nil, true, modelConfigFailure("read "+path, fmt.Errorf("file exceeds %d-byte limit", maxModelConfigBytes))
-	}
-	return data, true, nil
+	return readHygienicConfigFile(path, maxModelConfigBytes, openFile, func(op string, cause error) error {
+		return modelConfigFailure(op, cause)
+	})
 }
 
 func modelConfigIsUnix() bool {
