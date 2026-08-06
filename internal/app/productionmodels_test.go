@@ -332,6 +332,51 @@ func TestProductionModelsResolvesPermissionReview(t *testing.T) {
 	})
 }
 
+// TestProductionModelsResolvesUnusedClassifierPermissionReview is the
+// end-to-end (JSON in, compileProductionModels out) proof for the
+// phase-boundary review's fix: a models.json row whose "uses" field is
+// entirely omitted from the JSON binds through permission_review.model, and
+// stays invisible to both the primer-picker (PrimerCandidates) and the
+// delegate roster (ACP) — proving it is genuinely excluded from those
+// rosters, not merely absent from them by coincidence.
+func TestProductionModelsResolvesUnusedClassifierPermissionReview(t *testing.T) {
+	wire, err := decodeModelConfig([]byte(modelConfigJSONWithUnusedClassifier()))
+	if err != nil {
+		t.Fatalf("decodeModelConfig() error = %v", err)
+	}
+	normalized, err := normalizeModelConfig(wire)
+	if err != nil {
+		t.Fatalf("normalizeModelConfig() error = %v", err)
+	}
+	classifier, ok := modelConfigNormalizedTargetByAlias(normalized.Models, "classifier")
+	if !ok {
+		t.Fatal("normalized config missing the classifier model")
+	}
+
+	factory := func(model.Model, auth.APIKey) (inference.Client, error) { return &fakeLLM{}, nil }
+	got, err := compileProductionModels(normalized, factory)
+	if err != nil {
+		t.Fatalf("compileProductionModels() error = %v", err)
+	}
+
+	if !got.PermissionReviewEnabled {
+		t.Fatal("PermissionReviewEnabled = false, want true")
+	}
+	if !reflect.DeepEqual(got.PermissionReviewModel, classifier.Model) {
+		t.Fatalf("PermissionReviewModel = %#v, want the classifier model %#v", got.PermissionReviewModel, classifier.Model)
+	}
+	for _, candidate := range got.PrimerCandidates {
+		if candidate.Alias == "classifier" {
+			t.Fatal("classifier model appeared in PrimerCandidates, want excluded")
+		}
+	}
+	for _, source := range got.ACP {
+		if source.Alias == "classifier" {
+			t.Fatal("classifier model appeared in ACP delegate roster, want excluded")
+		}
+	}
+}
+
 func aliasesToLoop(values []string) []loop.ModelAlias {
 	if values == nil {
 		return nil

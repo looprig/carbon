@@ -154,3 +154,83 @@ func decodeModelConfigWithPermissionReview(t *testing.T, permissionJSON string) 
 func modelConfigJSONWithPermissionReview(permissionJSON string) string {
 	return strings.Replace(validLMStudioModelConfig, `"version": 2,`, `"version": 2, "permission_review":`+permissionJSON+`,`, 1)
 }
+
+// modelConfigJSONWithUnusedClassifier returns validLMStudioModelConfig
+// extended with a second model row, "classifier", bound as
+// permission_review.model. Its "uses" field is entirely omitted from the
+// JSON object — not just set to an empty array — matching how an operator
+// would actually write a dedicated permission-review classifier that is
+// neither primer- nor delegate-capable.
+func modelConfigJSONWithUnusedClassifier() string {
+	const classifierModelJSON = `"default_effort": "none"
+  },{
+    "alias": "classifier",
+    "provider": "openai",
+    "api_format": "openai-responses",
+    "base_url": "https://api.openai.com/v1",
+    "model": "classifier-model",
+    "api_key": "test-secret-do-not-log",
+    "capabilities": {
+      "tools": true,
+      "structured_output": true,
+      "structured_output_with_tools": true
+    },
+    "efforts": ["none"],
+    "default_effort": "none"
+  }]`
+	withClassifier := strings.Replace(validLMStudioModelConfig, `"default_effort": "none"
+  }]`, classifierModelJSON, 1)
+	return strings.Replace(withClassifier, `"version": 2,`, `"version": 2, "permission_review": {"model": "classifier"},`, 1)
+}
+
+// TestNormalizeModelConfigUnusedClassifierUses proves the fix for the gap a
+// phase-boundary review found: a model row whose "uses" field is entirely
+// omitted from the JSON (not merely an empty array) decodes and normalizes
+// successfully, ending up with an empty Uses rather than a validation error,
+// and is still resolved as the permission_review binding by alias.
+func TestNormalizeModelConfigUnusedClassifierUses(t *testing.T) {
+	wire, err := decodeModelConfig([]byte(modelConfigJSONWithUnusedClassifier()))
+	if err != nil {
+		t.Fatalf("decodeModelConfig() error = %v", err)
+	}
+	classifierRow, ok := modelConfigTargetByAlias(wire.Models, "classifier")
+	if !ok {
+		t.Fatal("decoded config missing the classifier model row")
+	}
+	if classifierRow.Uses != nil {
+		t.Fatalf("decoded classifier Uses = %#v, want nil (field omitted from JSON)", classifierRow.Uses)
+	}
+
+	normalized, err := normalizeModelConfig(wire)
+	if err != nil {
+		t.Fatalf("normalizeModelConfig() error = %v", err)
+	}
+	classifier, ok := modelConfigNormalizedTargetByAlias(normalized.Models, "classifier")
+	if !ok {
+		t.Fatal("normalized config missing the classifier model")
+	}
+	if len(classifier.Uses) != 0 {
+		t.Fatalf("normalized classifier Uses = %v, want empty", classifier.Uses)
+	}
+	if normalized.PermissionReview == nil || normalized.PermissionReview.Model != "classifier" {
+		t.Fatalf("PermissionReview = %+v, want Model=classifier", normalized.PermissionReview)
+	}
+}
+
+func modelConfigTargetByAlias(targets []modelTargetConfig, alias string) (modelTargetConfig, bool) {
+	for _, target := range targets {
+		if target.Alias == alias {
+			return target, true
+		}
+	}
+	return modelTargetConfig{}, false
+}
+
+func modelConfigNormalizedTargetByAlias(targets []normalizedModelTarget, alias string) (normalizedModelTarget, bool) {
+	for _, target := range targets {
+		if target.Alias == alias {
+			return target, true
+		}
+	}
+	return normalizedModelTarget{}, false
+}

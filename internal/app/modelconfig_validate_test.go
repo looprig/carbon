@@ -22,7 +22,6 @@ func TestValidateModelConfig(t *testing.T) {
 		{name: "empty model", mutate: func(c *modelConfigFile) { c.Models[0].Model = "" }},
 		{name: "padded model", mutate: func(c *modelConfigFile) { c.Models[0].Model += " " }},
 		{name: "duplicate aliases", mutate: func(c *modelConfigFile) { c.Models = append(c.Models, c.Models[0]) }},
-		{name: "empty uses", mutate: func(c *modelConfigFile) { c.Models[0].Uses = nil }},
 		{name: "empty use", mutate: func(c *modelConfigFile) { c.Models[0].Uses[0] = "" }},
 		{name: "padded use", mutate: func(c *modelConfigFile) { c.Models[0].Uses[0] = "primer " }},
 		{name: "duplicate uses", mutate: func(c *modelConfigFile) { c.Models[0].Uses = append(c.Models[0].Uses, "primer") }},

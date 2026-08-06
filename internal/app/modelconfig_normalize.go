@@ -269,9 +269,10 @@ func normalizeModelTarget(target modelTargetConfig) (normalizedModelTarget, erro
 			return normalized, modelConfigValidationError(field + " must be non-empty and unpadded")
 		}
 	}
-	if len(target.Uses) == 0 {
-		return normalized, modelConfigValidationError("uses must not be empty")
-	}
+	// An empty or absent uses is valid: the model is neither primer- nor
+	// delegate-capable, addressable only by alias (today, only
+	// permission_review.model resolves a model this way). The loop below
+	// still rejects unknown values and duplicates when uses IS non-empty.
 	usesSeen := make(map[string]struct{}, len(target.Uses))
 	uses := make([]string, 0, len(target.Uses))
 	for _, use := range target.Uses {
@@ -289,7 +290,7 @@ func normalizeModelTarget(target modelTargetConfig) (normalizedModelTarget, erro
 		return normalized, err
 	}
 	if !target.Capabilities.Tools {
-		return normalized, modelConfigValidationError("primer and delegate models must support tools")
+		return normalized, modelConfigValidationError("models must support tools")
 	}
 	if target.Capabilities.StructuredOutputWithTools && (!target.Capabilities.Tools || !target.Capabilities.StructuredOutput) {
 		return normalized, modelConfigValidationError("structured_output_with_tools requires tools and structured_output")

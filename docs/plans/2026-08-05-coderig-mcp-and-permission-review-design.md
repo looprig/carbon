@@ -294,9 +294,13 @@ valid v2; no version bump):
   checking at load turns a session-open failure into a clear config error).
   Errors are typed in the `*ModelConfigError` family and name the alias, never
   the key.
-- No `uses` tag is required on the model row; `permission_review.model` is the
-  binding. (An operator may still tag `uses: ["classifier"]` for their own
-  bookkeeping; CodeRig does not read it.)
+- No `uses` tag is required on the model row — omit it (or leave the array
+  empty) entirely and the model is addressable only by alias, invisible to
+  the primer-picker and delegate roster; `permission_review.model` is the
+  binding. A model already tagged `primer` or `delegate` may equally be
+  reused as the classifier (the design's own `"model": "haiku"` example
+  does this) — both a dedicated uses-less model and a reused primer/delegate
+  model are supported.
 - **Composition with programmatic Config** (Config is built before the loader
   runs — `cmd/coderig/main.go` constructs Config, then `Open` loads
   models.json and mutates it, the loader's existing pattern): the loader only
