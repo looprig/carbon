@@ -19,6 +19,7 @@ Do not add an open-ended agent registry. The primer loop may expose a bounded pi
 
 ## Model catalogue and credentials
 
+- All fixed `~/.looprig/...` paths in this file (`models.json`, `mcp.json`, `workspaces/<hash>/permissions.json`, the default session-store root) are relative to the resolved looprig home: `Config.HomeDir` when set (must be absolute; validated once at construction, fail closed otherwise), else `~/.looprig`. One resolver (`internal/app/home.go`'s `looprigHome`) is the single place this is computed; there is no CLI flag or environment variable for it.
 - The `planner`, `builder`, and `reviewer` roster and its role policy remain fixed in code. Production model data is external configuration, loaded once at the composition boundary from `~/.looprig/models.json`. The file may also carry an optional top-level `permission_review` section that can enable classifier-based automatic permission review; see "Permission review" below for what it does and does not override.
 - The model catalogue is operator-managed and read-only to CodeRig: the loader never creates, rewrites, or changes the mode of the file. On Unix, the file must be owner-only (`0600`), must be a regular file, and must not be a symlink.
 - Inline API keys are permitted only in this machine-wide file because it is outside repositories and owner-only. Never put provider keys in `.env`, provider-key environment variables, command-line arguments, logs, fingerprints, permission files, or child environments.
@@ -109,6 +110,103 @@ duplicates ceiling-comparison/eligibility logic locally.
 `make test-integration` (see "Commands" below) is the suite that actually
 proves this feature works end to end against a real classifier call; run it
 before any release touching permission review.
+
+## MCP servers
+
+CodeRig can optionally compose MCP servers from an operator-managed
+`<home>/mcp.json` (design doc
+`docs/plans/2026-08-05-coderig-mcp-and-permission-review-design.md` Part 1).
+Loading and validation live in `internal/app/mcpconfig.go`; assembly
+(transports, bindings, the Manager, adoption, and lifecycle) lives in
+`internal/app/mcp.go` and is composed inside `openRuntimeAgent`
+(`internal/app/swarm.go`), so new, restore, interactive, and headless
+sessions all get it the same way. CodeRig wires
+`github.com/looprig/mcp`'s `pkg/harness` Manager/Bindings/Adopter and its
+transport factories directly; it adds no policy-translation layer of its
+own.
+
+- **File and schema** — `<home>/mcp.json` uses the exact Claude Code
+  `mcpServers` schema plus one looprig extension field, `roles`:
+  `{"mcpServers": {"<binding>": {"type", "command", "args", "env", "url",
+  "headers", "roles"}}}`. `type` is `stdio`, `http`, or `sse`; when omitted
+  it is inferred from shape — `command` present infers `stdio`, `url`
+  present infers `http` — but `sse` is never inferred (it shares the `url`
+  shape with `http`), so a server that wants it must say `"type": "sse"`
+  explicitly. Decoding is strict (unknown fields and duplicate keys are
+  rejected, matching `models.json`'s own decode discipline), and binding
+  names must satisfy `mcp/pkg/client.Name` validation — they become both the
+  `mcp__<binding>__<tool>` tool prefix and the `mcp:<binding>:<tool>`
+  permission identity.
+- **Hygiene** — identical to `models.json`'s, because headers and env values
+  may carry credentials the same way models.json's inline `api_key` fields
+  do: ≤ 1 MiB, regular file, no symlink, owner-only `0600` on Unix, read
+  once at the composition boundary, never created, rewritten, or
+  mode-changed by CodeRig. An absent file disables the feature entirely —
+  zero MCP assembly, a byte-for-byte identical rig to one with no `mcp.json`
+  at all.
+- **Roles extension** — `roles` is optional and drawn from `planner`,
+  `builder`, `reviewer` (the fixed `internal/catalog` loop identities);
+  empty or absent means all three. A binding's visibility selects by loop
+  **name**, not loop ID, since bindings are built before the session mints
+  loop IDs — a runtime-spawned delegate of a role shares its name and
+  inherits its visibility. Unknown role names are a config error.
+- **Fail-closed posture — two different failure modes, not one** — an
+  invalid or insecure `mcp.json`, including a stdio `command` that does not
+  resolve on `$PATH` (checked via `exec.LookPath` at construction), fails
+  **session construction** itself with a typed, secret-free error — the same
+  fail-closed treatment as a bad `models.json` alias, not a degraded server.
+  Separately, a server whose config resolves and parses fine but whose
+  connection or initialize handshake fails at `Start` is **optional-binding
+  degradation**: the session still opens, that one server's tools are
+  simply absent, and an integration status event explains why. Do not
+  conflate the two — a config-shape problem never lets a session open
+  quietly missing a server, but a live connectivity problem never blocks
+  the session either.
+- **Permissions** — every MCP tool call carries `tool.invoke` with identity
+  `mcp:<binding>:<tool>` and routes through the same product access source
+  and role gates every other tool does; `newProductAccessSource` already
+  answers `AccessGated` for any non-empty `tool.invoke` scope
+  (`internal/app/access.go`), so MCP tools get "ask" with no dedicated
+  wiring. The command-safety permission classifier (see "Permission review"
+  above) reviews shell commands only — MCP invocations are outside its
+  evidence domain and are never auto-approved by it.
+- **Applies to every access profile** — unlike permission review, MCP
+  composition is not trusted-profile-gated: `openRuntimeAgent` builds the
+  MCP assembly (`newMCPSessionAssembly`) unconditionally for every session,
+  and neither it nor `internal/app/mcp.go` ever branches on
+  `AccessProfile`/`AccessTrusted`. A configured `mcp.json` composes the same
+  way under `readonly`, `unconfined`, and `trusted`.
+- **Fingerprint and restore** — MCP identity folds into the rig's
+  configuration fingerprint through harness's purpose-built seam:
+  `mgr.ConfigDigest()` supplies `rig.ConfigFingerprintFields.ExternalCapabilityRev`
+  (`internal/app/persistence.go`'s `agentFingerprintFields`) before
+  `rig.NewSession`. The digest is secret-free by the mcp module's own
+  contract — binding name, transport kind, redacted origin, capability/
+  filter/limits/compat digests, and role-visibility digest, never a header
+  or env **value** — so changing the server set, a URL, or role visibility
+  is now correctly a **rejected drift** on restore by default, the same
+  pattern as the "Restore behavior" bullet above: escaping it requires the
+  caller's `SessionSelector.AllowConfigMismatch` on that specific resume,
+  not a new permission-review- or MCP-specific path. (A harness-level bug
+  found during this feature's implementation had this drift category
+  wrongly classified as informational, silently re-adopting a changed
+  server set on restore; harness fixed it to classify an opaque,
+  direction-unknowable digest change as fail-secure `Warn`, matching every
+  other rejected-drift category here.) Stable header/env values never move
+  the digest. An absent `mcp.json` contributes the seam's empty
+  no-external-capability value, so today's sessions restore completely
+  unaffected.
+- **Security** — treat `mcp.json` exactly like `models.json`: headers and
+  env values may carry credentials and must never be logged, placed in an
+  error message, or allowed to reach the fingerprint. The file is
+  operator-managed and read-only to CodeRig — same posture, same file
+  hygiene, same secret-bearing-file treatment as `~/.looprig/models.json`
+  (see "Security" below).
+- **Known gap** — the exported library construction path (`New()`/
+  `newWithClient`) does not compose MCP; only `SessionStoreFactory.Open` →
+  `openRuntimeAgent` does, and `cmd/coderig` exclusively uses that path.
+  This is a real, pre-existing gap flagged in code comments
+  (`runtime_controls.go`, `swarm.go`), not something this feature closes.
 
 ## Placement
 
