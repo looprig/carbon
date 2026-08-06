@@ -313,14 +313,25 @@ func modelConfigNoFollowTestSupported() bool {
 
 func setProcessHome(t *testing.T, home string) {
 	t.Helper()
+	applyProcessHome(t.Setenv, home)
+}
+
+// applyProcessHome sets whichever platform-specific environment variable(s)
+// os.UserHomeDir consults for GOOS to home, via setenv. It is the single
+// source of that platform switch, shared by setProcessHome (per-test
+// isolation via t.Setenv, restored automatically when the test ends) and
+// TestMain in subagent_acp_peer_test.go (process-wide isolation via
+// os.Setenv, established once before any test runs and never restored,
+// since the process exits when m.Run() returns).
+func applyProcessHome(setenv func(key, value string), home string) {
 	switch runtime.GOOS {
 	case "windows":
-		t.Setenv("USERPROFILE", home)
-		t.Setenv("HOMEDRIVE", "")
-		t.Setenv("HOMEPATH", "")
+		setenv("USERPROFILE", home)
+		setenv("HOMEDRIVE", "")
+		setenv("HOMEPATH", "")
 	case "plan9":
-		t.Setenv("home", home)
+		setenv("home", home)
 	default:
-		t.Setenv("HOME", home)
+		setenv("HOME", home)
 	}
 }

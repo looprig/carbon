@@ -22,15 +22,59 @@ const (
 	task33NativeCodexACPHelperPath  = "task33-native-codex-acp-helper"
 )
 
+// testIsolatedHome is the process-wide temporary directory TestMain
+// establishes as HOME (and platform equivalents) before running this
+// package's ordinary tests. It is set exactly once, before m.Run(), and is
+// read-only afterward. home_test.go's TestLooprigHomeIsolatedFromRealHOME
+// uses it to prove looprigHome(Config{}) actually resolves here rather than
+// to the real developer machine's HOME.
+var testIsolatedHome string
+
 // TestMain turns the test binary into a deterministic ACP protocol peer when
 // the production ACP child factory launches it. The parent test only supplies
 // a gateway-safe PATH marker, so ordinary package tests never enter this path.
+//
+// For every other invocation (ordinary package tests), TestMain first
+// isolates the process's HOME (and platform equivalents) to a fresh,
+// per-run temporary directory before handing off to m.Run(). This makes it
+// structurally impossible for a bare Config{} exercised anywhere in this
+// package -- directly or via openRuntimeAgent's shared MCP-loading path --
+// to resolve looprigHome to the real developer machine's ~/.looprig and so
+// read a real mcp.json or spawn real MCP server connections as a side
+// effect of `go test`. See home_test.go's TestLooprigHomeIsolatedFromRealHOME
+// for the isolation proof.
 func TestMain(m *testing.M) {
 	switch os.Getenv("PATH") {
 	case task33ACPHelperPath, task33NativeClaudeACPHelperPath, task33NativeCodexACPHelperPath:
 		os.Exit(runTask33ACPHelper())
 	}
-	os.Exit(m.Run())
+	os.Exit(runPackageTestsWithIsolatedHome(m))
+}
+
+// runPackageTestsWithIsolatedHome sets up the process-wide isolated HOME and
+// runs the package's ordinary tests. It is factored out of TestMain so the
+// exit-code path stays a single, unambiguous `return m.Run()`: cleanup runs
+// via defer regardless of how m.Run() finishes, but never substitutes or
+// swallows the real exit code, which CI depends on to detect failures.
+func runPackageTestsWithIsolatedHome(m *testing.M) int {
+	home, err := os.MkdirTemp("", "coderig-internal-app-test-home-*")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "internal/app TestMain: create isolated HOME:", err)
+		return 1
+	}
+	defer os.RemoveAll(home)
+
+	testIsolatedHome = home
+	applyProcessHome(func(key, value string) {
+		// os.Setenv (unlike t.Setenv) returns an error, but it is
+		// practically infallible for these fixed, well-formed key names;
+		// report and move on rather than aborting the whole run over it.
+		if err := os.Setenv(key, value); err != nil {
+			fmt.Fprintf(os.Stderr, "internal/app TestMain: setenv %s: %v\n", key, err)
+		}
+	}, home)
+
+	return m.Run()
 }
 
 type task33ACPHelperState struct {
