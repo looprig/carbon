@@ -13,12 +13,14 @@ import (
 	"github.com/looprig/sandbox"
 	"github.com/looprig/tools"
 	"github.com/looprig/tools/bash"
+	"github.com/looprig/tools/editfile"
 	"github.com/looprig/tools/glob"
 	"github.com/looprig/tools/grep"
 	"github.com/looprig/tools/permission"
 	"github.com/looprig/tools/readfile"
 	"github.com/looprig/tools/skill"
 	"github.com/looprig/tools/websearch"
+	"github.com/looprig/tools/writefile"
 )
 
 // toolsets.go owns CodeRig's direct sandbox assembly: it builds the per-role
@@ -192,8 +194,8 @@ func builderToolDefinitions(set *sandbox.ExecutorSet, client *http.Client, skill
 	guard := coderigReadGuard{}
 	definitions := []tool.Definition{
 		tools.ReadFileDefinition(guard, readfile.WithHostReads()),
-		tools.WriteFileDefinition(),
-		tools.EditFileDefinition(),
+		tools.WriteFileDefinition(writefile.WithHostWrites()),
+		tools.EditFileDefinition(editfile.WithHostWrites()),
 		tools.GlobDefinition(guard, glob.WithHostReads()),
 		tools.GrepDefinition(guard, grep.WithHostReads()),
 		bashDefinition(set),
