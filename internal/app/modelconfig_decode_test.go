@@ -176,6 +176,45 @@ func TestDecodeModelConfigRejectsDuplicateKeysAtEveryDepth(t *testing.T) {
 	}
 }
 
+func TestDecodeModelConfigACPLaunchers(t *testing.T) {
+	tests := []struct {
+		name    string
+		json    string
+		wantErr bool
+	}{
+		{
+			name: "valid launchers block",
+			json: `{"version":2,"primer_default":"p","claude_code_small_model":"p",
+				"delegate_defaults":{"planner":{"harness":"looprig"},"builder":{"harness":"looprig"},"reviewer":{"harness":"looprig"}},
+				"models":[{"alias":"p","provider":"anthropic","api_format":"anthropic","model":"m","uses":["primer"],"efforts":["high"],"default_effort":"high"}],
+				"acp_launchers":{"claude-code":{"executable":"/usr/local/bin/claude-code-acp"},"codex":{"executable":"/usr/local/bin/codex-acp"}}}`,
+		},
+		{
+			name: "omitted launchers block is valid",
+			json: `{"version":2,"primer_default":"p","claude_code_small_model":"p",
+				"delegate_defaults":{"planner":{"harness":"looprig"},"builder":{"harness":"looprig"},"reviewer":{"harness":"looprig"}},
+				"models":[{"alias":"p","provider":"anthropic","api_format":"anthropic","model":"m","uses":["primer"],"efforts":["high"],"default_effort":"high"}]}`,
+		},
+		{
+			name: "unknown field inside a launcher entry is rejected",
+			json: `{"version":2,"primer_default":"p","claude_code_small_model":"p",
+				"delegate_defaults":{"planner":{"harness":"looprig"},"builder":{"harness":"looprig"},"reviewer":{"harness":"looprig"}},
+				"models":[{"alias":"p","provider":"anthropic","api_format":"anthropic","model":"m","uses":["primer"],"efforts":["high"],"default_effort":"high"}],
+				"acp_launchers":{"claude-code":{"executable":"/usr/local/bin/claude-code-acp","args":["x"]}}}`,
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := decodeModelConfig([]byte(tt.json))
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("decodeModelConfig() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func assertModelConfigDecodeError(t *testing.T, err error, want string) {
 	t.Helper()
 	if err == nil {

@@ -35,6 +35,14 @@ type modelConfigFile struct {
 	DelegateDefaults     map[string]delegateDefaultConfig  `json:"delegate_defaults"`
 	Models               []modelTargetConfig               `json:"models"`
 	NativeACP            map[string]nativeACPProfileConfig `json:"native_acp"`
+	ACPLaunchers         map[string]acpLauncherConfig      `json:"acp_launchers"`
+}
+
+// acpLauncherConfig is one harness's configured ACP adapter executable
+// location. It is machine-local launcher configuration, not a model
+// credential: it never enters the model-configuration digest.
+type acpLauncherConfig struct {
+	Executable string `json:"executable"`
 }
 
 type delegateDefaultConfig struct {
