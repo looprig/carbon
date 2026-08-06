@@ -74,6 +74,15 @@ type swarmStores struct {
 	workspace *workspacestore.Store
 	leaser    storage.Leaser
 	catalog   *sessionstore.Catalog
+	// resourceStorage is this backend's rig.SessionResourceStorageProvider: the persisted
+	// on-disk provider for ensureStoresLocked's fsstore backend, the process-owned headless
+	// provider for headlessStores' process-shared in-memory backend, and nil for any
+	// swarmStores a narrow package test builds directly via openStores (most package tests
+	// are unconcerned with process-service tools). buildRigWithRegistrationAndACP only
+	// installs rig.WithSessionResourceStorage when this is non-nil, so its absence changes
+	// nothing for a topology that does not declare tool.RequiresProcessServices (none does
+	// today).
+	resourceStorage rig.SessionResourceStorageProvider
 }
 
 // openStores wires the session + workspace facades and the listing catalog over one backend
@@ -97,9 +106,97 @@ func openStores(backend *storage.Composite) (*swarmStores, error) {
 	}, nil
 }
 
+// sessionResourceStorageIdentity is the stable identity CodeRig's session resource-storage
+// provider reports through rig.SessionResourceStorage.Identity. It names the on-disk scheme
+// this provider implements -- <data-dir>/resources/<session-id> for persisted sessions, a
+// process-owned temporary base for headless ones -- and must change ONLY when that scheme's
+// shape changes (a different path template, a different anchor convention, etc.), never
+// between two calls for the same session, and never merely because a session's config, model,
+// or access profile changes (that drift is the rig's own config fingerprint's job, an
+// entirely separate mechanism from this one). Harness's own identity anchor is what actually
+// detects and fails a restore closed on a mismatch (harness internal/sessionruntime's
+// ensureSessionResourceAnchor/validateSessionResourceAnchor); this constant is CodeRig's one
+// input to that check. Bump the version suffix, never reuse it, if CodeRig's resource-storage
+// scheme ever changes shape.
+const sessionResourceStorageIdentity = "coderig:session-resource-storage/v1"
+
+// persistedResourceStorageProvider resolves each persisted session's process-resource storage
+// root to <data-dir>/resources/<session-id>, under the SAME data-dir root SessionStoreFactory
+// opens its session/workspace stores under (ensureStoresLocked). It is a pure function of
+// dataDir + session id -- no mutable state -- so it is trivially safe for concurrent use
+// (SessionResourceStorageProvider's doc requirement) and trivially resolves the SAME
+// path/identity for the same session id across repeated calls, including across a real
+// process restart: a fresh SessionStoreFactory reconstructed over the same dataDir after
+// CodeRig restarts constructs an equal provider by construction, not by any cached state. The
+// resolved path is always a subdirectory of dataDir, which is CodeRig's own state directory
+// (DefaultDataDirIn) and structurally independent of any session's workspace root (the
+// checked-out code directory the rig places separately via WithExclusiveWorkspace), so it can
+// never overlap a workspace.
+type persistedResourceStorageProvider struct {
+	dataDir string
+}
+
+func newPersistedResourceStorageProvider(dataDir string) *persistedResourceStorageProvider {
+	return &persistedResourceStorageProvider{dataDir: dataDir}
+}
+
+func (p *persistedResourceStorageProvider) StorageForSession(_ context.Context, id uuid.UUID) (rig.SessionResourceStorage, error) {
+	return rig.SessionResourceStorage{
+		Path:     filepath.Join(p.dataDir, "resources", id.String()),
+		Identity: sessionResourceStorageIdentity,
+	}, nil
+}
+
+var _ rig.SessionResourceStorageProvider = (*persistedResourceStorageProvider)(nil)
+
+// headlessResourceStorageProvider resolves process-resource storage roots for headless
+// CodeRig sessions under ONE process-owned temporary base directory, minted once via
+// os.MkdirTemp at construction. It never collides with another concurrently running headless
+// CodeRig process: each process constructs its own provider, and os.MkdirTemp mints a fresh,
+// uniquely named base directory every time. Unlike the persisted provider, it deliberately
+// does NOT promise stability across a real process restart -- a fresh process gets a fresh
+// base and so a fresh (and, if a prior run's directory happens to still be on disk, distinct)
+// resource root for the same session id. The narrower stability it DOES uphold, matching this
+// task's explicit contract, is same-process stability: bySession remembers each session id's
+// subdirectory for the lifetime of this provider, so reconstructing a session within the same
+// running process (e.g. a resume during this run) resolves the identical root. The base
+// directory is intentionally never removed by this type -- like the process-shared in-memory
+// store it sits alongside (headlessStores), it is scoped to, and discarded only with, the
+// CodeRig process itself.
+type headlessResourceStorageProvider struct {
+	base string
+
+	mu        sync.Mutex
+	bySession map[uuid.UUID]string
+}
+
+func newHeadlessResourceStorageProvider() (*headlessResourceStorageProvider, error) {
+	base, err := os.MkdirTemp("", "coderig-headless-resources-*")
+	if err != nil {
+		return nil, &StoreInitError{Stage: "headless-resource-storage", Cause: err}
+	}
+	return &headlessResourceStorageProvider{base: base, bySession: make(map[uuid.UUID]string)}, nil
+}
+
+func (p *headlessResourceStorageProvider) StorageForSession(_ context.Context, id uuid.UUID) (rig.SessionResourceStorage, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	path, ok := p.bySession[id]
+	if !ok {
+		path = filepath.Join(p.base, id.String())
+		p.bySession[id] = path
+	}
+	return rig.SessionResourceStorage{Path: path, Identity: sessionResourceStorageIdentity}, nil
+}
+
+var _ rig.SessionResourceStorageProvider = (*headlessResourceStorageProvider)(nil)
+
 // headlessShared holds the process-shared in-memory store the headless New path uses, opened
 // once. Two headless sessions therefore share ONE backend and contend on the SAME exclusive
-// root lease for the current checkout — exactly like two persisted sessions.
+// root lease for the current checkout — exactly like two persisted sessions. They also share
+// ONE headlessResourceStorageProvider, matching the "one process-owned temporary base" contract:
+// two headless sessions in this process get distinct subdirectories of the SAME base, never two
+// different bases.
 var (
 	headlessOnce   sync.Once
 	headlessResult *swarmStores
@@ -109,7 +206,18 @@ var (
 // headlessStores returns the process-shared in-memory store facades, opening them once.
 func headlessStores() (*swarmStores, error) {
 	headlessOnce.Do(func() {
-		headlessResult, headlessError = openStores(memstore.New())
+		stores, err := openStores(memstore.New())
+		if err != nil {
+			headlessError = err
+			return
+		}
+		provider, err := newHeadlessResourceStorageProvider()
+		if err != nil {
+			headlessError = err
+			return
+		}
+		stores.resourceStorage = provider
+		headlessResult = stores
 	})
 	return headlessResult, headlessError
 }
@@ -243,6 +351,9 @@ func buildRigWithRegistrationAndACP(definitions []loop.Definition, stores *swarm
 		rig.WithFingerprintFields(agentFingerprintFields(cfg)),
 		rig.WithOffloadGC(rig.OffloadGCPolicy{Interval: offloadGCInterval, Timeout: offloadGCTimeout}),
 	}
+	if stores.resourceStorage != nil {
+		options = append(options, rig.WithSessionResourceStorage(stores.resourceStorage))
+	}
 	if catalog := effectiveRuntimeCatalog(cfg); catalog.HasEntries() {
 		options = append(options, rig.WithRuntimeCatalog(catalog))
 	}
@@ -352,6 +463,7 @@ func (f *SessionStoreFactory) ensureStoresLocked() (*swarmStores, error) {
 		_ = fs.Close()
 		return nil, err
 	}
+	stores.resourceStorage = newPersistedResourceStorageProvider(f.dataDir)
 	f.fs = fs
 	f.stores = stores
 	return stores, nil

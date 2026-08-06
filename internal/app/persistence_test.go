@@ -2,10 +2,12 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -14,10 +16,14 @@ import (
 	"github.com/looprig/coderig/internal/catalog/planner"
 	"github.com/looprig/coderig/internal/catalog/reviewer"
 	"github.com/looprig/core/content"
+	"github.com/looprig/core/uuid"
 	"github.com/looprig/harness/pkg/event"
 	"github.com/looprig/harness/pkg/identity"
 	"github.com/looprig/harness/pkg/loop"
 	"github.com/looprig/harness/pkg/rig"
+	"github.com/looprig/harness/pkg/session"
+	"github.com/looprig/harness/pkg/sessionstore"
+	"github.com/looprig/harness/pkg/tool"
 	"github.com/looprig/inference"
 	model "github.com/looprig/inference/model"
 	"github.com/looprig/storage/memstore"
@@ -750,4 +756,346 @@ func TestSessionStoreFactoryCloseAndListAreSerialized(t *testing.T) {
 // yields the swarm's shared, secret-free model.Model identity (no system, no secret).
 var _ ModelFactory = func() model.Model {
 	return model.Model{}
+}
+
+// --- Session resource-storage composition (persisted + headless providers) ---
+//
+// No CodeRig role declares tool.RequiresProcessServices today (that lands with the
+// process-supervision tools themselves, a later task), so these tests exercise the two
+// providers directly and, where the actual harness restore/identity-anchor behavior is what
+// is under test, over a minimal standalone rig assembled with a probe loop.Definition that
+// DOES declare the requirement — mirroring harness's own pkg/rig/session_resource_storage_test.go
+// coverage of the same seam, one level up.
+
+// resourceProbeTool is the minimal InvokableTool a process-services loop.Definition needs to
+// bind; it is never actually invoked by these tests (no turn runs), only bound at session
+// construction.
+type resourceProbeTool struct{}
+
+func (resourceProbeTool) Info(context.Context) (*tool.ToolInfo, error) {
+	return &tool.ToolInfo{Name: "resource-probe", Desc: "process-resource-storage test probe", Schema: json.RawMessage(`{"type":"object"}`)}, nil
+}
+
+func (resourceProbeTool) InvokableRun(context.Context, string) (*tool.ToolResult, error) {
+	return tool.TextResult("ok"), nil
+}
+
+// processResourceStorageAgentName is the sole primer of the minimal probe topology below.
+const processResourceStorageAgentName = "resource-probe-agent"
+
+// processResourceStorageDefinition builds the smallest loop.Definition that declares
+// tool.RequiresProcessServices, so rig.Define's requiresProcessServices gate is satisfied and
+// NewSession/RestoreSession actually resolve resource storage through the injected provider.
+func processResourceStorageDefinition(t *testing.T) loop.Definition {
+	t.Helper()
+	definition, err := loop.Define(
+		loop.WithName(processResourceStorageAgentName),
+		loop.WithInference(&fakeLLM{}, testModel()),
+		loop.WithTools(tool.NewDefinition("resource-probe", tool.RequiresProcessServices, func(context.Context, tool.Bindings) ([]tool.InvokableTool, error) {
+			return []tool.InvokableTool{resourceProbeTool{}}, nil
+		})),
+	)
+	if err != nil {
+		t.Fatalf("loop.Define(resource-probe) error = %v", err)
+	}
+	return definition
+}
+
+// processResourceStorageRig assembles a standalone rig (independent of the production swarm
+// topology) over store with provider installed as its session resource-storage provider.
+func processResourceStorageRig(t *testing.T, store *sessionstore.Store, provider rig.SessionResourceStorageProvider) *rig.Rig {
+	t.Helper()
+	defined, err := rig.Define(
+		rig.WithLoops(processResourceStorageDefinition(t)),
+		rig.WithPrimers(processResourceStorageAgentName),
+		rig.WithSessionStore(store),
+		rig.WithSessionResourceStorage(provider),
+	)
+	if err != nil {
+		t.Fatalf("rig.Define() error = %v", err)
+	}
+	return defined
+}
+
+// pathHasRootPrefix reports whether path is root itself or lexically nested under it, purely
+// structurally (no filesystem access, so it works for paths that do not yet exist).
+func pathHasRootPrefix(path, root string) bool {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	if rel == "." {
+		return true
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// identityOverrideProvider wraps another provider, substituting its own Identity while
+// preserving the wrapped provider's Path. It simulates CodeRig's own resource-storage scheme
+// changing shape (a version bump to sessionResourceStorageIdentity) without needing to
+// actually touch the package constant.
+type identityOverrideProvider struct {
+	inner    rig.SessionResourceStorageProvider
+	identity string
+}
+
+func (p identityOverrideProvider) StorageForSession(ctx context.Context, id uuid.UUID) (rig.SessionResourceStorage, error) {
+	storage, err := p.inner.StorageForSession(ctx, id)
+	if err != nil {
+		return rig.SessionResourceStorage{}, err
+	}
+	storage.Identity = p.identity
+	return storage, nil
+}
+
+// TestProcessResourceRootOutsideWorkspace proves both providers' resolved resource roots never
+// live inside a session's workspace root, by construction: the persisted root is always a
+// child of <data-dir>, and the headless root is always a child of a dedicated os.MkdirTemp
+// base, neither of which has anything to do with wherever the caller's checkout happens to be.
+func TestProcessResourceRootOutsideWorkspace(t *testing.T) {
+	t.Parallel()
+
+	dataDir := filepath.Join(t.TempDir(), "store")
+	persisted := newPersistedResourceStorageProvider(dataDir)
+	headless, err := newHeadlessResourceStorageProvider()
+	if err != nil {
+		t.Fatalf("newHeadlessResourceStorageProvider() error = %v", err)
+	}
+
+	id, err := uuid.New()
+	if err != nil {
+		t.Fatalf("uuid.New() error = %v", err)
+	}
+
+	// A couple of representative workspace roots: a wholly unrelated checkout, and one that
+	// happens to be a filesystem SIBLING of the data dir (the closest a workspace could
+	// plausibly get without actually being an ancestor/descendant).
+	workspaces := []string{
+		t.TempDir(),
+		filepath.Join(filepath.Dir(dataDir), "checkout"),
+	}
+
+	for _, provider := range []rig.SessionResourceStorageProvider{persisted, headless} {
+		storage, err := provider.StorageForSession(context.Background(), id)
+		if err != nil {
+			t.Fatalf("StorageForSession() error = %v", err)
+		}
+		for _, workspace := range workspaces {
+			if pathHasRootPrefix(storage.Path, workspace) {
+				t.Fatalf("resource root %q lies inside workspace root %q", storage.Path, workspace)
+			}
+		}
+	}
+}
+
+// TestProcessResourceRootStableAcrossRestore proves the persisted provider resolves the SAME
+// path and identity for the same session id across two INDEPENDENTLY constructed provider
+// instances over the same data dir — simulating a real CodeRig process restart, where a fresh
+// SessionStoreFactory rebuilds a fresh provider carrying no in-memory state from the prior
+// run — and that a real RestoreSession succeeds using the second instance for a session opened
+// with the first.
+func TestProcessResourceRootStableAcrossRestore(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	store, err := sessionstore.Open(memstore.New())
+	if err != nil {
+		t.Fatalf("sessionstore.Open() error = %v", err)
+	}
+
+	firstProvider := newPersistedResourceStorageProvider(dataDir)
+	firstRig := processResourceStorageRig(t, store, firstProvider)
+	live, err := firstRig.NewSession(ctx)
+	if err != nil {
+		t.Fatalf("NewSession() error = %v", err)
+	}
+	id := live.SessionID()
+	if err := live.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown() error = %v", err)
+	}
+
+	secondProvider := newPersistedResourceStorageProvider(dataDir)
+	firstStorage, err := firstProvider.StorageForSession(ctx, id)
+	if err != nil {
+		t.Fatalf("first provider StorageForSession() error = %v", err)
+	}
+	secondStorage, err := secondProvider.StorageForSession(ctx, id)
+	if err != nil {
+		t.Fatalf("second provider StorageForSession() error = %v", err)
+	}
+	if firstStorage != secondStorage {
+		t.Fatalf("resource storage across independently-constructed providers over the same data dir = %+v vs %+v, want equal", firstStorage, secondStorage)
+	}
+
+	secondRig := processResourceStorageRig(t, store, secondProvider)
+	restored, err := secondRig.RestoreSession(ctx, id)
+	if err != nil {
+		t.Fatalf("RestoreSession() with a freshly-constructed provider over the same data dir error = %v, want success", err)
+	}
+	if err := restored.Shutdown(ctx); err != nil {
+		t.Fatalf("restored Shutdown() error = %v", err)
+	}
+}
+
+// TestProcessResourceRootIdentityMismatchFailsRestore proves that if the resource-storage
+// identity a session was opened with ever differs from what a later restore's provider
+// reports for the same session id and path — exactly what would happen if CodeRig's own
+// on-disk resource-storage scheme changed shape without a migration — harness's own identity
+// anchor rejects the restore. It also proves the CONVERSE: restoring again with the original,
+// undrifted identity succeeds, so the failure above is really about the identity mismatch and
+// not some unrelated construction problem.
+func TestProcessResourceRootIdentityMismatchFailsRestore(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	store, err := sessionstore.Open(memstore.New())
+	if err != nil {
+		t.Fatalf("sessionstore.Open() error = %v", err)
+	}
+
+	provider := newPersistedResourceStorageProvider(dataDir)
+	liveRig := processResourceStorageRig(t, store, provider)
+	live, err := liveRig.NewSession(ctx)
+	if err != nil {
+		t.Fatalf("NewSession() error = %v", err)
+	}
+	id := live.SessionID()
+	if err := live.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown() error = %v", err)
+	}
+
+	drifted := identityOverrideProvider{inner: provider, identity: sessionResourceStorageIdentity + "-simulated-scheme-change"}
+	driftedRig := processResourceStorageRig(t, store, drifted)
+	restored, restoreErr := driftedRig.RestoreSession(ctx, id)
+	if restored != nil {
+		_ = restored.Shutdown(ctx)
+	}
+	if restoreErr == nil {
+		t.Fatal("RestoreSession() with a drifted resource-storage identity succeeded, want fail-closed rejection")
+	}
+	// *session.RestoreError is harness's one exported restore-failure type; the more
+	// specific *sessionruntime.SessionResourceStorageError and its identity_mismatch Kind
+	// live in harness's internal/sessionruntime and so cannot be errors.As'd from outside
+	// the harness module. RestoreLoopFailed plus the wrapped cause's "identity_mismatch"
+	// text is the most precise assertion available to a coderig-level test.
+	var restoreError *session.RestoreError
+	if !errors.As(restoreErr, &restoreError) || restoreError.Kind != session.RestoreLoopFailed {
+		t.Fatalf("RestoreSession() error = %T %v, want *session.RestoreError{Kind: RestoreLoopFailed}", restoreErr, restoreErr)
+	}
+	if !strings.Contains(restoreErr.Error(), "identity_mismatch") {
+		t.Fatalf("RestoreSession() error = %v, want harness's identity_mismatch resource-storage error", restoreErr)
+	}
+
+	undriftedRig := processResourceStorageRig(t, store, provider)
+	recovered, err := undriftedRig.RestoreSession(ctx, id)
+	if err != nil {
+		t.Fatalf("RestoreSession() with the ORIGINAL undrifted identity error = %v, want success (proves the drifted case above genuinely turned on the identity, not on some other difference)", err)
+	}
+	if err := recovered.Shutdown(ctx); err != nil {
+		t.Fatalf("recovered Shutdown() error = %v", err)
+	}
+}
+
+// TestHeadlessProcessResourceRootsAreIsolated proves two independently constructed headless
+// providers — simulating two concurrently running headless CodeRig processes — never resolve
+// overlapping resource roots, even for the identical session id, and that two different
+// session ids within the SAME provider get distinct subdirectories of its one shared base.
+func TestHeadlessProcessResourceRootsAreIsolated(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	first, err := newHeadlessResourceStorageProvider()
+	if err != nil {
+		t.Fatalf("newHeadlessResourceStorageProvider() error = %v", err)
+	}
+	second, err := newHeadlessResourceStorageProvider()
+	if err != nil {
+		t.Fatalf("newHeadlessResourceStorageProvider() error = %v", err)
+	}
+	if first.base == second.base {
+		t.Fatalf("two independently constructed headless providers share base %q, want distinct process-owned bases", first.base)
+	}
+
+	id, err := uuid.New()
+	if err != nil {
+		t.Fatalf("uuid.New() error = %v", err)
+	}
+	firstStorage, err := first.StorageForSession(ctx, id)
+	if err != nil {
+		t.Fatalf("first.StorageForSession() error = %v", err)
+	}
+	secondStorage, err := second.StorageForSession(ctx, id)
+	if err != nil {
+		t.Fatalf("second.StorageForSession() error = %v", err)
+	}
+	if firstStorage.Path == secondStorage.Path {
+		t.Fatalf("two independent headless providers (simulating two concurrently running headless CodeRig processes) resolved the SAME resource root %q for the same session id, want distinct process-owned bases", firstStorage.Path)
+	}
+	if pathHasRootPrefix(secondStorage.Path, first.base) || pathHasRootPrefix(firstStorage.Path, second.base) {
+		t.Fatalf("headless provider roots overlap: first=%q (base %q) second=%q (base %q)", firstStorage.Path, first.base, secondStorage.Path, second.base)
+	}
+
+	otherID, err := uuid.New()
+	if err != nil {
+		t.Fatalf("uuid.New() error = %v", err)
+	}
+	otherStorage, err := first.StorageForSession(ctx, otherID)
+	if err != nil {
+		t.Fatalf("first.StorageForSession(otherID) error = %v", err)
+	}
+	if otherStorage.Path == firstStorage.Path {
+		t.Fatalf("two different session ids resolved the same headless resource root %q", firstStorage.Path)
+	}
+}
+
+// TestHeadlessProcessResourceRootStableForSameProcessRestore proves that, within ONE running
+// process (one provider instance), reconstructing a headless session — a real
+// NewSession/Shutdown/RestoreSession round trip over the SAME provider — resolves the
+// identical resource root both times and lets the restore succeed, matching the task's
+// "SessionID subdirectory is stable for same-process reconstruction" contract.
+func TestHeadlessProcessResourceRootStableForSameProcessRestore(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	provider, err := newHeadlessResourceStorageProvider()
+	if err != nil {
+		t.Fatalf("newHeadlessResourceStorageProvider() error = %v", err)
+	}
+	store, err := sessionstore.Open(memstore.New())
+	if err != nil {
+		t.Fatalf("sessionstore.Open() error = %v", err)
+	}
+
+	defined := processResourceStorageRig(t, store, provider)
+	live, err := defined.NewSession(ctx)
+	if err != nil {
+		t.Fatalf("NewSession() error = %v", err)
+	}
+	id := live.SessionID()
+	if err := live.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown() error = %v", err)
+	}
+
+	before, err := provider.StorageForSession(ctx, id)
+	if err != nil {
+		t.Fatalf("StorageForSession() before restore error = %v", err)
+	}
+
+	restored, err := defined.RestoreSession(ctx, id)
+	if err != nil {
+		t.Fatalf("RestoreSession() within the same process error = %v, want success", err)
+	}
+	if err := restored.Shutdown(ctx); err != nil {
+		t.Fatalf("restored Shutdown() error = %v", err)
+	}
+
+	after, err := provider.StorageForSession(ctx, id)
+	if err != nil {
+		t.Fatalf("StorageForSession() after restore error = %v", err)
+	}
+	if before != after {
+		t.Fatalf("headless provider resource storage before restore = %+v, after = %+v, want stable within one process", before, after)
+	}
 }
