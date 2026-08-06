@@ -45,8 +45,10 @@ type Config struct {
 	// before the session's config fingerprint is assembled; it stays the
 	// empty string -- the same "no external capability" default the rig's
 	// own ExternalCapabilityRev field means by its zero value -- when there
-	// is no mcp.json at all. Nothing folds it into the rig's configuration
-	// fingerprint yet.
+	// is no mcp.json at all. persistence.go's agentFingerprintFields folds it
+	// into the rig's configuration fingerprint as ExternalCapabilityRev, so a
+	// changed mcp.json (servers added/removed/reconfigured) is caught as
+	// restore drift like every other fingerprinted input.
 	MCPConfigRev string
 	// PrimerAlias is the public, stable selector for the configured primer. It
 	// is used only by runtime controls; provider routing remains private.

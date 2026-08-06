@@ -387,10 +387,11 @@ func newSessionOverStores(ctx context.Context, client inference.Client, factory 
 // its own nil-checked manager.Close()/adopter.Close(), which is exactly the
 // kind of copy-pasted block a later edit forgets to update in one place.
 type mcpSessionAssembly struct {
-	manager *mcpharness.Manager
-	opener  *mcpGateOpener
-	events  *mcpEventPublisher
-	adopter *mcpharness.Adopter
+	manager  *mcpharness.Manager
+	opener   *mcpGateOpener
+	events   *mcpEventPublisher
+	adopter  *mcpharness.Adopter
+	recorder *mcpNoticeRecorder
 }
 
 // newMCPSessionAssembly loads <home>/mcp.json (via loadMCPConfig, honoring
@@ -412,6 +413,11 @@ func newMCPSessionAssembly(cfg Config) (mcpSessionAssembly, error) {
 	}
 	opener := &mcpGateOpener{}
 	events := &mcpEventPublisher{}
+	// recorder is kept and threaded through the returned assembly (and, from
+	// there, RuntimeAgent) so the notices it captures are actually
+	// reachable via RuntimeAgent.MCPNotices() -- not just constructed and
+	// then discarded with this function's local variables.
+	recorder := newMCPNoticeRecorder()
 	mgr, err := mcpharness.NewManager(bindings, mcpharness.Deps{
 		Gates:  opener,
 		Events: events,
@@ -419,12 +425,12 @@ func newMCPSessionAssembly(cfg Config) (mcpSessionAssembly, error) {
 		// an operator visibility into tool-name collisions and adoption
 		// failures instead of silently dropping them, at no cost a nil
 		// Reporter would have avoided (mcp.go's mcpNoticeRecorder doc).
-		Reporter: newMCPNoticeRecorder(),
+		Reporter: recorder,
 	})
 	if err != nil {
 		return mcpSessionAssembly{}, err
 	}
-	return mcpSessionAssembly{manager: mgr, opener: opener, events: events}, nil
+	return mcpSessionAssembly{manager: mgr, opener: opener, events: events, recorder: recorder}, nil
 }
 
 // configRev is the digest openRuntimeAgent folds into cfg.MCPConfigRev, or ""
@@ -483,6 +489,14 @@ func (a *mcpSessionAssembly) attach(ctx context.Context, sess session.SessionCon
 	}
 	a.adopter = adopter
 	active := sess.ActiveLoop()
+	// string(activePrimerName) names the active loop here rather than
+	// reading it back from sess: this depends on CodeRig never calling
+	// SetActiveLoop before this point in session construction, so
+	// active.ID() and activePrimerName always name the same Loop
+	// (verified: SetActiveLoop is never called anywhere in internal/app
+	// today). A future primer-picker/model-switch feature that reassigns
+	// the active loop before session-open completes would need to revisit
+	// this.
 	_ = adopter.Install(ctx, active.ID(), string(activePrimerName))
 	return nil
 }
@@ -557,7 +571,7 @@ func openRuntimeAgent(ctx context.Context, client inference.Client, factory Mode
 		return fail(err)
 	}
 
-	return newRuntimeAgentWithMCP(adapter, adapter.Controller(), root, access, mcpAssembly.manager, mcpAssembly.adopter, cfg.PrimerAlias, cfg.PrimerEfforts, cfg.PrimerCandidates), nil
+	return newRuntimeAgentWithMCP(adapter, adapter.Controller(), root, access, mcpAssembly.manager, mcpAssembly.adopter, mcpAssembly.recorder, cfg.PrimerAlias, cfg.PrimerEfforts, cfg.PrimerCandidates), nil
 }
 
 // openSessionWithDefinitions is CodeRig's single new-or-restore assembly path.

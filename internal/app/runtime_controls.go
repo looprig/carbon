@@ -26,6 +26,7 @@ type RuntimeAgent struct {
 	access           *sessionAccess
 	mgr              *mcpharness.Manager
 	adopter          *mcpharness.Adopter
+	recorder         *mcpNoticeRecorder
 	primerAlias      string
 	primerEfforts    []model.Effort
 	primerCandidates []PrimerCandidate
@@ -37,12 +38,15 @@ type RuntimeAgent struct {
 // newSessionOverStores) does not wire MCP -- see openRuntimeAgent's own doc for where that
 // wiring lives.
 func newRuntimeAgentWithPrimerCandidates(adapter *sessionadapter.Adapter, sess session.SessionController, root string, access *sessionAccess, primerAlias string, primerEfforts []model.Effort, primerCandidates []PrimerCandidate) *RuntimeAgent {
-	return newRuntimeAgentWithMCP(adapter, sess, root, access, nil, nil, primerAlias, primerEfforts, primerCandidates)
+	return newRuntimeAgentWithMCP(adapter, sess, root, access, nil, nil, nil, primerAlias, primerEfforts, primerCandidates)
 }
 
-// newRuntimeAgentWithMCP is openRuntimeAgent's constructor: mgr and adopter are the session's
-// MCP composition closers, both nil when the session was opened with no mcp.json.
-func newRuntimeAgentWithMCP(adapter *sessionadapter.Adapter, sess session.SessionController, root string, access *sessionAccess, mgr *mcpharness.Manager, adopter *mcpharness.Adopter, primerAlias string, primerEfforts []model.Effort, primerCandidates []PrimerCandidate) *RuntimeAgent {
+// newRuntimeAgentWithMCP is openRuntimeAgent's constructor: mgr, adopter, and recorder are the
+// session's MCP composition closers/sinks, all nil when the session was opened with no
+// mcp.json. recorder follows the same mgr/adopter path from mcpSessionAssembly so the notices
+// it captured during construction remain reachable through MCPNotices for the life of the
+// session, instead of being discarded with mcpSessionAssembly's local variables.
+func newRuntimeAgentWithMCP(adapter *sessionadapter.Adapter, sess session.SessionController, root string, access *sessionAccess, mgr *mcpharness.Manager, adopter *mcpharness.Adopter, recorder *mcpNoticeRecorder, primerAlias string, primerEfforts []model.Effort, primerCandidates []PrimerCandidate) *RuntimeAgent {
 	return &RuntimeAgent{
 		Adapter:          adapter,
 		sess:             sess,
@@ -50,10 +54,25 @@ func newRuntimeAgentWithMCP(adapter *sessionadapter.Adapter, sess session.Sessio
 		access:           access,
 		mgr:              mgr,
 		adopter:          adopter,
+		recorder:         recorder,
 		primerAlias:      primerAlias,
 		primerEfforts:    append([]model.Effort(nil), primerEfforts...),
 		primerCandidates: append([]PrimerCandidate(nil), primerCandidates...),
 	}
+}
+
+// MCPNotices returns the notices captured by the session's MCP Reporter
+// (tool-name collisions, adoption failures -- see mcpharness.NoticeKind), or
+// nil when the session has no MCP composition at all. This is a plain,
+// read-only accessor over the already-bounded, already-safe recorder
+// (mcp.go's mcpNoticeRecorder); it does not publish notices anywhere or
+// invent a new delivery mechanism -- a caller (CLI diagnostics, a future TUI
+// surface) polls it directly.
+func (a *RuntimeAgent) MCPNotices() []mcpharness.Notice {
+	if a.recorder == nil {
+		return nil
+	}
+	return a.recorder.Notices()
 }
 
 // Close shuts the session down, then releases its MCP composition (if any), then its

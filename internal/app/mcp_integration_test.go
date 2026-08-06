@@ -120,6 +120,52 @@ func TestOpenRuntimeAgentValidMCPConfigWiresManagerAndAdopter(t *testing.T) {
 	}
 }
 
+// TestRuntimeAgentMCPNoticesSurfacesReportedNotices proves the fix for the
+// Reporter-is-permanently-unreachable finding: a notice reported through the
+// Manager's own Reporter during a real MCP session (a genuine mcp.json, a
+// real /bin/sh binding, assembled via the production newSessionOverStores
+// path) is actually observable afterward via RuntimeAgent.MCPNotices() --
+// not merely constructed and captured into a local variable nothing ever
+// reads again. The eager Install call attach makes already reports a real
+// NoticeAdopted through this exact recorder (proof the wiring is live, not
+// just present), so this test starts from whatever that produced and proves
+// one more notice -- reported directly through agent.recorder, the exact
+// mcpharness.Reporter instance the constructed Manager holds as
+// Deps.Reporter, the same call the Manager itself makes internally on
+// collision/adoption-failure -- becomes visible too, without needing to
+// engineer a real tool-name collision (which would require two live,
+// protocol-speaking MCP servers to produce).
+func TestRuntimeAgentMCPNoticesSurfacesReportedNotices(t *testing.T) {
+	ctx := context.Background()
+	stores := mustOpenStores(t)
+	home := t.TempDir()
+	writeMCPConfigFixture(t, home, "sh")
+	cfg := Config{HomeDir: home}
+
+	agent, err := newSessionOverStores(ctx, &fakeLLM{}, newModelFactoryFor(testModel()), cfg, stores, t.TempDir())
+	if err != nil {
+		t.Fatalf("newSessionOverStores() error = %v", err)
+	}
+	t.Cleanup(func() { _ = agent.Close(ctx) })
+
+	if agent.recorder == nil {
+		t.Fatal("agent.recorder = nil, want the constructed mcpNoticeRecorder threaded through from mcpSessionAssembly")
+	}
+	before := agent.MCPNotices()
+
+	loopID := mcpTestLoopID(t)
+	agent.recorder.Report(mcpharness.Notice{Kind: mcpharness.NoticeToolNameCollision, Binding: "sh", LoopID: loopID, Message: "duplicate tool name"})
+
+	got := agent.MCPNotices()
+	if len(got) != len(before)+1 {
+		t.Fatalf("MCPNotices() len = %d, want %d (one more than before the report)", len(got), len(before)+1)
+	}
+	last := got[len(got)-1]
+	if last.Kind != mcpharness.NoticeToolNameCollision || last.Binding != "sh" || last.LoopID != loopID || last.Message != "duplicate tool name" {
+		t.Errorf("MCPNotices() last entry = %+v, want the just-reported notice preserved", last)
+	}
+}
+
 // TestOpenRuntimeAgentInteractiveWiresMCPToo proves the interactive path
 // (SessionStoreFactory.openWithClient's flag) gets the same MCP composition
 // as headless -- openRuntimeAgent's interactive flag only changes whether the
