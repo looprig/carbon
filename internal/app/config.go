@@ -14,6 +14,10 @@ type Config struct {
 	// composition. Native primer operation remains available when it is nil or
 	// when its catalog has no executable profiles.
 	ACPChildren *ACPComposition
+	// ACPDiagnostics are the bounded, secret-free ACP availability notices
+	// produced at composition time (dropped or reduced harnesses). They ride
+	// the same presentation channel as the permission-store diagnostics.
+	ACPDiagnostics []string
 	// RuntimeCatalog is the complete parent-scoped catalogue of selectable
 	// child runtimes. It remains available when ACP is disabled; ACPChildren
 	// contributes only executable foreign builders and preflighted ACP rows.

@@ -268,6 +268,29 @@ func TestNewWithClientBuildsBuilderAsActivePrimer(t *testing.T) {
 	}
 }
 
+func TestSessionPresentationSurfacesACPDiagnostics(t *testing.T) {
+	ctx := context.Background()
+	cfg := Config{
+		ACPDiagnostics: []string{"acp: codex unavailable: no executable (set acp_launchers in models.json or set CODEX_ACP_EXECUTABLE)"},
+	}
+	agent, err := newWithClient(ctx, &fakeLLM{}, newModelFactory(), cfg)
+	if err != nil {
+		t.Fatalf("newWithClient() error = %v", err)
+	}
+	t.Cleanup(func() { _ = agent.Close(ctx) })
+
+	presentation := agent.SessionPresentation()
+	found := false
+	for _, line := range presentation.PermissionDiagnostics {
+		if strings.Contains(line, "acp: codex unavailable") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected ACP diagnostic in session presentation, got %v", presentation.PermissionDiagnostics)
+	}
+}
+
 func TestProductionModelsLoadExactlyOnceAndConfigureCurrentPrimer(t *testing.T) {
 	ctx := context.Background()
 	configured := testModel()

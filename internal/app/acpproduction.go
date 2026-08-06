@@ -55,6 +55,7 @@ func withProductionACPChildren(ctx context.Context, cfg Config, configured produ
 	}
 	cfg.ACPChildren = composition
 	cfg.RuntimeCatalog = composition.Catalog.RuntimeCatalog
+	cfg.ACPDiagnostics = composition.Diagnostics
 	return cfg, nil
 }
 
