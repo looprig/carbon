@@ -348,6 +348,44 @@ func TestNormalizeModelConfig(t *testing.T) {
 	}
 }
 
+func TestNormalizeModelConfigACPLaunchers(t *testing.T) {
+	tests := []struct {
+		name      string
+		launchers map[string]acpLauncherConfig
+		wantErr   bool
+	}{
+		{name: "nil is valid"},
+		{name: "empty map is valid", launchers: map[string]acpLauncherConfig{}},
+		{name: "valid claude-code and codex", launchers: map[string]acpLauncherConfig{
+			"claude-code": {Executable: "/usr/local/bin/claude-code-acp"},
+			"codex":       {Executable: "/usr/local/bin/codex-acp"},
+		}},
+		{name: "unknown harness key", launchers: map[string]acpLauncherConfig{
+			"gpt-cli": {Executable: "/usr/local/bin/gpt-cli"},
+		}, wantErr: true},
+		{name: "empty executable", launchers: map[string]acpLauncherConfig{
+			"codex": {Executable: ""},
+		}, wantErr: true},
+		{name: "relative executable path", launchers: map[string]acpLauncherConfig{
+			"codex": {Executable: "codex-acp"},
+		}, wantErr: true},
+		{name: "unclean executable path", launchers: map[string]acpLauncherConfig{
+			"codex": {Executable: "/usr/local/bin/../bin/codex-acp"},
+		}, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			config := validDecodedModelConfig(t)
+			config.ACPLaunchers = tt.launchers
+			_, err := normalizeModelConfig(config)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("normalizeModelConfig() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func validDecodedModelConfig(t *testing.T) modelConfigFile {
 	t.Helper()
 	config, err := decodeModelConfig([]byte(validLMStudioModelConfig))
