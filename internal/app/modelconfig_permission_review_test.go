@@ -79,6 +79,45 @@ func TestDecodeModelConfigPermissionReviewSection(t *testing.T) {
 	})
 }
 
+// TestNormalizeModelConfigPermissionReviewSection covers Task 4's Layer 1
+// resolution of the optional permission_review section: an absent section
+// normalizes to a nil normalized.PermissionReview, and a present section
+// naming a model with tools + structured_output_with_tools normalizes its
+// Model alias and Strict flag unchanged. No `uses` tag is required on the
+// bound model row (design's explicit deviation from claude_code_small_model's
+// "uses" precedent): permission_review.model is the binding.
+func TestNormalizeModelConfigPermissionReviewSection(t *testing.T) {
+	t.Run("absent section normalizes to nil", func(t *testing.T) {
+		config := validDecodedModelConfig(t)
+		normalized, err := normalizeModelConfig(config)
+		if err != nil {
+			t.Fatalf("normalizeModelConfig() error = %v", err)
+		}
+		if normalized.PermissionReview != nil {
+			t.Fatalf("PermissionReview = %+v, want nil", normalized.PermissionReview)
+		}
+	})
+
+	t.Run("present section normalizes Model and Strict", func(t *testing.T) {
+		config := validDecodedModelConfig(t)
+		classifier := config.Models[0]
+		classifier.Alias = "classifier"
+		classifier.Uses = []string{"delegate"}
+		classifier.Capabilities.StructuredOutput = true
+		classifier.Capabilities.StructuredOutputWithTools = true
+		config.Models = append(config.Models, classifier)
+		config.PermissionReview = &permissionReviewConfig{Model: "classifier", Strict: true}
+
+		normalized, err := normalizeModelConfig(config)
+		if err != nil {
+			t.Fatalf("normalizeModelConfig() error = %v", err)
+		}
+		if normalized.PermissionReview == nil || normalized.PermissionReview.Model != "classifier" || !normalized.PermissionReview.Strict {
+			t.Fatalf("PermissionReview = %+v, want {Model:classifier Strict:true}", normalized.PermissionReview)
+		}
+	})
+}
+
 // TestDecodeModelConfigPermissionReviewFromDisk mirrors modelconfig_test.go's
 // "write a temp file 0600 and load" fixture style, proving the section
 // survives the on-disk read path (readModelConfigFile), not just an

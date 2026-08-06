@@ -61,6 +61,14 @@ type Config struct {
 	// PermissionReviewEnabled turns on classifier-based automatic permission
 	// review (off by default — a zero Config never auto-approves anything).
 	// See internal/app/permission_review.go for the composition this enables.
+	// It can also be turned on by a models.json permission_review section
+	// (persistence.go's Open, swarm.go's newWithProductionModelsLoader): a
+	// file section can only ever ENABLE review, never disable it, when this
+	// field is already true — the programmatic seam always wins over the
+	// file, and this plain bool has no way to force-disable a caller's own
+	// prior true value. Regardless of which source set it, permission review
+	// only ever takes effect when AccessProfile == AccessTrusted; every other
+	// profile leaves it silently disabled (newPermissionReviewRegistration).
 	PermissionReviewEnabled bool
 	// PermissionReviewModel is the named model bound to the command-safety
 	// classifier. Required when PermissionReviewEnabled is true; CodeRig never

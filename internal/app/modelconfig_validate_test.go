@@ -99,6 +99,9 @@ func TestValidateModelConfig(t *testing.T) {
 			c.Models = append(c.Models, small)
 		}},
 		{name: "structured output with tools lacks prerequisite", mutate: func(c *modelConfigFile) { c.Models[0].Capabilities.StructuredOutputWithTools = true }},
+		{name: "permission_review missing model", mutate: func(c *modelConfigFile) { c.PermissionReview = &permissionReviewConfig{Strict: true} }},
+		{name: "permission_review unknown alias", mutate: func(c *modelConfigFile) { c.PermissionReview = &permissionReviewConfig{Model: "does-not-exist"} }},
+		{name: "permission_review model lacks structured_output_with_tools", mutate: func(c *modelConfigFile) { c.PermissionReview = &permissionReviewConfig{Model: "local"} }},
 	}
 
 	for _, tt := range tests {

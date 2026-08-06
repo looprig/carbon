@@ -22,6 +22,16 @@ type normalizedModelConfig struct {
 	DelegateDefaults     []normalizedDelegateDefault
 	Models               []normalizedModelTarget
 	NativeACP            map[string]normalizedNativeACPProfile
+	PermissionReview     *normalizedPermissionReview
+}
+
+// normalizedPermissionReview is the resolved (but not yet client-bound)
+// permission_review section: the alias string, not yet the model.Model value
+// it names. compileProductionModels resolves the alias to a model.Model, the
+// same shape PrimerAlias/config.PrimerDefault follow at this layer.
+type normalizedPermissionReview struct {
+	Model  string
+	Strict bool
 }
 
 type normalizedDelegateDefault struct {
@@ -169,6 +179,27 @@ func normalizeModelConfig(config modelConfigFile) (normalizedModelConfig, error)
 		normalized.ClaudeCodeSmallModel = config.ClaudeCodeSmallModel
 	} else if claudeDefault {
 		return normalizedModelConfig{}, modelConfigValidationError("claude-code defaults require claude_code_small_model")
+	}
+
+	if config.PermissionReview != nil {
+		if !isExactNonEmptyModelConfigString(config.PermissionReview.Model) {
+			return normalizedModelConfig{}, modelConfigValidationError("permission_review.model must be non-empty and unpadded")
+		}
+		target, exists := byAlias[config.PermissionReview.Model]
+		if !exists {
+			// Unlike every other modelConfigValidationError call in this file, this
+			// one (and the capability-shortfall error below) names the offending
+			// alias via %q. Alias names are operator-chosen identifiers, not
+			// secrets (unlike API keys/headers elsewhere in this file), and
+			// boundedModelConfigText still caps the final message length — a
+			// deliberate, narrow deviation for this field only, not a license to
+			// interpolate elsewhere in this function.
+			return normalizedModelConfig{}, modelConfigValidationError(fmt.Sprintf("permission_review.model %q is not a configured model alias", config.PermissionReview.Model))
+		}
+		if !target.Model.Caps.Tools || !target.Model.Caps.StructuredOutputWithTools {
+			return normalizedModelConfig{}, modelConfigValidationError(fmt.Sprintf("permission_review.model %q must support tools and structured_output_with_tools", config.PermissionReview.Model))
+		}
+		normalized.PermissionReview = &normalizedPermissionReview{Model: config.PermissionReview.Model, Strict: config.PermissionReview.Strict}
 	}
 
 	sort.Slice(normalized.Models, func(i, j int) bool {

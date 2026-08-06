@@ -270,6 +270,68 @@ func TestProductionModelsRejectsSharedPrimerProviderTargets(t *testing.T) {
 	}
 }
 
+// TestProductionModelsResolvesPermissionReview proves compileProductionModels
+// resolves a normalized permission_review section into
+// PermissionReviewEnabled/PermissionReviewModel/PermissionReviewStrict on the
+// output, and that all three stay at their zero value when the section is
+// absent.
+func TestProductionModelsResolvesPermissionReview(t *testing.T) {
+	primerModel := model.CustomModel("anthropic", model.APIFormatAnthropic, "", "primer-model", model.WithTools())
+	classifierModel := model.CustomModel(
+		"openai", model.APIFormatOpenAIResponses, "", "classifier-model",
+		model.WithTools(), model.WithStructuredOutput(), model.WithStructuredOutputWithTools(),
+	)
+	factory := func(model.Model, auth.APIKey) (inference.Client, error) { return &fakeLLM{}, nil }
+
+	t.Run("present section resolves the enabled model and strict flag", func(t *testing.T) {
+		config := normalizedModelConfig{
+			PrimerDefault: "fixture-primer",
+			Models: []normalizedModelTarget{
+				{Alias: "fixture-primer", Model: primerModel, Uses: []string{"primer"}, Efforts: []model.Effort{model.EffortNone}, DefaultEffort: model.EffortNone},
+				{Alias: "fixture-classifier", Model: classifierModel, Uses: []string{"delegate"}, Efforts: []model.Effort{model.EffortNone}, DefaultEffort: model.EffortNone},
+			},
+			PermissionReview: &normalizedPermissionReview{Model: "fixture-classifier", Strict: true},
+		}
+
+		got, err := compileProductionModels(config, factory)
+		if err != nil {
+			t.Fatalf("compileProductionModels() error = %v", err)
+		}
+		if !got.PermissionReviewEnabled {
+			t.Fatal("PermissionReviewEnabled = false, want true")
+		}
+		if !reflect.DeepEqual(got.PermissionReviewModel, classifierModel) {
+			t.Fatalf("PermissionReviewModel = %#v, want %#v", got.PermissionReviewModel, classifierModel)
+		}
+		if !got.PermissionReviewStrict {
+			t.Fatal("PermissionReviewStrict = false, want true")
+		}
+	})
+
+	t.Run("absent section stays disabled with zero fields", func(t *testing.T) {
+		config := normalizedModelConfig{
+			PrimerDefault: "fixture-primer",
+			Models: []normalizedModelTarget{
+				{Alias: "fixture-primer", Model: primerModel, Uses: []string{"primer"}, Efforts: []model.Effort{model.EffortNone}, DefaultEffort: model.EffortNone},
+			},
+		}
+
+		got, err := compileProductionModels(config, factory)
+		if err != nil {
+			t.Fatalf("compileProductionModels() error = %v", err)
+		}
+		if got.PermissionReviewEnabled {
+			t.Fatal("PermissionReviewEnabled = true, want false")
+		}
+		if got.PermissionReviewModel.Name != "" {
+			t.Fatalf("PermissionReviewModel = %#v, want the zero model.Model", got.PermissionReviewModel)
+		}
+		if got.PermissionReviewStrict {
+			t.Fatal("PermissionReviewStrict = true, want false")
+		}
+	})
+}
+
 func aliasesToLoop(values []string) []loop.ModelAlias {
 	if values == nil {
 		return nil

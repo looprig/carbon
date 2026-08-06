@@ -404,6 +404,16 @@ func (f *SessionStoreFactory) Open(ctx context.Context, sel SessionSelector, cfg
 		if err != nil {
 			return nil, err
 		}
+		// Programmatic enable wins: a models.json permission_review section can
+		// only ever ENABLE permission review, never override an already-enabled
+		// programmatic selection (see Config.PermissionReviewEnabled's doc
+		// comment). newPermissionReviewRegistration's own trusted-profile gate
+		// (permission_review.go) still applies regardless of which source set it.
+		if !cfg.PermissionReviewEnabled && configured.PermissionReviewEnabled {
+			cfg.PermissionReviewEnabled = true
+			cfg.PermissionReviewModel = configured.PermissionReviewModel
+			cfg.PermissionReviewStrictPolicy = configured.PermissionReviewStrict
+		}
 	}
 	agent, err := f.openWithClient(ctx, client, factory, sel, cfg)
 	if err != nil {

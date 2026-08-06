@@ -294,6 +294,16 @@ func newWithProductionModelsLoader(ctx context.Context, cfg Config, loader produ
 	if err != nil {
 		return nil, err
 	}
+	// Programmatic enable wins: a models.json permission_review section can
+	// only ever ENABLE permission review, never override an already-enabled
+	// programmatic selection (see Config.PermissionReviewEnabled's doc
+	// comment). newPermissionReviewRegistration's own trusted-profile gate
+	// (permission_review.go) still applies regardless of which source set it.
+	if !cfg.PermissionReviewEnabled && configured.PermissionReviewEnabled {
+		cfg.PermissionReviewEnabled = true
+		cfg.PermissionReviewModel = configured.PermissionReviewModel
+		cfg.PermissionReviewStrictPolicy = configured.PermissionReviewStrict
+	}
 	runtimeClient := configured.RuntimeClient
 	if runtimeClient == nil {
 		runtimeClient = configured.PrimerClient
