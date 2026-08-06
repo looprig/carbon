@@ -22,7 +22,6 @@ func TestValidateModelConfig(t *testing.T) {
 		{name: "empty model", mutate: func(c *modelConfigFile) { c.Models[0].Model = "" }},
 		{name: "padded model", mutate: func(c *modelConfigFile) { c.Models[0].Model += " " }},
 		{name: "duplicate aliases", mutate: func(c *modelConfigFile) { c.Models = append(c.Models, c.Models[0]) }},
-		{name: "empty uses", mutate: func(c *modelConfigFile) { c.Models[0].Uses = nil }},
 		{name: "empty use", mutate: func(c *modelConfigFile) { c.Models[0].Uses[0] = "" }},
 		{name: "padded use", mutate: func(c *modelConfigFile) { c.Models[0].Uses[0] = "primer " }},
 		{name: "duplicate uses", mutate: func(c *modelConfigFile) { c.Models[0].Uses = append(c.Models[0].Uses, "primer") }},
@@ -99,6 +98,9 @@ func TestValidateModelConfig(t *testing.T) {
 			c.Models = append(c.Models, small)
 		}},
 		{name: "structured output with tools lacks prerequisite", mutate: func(c *modelConfigFile) { c.Models[0].Capabilities.StructuredOutputWithTools = true }},
+		{name: "permission_review missing model", mutate: func(c *modelConfigFile) { c.PermissionReview = &permissionReviewConfig{Strict: true} }},
+		{name: "permission_review unknown alias", mutate: func(c *modelConfigFile) { c.PermissionReview = &permissionReviewConfig{Model: "does-not-exist"} }},
+		{name: "permission_review model lacks structured_output_with_tools", mutate: func(c *modelConfigFile) { c.PermissionReview = &permissionReviewConfig{Model: "local"} }},
 	}
 
 	for _, tt := range tests {

@@ -22,6 +22,16 @@ type normalizedModelConfig struct {
 	DelegateDefaults     []normalizedDelegateDefault
 	Models               []normalizedModelTarget
 	NativeACP            map[string]normalizedNativeACPProfile
+	PermissionReview     *normalizedPermissionReview
+}
+
+// normalizedPermissionReview is the resolved (but not yet client-bound)
+// permission_review section: the alias string, not yet the model.Model value
+// it names. compileProductionModels resolves the alias to a model.Model, the
+// same shape PrimerAlias/config.PrimerDefault follow at this layer.
+type normalizedPermissionReview struct {
+	Model  string
+	Strict bool
 }
 
 type normalizedDelegateDefault struct {
@@ -171,6 +181,27 @@ func normalizeModelConfig(config modelConfigFile) (normalizedModelConfig, error)
 		return normalizedModelConfig{}, modelConfigValidationError("claude-code defaults require claude_code_small_model")
 	}
 
+	if config.PermissionReview != nil {
+		if !isExactNonEmptyModelConfigString(config.PermissionReview.Model) {
+			return normalizedModelConfig{}, modelConfigValidationError("permission_review.model must be non-empty and unpadded")
+		}
+		target, exists := byAlias[config.PermissionReview.Model]
+		if !exists {
+			// Unlike every other modelConfigValidationError call in this file, this
+			// one (and the capability-shortfall error below) names the offending
+			// alias via %q. Alias names are operator-chosen identifiers, not
+			// secrets (unlike API keys/headers elsewhere in this file), and
+			// boundedModelConfigText still caps the final message length — a
+			// deliberate, narrow deviation for this field only, not a license to
+			// interpolate elsewhere in this function.
+			return normalizedModelConfig{}, modelConfigValidationError(fmt.Sprintf("permission_review.model %q is not a configured model alias", config.PermissionReview.Model))
+		}
+		if !target.Model.Caps.Tools || !target.Model.Caps.StructuredOutputWithTools {
+			return normalizedModelConfig{}, modelConfigValidationError(fmt.Sprintf("permission_review.model %q must support tools and structured_output_with_tools", config.PermissionReview.Model))
+		}
+		normalized.PermissionReview = &normalizedPermissionReview{Model: config.PermissionReview.Model, Strict: config.PermissionReview.Strict}
+	}
+
 	sort.Slice(normalized.Models, func(i, j int) bool {
 		return normalized.Models[i].Alias < normalized.Models[j].Alias
 	})
@@ -238,9 +269,10 @@ func normalizeModelTarget(target modelTargetConfig) (normalizedModelTarget, erro
 			return normalized, modelConfigValidationError(field + " must be non-empty and unpadded")
 		}
 	}
-	if len(target.Uses) == 0 {
-		return normalized, modelConfigValidationError("uses must not be empty")
-	}
+	// An empty or absent uses is valid: the model is neither primer- nor
+	// delegate-capable, addressable only by alias (today, only
+	// permission_review.model resolves a model this way). The loop below
+	// still rejects unknown values and duplicates when uses IS non-empty.
 	usesSeen := make(map[string]struct{}, len(target.Uses))
 	uses := make([]string, 0, len(target.Uses))
 	for _, use := range target.Uses {
@@ -258,7 +290,7 @@ func normalizeModelTarget(target modelTargetConfig) (normalizedModelTarget, erro
 		return normalized, err
 	}
 	if !target.Capabilities.Tools {
-		return normalized, modelConfigValidationError("primer and delegate models must support tools")
+		return normalized, modelConfigValidationError("models must support tools")
 	}
 	if target.Capabilities.StructuredOutputWithTools && (!target.Capabilities.Tools || !target.Capabilities.StructuredOutput) {
 		return normalized, modelConfigValidationError("structured_output_with_tools requires tools and structured_output")

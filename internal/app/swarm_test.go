@@ -274,7 +274,7 @@ func TestProductionModelsLoadExactlyOnceAndConfigureCurrentPrimer(t *testing.T) 
 	configured.Name = "configured-primer-only"
 	loadCalls := 0
 	storeCalls := 0
-	agent, err := newWithProductionModelsLoader(ctx, Config{}, func() (productionModels, error) {
+	agent, err := newWithProductionModelsLoader(ctx, Config{}, func(string) (productionModels, error) {
 		loadCalls++
 		return productionModels{
 			PrimerClient: &fakeLLM{}, PrimerModel: configured, PrimerAlias: "configured-primer-alias", PrimerEfforts: []model.Effort{model.EffortHigh}, ConfigRev: "model-config-rev",
@@ -316,7 +316,7 @@ func TestProductionModelsLoadExactlyOnceAndConfigureCurrentPrimer(t *testing.T) 
 func TestProductionModelsMissingPrimerFailsBeforeStoreOpen(t *testing.T) {
 	loadCalls := 0
 	storeCalls := 0
-	agent, err := newWithProductionModelsLoader(context.Background(), Config{}, func() (productionModels, error) {
+	agent, err := newWithProductionModelsLoader(context.Background(), Config{}, func(string) (productionModels, error) {
 		loadCalls++
 		return productionModels{}, nil
 	}, func() (*swarmStores, error) {
@@ -341,7 +341,7 @@ func TestProductionModelsMissingPrimerFailsBeforeStoreOpen(t *testing.T) {
 func TestProductionModelsLoaderFailureHappensBeforeStoreOpen(t *testing.T) {
 	wantErr := modelConfigFailure("decode", errors.New("fixture invalid configuration"))
 	storeCalls := 0
-	agent, err := newWithProductionModelsLoader(context.Background(), Config{}, func() (productionModels, error) {
+	agent, err := newWithProductionModelsLoader(context.Background(), Config{}, func(string) (productionModels, error) {
 		return productionModels{}, wantErr
 	}, func() (*swarmStores, error) {
 		storeCalls++

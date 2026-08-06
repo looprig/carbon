@@ -49,6 +49,15 @@ type productionModels struct {
 	Defaults         map[identity.AgentName]configuredDelegateDefault
 	ClaudeSmall      loop.ModelAlias
 	ConfigRev        string
+	// PermissionReviewEnabled, PermissionReviewModel, and PermissionReviewStrict
+	// mirror Config's own PermissionReviewEnabled/PermissionReviewModel/
+	// PermissionReviewStrictPolicy fields so production.go's and swarm.go's
+	// copy-over reads as an obvious 1:1 mapping. They are resolved from an
+	// optional models.json permission_review section; the zero values (false,
+	// the zero model.Model, false) mean the section was absent.
+	PermissionReviewEnabled bool
+	PermissionReviewModel   model.Model
+	PermissionReviewStrict  bool
 }
 
 func compileProductionModels(config normalizedModelConfig, factory configuredClientFactory) (productionModels, error) {
@@ -135,18 +144,30 @@ func compileProductionModels(config normalizedModelConfig, factory configuredCli
 		}
 	}
 
+	var permissionReviewEnabled bool
+	var permissionReviewModel model.Model
+	var permissionReviewStrict bool
+	if config.PermissionReview != nil {
+		permissionReviewEnabled = true
+		permissionReviewModel = models[config.PermissionReview.Model]
+		permissionReviewStrict = config.PermissionReview.Strict
+	}
+
 	return productionModels{
-		PrimerClient:     clients[config.PrimerDefault],
-		RuntimeClient:    runtimeClient,
-		PrimerModel:      models[config.PrimerDefault],
-		PrimerAlias:      config.PrimerDefault,
-		PrimerEfforts:    primerEfforts,
-		PrimerCandidates: primerCandidates,
-		ACP:              delegateSources,
-		NativeACP:        nativeACP,
-		Defaults:         defaults,
-		ClaudeSmall:      loop.ModelAlias(config.ClaudeCodeSmallModel),
-		ConfigRev:        configRev,
+		PrimerClient:            clients[config.PrimerDefault],
+		RuntimeClient:           runtimeClient,
+		PrimerModel:             models[config.PrimerDefault],
+		PrimerAlias:             config.PrimerDefault,
+		PrimerEfforts:           primerEfforts,
+		PrimerCandidates:        primerCandidates,
+		ACP:                     delegateSources,
+		NativeACP:               nativeACP,
+		Defaults:                defaults,
+		ClaudeSmall:             loop.ModelAlias(config.ClaudeCodeSmallModel),
+		ConfigRev:               configRev,
+		PermissionReviewEnabled: permissionReviewEnabled,
+		PermissionReviewModel:   permissionReviewModel,
+		PermissionReviewStrict:  permissionReviewStrict,
 	}, nil
 }
 

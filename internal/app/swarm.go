@@ -20,9 +20,11 @@ import (
 	"github.com/looprig/harness/pkg/identity"
 	"github.com/looprig/harness/pkg/loop"
 	"github.com/looprig/harness/pkg/rig"
+	"github.com/looprig/harness/pkg/session"
 	"github.com/looprig/harness/pkg/tool"
 	"github.com/looprig/inference"
 	model "github.com/looprig/inference/model"
+	mcpharness "github.com/looprig/mcp/pkg/harness"
 	"github.com/looprig/tools/skill"
 	"github.com/looprig/tui"
 	"github.com/looprig/tui/sessionadapter"
@@ -268,10 +270,17 @@ func New(ctx context.Context, cfg Config) (tui.Agent, error) {
 	return newWithProductionModelsLoader(ctx, cfg, loadProductionModels, headlessStores)
 }
 
-type productionModelsLoader func() (productionModels, error)
+// productionModelsLoader is loadProductionModels's shape: it takes the
+// already-resolved looprig home (looprigHome's result) so it never resolves
+// HOME itself.
+type productionModelsLoader func(home string) (productionModels, error)
 
 func newWithProductionModelsLoader(ctx context.Context, cfg Config, loader productionModelsLoader, storesProvider swarmStoresProvider) (*RuntimeAgent, error) {
-	configured, err := loader()
+	home, err := looprigHome(cfg)
+	if err != nil {
+		return nil, err
+	}
+	configured, err := loader(home)
 	if err != nil {
 		return nil, err
 	}
@@ -286,6 +295,16 @@ func newWithProductionModelsLoader(ctx context.Context, cfg Config, loader produ
 	cfg, err = withProductionACPChildren(ctx, cfg, configured)
 	if err != nil {
 		return nil, err
+	}
+	// Programmatic enable wins: a models.json permission_review section can
+	// only ever ENABLE permission review, never override an already-enabled
+	// programmatic selection (see Config.PermissionReviewEnabled's doc
+	// comment). newPermissionReviewRegistration's own trusted-profile gate
+	// (permission_review.go) still applies regardless of which source set it.
+	if !cfg.PermissionReviewEnabled && configured.PermissionReviewEnabled {
+		cfg.PermissionReviewEnabled = true
+		cfg.PermissionReviewModel = configured.PermissionReviewModel
+		cfg.PermissionReviewStrictPolicy = configured.PermissionReviewStrict
 	}
 	runtimeClient := configured.RuntimeClient
 	if runtimeClient == nil {
@@ -356,37 +375,203 @@ func newSessionOverStores(ctx context.Context, client inference.Client, factory 
 	return openRuntimeAgent(ctx, client, factory, cfg, stores, root, SessionSelector{}, false)
 }
 
+// mcpSessionAssembly is openRuntimeAgent's local helper for the optional MCP
+// composition step: loading mcp.json, constructing the Manager and its
+// late-binding gate/event adapters, attaching them once a session exists, and
+// closing them on any failure path. Its zero value is a legitimate value --
+// every method is a safe no-op when manager is nil -- which is exactly the
+// "no mcp.json" case: nothing about the assembled rig or session changes.
+//
+// It exists so openRuntimeAgent's several failure paths (before and after the
+// live session exists) can share one cleanup call instead of each repeating
+// its own nil-checked manager.Close()/adopter.Close(), which is exactly the
+// kind of copy-pasted block a later edit forgets to update in one place.
+type mcpSessionAssembly struct {
+	manager  *mcpharness.Manager
+	opener   *mcpGateOpener
+	events   *mcpEventPublisher
+	adopter  *mcpharness.Adopter
+	recorder *mcpNoticeRecorder
+}
+
+// newMCPSessionAssembly loads <home>/mcp.json (via loadMCPConfig, honoring
+// cfg.HomeDir) and, when it names at least one server, constructs the Manager
+// over it. An absent file, or one with no servers, returns the zero
+// mcpSessionAssembly and no error -- zero change to the assembled rig or
+// session, matching every other touch point's nil-check.
+func newMCPSessionAssembly(cfg Config) (mcpSessionAssembly, error) {
+	specs, err := loadMCPConfig(cfg)
+	if err != nil {
+		return mcpSessionAssembly{}, err
+	}
+	if len(specs) == 0 {
+		return mcpSessionAssembly{}, nil
+	}
+	bindings, err := mcpDefinitions(specs)
+	if err != nil {
+		return mcpSessionAssembly{}, err
+	}
+	opener := &mcpGateOpener{}
+	events := &mcpEventPublisher{}
+	// recorder is kept and threaded through the returned assembly (and, from
+	// there, RuntimeAgent) so the notices it captures are actually
+	// reachable via RuntimeAgent.MCPNotices() -- not just constructed and
+	// then discarded with this function's local variables.
+	recorder := newMCPNoticeRecorder()
+	mgr, err := mcpharness.NewManager(bindings, mcpharness.Deps{
+		Gates:  opener,
+		Events: events,
+		// A recorder rather than nil: it is bounded, always-safe, and gives
+		// an operator visibility into tool-name collisions and adoption
+		// failures instead of silently dropping them, at no cost a nil
+		// Reporter would have avoided (mcp.go's mcpNoticeRecorder doc).
+		Reporter: recorder,
+	})
+	if err != nil {
+		return mcpSessionAssembly{}, err
+	}
+	return mcpSessionAssembly{manager: mgr, opener: opener, events: events, recorder: recorder}, nil
+}
+
+// configRev is the digest openRuntimeAgent folds into cfg.MCPConfigRev, or ""
+// when there is no MCP composition at all -- the same "no external
+// capability" zero value Manager.ConfigDigest itself returns for a Manager
+// with no bindings.
+func (a mcpSessionAssembly) configRev() string {
+	if a.manager == nil {
+		return ""
+	}
+	return a.manager.ConfigDigest()
+}
+
+// attach binds the Manager to the live session, connects every binding, and
+// starts the Adopter -- installing the active primer's own toolset
+// immediately, since that Loop already exists and, having never run, will
+// never reach the idle boundary that would otherwise trigger its first
+// install (mcpharness.Adopter.Install's doc). It is a no-op when there is no
+// manager.
+//
+// The gate opener is bound only when interactive: a headless composition has
+// no human to route an elicitation to, matching mcpGateOpener's permanently-
+// unbound posture for headless sessions (design: "Headless sessions install
+// an always-refusing opener"). The event publisher is bound in both cases --
+// publishing an integration status is not a human-input capability, so a
+// headless session's own event stream still opens knowing what its servers
+// are.
+//
+// The eager Install's error is intentionally discarded: a failure there
+// (e.g. a slow build racing the timeout) leaves the active primer's first
+// turn running with no MCP tools, exactly like any other Loop that has not
+// yet adopted a generation, and it gets a real retry the moment that turn
+// ends and the Loop reaches its own idle boundary -- matching Install's own
+// "otherwise the same operation as a boundary" contract.
+func (a *mcpSessionAssembly) attach(ctx context.Context, sess session.SessionController, interactive bool) error {
+	if a.manager == nil {
+		return nil
+	}
+	if err := a.manager.BindSession(sess.SessionID()); err != nil {
+		return err
+	}
+	if interactive {
+		if host, ok := sess.(session.GateHost); ok {
+			a.opener.Bind(host)
+		}
+	}
+	if pub, ok := sess.(mcpharness.EventPublisher); ok {
+		a.events.Bind(pub)
+	}
+	if err := a.manager.Start(ctx); err != nil {
+		return err
+	}
+	adopter, err := a.manager.StartAdoption(sess, sess)
+	if err != nil {
+		return err
+	}
+	a.adopter = adopter
+	active := sess.ActiveLoop()
+	// string(activePrimerName) names the active loop here rather than
+	// reading it back from sess: this depends on CodeRig never calling
+	// SetActiveLoop before this point in session construction, so
+	// active.ID() and activePrimerName always name the same Loop
+	// (verified: SetActiveLoop is never called anywhere in internal/app
+	// today). A future primer-picker/model-switch feature that reassigns
+	// the active loop before session-open completes would need to revisit
+	// this.
+	_ = adopter.Install(ctx, active.ID(), string(activePrimerName))
+	return nil
+}
+
+// close releases the adopter, then the manager, nil-safe and safe to call at
+// any point in construction -- before a manager was ever built, after Start
+// but before StartAdoption, or after a full attach. The order mirrors
+// RuntimeAgent.Close's documented "stop consumers before the resource they
+// consume": the adopter only reacts to the session's own idle events, so it
+// is stopped before the manager that owns the actual connections.
+func (a *mcpSessionAssembly) close(ctx context.Context) {
+	if a.adopter != nil {
+		_ = a.adopter.Close()
+		a.adopter = nil
+	}
+	if a.manager != nil {
+		_ = a.manager.Close(ctx)
+	}
+}
+
 // openRuntimeAgent is CodeRig's single session-assembly path. It resolves the
 // session-fixed access wiring (interactive or headless), folds its secret-free
-// digest into the config fingerprint, builds the three definitions and one rig
-// over the injected stores, opens (Resume zero) or restores the session, and
-// returns the runtime agent that OWNS the executor-set closers. Any failure after
-// the access is built closes the partial assembly so no scratch HOME leaks. New,
-// restore, headless, and interactive construction differ only in the injected
-// stores, selector, and the interactive flag (which selects the permission store +
-// evaluator kind).
+// digest into the config fingerprint, optionally discovers and constructs an MCP
+// Manager from <home>/mcp.json (nil when the file is absent or empty -- every
+// touch point below nil-checks it via mcpSessionAssembly), builds the three
+// definitions and one rig over the injected stores, opens (Resume zero) or
+// restores the session, attaches the MCP composition to it, and returns the
+// runtime agent that OWNS the executor-set and MCP closers. Any failure after the
+// access is built closes the partial assembly (MCP composition, then access) so
+// nothing leaks. New, restore, headless, and interactive construction differ only
+// in the injected stores, selector, and the interactive flag (which selects the
+// permission store + evaluator kind, and here, whether the MCP gate opener binds
+// at all).
 func openRuntimeAgent(ctx context.Context, client inference.Client, factory ModelFactory, cfg Config, stores *swarmStores, root string, selector SessionSelector, interactive bool) (*RuntimeAgent, error) {
 	access, err := buildSessionAccess(cfg, root, interactive)
 	if err != nil {
 		return nil, err
 	}
 	cfg.AccessConfigRev = access.configRev
-	definitions, err := swarmDefinitions(client, factory(), cfg, access)
+
+	mcpAssembly, err := newMCPSessionAssembly(cfg)
 	if err != nil {
 		_ = access.Close()
 		return nil, err
+	}
+	cfg.MCPConfigRev = mcpAssembly.configRev()
+
+	// fail is every remaining failure path's cleanup: close whatever MCP
+	// composition exists (a no-op when there is none), then the access
+	// wiring, mirroring buildSessionAccess's own partial-failure discipline.
+	fail := func(err error) (*RuntimeAgent, error) {
+		mcpAssembly.close(ctx)
+		_ = access.Close()
+		return nil, err
+	}
+
+	definitions, err := swarmDefinitions(client, factory(), cfg, access)
+	if err != nil {
+		return fail(err)
 	}
 	permissionReview, err := newPermissionReviewRegistration(cfg, client)
 	if err != nil {
-		_ = access.Close()
-		return nil, err
+		return fail(err)
 	}
 	adapter, err := openSessionWithDefinitions(ctx, definitions, cfg, stores, root, selector, permissionReview)
 	if err != nil {
-		_ = access.Close()
-		return nil, err
+		return fail(err)
 	}
-	return newRuntimeAgentWithPrimerCandidates(adapter, adapter.Controller(), root, access, cfg.PrimerAlias, cfg.PrimerEfforts, cfg.PrimerCandidates), nil
+
+	if err := mcpAssembly.attach(ctx, adapter.Controller(), interactive); err != nil {
+		_ = adapter.Close(ctx)
+		return fail(err)
+	}
+
+	return newRuntimeAgentWithMCP(adapter, adapter.Controller(), root, access, mcpAssembly.manager, mcpAssembly.adopter, mcpAssembly.recorder, cfg.PrimerAlias, cfg.PrimerEfforts, cfg.PrimerCandidates), nil
 }
 
 // openSessionWithDefinitions is CodeRig's single new-or-restore assembly path.

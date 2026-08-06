@@ -270,6 +270,113 @@ func TestProductionModelsRejectsSharedPrimerProviderTargets(t *testing.T) {
 	}
 }
 
+// TestProductionModelsResolvesPermissionReview proves compileProductionModels
+// resolves a normalized permission_review section into
+// PermissionReviewEnabled/PermissionReviewModel/PermissionReviewStrict on the
+// output, and that all three stay at their zero value when the section is
+// absent.
+func TestProductionModelsResolvesPermissionReview(t *testing.T) {
+	primerModel := model.CustomModel("anthropic", model.APIFormatAnthropic, "", "primer-model", model.WithTools())
+	classifierModel := model.CustomModel(
+		"openai", model.APIFormatOpenAIResponses, "", "classifier-model",
+		model.WithTools(), model.WithStructuredOutput(), model.WithStructuredOutputWithTools(),
+	)
+	factory := func(model.Model, auth.APIKey) (inference.Client, error) { return &fakeLLM{}, nil }
+
+	t.Run("present section resolves the enabled model and strict flag", func(t *testing.T) {
+		config := normalizedModelConfig{
+			PrimerDefault: "fixture-primer",
+			Models: []normalizedModelTarget{
+				{Alias: "fixture-primer", Model: primerModel, Uses: []string{"primer"}, Efforts: []model.Effort{model.EffortNone}, DefaultEffort: model.EffortNone},
+				{Alias: "fixture-classifier", Model: classifierModel, Uses: []string{"delegate"}, Efforts: []model.Effort{model.EffortNone}, DefaultEffort: model.EffortNone},
+			},
+			PermissionReview: &normalizedPermissionReview{Model: "fixture-classifier", Strict: true},
+		}
+
+		got, err := compileProductionModels(config, factory)
+		if err != nil {
+			t.Fatalf("compileProductionModels() error = %v", err)
+		}
+		if !got.PermissionReviewEnabled {
+			t.Fatal("PermissionReviewEnabled = false, want true")
+		}
+		if !reflect.DeepEqual(got.PermissionReviewModel, classifierModel) {
+			t.Fatalf("PermissionReviewModel = %#v, want %#v", got.PermissionReviewModel, classifierModel)
+		}
+		if !got.PermissionReviewStrict {
+			t.Fatal("PermissionReviewStrict = false, want true")
+		}
+	})
+
+	t.Run("absent section stays disabled with zero fields", func(t *testing.T) {
+		config := normalizedModelConfig{
+			PrimerDefault: "fixture-primer",
+			Models: []normalizedModelTarget{
+				{Alias: "fixture-primer", Model: primerModel, Uses: []string{"primer"}, Efforts: []model.Effort{model.EffortNone}, DefaultEffort: model.EffortNone},
+			},
+		}
+
+		got, err := compileProductionModels(config, factory)
+		if err != nil {
+			t.Fatalf("compileProductionModels() error = %v", err)
+		}
+		if got.PermissionReviewEnabled {
+			t.Fatal("PermissionReviewEnabled = true, want false")
+		}
+		if got.PermissionReviewModel.Name != "" {
+			t.Fatalf("PermissionReviewModel = %#v, want the zero model.Model", got.PermissionReviewModel)
+		}
+		if got.PermissionReviewStrict {
+			t.Fatal("PermissionReviewStrict = true, want false")
+		}
+	})
+}
+
+// TestProductionModelsResolvesUnusedClassifierPermissionReview is the
+// end-to-end (JSON in, compileProductionModels out) proof for the
+// phase-boundary review's fix: a models.json row whose "uses" field is
+// entirely omitted from the JSON binds through permission_review.model, and
+// stays invisible to both the primer-picker (PrimerCandidates) and the
+// delegate roster (ACP) — proving it is genuinely excluded from those
+// rosters, not merely absent from them by coincidence.
+func TestProductionModelsResolvesUnusedClassifierPermissionReview(t *testing.T) {
+	wire, err := decodeModelConfig([]byte(modelConfigJSONWithUnusedClassifier()))
+	if err != nil {
+		t.Fatalf("decodeModelConfig() error = %v", err)
+	}
+	normalized, err := normalizeModelConfig(wire)
+	if err != nil {
+		t.Fatalf("normalizeModelConfig() error = %v", err)
+	}
+	classifier, ok := modelConfigNormalizedTargetByAlias(normalized.Models, "classifier")
+	if !ok {
+		t.Fatal("normalized config missing the classifier model")
+	}
+
+	factory := func(model.Model, auth.APIKey) (inference.Client, error) { return &fakeLLM{}, nil }
+	got, err := compileProductionModels(normalized, factory)
+	if err != nil {
+		t.Fatalf("compileProductionModels() error = %v", err)
+	}
+
+	if !got.PermissionReviewEnabled {
+		t.Fatal("PermissionReviewEnabled = false, want true")
+	}
+	if !reflect.DeepEqual(got.PermissionReviewModel, classifier.Model) {
+		t.Fatalf("PermissionReviewModel = %#v, want the classifier model %#v", got.PermissionReviewModel, classifier.Model)
+	}
+	for _, candidate := range got.PrimerCandidates {
+		if candidate.Alias == "classifier" {
+			t.Fatal("classifier model appeared in PrimerCandidates, want excluded")
+		}
+	}
+	for _, source := range got.ACP {
+		if source.Alias == "classifier" {
+			t.Fatal("classifier model appeared in ACP delegate roster, want excluded")
+		}
+	}
+}
+
 func aliasesToLoop(values []string) []loop.ModelAlias {
 	if values == nil {
 		return nil

@@ -85,12 +85,19 @@ type permissionReviewRegistration struct {
 
 // newPermissionReviewRegistration resolves cfg's permission-review selection
 // into a registration. When cfg.PermissionReviewEnabled is false it returns
-// the disabled zero value and no error — CodeRig's default. When enabled, it
-// requires a non-empty cfg.PermissionReviewModel (CodeRig never inherits an
-// operator Loop's model for the classifier), constructs ONE command-safety
-// classifier over client and that named model with the classifier's own
-// default policy and standard read-only evidence tools, and selects the
-// default or strict local decision policy per cfg.PermissionReviewStrictPolicy.
+// the disabled zero value and no error — CodeRig's default. Permission review
+// also only ever takes effect when cfg.AccessProfile == AccessTrusted: every
+// other named profile (and the empty default) returns the SAME disabled zero
+// value and no error, no matter how PermissionReviewEnabled became true —
+// the programmatic seam or a models.json permission_review section. This
+// gate is intentionally silent (no error, no log), matching the
+// disabled-by-default case it is indistinguishable from to a caller. When
+// enabled AND trusted, it requires a non-empty cfg.PermissionReviewModel
+// (CodeRig never inherits an operator Loop's model for the classifier),
+// constructs ONE command-safety classifier over client and that named model
+// with the classifier's own default policy and standard read-only evidence
+// tools, and selects the default or strict local decision policy per
+// cfg.PermissionReviewStrictPolicy.
 //
 // It never derives, accepts, or threads any independent "security ceiling":
 // the classifier's assessments are eligible only within whatever a request's
@@ -113,6 +120,9 @@ type permissionReviewRegistration struct {
 // (Addendum 4), installed via rig.WithPermissionReviewObservations.
 func newPermissionReviewRegistration(cfg Config, client inference.Client) (permissionReviewRegistration, error) {
 	if !cfg.PermissionReviewEnabled {
+		return permissionReviewRegistration{}, nil
+	}
+	if cfg.AccessProfile != AccessTrusted {
 		return permissionReviewRegistration{}, nil
 	}
 	if strings.TrimSpace(cfg.PermissionReviewModel.Name) == "" {

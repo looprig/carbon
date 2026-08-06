@@ -49,8 +49,9 @@ func TestProductFamilyEligibility(t *testing.T) {
 }
 
 // TestDefaultPermissionsPath proves the interactive default path is
-// ~/.looprig/workspaces/<sha256(canonical-workspace)>/permissions.json and that a
-// relative or empty workspace fails closed.
+// <home>/workspaces/<sha256(canonical-workspace)>/permissions.json for the
+// given already-resolved looprig home, and that a relative or empty
+// workspace fails closed regardless of home.
 func TestDefaultPermissionsPath(t *testing.T) {
 	t.Parallel()
 
@@ -58,26 +59,58 @@ func TestDefaultPermissionsPath(t *testing.T) {
 	if err != nil {
 		t.Skipf("no home directory: %v", err)
 	}
+	looprigRoot := filepath.Join(home, ".looprig")
 	ws := "/canonical/workspace/root"
-	got, err := defaultPermissionsPath(ws)
+	got, err := defaultPermissionsPath(looprigRoot, ws)
 	if err != nil {
-		t.Fatalf("defaultPermissionsPath(%q) error = %v", ws, err)
+		t.Fatalf("defaultPermissionsPath(%q, %q) error = %v", looprigRoot, ws, err)
 	}
 	digest := sha256.Sum256([]byte(ws))
-	want := filepath.Join(home, ".looprig", "workspaces", hex.EncodeToString(digest[:]), "permissions.json")
+	want := filepath.Join(looprigRoot, "workspaces", hex.EncodeToString(digest[:]), "permissions.json")
 	if got != want {
 		t.Errorf("defaultPermissionsPath = %q, want %q", got, want)
 	}
 
 	for _, bad := range []string{"", "relative/path", "./x"} {
-		if _, err := defaultPermissionsPath(bad); err == nil {
+		if _, err := defaultPermissionsPath(looprigRoot, bad); err == nil {
 			t.Errorf("defaultPermissionsPath(%q) = nil error; want fail-closed", bad)
 		}
 	}
 }
 
+// TestDefaultPermissionsPathHomeDirOverride proves an overridden looprig home
+// changes where the interactive permission file resolves to, independent of
+// the process's real HOME.
+func TestDefaultPermissionsPathHomeDirOverride(t *testing.T) {
+	t.Parallel()
+
+	override := t.TempDir()
+	looprigRoot, err := looprigHome(Config{HomeDir: override})
+	if err != nil {
+		t.Fatalf("looprigHome(Config{HomeDir: %q}) error = %v", override, err)
+	}
+	if looprigRoot != override {
+		t.Fatalf("looprigHome(Config{HomeDir: %q}) = %q, want %q", override, looprigRoot, override)
+	}
+
+	ws := "/canonical/workspace/root"
+	got, err := defaultPermissionsPath(looprigRoot, ws)
+	if err != nil {
+		t.Fatalf("defaultPermissionsPath(%q, %q) error = %v", looprigRoot, ws, err)
+	}
+	digest := sha256.Sum256([]byte(ws))
+	want := filepath.Join(override, "workspaces", hex.EncodeToString(digest[:]), "permissions.json")
+	if got != want {
+		t.Errorf("defaultPermissionsPath(override) = %q, want %q", got, want)
+	}
+	if !strings.HasPrefix(got, override) {
+		t.Errorf("defaultPermissionsPath(override) = %q, want prefix %q", got, override)
+	}
+}
+
 // TestInteractivePermissionConfig proves interactive assembly derives the
-// HOME-based path and attaches the family catalog.
+// home-based path (for the already-resolved looprig home it is given) and
+// attaches the family catalog.
 func TestInteractivePermissionConfig(t *testing.T) {
 	t.Parallel()
 
@@ -85,19 +118,41 @@ func TestInteractivePermissionConfig(t *testing.T) {
 	if err != nil {
 		t.Skipf("no home directory: %v", err)
 	}
+	looprigRoot := filepath.Join(home, ".looprig")
 	ws := "/canonical/ws"
-	cfg, err := interactivePermissionConfig(ws)
+	cfg, err := interactivePermissionConfig(looprigRoot, ws)
 	if err != nil {
 		t.Fatalf("interactivePermissionConfig error = %v", err)
 	}
-	if !strings.HasPrefix(cfg.Path, filepath.Join(home, ".looprig", "workspaces")) {
-		t.Errorf("interactive Path = %q, want under ~/.looprig/workspaces", cfg.Path)
+	if !strings.HasPrefix(cfg.Path, filepath.Join(looprigRoot, "workspaces")) {
+		t.Errorf("interactive Path = %q, want under %q", cfg.Path, filepath.Join(looprigRoot, "workspaces"))
 	}
 	if cfg.FamilyEligible == nil {
 		t.Fatal("interactive config has no family catalog")
 	}
 	if !cfg.FamilyEligible([]string{"git", "push"}) {
 		t.Error("interactive family catalog missing git push")
+	}
+}
+
+// TestInteractivePermissionConfigHomeDirOverride proves interactive assembly
+// resolves the permission path under an overridden looprig home rather than
+// the process's real HOME.
+func TestInteractivePermissionConfigHomeDirOverride(t *testing.T) {
+	t.Parallel()
+
+	override := t.TempDir()
+	looprigRoot, err := looprigHome(Config{HomeDir: override})
+	if err != nil {
+		t.Fatalf("looprigHome(Config{HomeDir: %q}) error = %v", override, err)
+	}
+	ws := "/canonical/ws"
+	cfg, err := interactivePermissionConfig(looprigRoot, ws)
+	if err != nil {
+		t.Fatalf("interactivePermissionConfig error = %v", err)
+	}
+	if !strings.HasPrefix(cfg.Path, filepath.Join(override, "workspaces")) {
+		t.Errorf("interactive Path = %q, want under %q", cfg.Path, filepath.Join(override, "workspaces"))
 	}
 }
 

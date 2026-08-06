@@ -10,6 +10,11 @@ import (
 // CLI fills before the Rig is constructed; the access profile cannot change for
 // the lifetime of the session.
 type Config struct {
+	// HomeDir overrides the looprig base directory (default ~/.looprig).
+	// It relocates everything CodeRig itself reads or writes under that root:
+	// models.json, mcp.json, workspaces/<hash>/permissions.json, and the
+	// default session-store root (store/).
+	HomeDir string
 	// ACPChildren is the optional, already-preflighted delegated-child
 	// composition. Native primer operation remains available when it is nil or
 	// when its catalog has no executable profiles.
@@ -34,6 +39,17 @@ type Config struct {
 	// ModelConfigRev is the secret-free digest of the normalized process model
 	// configuration. Production composition sets it before rig assembly.
 	ModelConfigRev string
+	// MCPConfigRev is the secret-free digest of the process's discovered MCP
+	// server configuration (mcp.json). openRuntimeAgent sets it from the
+	// constructed mcpharness.Manager's ConfigDigest once the Manager exists,
+	// before the session's config fingerprint is assembled; it stays the
+	// empty string -- the same "no external capability" default the rig's
+	// own ExternalCapabilityRev field means by its zero value -- when there
+	// is no mcp.json at all. persistence.go's agentFingerprintFields folds it
+	// into the rig's configuration fingerprint as ExternalCapabilityRev, so a
+	// changed mcp.json (servers added/removed/reconfigured) is caught as
+	// restore drift like every other fingerprinted input.
+	MCPConfigRev string
 	// PrimerAlias is the public, stable selector for the configured primer. It
 	// is used only by runtime controls; provider routing remains private.
 	PrimerAlias string
@@ -56,6 +72,14 @@ type Config struct {
 	// PermissionReviewEnabled turns on classifier-based automatic permission
 	// review (off by default — a zero Config never auto-approves anything).
 	// See internal/app/permission_review.go for the composition this enables.
+	// It can also be turned on by a models.json permission_review section
+	// (persistence.go's Open, swarm.go's newWithProductionModelsLoader): a
+	// file section can only ever ENABLE review, never disable it, when this
+	// field is already true — the programmatic seam always wins over the
+	// file, and this plain bool has no way to force-disable a caller's own
+	// prior true value. Regardless of which source set it, permission review
+	// only ever takes effect when AccessProfile == AccessTrusted; every other
+	// profile leaves it silently disabled (newPermissionReviewRegistration).
 	PermissionReviewEnabled bool
 	// PermissionReviewModel is the named model bound to the command-safety
 	// classifier. Required when PermissionReviewEnabled is true; CodeRig never

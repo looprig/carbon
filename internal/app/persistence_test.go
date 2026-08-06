@@ -43,7 +43,7 @@ func TestProductionModelsPersistedOpenLoadsExactlyOnce(t *testing.T) {
 	loads := 0
 	factory := &SessionStoreFactory{
 		stores: mustHeadlessTestStores(t),
-		loadModels: func() (productionModels, error) {
+		loadModels: func(string) (productionModels, error) {
 			loads++
 			return productionModels{PrimerClient: &fakeLLM{}, PrimerModel: configured, PrimerAlias: "persisted-primer-alias", PrimerEfforts: []model.Effort{model.EffortHigh}, ConfigRev: "persisted-model-rev"}, nil
 		},
@@ -131,7 +131,7 @@ func TestPersistedOpenRoutesNativeAgentThroughRuntimeClientAcrossRestore(t *test
 	}
 	factory := &SessionStoreFactory{
 		stores: mustHeadlessTestStores(t),
-		loadModels: func() (productionModels, error) {
+		loadModels: func(string) (productionModels, error) {
 			return configured, nil
 		},
 	}
@@ -628,6 +628,39 @@ func TestDefaultDataDir(t *testing.T) {
 	}
 	if want := filepath.Join(home, ".looprig", "store"); got != want {
 		t.Errorf("DefaultDataDir() = %q, want %q", got, want)
+	}
+}
+
+// TestDefaultDataDirIn proves DefaultDataDirIn resolves the store root under an
+// already-resolved looprig home directory (an overridden Config.HomeDir in
+// particular), independent of the process's real HOME, and that DefaultDataDir()
+// still matches DefaultDataDirIn applied to the process HOME default.
+func TestDefaultDataDirIn(t *testing.T) {
+	t.Parallel()
+
+	override := t.TempDir()
+	got, err := DefaultDataDirIn(override)
+	if err != nil {
+		t.Fatalf("DefaultDataDirIn(%q) error = %v", override, err)
+	}
+	if want := filepath.Join(override, "store"); got != want {
+		t.Errorf("DefaultDataDirIn(%q) = %q, want %q", override, got, want)
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skipf("no home directory available: %v", err)
+	}
+	fromDefault, err := DefaultDataDir()
+	if err != nil {
+		t.Fatalf("DefaultDataDir: %v", err)
+	}
+	fromIn, err := DefaultDataDirIn(filepath.Join(home, ".looprig"))
+	if err != nil {
+		t.Fatalf("DefaultDataDirIn: %v", err)
+	}
+	if fromDefault != fromIn {
+		t.Errorf("DefaultDataDir() = %q, DefaultDataDirIn(process home) = %q, want equal", fromDefault, fromIn)
 	}
 }
 

@@ -4,9 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -26,8 +24,6 @@ const (
 	maxModelConfigErrorCauseBytes     = 256
 )
 
-var errDuplicateModelConfigKey = errors.New("duplicate JSON object key")
-
 type modelConfigFile struct {
 	Version              int                               `json:"version"`
 	PrimerDefault        string                            `json:"primer_default"`
@@ -35,6 +31,7 @@ type modelConfigFile struct {
 	DelegateDefaults     map[string]delegateDefaultConfig  `json:"delegate_defaults"`
 	Models               []modelTargetConfig               `json:"models"`
 	NativeACP            map[string]nativeACPProfileConfig `json:"native_acp"`
+	PermissionReview     *permissionReviewConfig           `json:"permission_review,omitempty"`
 }
 
 type delegateDefaultConfig struct {
@@ -110,6 +107,32 @@ func (c *nativeACPProfileConfig) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// permissionReviewConfig holds the optional classifier-based automatic
+// permission review section. It is parsing plumbing only: whether Model is
+// required, whether it names a configured alias, and whether review may
+// take effect for the session's access profile are all resolved later (see
+// Task 4 in docs/plans/2026-08-05-coderig-mcp-and-permission-review-implementation.md).
+type permissionReviewConfig struct {
+	Model  string `json:"model"`
+	Strict bool   `json:"strict"`
+}
+
+// UnmarshalJSON keeps decoding of this section strict (unknown fields
+// rejected), matching every other section in this file.
+func (c *permissionReviewConfig) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		Model  string `json:"model"`
+		Strict bool   `json:"strict"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&wire); err != nil {
+		return err
+	}
+	*c = permissionReviewConfig{Model: wire.Model, Strict: wire.Strict}
+	return nil
+}
+
 type modelTargetConfig struct {
 	Alias         string                   `json:"alias"`
 	Description   string                   `json:"description"`
@@ -167,6 +190,9 @@ func decodeModelConfig(data []byte) (modelConfigFile, error) {
 	if err := rejectDuplicateJSONKeys(data); err != nil {
 		return config, modelConfigFailure("decode", err)
 	}
+	if err := rejectNullPermissionReview(data); err != nil {
+		return config, modelConfigFailure("decode", err)
+	}
 
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
@@ -195,74 +221,33 @@ func safeModelConfigDecodeError(err error) error {
 	return errors.New("invalid JSON model configuration")
 }
 
-func rejectDuplicateJSONKeys(data []byte) error {
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	if err := walkModelConfigJSONValue(decoder); err != nil {
-		if errors.Is(err, errDuplicateModelConfigKey) {
-			return errDuplicateModelConfigKey
-		}
-		return errors.New("invalid JSON model configuration")
+// rejectNullPermissionReview rejects an explicit "permission_review": null.
+//
+// encoding/json's indirect() never calls a settable pointer field's
+// UnmarshalJSON when the wire value is a JSON null: it sets the field to nil
+// directly instead. That means permissionReviewConfig.UnmarshalJSON (a
+// method on the pointee, not the *modelConfigFile.PermissionReview pointer
+// field itself) is never invoked for that case and so cannot distinguish an
+// explicit null from an absent key — both leave PermissionReview nil with no
+// error. A lightweight raw-message probe, run before the real decode, is the
+// simplest way to see the wire bytes for this one key and catch the null
+// case explicitly, matching nativeACPProfileConfig's null-rejection
+// precedent for its own (nested) optional field.
+func rejectNullPermissionReview(data []byte) error {
+	var probe struct {
+		PermissionReview json.RawMessage `json:"permission_review"`
 	}
-	if _, err := decoder.Token(); err != io.EOF {
-		if err == nil {
-			return errors.New("multiple top-level JSON values")
-		}
-		return errors.New("invalid JSON model configuration")
-	}
-	return nil
-}
-
-func walkModelConfigJSONValue(decoder *json.Decoder) error {
-	token, err := decoder.Token()
-	if err != nil {
-		return err
-	}
-	delim, ok := token.(json.Delim)
-	if !ok {
+	if err := json.Unmarshal(data, &probe); err != nil {
+		// Malformed or non-object JSON is reported by the caller's later,
+		// stricter decode; this probe only needs to see a well-formed
+		// "permission_review" key when one is present.
 		return nil
 	}
-	switch delim {
-	case '{':
-		seen := make(map[string]struct{})
-		for decoder.More() {
-			keyToken, err := decoder.Token()
-			if err != nil {
-				return err
-			}
-			key, ok := keyToken.(string)
-			if !ok {
-				return errors.New("object key is not a string")
-			}
-			if _, exists := seen[key]; exists {
-				return errDuplicateModelConfigKey
-			}
-			seen[key] = struct{}{}
-			if err := walkModelConfigJSONValue(decoder); err != nil {
-				return err
-			}
-		}
-		closing, err := decoder.Token()
-		if err != nil {
-			return err
-		}
-		if closing != json.Delim('}') {
-			return errors.New("malformed JSON object")
-		}
-	case '[':
-		for decoder.More() {
-			if err := walkModelConfigJSONValue(decoder); err != nil {
-				return err
-			}
-		}
-		closing, err := decoder.Token()
-		if err != nil {
-			return err
-		}
-		if closing != json.Delim(']') {
-			return errors.New("malformed JSON array")
-		}
-	default:
-		return errors.New("unexpected JSON delimiter")
+	if len(probe.PermissionReview) == 0 {
+		return nil
+	}
+	if bytes.Equal(bytes.TrimSpace(probe.PermissionReview), []byte("null")) {
+		return errors.New("permission_review must be an object")
 	}
 	return nil
 }
@@ -296,12 +281,14 @@ func boundedModelConfigText(value string, limit int) string {
 	return value[:end] + "..."
 }
 
-func defaultModelConfigPath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", modelConfigFailure("home lookup", err)
-	}
-	return filepath.Join(home, ".looprig", "models.json"), nil
+// defaultModelConfigPath computes CodeRig's models.json path under the
+// resolved looprig home directory: <home>/models.json. home is the
+// already-resolved looprig base directory (looprigHome's result, e.g.
+// ~/.looprig or Config.HomeDir) — this function no longer resolves HOME
+// itself, so it retains its (string, error) signature for call-site
+// consistency but cannot fail today.
+func defaultModelConfigPath(home string) (string, error) {
+	return filepath.Join(home, "models.json"), nil
 }
 
 func readModelConfigFile(path string) ([]byte, bool, error) {
@@ -309,48 +296,9 @@ func readModelConfigFile(path string) ([]byte, bool, error) {
 }
 
 func readModelConfigFileWithOpen(path string, openFile func(string) (*os.File, error)) ([]byte, bool, error) {
-	beforeOpen, err := os.Lstat(path)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil, false, nil
-		}
-		return nil, false, modelConfigFailure("inspect "+path, err)
-	}
-	if beforeOpen.Mode()&os.ModeSymlink != 0 {
-		return nil, true, modelConfigFailure("validate "+path, errors.New("symbolic links are not allowed"))
-	}
-	if !beforeOpen.Mode().IsRegular() {
-		return nil, true, modelConfigFailure("validate "+path, errors.New("file is not regular"))
-	}
-	if modelConfigIsUnix() && beforeOpen.Mode().Perm()&0o077 != 0 {
-		return nil, true, modelConfigFailure("validate "+path, fmt.Errorf("permissions %04o allow group or other access", beforeOpen.Mode().Perm()))
-	}
-
-	file, err := openFile(path)
-	if err != nil {
-		return nil, true, modelConfigFailure("open "+path, err)
-	}
-	defer file.Close()
-
-	afterOpen, err := file.Stat()
-	if err != nil {
-		return nil, true, modelConfigFailure("inspect opened file "+path, err)
-	}
-	if !afterOpen.Mode().IsRegular() || !os.SameFile(beforeOpen, afterOpen) {
-		return nil, true, modelConfigFailure("validate opened file "+path, errors.New("file type or identity changed while opening"))
-	}
-	if modelConfigIsUnix() && afterOpen.Mode().Perm()&0o077 != 0 {
-		return nil, true, modelConfigFailure("validate opened file "+path, fmt.Errorf("permissions %04o allow group or other access", afterOpen.Mode().Perm()))
-	}
-
-	data, err := io.ReadAll(io.LimitReader(file, maxModelConfigBytes+1))
-	if err != nil {
-		return nil, true, modelConfigFailure("read "+path, err)
-	}
-	if len(data) > maxModelConfigBytes {
-		return nil, true, modelConfigFailure("read "+path, fmt.Errorf("file exceeds %d-byte limit", maxModelConfigBytes))
-	}
-	return data, true, nil
+	return readHygienicConfigFile(path, maxModelConfigBytes, openFile, func(op string, cause error) error {
+		return modelConfigFailure(op, cause)
+	})
 }
 
 func modelConfigIsUnix() bool {

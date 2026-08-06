@@ -108,7 +108,7 @@ func TestACPRequestPermissionDeniesOutsidePostureWithoutNativePermissionWrites(t
 	workspace := canonicalTempDir(t)
 
 	modelPath := filepath.Join(home, ".looprig", "models.json")
-	permissionPath, err := defaultPermissionsPath(workspace)
+	permissionPath, err := defaultPermissionsPath(filepath.Join(home, ".looprig"), workspace)
 	if err != nil {
 		t.Fatalf("defaultPermissionsPath: %v", err)
 	}

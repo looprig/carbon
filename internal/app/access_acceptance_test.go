@@ -333,7 +333,7 @@ func TestAcceptanceBuilderPermissionApprovalReachesStoreAndExecutorGrantPath(t *
 		t.Fatalf("granted execution = stdout %q exit %d error %v", stdout, exitCode, err)
 	}
 
-	permissionPath, err := defaultPermissionsPath(root)
+	permissionPath, err := defaultPermissionsPath(filepath.Join(home, ".looprig"), root)
 	if err != nil {
 		t.Fatalf("defaultPermissionsPath: %v", err)
 	}
@@ -364,11 +364,12 @@ func TestAcceptanceModelAndInteractivePermissionFilesRemainSeparated(t *testing.
 	t.Setenv("NO_PROXY", "")
 	root := canonicalTempDir(t)
 
-	modelPath, err := defaultModelConfigPath()
+	looprigRoot := filepath.Join(home, ".looprig")
+	modelPath, err := defaultModelConfigPath(looprigRoot)
 	if err != nil {
 		t.Fatalf("defaultModelConfigPath: %v", err)
 	}
-	permissionPath, err := defaultPermissionsPath(root)
+	permissionPath, err := defaultPermissionsPath(looprigRoot, root)
 	if err != nil {
 		t.Fatalf("defaultPermissionsPath: %v", err)
 	}
@@ -494,7 +495,8 @@ func TestAcceptanceHeadlessPermissionFileLoads(t *testing.T) {
 	// Drive the explicit file through assembled session access as well. HOME
 	// points elsewhere, proving headless assembly does not discover or write an
 	// interactive workspace store.
-	t.Setenv("HOME", t.TempDir())
+	elsewhere := t.TempDir()
+	t.Setenv("HOME", elsewhere)
 	t.Setenv("HTTPS_PROXY", "")
 	t.Setenv("HTTP_PROXY", "")
 	t.Setenv("NO_PROXY", "")
@@ -507,7 +509,7 @@ func TestAcceptanceHeadlessPermissionFileLoads(t *testing.T) {
 	if got := observeGate(t, mustLoopProvenance(t), access.builderGate, commandRequest(t, root, "git log -n 2")); got != outcomeAllowed {
 		t.Fatalf("assembled headless builder outcome = %d, want persisted allow", got)
 	}
-	interactivePath, err := defaultPermissionsPath(root)
+	interactivePath, err := defaultPermissionsPath(filepath.Join(elsewhere, ".looprig"), root)
 	if err != nil {
 		t.Fatalf("defaultPermissionsPath: %v", err)
 	}
