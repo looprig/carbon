@@ -124,18 +124,33 @@ restore, interactive, and headless paths, like `sessionAccess`):
 1. **Transports.** Each spec builds its `client.TransportFactory` via
    `transport/stdio.New` / `transport/streamablehttp.New` / `transport/sse.New`
    and wraps it in a `client.Definition` whose `Name` equals the binding name.
-   - *stdio env baseline.* `stdio.Config.Env` is an allowlist built from
-     nothing — the zero value gives the child an **empty** environment,
-     unlike Claude Code's overlay semantics. The loader therefore constructs
-     the allowlist as: pass-through of a fixed baseline (`PATH`, `HOME`,
-     `TMPDIR`, `LANG`, `LC_ALL` when present) plus explicit `Set` entries for
-     the config's `env` map. Documented divergence: variables outside the
-     baseline are NOT inherited; add them to `env` explicitly.
+   - *stdio env baseline.* `stdio.Config.Env` is an `EnvAllowlist{Vars
+     []stdio.Var, PassThrough []string}` built from nothing — the zero value
+     gives the child an **empty** environment, unlike Claude Code's overlay
+     semantics. The loader therefore constructs it as: `PassThrough` of a
+     fixed baseline (`PATH`, `HOME`, `TMPDIR`, `LANG`, `LC_ALL` when present)
+     plus explicit `Vars` entries (sorted by name for deterministic
+     construction — `spec.env` is a Go map) built from the config's `env`
+     map. Documented divergence: variables outside the baseline are NOT
+     inherited; add them to `env` explicitly.
    - *HTTP client.* The HTTP transports refuse an injected `http.Client` with
      a non-zero `Timeout` (it would sever SSE streams), so the session's
      `newHTTPClient` is NOT shared. Leave `HTTPClient` nil and rely on the
      transports' own `Timeouts` struct (every wait individually defaulted),
-     which satisfies the no-unbounded-blocking rule.
+     which satisfies the no-unbounded-blocking rule. `Headers` (`http`/`sse`)
+     are built from the config's `headers` map via `auth.NewHeader` (its
+     fields are private), sorted by name for the same determinism reason.
+   - *SSE compatibility profile.* `client.Definition.Validate` (via
+     `checkTransportCompat`) unconditionally rejects a `"sse"`-kind
+     transport under a zero/`ProfileDefault` `Compat` — legacy SSE is
+     deliberately excluded from the default profile so a binding never
+     acquires it silently. Since Part 1.1 already requires `type: "sse"` to
+     be **stated explicitly** (never inferred), an `mcp.json` entry naming it
+     already is that deliberate, on-purpose choice, so an `"sse"`-kind
+     `Definition` sets `Compat: client.ProfileLegacy` (`ProfileDefault` plus
+     `TolerateLegacySSE`, nothing else); `stdio`/`http` keep the zero value.
+     Found and fixed during Task 8's implementation — omitting this makes
+     every `"sse"` spec fail `Binding.Validate` unconditionally.
 2. **Bindings.** One `mcpharness.Binding` per server: `Scope: ScopeSession`,
    `Required: false`, `Visibility = mcpharness.Named(roles...)` — visibility
    selects by **loop name** (`"planner"`, `"builder"`, `"reviewer"`, the
