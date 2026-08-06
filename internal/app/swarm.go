@@ -268,10 +268,17 @@ func New(ctx context.Context, cfg Config) (tui.Agent, error) {
 	return newWithProductionModelsLoader(ctx, cfg, loadProductionModels, headlessStores)
 }
 
-type productionModelsLoader func() (productionModels, error)
+// productionModelsLoader is loadProductionModels's shape: it takes the
+// already-resolved looprig home (looprigHome's result) so it never resolves
+// HOME itself.
+type productionModelsLoader func(home string) (productionModels, error)
 
 func newWithProductionModelsLoader(ctx context.Context, cfg Config, loader productionModelsLoader, storesProvider swarmStoresProvider) (*RuntimeAgent, error) {
-	configured, err := loader()
+	home, err := looprigHome(cfg)
+	if err != nil {
+		return nil, err
+	}
+	configured, err := loader(home)
 	if err != nil {
 		return nil, err
 	}

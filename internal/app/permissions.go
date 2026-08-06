@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"os"
 	"path/filepath"
 
 	"github.com/looprig/tools/permission"
@@ -14,8 +13,10 @@ import (
 // family eligibility catalog and the permission-file location rules. The catalog
 // is product policy (a catalog change updates the durable configuration
 // fingerprint through the profile/loop revisions). The interactive default file
-// path is the ONLY place CodeRig touches HOME; headless runs accept an explicit
-// read-only path and never search HOME.
+// path is derived from the resolved looprig home (toolsets.go's
+// buildPermissionStore is the only caller that resolves HOME, via
+// looprigHome); headless runs accept an explicit read-only path and never
+// search HOME.
 
 // permissionFileName is the fixed workspace permission file name.
 const permissionFileName = "permissions.json"
@@ -48,32 +49,31 @@ func productFamilyEligibility() permission.FamilyEligibility {
 // defaultPermissionsPath computes CodeRig's interactive workspace permission
 // file:
 //
-//	~/.looprig/workspaces/<sha256(canonical-workspace)>/permissions.json
+//	<home>/workspaces/<sha256(canonical-workspace)>/permissions.json
 //
 // The file lives outside the repository and is the sole destination for
 // "Approve always for this workspace". This function is used ONLY in interactive
-// CodeRig assembly. canonicalWorkspace must be the absolute, canonical workspace
-// root (the same value the profile is built on); a relative or empty value fails
-// closed. A home directory that cannot be resolved fails loud rather than
-// falling back to a surprising path.
-func defaultPermissionsPath(canonicalWorkspace string) (string, error) {
+// CodeRig assembly. home is the already-resolved looprig base directory
+// (looprigHome's result, e.g. ~/.looprig or Config.HomeDir); this function no
+// longer resolves HOME itself. canonicalWorkspace must be the absolute,
+// canonical workspace root (the same value the profile is built on); a
+// relative or empty value fails closed.
+func defaultPermissionsPath(home, canonicalWorkspace string) (string, error) {
 	if canonicalWorkspace == "" || !filepath.IsAbs(canonicalWorkspace) {
 		return "", fmt.Errorf("coderig: permission-file path requires a canonical workspace root, got %q", canonicalWorkspace)
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", &StoreInitError{Stage: "permission-home", Cause: err}
-	}
 	digest := sha256.Sum256([]byte(canonicalWorkspace))
-	return filepath.Join(home, ".looprig", "workspaces", hex.EncodeToString(digest[:]), permissionFileName), nil
+	return filepath.Join(home, "workspaces", hex.EncodeToString(digest[:]), permissionFileName), nil
 }
 
 // interactivePermissionConfig builds the interactive workspace permission-store
-// Config: the HOME-derived per-workspace file plus CodeRig's family catalog.
-// This is the ONLY assembly path that resolves HOME. Assembly passes the
-// returned Config to permission.NewWorkspaceStore.
-func interactivePermissionConfig(canonicalWorkspace string) (permission.Config, error) {
-	path, err := defaultPermissionsPath(canonicalWorkspace)
+// Config: the per-workspace file under the resolved looprig home plus
+// CodeRig's family catalog. home is the already-resolved looprig base
+// directory; the caller (buildPermissionStore) resolves it via looprigHome —
+// the ONLY assembly path that resolves HOME. Assembly passes the returned
+// Config to permission.NewWorkspaceStore.
+func interactivePermissionConfig(home, canonicalWorkspace string) (permission.Config, error) {
+	path, err := defaultPermissionsPath(home, canonicalWorkspace)
 	if err != nil {
 		return permission.Config{}, err
 	}

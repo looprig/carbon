@@ -14,6 +14,10 @@ import (
 func TestDefaultModelConfigPath(t *testing.T) {
 	home := t.TempDir()
 	setProcessHome(t, home)
+	looprigRoot, err := looprigHome(Config{})
+	if err != nil {
+		t.Fatalf("looprigHome(Config{}) error = %v", err)
+	}
 
 	tests := []struct {
 		name      string
@@ -25,7 +29,7 @@ func TestDefaultModelConfigPath(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := defaultModelConfigPath()
+			got, err := defaultModelConfigPath(looprigRoot)
 			if err != nil {
 				t.Fatalf("defaultModelConfigPath() error = %v", err)
 			}
@@ -37,7 +41,7 @@ func TestDefaultModelConfigPath(t *testing.T) {
 				t.Errorf("defaultModelConfigPath() = %q, must not contain a workspaces segment", got)
 			}
 
-			permissionsPath, err := defaultPermissionsPath(tt.workspace)
+			permissionsPath, err := defaultPermissionsPath(looprigRoot, tt.workspace)
 			if err != nil {
 				t.Fatalf("defaultPermissionsPath(%q) error = %v", tt.workspace, err)
 			}
@@ -47,12 +51,40 @@ func TestDefaultModelConfigPath(t *testing.T) {
 		})
 	}
 
-	t.Run("home lookup failure is typed", func(t *testing.T) {
-		setProcessHome(t, "")
-		_, err := defaultModelConfigPath()
-		var configErr *ModelConfigError
-		if !errors.As(err, &configErr) {
-			t.Fatalf("defaultModelConfigPath() error = %T %v, want *ModelConfigError", err, err)
+	t.Run("HomeDir override changes where models.json is read from", func(t *testing.T) {
+		override := t.TempDir()
+		overrideRoot, err := looprigHome(Config{HomeDir: override})
+		if err != nil {
+			t.Fatalf("looprigHome(Config{HomeDir: %q}) error = %v", override, err)
+		}
+		if overrideRoot != override {
+			t.Fatalf("looprigHome(Config{HomeDir: %q}) = %q, want %q", override, overrideRoot, override)
+		}
+
+		got, err := defaultModelConfigPath(overrideRoot)
+		if err != nil {
+			t.Fatalf("defaultModelConfigPath(%q) error = %v", overrideRoot, err)
+		}
+		want := filepath.Join(override, "models.json")
+		if got != want {
+			t.Errorf("defaultModelConfigPath(%q) = %q, want %q", overrideRoot, got, want)
+		}
+		if got == filepath.Join(home, ".looprig", "models.json") {
+			t.Errorf("defaultModelConfigPath(%q) = %q, still resolved the process HOME default", overrideRoot, got)
+		}
+
+		// End-to-end: loadProductionModels(home) actually reads models.json from
+		// under the overridden looprig home, not the process HOME default.
+		if err := os.MkdirAll(filepath.Dir(got), 0o700); err != nil {
+			t.Fatalf("create override models directory: %v", err)
+		}
+		writeModelConfigFixture(t, got, []byte(validLMStudioModelConfig), 0o600)
+		configured, err := loadProductionModels(overrideRoot)
+		if err != nil {
+			t.Fatalf("loadProductionModels(%q) error = %v", overrideRoot, err)
+		}
+		if configured.PrimerClient == nil || configured.PrimerModel.Name == "" {
+			t.Fatalf("loadProductionModels(%q) = %#v, want a compiled primer", overrideRoot, configured)
 		}
 	})
 }

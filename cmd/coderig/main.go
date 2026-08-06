@@ -235,11 +235,23 @@ func run(ctx context.Context, args []string, out, errOut io.Writer) int {
 		return exitUsage
 	}
 
-	// Resolve the store root: the explicit --data-dir, or the ~/.looprig/store default. A home
-	// directory that cannot be resolved fails loud rather than falling back to a surprising path.
+	// cfg carries the human-set construction modes; it is built once, here, so both the
+	// store-root resolution below and the later open thunk (openThunk) resolve through the
+	// SAME Config. There is no CLI flag for HomeDir (programmatic-only), so cfg.HomeDir is
+	// always empty today and this resolves identically to the ~/.looprig/store default.
+	cfg := coderig.Config{RuntimeSkills: flags.runtimeSkills, AccessProfile: flags.accessProfile}
+
+	// Resolve the store root: the explicit --data-dir, or the ~/.looprig/store default
+	// (relative to cfg's resolved home directory). A home directory that cannot be resolved
+	// fails loud rather than falling back to a surprising path.
 	dataDir := flags.dataDir
 	if dataDir == "" {
-		dd, derr := coderig.DefaultDataDir()
+		home, herr := coderig.LooprigHome(cfg)
+		if herr != nil {
+			fmt.Fprintln(errOut, "persistence:", herr)
+			return exitFailed
+		}
+		dd, derr := coderig.DefaultDataDirIn(home)
 		if derr != nil {
 			fmt.Fprintln(errOut, "persistence:", derr)
 			return exitFailed
@@ -280,8 +292,9 @@ func run(ctx context.Context, args []string, out, errOut io.Writer) int {
 
 	// The initial open honors --resume; every /clear reopen starts a FRESH persisted session.
 	// The --runtime-skills mode applies to every open. runtime.Run owns logging, signal
-	// teardown, the TUI, the session-identifying startup banner, and bounded Close.
-	cfg := coderig.Config{RuntimeSkills: flags.runtimeSkills, AccessProfile: flags.accessProfile}
+	// teardown, the TUI, the session-identifying startup banner, and bounded Close. cfg was
+	// already built above (the single point of Config construction this run resolves both the
+	// store root and the session-opening modes through).
 	open := openThunk(func(ctx context.Context, sel coderig.SessionSelector, cfg coderig.Config) (tui.Agent, error) {
 		return factory.Open(ctx, sel, cfg)
 	}, flags.resume, cfg)

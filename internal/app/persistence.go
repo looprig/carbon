@@ -49,13 +49,22 @@ const (
 const runtimeCatalogRevisionDigestDomain = "looprig/coderig/runtime-catalog-revision/v1"
 
 // DefaultDataDir is the default root for the on-disk session store: ~/.looprig/store. It
-// fails loud with a typed *StoreInitError if the home directory cannot be resolved.
+// fails loud with a typed *StoreInitError if the home directory cannot be resolved. It
+// preserves this exact behavior/signature for compatibility; DefaultDataDirIn is the
+// home-relative form callers holding a resolved Config should prefer.
 func DefaultDataDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", &StoreInitError{Stage: "data-dir", Cause: err}
 	}
-	return filepath.Join(home, ".looprig", "store"), nil
+	return DefaultDataDirIn(filepath.Join(home, ".looprig"))
+}
+
+// DefaultDataDirIn is the on-disk session store root under an already-resolved
+// looprig base directory: <home>/store. home is looprigHome's result (e.g.
+// ~/.looprig or Config.HomeDir) — this function does not resolve HOME itself.
+func DefaultDataDirIn(home string) (string, error) {
+	return filepath.Join(home, "store"), nil
 }
 
 // swarmStores bundles the session + workspace facades and the root leaser the rig needs,
@@ -370,7 +379,11 @@ func (f *SessionStoreFactory) Open(ctx context.Context, sel SessionSelector, cfg
 			return nil, err
 		}
 	} else {
-		configured, err := f.loadModels()
+		home, err := looprigHome(cfg)
+		if err != nil {
+			return nil, err
+		}
+		configured, err := f.loadModels(home)
 		if err != nil {
 			return nil, err
 		}

@@ -14,10 +14,12 @@ func newModelFactoryFor(base model.Model) ModelFactory {
 }
 
 // loadProductionModels is the process-composition boundary for models.json.
-// An absent file yields an empty configuration; callers that require a primer
+// home is the already-resolved looprig base directory (looprigHome's
+// result); callers resolve it once from their Config before calling this. An
+// absent file yields an empty configuration; callers that require a primer
 // reject it before session assembly. Unreadable or invalid files fail here.
-func loadProductionModels() (productionModels, error) {
-	path, err := defaultModelConfigPath()
+func loadProductionModels(home string) (productionModels, error) {
+	path, err := defaultModelConfigPath(home)
 	if err != nil {
 		return productionModels{}, err
 	}

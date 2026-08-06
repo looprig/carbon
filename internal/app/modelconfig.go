@@ -296,12 +296,14 @@ func boundedModelConfigText(value string, limit int) string {
 	return value[:end] + "..."
 }
 
-func defaultModelConfigPath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", modelConfigFailure("home lookup", err)
-	}
-	return filepath.Join(home, ".looprig", "models.json"), nil
+// defaultModelConfigPath computes CodeRig's models.json path under the
+// resolved looprig home directory: <home>/models.json. home is the
+// already-resolved looprig base directory (looprigHome's result, e.g.
+// ~/.looprig or Config.HomeDir) — this function no longer resolves HOME
+// itself, so it retains its (string, error) signature for call-site
+// consistency but cannot fail today.
+func defaultModelConfigPath(home string) (string, error) {
+	return filepath.Join(home, "models.json"), nil
 }
 
 func readModelConfigFile(path string) ([]byte, bool, error) {
