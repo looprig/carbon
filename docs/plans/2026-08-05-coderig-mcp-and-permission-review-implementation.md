@@ -129,13 +129,14 @@ Give it an `UnmarshalJSON` with `DisallowUnknownFields` (copy the pattern from `
 
 **Steps 2/4/5:** fail → pass → `git commit -m "feat(app): parse optional permission_review section in models.json"`
 
-### Task 4: resolve + enable in the loader
+### Task 4: resolve + enable in the loader, gated to the trusted profile
 
 **Files:**
 - Modify: `internal/app/models.go` (or wherever `loadModels`/`productionModels` resolves aliases — find the function that builds the `configured` value consumed by `SessionStoreFactory.Open` at `persistence.go:374`; it must gain `PermissionReview` output fields: `Enabled bool`, `Model model.Model`, `Strict bool`)
 - Modify: `internal/app/persistence.go` (`Open`, ~line 385 area where `cfg.*` fields are copied from `configured`)
 - Also find and update the headless path (`swarm.go:265-268` per the review) — both paths must compose identically.
-- Test: extend `modelconfig_permission_review_test.go` + an assembly-level test in `internal/app/permission_review_test.go`'s style.
+- Modify: `internal/app/permission_review.go` — `newPermissionReviewRegistration` (~line 114) gains the trusted-profile gate (see below).
+- Test: extend `modelconfig_permission_review_test.go` + an assembly-level test in `internal/app/permission_review_test.go`'s style; update the existing `TestPermissionReviewSecurityCeilingMatchesEvidenceContainment` (currently exercises `AccessReadOnly`/`AccessUnconfined`/`""` as enabled — those subtests must change to assert silent disablement).
 
 **Behavior (design §Part 3, exactly):**
 - Section present → resolve `Model` alias against the catalogue; alias must exist and its capabilities must include `tools` AND `structured_output_with_tools`; on shortfall return a typed error naming the alias (`*ModelConfigError` family — reuse the existing capability-error type if one fits, e.g. the pattern behind `ModelConfigCapabilityError`).
@@ -151,13 +152,23 @@ Give it an `UnmarshalJSON` with `DisallowUnknownFields` (copy the pattern from `
 
 - Programmatic-enable-wins and the plain-bool "cannot force-disable" limitation get a sentence in `Config.PermissionReviewEnabled`'s doc comment.
 
-**Test cases:** file enables when Config zero; programmatic enable + file present → programmatic model retained; missing alias → typed error; capability shortfall → typed error naming alias; absent section → disabled.
+**Trusted-profile gate (new, settled with the user 2026-08-05 — see design doc §Part 3 addendum):** permission review only ever takes effect on `Config.AccessProfile == AccessTrusted`, no matter how `PermissionReviewEnabled` became true (programmatic seam or the new models.json section). Enforce it in ONE place — `newPermissionReviewRegistration` in `internal/app/permission_review.go`, which already receives the full `cfg` and is the single call point both the interactive and headless `openRuntimeAgent` paths use (`swarm.go` calls it at two sites; gating here covers both without touching either call site). Add the check immediately after the existing `if !cfg.PermissionReviewEnabled` early return:
 
-**Commit:** `git commit -m "feat(app): enable permission review from models.json permission_review section"`
+```go
+	if cfg.AccessProfile != AccessTrusted {
+		return permissionReviewRegistration{}, nil
+	}
+```
+
+A non-trusted profile is **silently disabled** — identical zero registration to `PermissionReviewEnabled == false`, no error, no log. Update the function's doc comment to state the gate. Update `TestPermissionReviewSecurityCeilingMatchesEvidenceContainment` (`internal/app/permission_review_test.go` ~line 234): the `AccessReadOnly`/`AccessUnconfined`/`""`-profile subtests must now assert `registration.enabled == false` (disabled, zero value) instead of asserting a populated `evidenceContainment`; only the `AccessTrusted` subtest keeps the original enabled assertions. Do not weaken or delete the single-source-of-truth proof for the `AccessTrusted` case.
+
+**Test cases:** file enables when Config zero AND profile trusted; file present but profile readonly/unconfined → silently disabled (registration.enabled == false, no error); programmatic enable + file present + trusted → programmatic model retained; missing alias → typed error (independent of profile — resolution/validation still runs before the profile gate, since a bad alias in a shared file is a config error regardless of which session reads it); capability shortfall → typed error naming alias; absent section → disabled; programmatic `PermissionReviewEnabled=true` + non-trusted profile → silently disabled (covers the pre-existing seam, not just the new file path).
+
+**Commit:** `git commit -m "feat(app): enable permission review from models.json, gated to the trusted profile"`
 
 ### Task 5: Phase 2 docs + gate
 
-- Update `CLAUDE.md` "Permission review" bullet **Enable/disable** to mention the models.json path (keep it accurate: still no CLI flag).
+- Update `CLAUDE.md` "Permission review" bullet **Enable/disable** to mention the models.json path (keep it accurate: still no CLI flag), AND add a bullet (or extend an existing one) documenting the trusted-profile gate: permission review only ever takes effect when the session's `AccessProfile` is `trusted`, regardless of whether it was enabled programmatically or via models.json; any other profile silently disables it (no error), enforced once in `newPermissionReviewRegistration`.
 - Run `make secure` and `go test -race ./...`.
 - `git commit -m "docs: permission_review models.json enablement in CLAUDE.md"`
 

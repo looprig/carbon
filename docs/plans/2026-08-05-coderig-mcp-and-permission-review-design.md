@@ -267,6 +267,27 @@ valid v2; no version bump):
   `Config.PermissionReviewModel`, and maps `strict` (optional, default false)
   to `Config.PermissionReviewStrictPolicy`. Absence leaves all three zero —
   today's disabled default, byte-for-byte identical rig.
+- **Trusted-profile gate (new invariant, settled with the user 2026-08-05)**:
+  permission review only ever takes effect when the session's resolved
+  `Config.AccessProfile == AccessTrusted`. This is enforced once, in
+  `newPermissionReviewRegistration` (`internal/app/permission_review.go`),
+  which already receives the full `cfg` and is the single choke point both
+  the interactive and headless `openRuntimeAgent` paths call — so the gate
+  applies no matter how `PermissionReviewEnabled` became true: the new
+  models.json section, or the pre-existing programmatic
+  `Config.PermissionReviewEnabled = true` seam. A non-trusted profile with
+  review "enabled" by either path is **silently disabled** — same zero
+  `permissionReviewRegistration{}`, same byte-for-byte-identical-to-disabled
+  rig as an absent `permission_review` section, no error. Rationale: a
+  shared, machine-wide `models.json` runs against sessions of every profile;
+  auto-approval narrowing the human gate is a meaningfully different risk
+  posture than the readonly or unconfined profiles were designed around, so
+  it activates only for the profile it was designed for. This changes
+  existing behavior: today `newPermissionReviewRegistration` and its tests
+  (`TestPermissionReviewSecurityCeilingMatchesEvidenceContainment`) exercise
+  `AccessReadOnly`/`AccessUnconfined`/`""` as enabled; those cases must be
+  updated to assert silent disablement, with `AccessTrusted` remaining the
+  one enabled case.
 - **Validation at load, fail closed**: the alias must name a configured model
   whose capabilities include `tools` and `structured_output_with_tools`
   (the same requirement `commandsafety.New` enforces at construction —
