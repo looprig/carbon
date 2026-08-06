@@ -35,6 +35,7 @@ type modelConfigFile struct {
 	DelegateDefaults     map[string]delegateDefaultConfig  `json:"delegate_defaults"`
 	Models               []modelTargetConfig               `json:"models"`
 	NativeACP            map[string]nativeACPProfileConfig `json:"native_acp"`
+	PermissionReview     *permissionReviewConfig           `json:"permission_review,omitempty"`
 }
 
 type delegateDefaultConfig struct {
@@ -110,6 +111,32 @@ func (c *nativeACPProfileConfig) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// permissionReviewConfig holds the optional classifier-based automatic
+// permission review section. It is parsing plumbing only: whether Model is
+// required, whether it names a configured alias, and whether review may
+// take effect for the session's access profile are all resolved later (see
+// Task 4 in docs/plans/2026-08-05-coderig-mcp-and-permission-review-implementation.md).
+type permissionReviewConfig struct {
+	Model  string `json:"model"`
+	Strict bool   `json:"strict"`
+}
+
+// UnmarshalJSON keeps decoding of this section strict (unknown fields
+// rejected), matching every other section in this file.
+func (c *permissionReviewConfig) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		Model  string `json:"model"`
+		Strict bool   `json:"strict"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&wire); err != nil {
+		return err
+	}
+	*c = permissionReviewConfig{Model: wire.Model, Strict: wire.Strict}
+	return nil
+}
+
 type modelTargetConfig struct {
 	Alias         string                   `json:"alias"`
 	Description   string                   `json:"description"`
@@ -167,6 +194,9 @@ func decodeModelConfig(data []byte) (modelConfigFile, error) {
 	if err := rejectDuplicateJSONKeys(data); err != nil {
 		return config, modelConfigFailure("decode", err)
 	}
+	if err := rejectNullPermissionReview(data); err != nil {
+		return config, modelConfigFailure("decode", err)
+	}
 
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
@@ -193,6 +223,37 @@ func safeModelConfigDecodeError(err error) error {
 		return errors.New("model configuration JSON is empty")
 	}
 	return errors.New("invalid JSON model configuration")
+}
+
+// rejectNullPermissionReview rejects an explicit "permission_review": null.
+//
+// encoding/json's indirect() never calls a settable pointer field's
+// UnmarshalJSON when the wire value is a JSON null: it sets the field to nil
+// directly instead. That means permissionReviewConfig.UnmarshalJSON (a
+// method on the pointee, not the *modelConfigFile.PermissionReview pointer
+// field itself) is never invoked for that case and so cannot distinguish an
+// explicit null from an absent key — both leave PermissionReview nil with no
+// error. A lightweight raw-message probe, run before the real decode, is the
+// simplest way to see the wire bytes for this one key and catch the null
+// case explicitly, matching nativeACPProfileConfig's null-rejection
+// precedent for its own (nested) optional field.
+func rejectNullPermissionReview(data []byte) error {
+	var probe struct {
+		PermissionReview json.RawMessage `json:"permission_review"`
+	}
+	if err := json.Unmarshal(data, &probe); err != nil {
+		// Malformed or non-object JSON is reported by the caller's later,
+		// stricter decode; this probe only needs to see a well-formed
+		// "permission_review" key when one is present.
+		return nil
+	}
+	if len(probe.PermissionReview) == 0 {
+		return nil
+	}
+	if bytes.Equal(bytes.TrimSpace(probe.PermissionReview), []byte("null")) {
+		return errors.New("permission_review must be an object")
+	}
+	return nil
 }
 
 func rejectDuplicateJSONKeys(data []byte) error {
