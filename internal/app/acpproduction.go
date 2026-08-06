@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -84,8 +85,8 @@ func newProductionACPCompositionWithPreflight(ctx context.Context, configured pr
 	return NewACPComposition(ACPChildrenConfig{
 		Catalog: catalog,
 		Executables: map[loop.AgentHarnessName]string{
-			"claude-code": os.Getenv(acpClaudeExecutableEnv),
-			"codex":       os.Getenv(acpCodexExecutableEnv),
+			"claude-code": resolveACPExecutable(os.Getenv(acpClaudeExecutableEnv), configured.ACPLaunchers["claude-code"], "claude-code-acp"),
+			"codex":       resolveACPExecutable(os.Getenv(acpCodexExecutableEnv), configured.ACPLaunchers["codex"], "codex-acp"),
 		},
 		WorkspaceRoot:       root,
 		Env:                 os.Environ(),
@@ -243,6 +244,31 @@ func validACPNativeField(value string) bool {
 		}
 	}
 	return true
+}
+
+// resolveACPExecutable picks one harness's ACP adapter executable by explicit
+// precedence: the environment-variable override, then the configured
+// acp_launchers path, then PATH discovery of the fixed well-known adapter
+// name. It performs no existence or executability check; preflight still
+// owns that. A relative PATH match is resolved to an absolute path so the
+// clean-absolute-path invariant used by the rest of the ACP pipeline holds.
+func resolveACPExecutable(envValue, configuredPath, wellKnownName string) string {
+	if envValue != "" {
+		return envValue
+	}
+	if configuredPath != "" {
+		return configuredPath
+	}
+	found, err := exec.LookPath(wellKnownName)
+	if err != nil {
+		return ""
+	}
+	if !filepath.IsAbs(found) {
+		if abs, absErr := filepath.Abs(found); absErr == nil {
+			found = abs
+		}
+	}
+	return found
 }
 
 func cleanACPWorkspaceRoot(root string) bool {
