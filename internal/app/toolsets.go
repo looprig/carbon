@@ -441,8 +441,12 @@ func buildSessionAccessWithPermissionFile(cfg Config, root string, interactive b
 // interactive read/write store at the HOME-derived per-workspace path, or the
 // headless read-only store (an empty rule set with no HOME search). Both satisfy
 // the gate's RuleMatcher; only the interactive store is a RuleWriter. This is
-// the only place CodeRig resolves HOME (via looprigHome), and it does so only
-// on the interactive branch — the headless branch never touches it.
+// the only place CodeRig's ACCESS wiring resolves HOME (via looprigHome), and it
+// does so only on the interactive branch — the headless branch never touches it.
+// openRuntimeAgent separately resolves HOME to load <home>/mcp.json
+// (newMCPSessionAssembly, swarm.go), unconditionally on both branches — MCP
+// server discovery is not a permission-store concern, and headless composition
+// is allowed to use MCP tools even though it can never answer their elicitations.
 func buildPermissionStore(cfg Config, root string, interactive bool, explicitPermissionPath string) (*permission.Store, []permission.Diagnostic, error) {
 	if interactive {
 		if explicitPermissionPath != "" {

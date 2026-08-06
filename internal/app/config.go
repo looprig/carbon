@@ -39,6 +39,15 @@ type Config struct {
 	// ModelConfigRev is the secret-free digest of the normalized process model
 	// configuration. Production composition sets it before rig assembly.
 	ModelConfigRev string
+	// MCPConfigRev is the secret-free digest of the process's discovered MCP
+	// server configuration (mcp.json). openRuntimeAgent sets it from the
+	// constructed mcpharness.Manager's ConfigDigest once the Manager exists,
+	// before the session's config fingerprint is assembled; it stays the
+	// empty string -- the same "no external capability" default the rig's
+	// own ExternalCapabilityRev field means by its zero value -- when there
+	// is no mcp.json at all. Nothing folds it into the rig's configuration
+	// fingerprint yet.
+	MCPConfigRev string
 	// PrimerAlias is the public, stable selector for the configured primer. It
 	// is used only by runtime controls; provider routing remains private.
 	PrimerAlias string

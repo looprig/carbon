@@ -8,43 +8,75 @@ import (
 	"github.com/looprig/harness/pkg/loop"
 	"github.com/looprig/harness/pkg/session"
 	model "github.com/looprig/inference/model"
+	mcpharness "github.com/looprig/mcp/pkg/harness"
 	"github.com/looprig/tui"
 	"github.com/looprig/tui/sessionadapter"
 )
 
 // RuntimeAgent keeps provider and policy knowledge in CodeRig while embedding the stable
 // session adapter used by the TUI data plane. It OWNS the session's executor-set closers
-// (through access) and supplies the synchronous, session-fixed presentation metadata
-// (profile name, workspace root, permission diagnostics) the TUI displays. The access
-// profile is fixed at Open; there is no in-session authority mutation surface.
+// (through access) and its MCP composition closers (mgr, adopter, both nil when the
+// session has no mcp.json), and supplies the synchronous, session-fixed presentation
+// metadata (profile name, workspace root, permission diagnostics) the TUI displays. The
+// access profile is fixed at Open; there is no in-session authority mutation surface.
 type RuntimeAgent struct {
 	*sessionadapter.Adapter
 	sess             session.SessionController
 	root             string
 	access           *sessionAccess
+	mgr              *mcpharness.Manager
+	adopter          *mcpharness.Adopter
 	primerAlias      string
 	primerEfforts    []model.Effort
 	primerCandidates []PrimerCandidate
 }
 
+// newRuntimeAgentWithPrimerCandidates builds a RuntimeAgent with no MCP composition. It is
+// newWithClientUsingStores' constructor: that path (New's headless composition root, a
+// separate construction seam from openRuntimeAgent used by SessionStoreFactory and
+// newSessionOverStores) does not wire MCP -- see openRuntimeAgent's own doc for where that
+// wiring lives.
 func newRuntimeAgentWithPrimerCandidates(adapter *sessionadapter.Adapter, sess session.SessionController, root string, access *sessionAccess, primerAlias string, primerEfforts []model.Effort, primerCandidates []PrimerCandidate) *RuntimeAgent {
+	return newRuntimeAgentWithMCP(adapter, sess, root, access, nil, nil, primerAlias, primerEfforts, primerCandidates)
+}
+
+// newRuntimeAgentWithMCP is openRuntimeAgent's constructor: mgr and adopter are the session's
+// MCP composition closers, both nil when the session was opened with no mcp.json.
+func newRuntimeAgentWithMCP(adapter *sessionadapter.Adapter, sess session.SessionController, root string, access *sessionAccess, mgr *mcpharness.Manager, adopter *mcpharness.Adopter, primerAlias string, primerEfforts []model.Effort, primerCandidates []PrimerCandidate) *RuntimeAgent {
 	return &RuntimeAgent{
 		Adapter:          adapter,
 		sess:             sess,
 		root:             root,
 		access:           access,
+		mgr:              mgr,
+		adopter:          adopter,
 		primerAlias:      primerAlias,
 		primerEfforts:    append([]model.Effort(nil), primerEfforts...),
 		primerCandidates: append([]PrimerCandidate(nil), primerCandidates...),
 	}
 }
 
-// Close shuts the session down and then releases the session's executor sets exactly once.
-// The adapter is closed FIRST (stopping any in-flight loop that could still use an executor),
-// then the executor sets are closed, removing their owned scratch HOME directories and
-// revoking their grant keys and egress proxies.
+// Close shuts the session down, then releases its MCP composition (if any), then its
+// executor sets, in that order. The adapter is closed FIRST (stopping any in-flight loop
+// that could still use an executor or an MCP tool); the adopter stops next (it only reacts
+// to the now-stopped session's own idle events); the MCP manager closes its connections
+// third; the executor sets close LAST, removing their owned scratch HOME directories and
+// revoking their grant keys and egress proxies. mgr and adopter are nil-safe (a session
+// opened with no mcp.json has neither), and mgr.Close is independently idempotent, but
+// RuntimeAgent.Close itself is not guarded against being called twice -- matching this
+// method's pre-existing behavior for access.Close.
 func (a *RuntimeAgent) Close(ctx context.Context) error {
 	err := a.Adapter.Close(ctx)
+	if a.adopter != nil {
+		if closeErr := a.adopter.Close(); closeErr != nil && err == nil {
+			err = closeErr
+		}
+	}
+	if a.mgr != nil {
+		if closeErr := a.mgr.Close(ctx); closeErr != nil && err == nil {
+			err = closeErr
+		}
+	}
 	if a.access != nil {
 		if closeErr := a.access.Close(); closeErr != nil && err == nil {
 			err = closeErr

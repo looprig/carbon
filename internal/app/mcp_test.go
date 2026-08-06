@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/looprig/core/uuid"
+	"github.com/looprig/harness/pkg/event"
 	"github.com/looprig/harness/pkg/gate"
 	"github.com/looprig/harness/pkg/session"
 	mcpharness "github.com/looprig/mcp/pkg/harness"
@@ -439,15 +440,17 @@ func TestMCPGateOpenerUnboundRefuses(t *testing.T) {
 }
 
 // TestMCPGateOpenerHeadlessNeverBoundBehavesAsUnbound documents the
-// connection between "unbound" and "headless" at this layer. Task 10 (not
-// yet wired) composes a headless session's Manager with a fresh
-// &mcpGateOpener{} and simply never calls Bind on it -- there is no
+// connection between "unbound" and "headless" at this layer. swarm.go's
+// mcpSessionAssembly.attach composes a headless session's Manager with a
+// fresh &mcpGateOpener{} and simply never calls Bind on it -- there is no
 // separate headless code path inside mcpGateOpener to exercise, because
 // headlessness IS the permanent absence of a Bind call (design section
 // 1.2.3: "Headless sessions install an always-refusing opener, matching
 // the headless permission posture"). This test is therefore exactly the
 // headless posture, exercised at the only layer that exists yet: a fresh
 // opener, across more than one request kind, never bound, always refusing.
+// mcp_integration_test.go's TestMCPSessionAssemblyAttachBindsGateHostOnlyWhenInteractive
+// proves the same property at the wiring layer.
 func TestMCPGateOpenerHeadlessNeverBoundBehavesAsUnbound(t *testing.T) {
 	opener := &mcpGateOpener{}
 
@@ -702,4 +705,92 @@ func TestMCPNoticeRecorderReportIsConcurrencySafe(t *testing.T) {
 	if r.Dropped() != 0 {
 		t.Errorf("Dropped() = %d, want 0", r.Dropped())
 	}
+}
+
+// fakeMCPEventTarget is a minimal mcpharness.EventPublisher test double that
+// records what it was handed and can be scripted to fail, so a test can
+// prove mcpEventPublisher forwards both the event and the target's error
+// unchanged rather than swallowing either.
+type fakeMCPEventTarget struct {
+	mu    sync.Mutex
+	calls []event.Event
+	err   error
+}
+
+func (f *fakeMCPEventTarget) PublishEvent(_ context.Context, ev event.Event) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, ev)
+	return f.err
+}
+
+var _ mcpharness.EventPublisher = (*fakeMCPEventTarget)(nil)
+
+// TestMCPEventPublisherUnboundDropsSilently is the "no session yet" half of
+// this task's required trio: PublishEvent before Bind must not error and
+// must not panic -- it drops, matching attach.go's own documented window
+// where a status has nowhere to go yet (see mcpEventPublisher's doc for why
+// that costs nothing durable).
+func TestMCPEventPublisherUnboundDropsSilently(t *testing.T) {
+	p := &mcpEventPublisher{}
+	if err := p.PublishEvent(context.Background(), event.SessionActive{}); err != nil {
+		t.Fatalf("PublishEvent() before Bind error = %v, want nil (dropped)", err)
+	}
+}
+
+// TestMCPEventPublisherBoundForwardsToTarget is the faithful-forwarding
+// proof: once Bind installs a target, PublishEvent must hand it the exact
+// event unchanged.
+func TestMCPEventPublisherBoundForwardsToTarget(t *testing.T) {
+	target := &fakeMCPEventTarget{}
+	p := &mcpEventPublisher{}
+	p.Bind(target)
+
+	ev := event.SessionActive{}
+	if err := p.PublishEvent(context.Background(), ev); err != nil {
+		t.Fatalf("PublishEvent() error = %v", err)
+	}
+
+	target.mu.Lock()
+	calls := append([]event.Event(nil), target.calls...)
+	target.mu.Unlock()
+	if len(calls) != 1 {
+		t.Fatalf("target PublishEvent calls = %d, want 1", len(calls))
+	}
+	if !reflect.DeepEqual(calls[0], ev) {
+		t.Errorf("forwarded event = %+v, want %+v", calls[0], ev)
+	}
+}
+
+// TestMCPEventPublisherBoundSurfacesTargetError proves PublishEvent does not
+// swallow the bound target's own error -- a caller relying on this to learn
+// its publish failed must actually see that failure.
+func TestMCPEventPublisherBoundSurfacesTargetError(t *testing.T) {
+	wantErr := errors.New("publish failed")
+	target := &fakeMCPEventTarget{err: wantErr}
+	p := &mcpEventPublisher{}
+	p.Bind(target)
+
+	if err := p.PublishEvent(context.Background(), event.SessionActive{}); !errors.Is(err, wantErr) {
+		t.Errorf("PublishEvent() error = %v, want %v", err, wantErr)
+	}
+}
+
+// TestMCPEventPublisherBindIsConcurrencySafe exercises the mutex under
+// -race: a concurrent PublishEvent must never observe a half-written target.
+func TestMCPEventPublisherBindIsConcurrencySafe(t *testing.T) {
+	target := &fakeMCPEventTarget{}
+	p := &mcpEventPublisher{}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		p.Bind(target)
+	}()
+	go func() {
+		defer wg.Done()
+		_ = p.PublishEvent(context.Background(), event.SessionActive{})
+	}()
+	wg.Wait()
 }

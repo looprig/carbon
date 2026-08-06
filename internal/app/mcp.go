@@ -6,6 +6,7 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/looprig/harness/pkg/event"
 	"github.com/looprig/harness/pkg/gate"
 	"github.com/looprig/harness/pkg/session"
 	mcpauth "github.com/looprig/mcp/pkg/auth"
@@ -350,6 +351,59 @@ type mcpGateOpenerUnboundError struct {
 func (e *mcpGateOpenerUnboundError) Error() string {
 	return fmt.Sprintf("mcp gate opener: no session gate host bound (binding %q); MCP elicitation cannot be answered", e.Binding)
 }
+
+// mcpEventPublisher routes the Manager's integration events to the session's
+// own event stream. Like mcpGateOpener, it is late-binding: the Manager this
+// feeds is constructed before the session exists (its ConfigDigest must enter
+// the rig fingerprint before rig.NewSession is called), so there is
+// necessarily a window in which an event has nowhere to go. Unlike Deps.Gates,
+// Deps.Events is REQUIRED at Manager construction (mcpharness/deps.go's
+// Deps.validate), so this cannot be left nil the way a Reporter can -- an
+// always-non-nil, always-safe placeholder is the only way to satisfy that
+// requirement before a publishable session exists.
+//
+// Before Bind, PublishEvent drops the event and returns nil rather than an
+// error. This is not a workaround: attach.go's own doc for BindSession
+// documents exactly this window and why nothing durable is lost in it --
+// event.IntegrationStatus is Ephemeral precisely because the latest status
+// supersedes every earlier one, and BindSession republishes every binding's
+// CURRENT status the moment there is somewhere to publish it. So the
+// session's event stream opens knowing the truth about every server; what a
+// pre-Bind drop loses is only an intermediate status of a connection still
+// settling before the session it serves existed.
+//
+// Bind is called at most once, right after the session/controller exists,
+// mirroring mcpGateOpener.Bind. Both interactive and headless sessions bind
+// it: publishing an integration status is not a human-input capability the
+// way opening a gate is, so there is no headless-specific refusal here.
+type mcpEventPublisher struct {
+	mu     sync.Mutex
+	target mcpharness.EventPublisher // nil until Bind
+}
+
+// Bind installs the live session's publishing capability. It is
+// mutex-guarded so a concurrent PublishEvent can never observe a
+// half-written target.
+func (p *mcpEventPublisher) Bind(target mcpharness.EventPublisher) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.target = target
+}
+
+// PublishEvent implements mcpharness.EventPublisher. Before Bind it drops ev
+// and returns nil; see this type's doc for why that is safe rather than a
+// silent failure.
+func (p *mcpEventPublisher) PublishEvent(ctx context.Context, ev event.Event) error {
+	p.mu.Lock()
+	target := p.target
+	p.mu.Unlock()
+	if target == nil {
+		return nil
+	}
+	return target.PublishEvent(ctx, ev)
+}
+
+var _ mcpharness.EventPublisher = (*mcpEventPublisher)(nil)
 
 // maxMCPNoticeBacklog bounds mcpNoticeRecorder's retained history so a
 // long-lived session cannot grow it without limit. Once full, Report drops
