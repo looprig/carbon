@@ -130,8 +130,13 @@ func NewACPComposition(config ACPChildrenConfig) (*ACPComposition, error) {
 			continue
 		}
 		harness := loop.AgentHarnessName(strings.TrimPrefix(string(profile), "acp/"))
-		if !preflightACPExecutable(config.Executables[harness]) {
+		executable := config.Executables[harness]
+		if executable == "" {
 			diagnostics = append(diagnostics, acpDiagnosticNoExecutable(harness))
+			continue
+		}
+		if !preflightACPExecutable(executable) {
+			diagnostics = append(diagnostics, acpDiagnosticExecutableNotRunnable(harness))
 			continue
 		}
 		decision := preflightACPProfile(preflightContext, config, harness, preflight)
@@ -180,6 +185,15 @@ func acpDiagnosticNoExecutable(harness loop.AgentHarnessName) string {
 		return fmt.Sprintf("acp: %s unavailable: no executable (set acp_launchers in models.json or its executable environment variable)", harness)
 	}
 	return fmt.Sprintf("acp: %s unavailable: no executable (set acp_launchers in models.json or %s)", harness, envVar)
+}
+
+// acpDiagnosticExecutableNotRunnable reports that a configured executable
+// path (from acp_launchers or its environment-variable override) exists in
+// configuration but failed the local stat/executable-bit check — distinct
+// from no candidate having resolved at all, since the operator-facing
+// remediation differs (fix the existing configuration vs. add configuration).
+func acpDiagnosticExecutableNotRunnable(harness loop.AgentHarnessName) string {
+	return fmt.Sprintf("acp: %s unavailable: configured executable not runnable (from acp_launchers)", harness)
 }
 
 func acpDiagnosticPreflightFailed(harness loop.AgentHarnessName, decision acpPreflightDecision) string {

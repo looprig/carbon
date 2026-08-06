@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -573,6 +574,31 @@ func TestNewACPCompositionDiagnosticsNoExecutable(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected a no-executable diagnostic for claude-code, got %v", composition.Diagnostics)
+	}
+}
+
+func TestNewACPCompositionDiagnosticsExecutableNotRunnable(t *testing.T) {
+	t.Parallel()
+	compiled := testACPGatewayCatalog(t)
+	composition, err := NewACPComposition(ACPChildrenConfig{
+		Catalog:       compiled,
+		Executables:   map[loop.AgentHarnessName]string{"claude-code": filepath.Join(t.TempDir(), "claude-code-acp")},
+		WorkspaceRoot: t.TempDir(),
+		executablePreflight: func(context.Context, ACPExecutableProbe) ACPPreflightResult {
+			return ACPPreflightResult{Ready: true}
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewACPComposition: %v", err)
+	}
+	found := false
+	for _, line := range composition.Diagnostics {
+		if strings.Contains(line, "claude-code unavailable: configured executable not runnable") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a configured-executable-not-runnable diagnostic for claude-code, got %v", composition.Diagnostics)
 	}
 }
 
