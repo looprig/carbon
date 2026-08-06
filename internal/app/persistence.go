@@ -130,6 +130,7 @@ func agentFingerprintFields(cfg Config) rig.ConfigFingerprintFields {
 		AgentKind:                 agentKind,
 		RuntimeSkills:             cfg.RuntimeSkills,
 		NativePermissionPolicyRev: cfg.AccessConfigRev,
+		ExternalCapabilityRev:     cfg.MCPConfigRev,
 		AppFields:                 accessAppFields(cfg.AccessProfile),
 	}
 	fields.RuntimeCatalogRev = cfg.ModelConfigRev
