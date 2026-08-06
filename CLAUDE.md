@@ -19,7 +19,7 @@ Do not add an open-ended agent registry. The primer loop may expose a bounded pi
 
 ## Model catalogue and credentials
 
-- The `planner`, `builder`, and `reviewer` roster and its role policy remain fixed in code. Production model data is external configuration, loaded once at the composition boundary from `~/.looprig/models.json`.
+- The `planner`, `builder`, and `reviewer` roster and its role policy remain fixed in code. Production model data is external configuration, loaded once at the composition boundary from `~/.looprig/models.json`. The file may also carry an optional top-level `permission_review` section that can enable classifier-based automatic permission review; see "Permission review" below for what it does and does not override.
 - The model catalogue is operator-managed and read-only to CodeRig: the loader never creates, rewrites, or changes the mode of the file. On Unix, the file must be owner-only (`0600`), must be a regular file, and must not be a symlink.
 - Inline API keys are permitted only in this machine-wide file because it is outside repositories and owner-only. Never put provider keys in `.env`, provider-key environment variables, command-line arguments, logs, fingerprints, permission files, or child environments.
 - Native permission persistence is separate and remains per workspace at `~/.looprig/workspaces/<sha256(canonical-workspace)>/permissions.json`. The global model catalogue is not a permission store.
@@ -43,11 +43,27 @@ duplicates ceiling-comparison/eligibility logic locally.
 
 - **Enable/disable** — `Config.PermissionReviewEnabled` (default `false`, so
   a zero `Config` never auto-approves anything). There is no CLI flag for it
-  today; a caller embedding `coderig.Config` sets the field directly. When
-  disabled, `newPermissionReviewRegistration` returns the zero
+  today, but there are two seams: a caller embedding `coderig.Config` can set
+  the field directly, and an operator can add a `permission_review` section
+  to `~/.looprig/models.json` (`{"model": "<alias>", "strict": <bool>}`) —
+  presence alone enables it, and `model` must name a configured alias with
+  both `tools` and `structured_output_with_tools` capabilities or the
+  catalogue fails closed with a typed `*ModelConfigError`. The programmatic
+  seam always wins: if `PermissionReviewEnabled` is already `true` before the
+  catalogue loads, the file can only leave it enabled, never disable or
+  reconfigure it — a models.json section has no way to force it back off.
+  When disabled, `newPermissionReviewRegistration` returns the zero
   (`enabled: false`) registration and `options()` returns `nil` — the
   assembled rig is byte-for-byte the same as if permission review did not
   exist.
+- **Access-profile gate** — regardless of how `PermissionReviewEnabled`
+  became true (the programmatic seam or models.json), permission review only
+  ever takes effect when the session's `AccessProfile == AccessTrusted`. Any
+  other profile (`readonly`, `unconfined`, or the empty default) leaves it
+  **silently disabled** — the same byte-for-byte-identical-to-disabled rig as
+  `PermissionReviewEnabled == false`, no error, no log. This is enforced once,
+  in `newPermissionReviewRegistration`, so both the interactive and headless
+  composition paths get it automatically.
 - **Model capability requirements** — `Config.PermissionReviewModel` is
   required whenever `PermissionReviewEnabled` is true (rejected at
   construction with `*PermissionReviewConfigError` otherwise). CodeRig never
