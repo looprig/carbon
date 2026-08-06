@@ -95,10 +95,11 @@ type ACPPreflightResult struct {
 // The registry is retained for inspection and the function pair is the narrow
 // legacy rig option; dispatch still selects by bound RuntimeProfile.
 type ACPComposition struct {
-	Catalog  ACPCompiledCatalog
-	Registry *foreign.BuilderRegistry
-	Live     foreign.Builder
-	Restored foreign.RestoredBuilder
+	Catalog     ACPCompiledCatalog
+	Registry    *foreign.BuilderRegistry
+	Live        foreign.Builder
+	Restored    foreign.RestoredBuilder
+	Diagnostics []string
 }
 
 // NewACPComposition preflights configured executable paths, registers only
@@ -116,6 +117,7 @@ func NewACPComposition(config ACPChildrenConfig) (*ACPComposition, error) {
 		}
 	}
 	decisions := make(map[loop.AgentHarnessName]acpPreflightDecision)
+	var diagnostics []string
 	preflightContext := config.preflightContext
 	if preflightContext == nil {
 		preflightContext = context.Background()
@@ -129,12 +131,15 @@ func NewACPComposition(config ACPChildrenConfig) (*ACPComposition, error) {
 		}
 		harness := loop.AgentHarnessName(strings.TrimPrefix(string(profile), "acp/"))
 		if !preflightACPExecutable(config.Executables[harness]) {
+			diagnostics = append(diagnostics, acpDiagnosticNoExecutable(harness))
 			continue
 		}
 		decision := preflightACPProfile(preflightContext, config, harness, preflight)
 		if decision.gatewayReady || decision.nativeReady {
 			decisions[harness] = decision
+			continue
 		}
+		diagnostics = append(diagnostics, acpDiagnosticPreflightFailed(harness, decision))
 	}
 	filtered, err := filterACPPreflightCatalog(config.Catalog, decisions)
 	if err != nil {
@@ -151,11 +156,40 @@ func NewACPComposition(config ACPChildrenConfig) (*ACPComposition, error) {
 		}
 	}
 	return &ACPComposition{
-		Catalog:  config.Catalog,
-		Registry: registry,
-		Live:     dispatchACPBuilder(registry),
-		Restored: dispatchACPRestoredBuilder(registry),
+		Catalog:     config.Catalog,
+		Registry:    registry,
+		Live:        dispatchACPBuilder(registry),
+		Restored:    dispatchACPRestoredBuilder(registry),
+		Diagnostics: diagnostics,
 	}, nil
+}
+
+// acpDiagnosticNoExecutable and acpDiagnosticPreflightFailed produce fixed,
+// secret-free category strings. They never include stderr content, provider
+// messages, URLs, tokens, or full filesystem paths.
+func acpDiagnosticNoExecutable(harness loop.AgentHarnessName) string {
+	envVar := ""
+	switch harness {
+	case "claude-code":
+		envVar = acpClaudeExecutableEnv
+	case "codex":
+		envVar = acpCodexExecutableEnv
+	}
+	if envVar == "" {
+		return fmt.Sprintf("acp: %s unavailable: no executable (set acp_launchers in models.json or its executable environment variable)", harness)
+	}
+	return fmt.Sprintf("acp: %s unavailable: no executable (set acp_launchers in models.json or %s)", harness, envVar)
+}
+
+func acpDiagnosticPreflightFailed(harness loop.AgentHarnessName, decision acpPreflightDecision) string {
+	mode := "gateway or native"
+	switch {
+	case decision.gatewayAttempted && !decision.nativeAttempted:
+		mode = "gateway"
+	case decision.nativeAttempted && !decision.gatewayAttempted:
+		mode = "native"
+	}
+	return fmt.Sprintf("acp: %s unavailable: preflight failed (%s)", harness, mode)
 }
 
 type acpPreflightDecision struct {
@@ -164,6 +198,13 @@ type acpPreflightDecision struct {
 	nativeReady        bool
 	nativeManagedReady bool
 	nativeAliases      map[loop.ModelAlias]struct{}
+	// gatewayAttempted and nativeAttempted record whether the catalog
+	// configured any model for this harness under that credential mode,
+	// regardless of whether the preflight probe ultimately succeeded. They
+	// back the preflight-failed diagnostic's "gateway"/"native"/"gateway or
+	// native" wording.
+	gatewayAttempted bool
+	nativeAttempted  bool
 }
 
 type acpRuntimeModel struct {
@@ -206,6 +247,8 @@ func preflightACPProfile(ctx context.Context, config ACPChildrenConfig, harness 
 		}
 	}
 
+	decision.gatewayAttempted = len(gatewayModels) > 0
+	decision.nativeAttempted = nativeManaged || len(nativeModels) > 0
 	if len(gatewayModels) > 0 && preflightACPSharedGateway(ctx, config, harness, gatewayModels, preflight, &decision) {
 		decision.gatewayReady = true
 	}
