@@ -377,6 +377,29 @@ func TestProductionModelsResolvesUnusedClassifierPermissionReview(t *testing.T) 
 	}
 }
 
+func TestCompileProductionModelsCarriesACPLaunchers(t *testing.T) {
+	config := normalizedModelConfig{
+		PrimerDefault: "fixture-primer",
+		Models: []normalizedModelTarget{{
+			Alias: "fixture-primer", Model: model.CustomModel("lmstudio", model.APIFormatOpenAI, "http://localhost:1234", "primer", model.WithTools()),
+			Uses: []string{"primer"}, Efforts: []model.Effort{model.EffortNone}, DefaultEffort: model.EffortNone,
+		}},
+	}
+	config.ACPLaunchers = map[string]normalizedACPLauncher{
+		"claude-code": {Harness: "claude-code", Executable: "/usr/local/bin/claude-code-acp"},
+	}
+
+	produced, err := compileProductionModels(config, func(model.Model, auth.APIKey) (inference.Client, error) {
+		return &fakeLLM{}, nil
+	})
+	if err != nil {
+		t.Fatalf("compileProductionModels: %v", err)
+	}
+	if got := produced.ACPLaunchers["claude-code"]; got != "/usr/local/bin/claude-code-acp" {
+		t.Fatalf("ACPLaunchers[claude-code] = %q, want the configured path", got)
+	}
+}
+
 func aliasesToLoop(values []string) []loop.ModelAlias {
 	if values == nil {
 		return nil

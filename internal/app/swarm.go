@@ -341,6 +341,7 @@ func newWithClientUsingStores(ctx context.Context, client inference.Client, fact
 	if err != nil {
 		return nil, err
 	}
+	access.diagnostics = append(access.diagnostics, cfg.ACPDiagnostics...)
 	cfg.AccessConfigRev = access.configRev
 	definitions, err := swarmDefinitions(client, factory(), cfg, access)
 	if err != nil {
@@ -535,6 +536,7 @@ func openRuntimeAgent(ctx context.Context, client inference.Client, factory Mode
 	if err != nil {
 		return nil, err
 	}
+	access.diagnostics = append(access.diagnostics, cfg.ACPDiagnostics...)
 	cfg.AccessConfigRev = access.configRev
 
 	mcpAssembly, err := newMCPSessionAssembly(cfg)

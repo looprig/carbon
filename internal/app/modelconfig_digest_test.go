@@ -141,6 +141,28 @@ func TestDigestModelConfigAndFormattingExcludeSecrets(t *testing.T) {
 	}
 }
 
+func TestModelConfigDigestExcludesACPLaunchers(t *testing.T) {
+	base, err := normalizeModelConfig(digestModelConfigFixture(t, "test-secret-do-not-log"))
+	if err != nil {
+		t.Fatalf("normalize fixture: %v", err)
+	}
+	withLaunchers := cloneNormalizedModelConfig(base)
+	withLaunchers.ACPLaunchers = map[string]normalizedACPLauncher{
+		"codex": {Harness: "codex", Executable: "/usr/local/bin/codex-acp"},
+	}
+	baseDigest, err := modelConfigDigest(base)
+	if err != nil {
+		t.Fatalf("digest(base): %v", err)
+	}
+	launcherDigest, err := modelConfigDigest(withLaunchers)
+	if err != nil {
+		t.Fatalf("digest(withLaunchers): %v", err)
+	}
+	if baseDigest != launcherDigest {
+		t.Fatalf("acp_launchers must not change the model config digest: base=%q withLaunchers=%q", baseDigest, launcherDigest)
+	}
+}
+
 func digestModelConfigFixture(t *testing.T, apiKey string) modelConfigFile {
 	t.Helper()
 	config := validDecodedModelConfig(t)

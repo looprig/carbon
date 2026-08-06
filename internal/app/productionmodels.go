@@ -46,6 +46,7 @@ type productionModels struct {
 	PrimerCandidates []PrimerCandidate
 	ACP              []ACPGatewaySource
 	NativeACP        map[string]ACPNativeProfile
+	ACPLaunchers     map[string]string // harness -> configured executable path
 	Defaults         map[identity.AgentName]configuredDelegateDefault
 	ClaudeSmall      loop.ModelAlias
 	ConfigRev        string
@@ -153,6 +154,14 @@ func compileProductionModels(config normalizedModelConfig, factory configuredCli
 		permissionReviewStrict = config.PermissionReview.Strict
 	}
 
+	var acpLaunchers map[string]string
+	if config.ACPLaunchers != nil {
+		acpLaunchers = make(map[string]string, len(config.ACPLaunchers))
+		for harness, launcher := range config.ACPLaunchers {
+			acpLaunchers[harness] = launcher.Executable
+		}
+	}
+
 	return productionModels{
 		PrimerClient:            clients[config.PrimerDefault],
 		RuntimeClient:           runtimeClient,
@@ -162,6 +171,7 @@ func compileProductionModels(config normalizedModelConfig, factory configuredCli
 		PrimerCandidates:        primerCandidates,
 		ACP:                     delegateSources,
 		NativeACP:               nativeACP,
+		ACPLaunchers:            acpLaunchers,
 		Defaults:                defaults,
 		ClaudeSmall:             loop.ModelAlias(config.ClaudeCodeSmallModel),
 		ConfigRev:               configRev,

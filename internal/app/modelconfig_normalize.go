@@ -3,6 +3,7 @@ package app
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 	"unicode"
@@ -23,6 +24,7 @@ type normalizedModelConfig struct {
 	Models               []normalizedModelTarget
 	NativeACP            map[string]normalizedNativeACPProfile
 	PermissionReview     *normalizedPermissionReview
+	ACPLaunchers         map[string]normalizedACPLauncher
 }
 
 // normalizedPermissionReview is the resolved (but not yet client-bound)
@@ -47,6 +49,11 @@ type normalizedNativeACPProfile struct {
 	Harness string
 	Enabled bool
 	Models  []string
+}
+
+type normalizedACPLauncher struct {
+	Harness    string
+	Executable string
 }
 
 type normalizedModelTarget struct {
@@ -76,6 +83,12 @@ func normalizeModelConfig(config modelConfigFile) (normalizedModelConfig, error)
 		return normalizedModelConfig{}, err
 	}
 	normalized.NativeACP = nativeACP
+
+	acpLaunchers, err := normalizeACPLaunchers(config.ACPLaunchers)
+	if err != nil {
+		return normalizedModelConfig{}, err
+	}
+	normalized.ACPLaunchers = acpLaunchers
 
 	byAlias := make(map[string]*normalizedModelTarget, len(config.Models))
 	normalized.Models = make([]normalizedModelTarget, 0, len(config.Models))
@@ -241,6 +254,27 @@ func normalizeNativeACPProfiles(config map[string]nativeACPProfileConfig) (map[s
 		profiles[harness] = normalizedNativeACPProfile{Harness: harness, Enabled: profile.Enabled, Models: models}
 	}
 	return profiles, nil
+}
+
+func normalizeACPLaunchers(config map[string]acpLauncherConfig) (map[string]normalizedACPLauncher, error) {
+	if config == nil {
+		return nil, nil
+	}
+	known := map[string]struct{}{"claude-code": {}, "codex": {}}
+	launchers := make(map[string]normalizedACPLauncher, len(config))
+	for harness, entry := range config {
+		if _, ok := known[harness]; !ok {
+			return nil, modelConfigValidationError("acp_launchers contains an unknown harness")
+		}
+		if !isExactNonEmptyModelConfigString(entry.Executable) {
+			return nil, modelConfigValidationError("acp_launchers executable must be non-empty and unpadded")
+		}
+		if !filepath.IsAbs(entry.Executable) || filepath.Clean(entry.Executable) != entry.Executable {
+			return nil, modelConfigValidationError("acp_launchers executable must be a clean absolute path")
+		}
+		launchers[harness] = normalizedACPLauncher{Harness: harness, Executable: entry.Executable}
+	}
+	return launchers, nil
 }
 
 func nativeACPProfileFor(profiles map[string]normalizedNativeACPProfile, harness string) (normalizedNativeACPProfile, bool) {

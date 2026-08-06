@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -222,6 +223,10 @@ func TestProductionACPCompositionWiresConfiguredManagedNativeProfile(t *testing.
 func TestProductionACPCompositionDoesNotFallbackWhenConfiguredDefaultHarnessIsUnavailable(t *testing.T) {
 	t.Setenv(acpCodexExecutableEnv, "")
 	t.Setenv(acpClaudeExecutableEnv, "")
+	// Isolate PATH so a real claude-code-acp/codex-acp installed on the host
+	// (as happens on developer machines) cannot be discovered by the new
+	// env->config->PATH resolution and make this harness look available.
+	t.Setenv("PATH", t.TempDir())
 
 	configured := configuredProductionModelsForTest("configured-only")
 	for role := range configured.Defaults {
@@ -239,6 +244,45 @@ func TestProductionACPCompositionDoesNotFallbackWhenConfiguredDefaultHarnessIsUn
 	entries := composition.Catalog.RuntimeCatalog.EntriesFor("builder")
 	if len(entries) != 1 || entries[0].AgentHarness != "looprig" || !entries[0].Default {
 		t.Fatalf("unavailable configured default did not retain the ordinary row: %#v", entries)
+	}
+}
+
+func TestResolveACPExecutable(t *testing.T) {
+	dir := t.TempDir()
+	configuredPath := filepath.Join(dir, "configured-claude-code-acp")
+	writeFakeACPExecutable(t, configuredPath)
+
+	pathDir := t.TempDir()
+	pathExecutable := filepath.Join(pathDir, "claude-code-acp")
+	writeFakeACPExecutable(t, pathExecutable)
+	t.Setenv("PATH", pathDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	tests := []struct {
+		name          string
+		env           string
+		configured    string
+		wellKnownName string
+		want          string
+	}{
+		{name: "env var wins", env: "/env/claude-code-acp", configured: configuredPath, wellKnownName: "claude-code-acp", want: "/env/claude-code-acp"},
+		{name: "config wins over PATH", env: "", configured: configuredPath, wellKnownName: "claude-code-acp", want: configuredPath},
+		{name: "falls back to PATH", env: "", configured: "", wellKnownName: "claude-code-acp", want: pathExecutable},
+		{name: "nothing resolves", env: "", configured: "", wellKnownName: "no-such-acp-adapter-binary", want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := resolveACPExecutable(tt.env, tt.configured, tt.wellKnownName)
+			if got != tt.want {
+				t.Fatalf("resolveACPExecutable() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func writeFakeACPExecutable(t *testing.T, path string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
 	}
 }
 

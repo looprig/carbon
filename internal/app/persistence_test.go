@@ -69,6 +69,12 @@ func TestProductionModelsPersistedOpenLoadsExactlyOnce(t *testing.T) {
 }
 
 func TestPersistedOpenRoutesNativeAgentThroughRuntimeClientAcrossRestore(t *testing.T) {
+	// Isolate PATH so a real claude-code-acp/codex-acp installed on the host
+	// (as happens on developer machines) cannot be discovered by the
+	// env->config->PATH executable resolution and divert this delegate's
+	// gateway row to a real ACP subprocess instead of the in-process
+	// RuntimeClient this test asserts against.
+	t.Setenv("PATH", t.TempDir())
 	primerModel := testModel()
 	delegateModel := model.CustomModel("openai", model.APIFormatOpenAIResponses, "", "persisted-delegate", model.WithTools(), model.WithThinking())
 	delegateModel.Limits = model.ContextLimits{WindowTokens: 128_000}

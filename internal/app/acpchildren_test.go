@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -89,6 +90,59 @@ func TestNewACPCompositionPreflightsProfilesAndFiltersEnv(t *testing.T) {
 	}
 	if got := filterACPEnv([]string{"PATH=/bin", "SECRET=x", "LANG=C"}, []string{"PATH", "LANG"}); len(got) != 2 || got[0] != "PATH=/bin" || got[1] != "LANG=C" {
 		t.Fatalf("filtered env = %#v", got)
+	}
+}
+
+func TestNewACPCompositionDiagnosticsReducedModels(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiled := testACPGatewayCatalog(t)
+	before := 0
+	for _, entry := range compiled.entries {
+		if entry.AgentHarness == "claude-code" {
+			before += len(entry.Models)
+		}
+	}
+	if before < 2 {
+		t.Fatalf("fixture does not configure enough claude-code models to exercise a partial reduction: %d", before)
+	}
+	composition, err := NewACPComposition(ACPChildrenConfig{
+		Catalog:                 compiled,
+		Executables:             map[loop.AgentHarnessName]string{"claude-code": executable, "codex": executable},
+		WorkspaceRoot:           t.TempDir(),
+		gatewayPreflightBinding: &launch.ProxyBinding{BaseURL: "http://127.0.0.1:1", Token: "test-token"},
+		executablePreflight: func(context.Context, ACPExecutableProbe) ACPPreflightResult {
+			// sonnet-5 remains the default alias for claude-code (per
+			// legacyTestDefaults), so omitting only fable-5 keeps claude-code
+			// admitted while genuinely reducing its surviving model count.
+			return ACPPreflightResult{Ready: true, AdvertisedModels: []string{"sonnet-5", "opus-5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"}}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !composition.Catalog.HasProfile("acp/claude-code") {
+		t.Fatal("claude-code profile should still be admitted with a reduced model set")
+	}
+	after := 0
+	for _, entry := range composition.Catalog.entries {
+		if entry.AgentHarness == "claude-code" {
+			after += len(entry.Models)
+		}
+	}
+	if after == 0 || after >= before {
+		t.Fatalf("expected a genuine partial reduction for claude-code, before=%d after=%d", before, after)
+	}
+	found := false
+	for _, line := range composition.Diagnostics {
+		if strings.Contains(line, "claude-code:") && strings.Contains(line, "not advertised") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a reduced-models diagnostic for claude-code, got %v", composition.Diagnostics)
 	}
 }
 
@@ -495,6 +549,143 @@ func TestACPBoundRuntimeResolutionUsesPinnedSelectors(t *testing.T) {
 	}
 	if harness != "codex" || got.ModelAlias != "gpt-5.6-luna" || got.TargetAlias != "gpt-5.6-luna@max" || got.Effort != model.EffortMax {
 		t.Fatalf("resolved = %#v harness=%q", got, harness)
+	}
+}
+
+func TestNewACPCompositionDiagnosticsNoExecutable(t *testing.T) {
+	t.Parallel()
+	compiled := testACPGatewayCatalog(t)
+	composition, err := NewACPComposition(ACPChildrenConfig{
+		Catalog:       compiled,
+		Executables:   map[loop.AgentHarnessName]string{},
+		WorkspaceRoot: t.TempDir(),
+		executablePreflight: func(context.Context, ACPExecutableProbe) ACPPreflightResult {
+			return ACPPreflightResult{Ready: true}
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewACPComposition: %v", err)
+	}
+	found := false
+	for _, line := range composition.Diagnostics {
+		if strings.Contains(line, "claude-code unavailable: no executable") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a no-executable diagnostic for claude-code, got %v", composition.Diagnostics)
+	}
+}
+
+func TestNewACPCompositionDiagnosticsExecutableNotRunnable(t *testing.T) {
+	t.Parallel()
+	compiled := testACPGatewayCatalog(t)
+	composition, err := NewACPComposition(ACPChildrenConfig{
+		Catalog:       compiled,
+		Executables:   map[loop.AgentHarnessName]string{"claude-code": filepath.Join(t.TempDir(), "claude-code-acp")},
+		WorkspaceRoot: t.TempDir(),
+		executablePreflight: func(context.Context, ACPExecutableProbe) ACPPreflightResult {
+			return ACPPreflightResult{Ready: true}
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewACPComposition: %v", err)
+	}
+	found := false
+	for _, line := range composition.Diagnostics {
+		if strings.Contains(line, "claude-code unavailable: configured executable not runnable") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a configured-executable-not-runnable diagnostic for claude-code, got %v", composition.Diagnostics)
+	}
+}
+
+func TestNewACPCompositionDiagnosticsPreflightFailed(t *testing.T) {
+	t.Parallel()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiled := testACPGatewayCatalog(t)
+	composition, err := NewACPComposition(ACPChildrenConfig{
+		Catalog:       compiled,
+		Executables:   map[loop.AgentHarnessName]string{"claude-code": executable, "codex": executable},
+		WorkspaceRoot: t.TempDir(),
+		executablePreflight: func(context.Context, ACPExecutableProbe) ACPPreflightResult {
+			return ACPPreflightResult{Ready: false}
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewACPComposition: %v", err)
+	}
+	found := false
+	for _, line := range composition.Diagnostics {
+		if strings.Contains(line, "codex unavailable: preflight failed") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a preflight-failed diagnostic for codex, got %v", composition.Diagnostics)
+	}
+}
+
+func TestNewACPCompositionDiagnosticsPreflightFailedBothModes(t *testing.T) {
+	t.Parallel()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Codex gets both a gateway row (from GatewayTargets' openai entries) and a
+	// native-auth row (from NativeAuth), so a universally failing preflight
+	// exercises the "gateway or native" both-attempted branch.
+	compiled, err := CompileACPCatalog(ACPCatalogInput{
+		AgentTypes: []identity.AgentName{"worker"},
+		GatewayTargets: legacyTestGatewayTargets(map[model.ProviderName]inference.Client{
+			"anthropic": &fakeLLM{},
+			"openai":    &fakeLLM{},
+		}),
+		Defaults:    legacyTestDefaults([]identity.AgentName{"worker"}),
+		ClaudeSmall: "sonnet-5",
+		NativeAuth: []ACPNativeAuthSource{{
+			Harness: "codex", Alias: "native-model", Model: testModel(),
+			DefaultEffort: model.EffortNone, Efforts: []model.Effort{model.EffortNone},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	composition, err := NewACPComposition(ACPChildrenConfig{
+		Catalog:       compiled,
+		Executables:   map[loop.AgentHarnessName]string{"claude-code": executable, "codex": executable},
+		WorkspaceRoot: t.TempDir(),
+		executablePreflight: func(context.Context, ACPExecutableProbe) ACPPreflightResult {
+			return ACPPreflightResult{Ready: false}
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewACPComposition: %v", err)
+	}
+	found := false
+	for _, line := range composition.Diagnostics {
+		if strings.Contains(line, "codex unavailable: preflight failed (gateway or native)") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a both-modes preflight-failed diagnostic for codex, got %v", composition.Diagnostics)
+	}
+}
+
+func TestNewACPCompositionNoDiagnosticWhenHarnessNotConfigured(t *testing.T) {
+	t.Parallel()
+	composition, err := NewACPComposition(ACPChildrenConfig{Executables: map[loop.AgentHarnessName]string{"codex": "/bin/sh"}})
+	if err != nil {
+		t.Fatalf("NewACPComposition: %v", err)
+	}
+	if len(composition.Diagnostics) != 0 {
+		t.Fatalf("expected no diagnostics for an unconfigured harness, got %v", composition.Diagnostics)
 	}
 }
 
