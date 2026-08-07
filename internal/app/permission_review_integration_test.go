@@ -255,7 +255,7 @@ func permissionReviewIntegrationAgentWithClassifier(t *testing.T, cfg Config, op
 	}
 	stores, err := openTestStores(t)
 	if err != nil {
-		t.Fatalf("openStores() error = %v", err)
+		t.Fatalf("openTestStores() error = %v", err)
 	}
 	assembly, err := buildRigForDelegationCaps(
 		definitions, stores, root, cfg, false,
@@ -1412,7 +1412,7 @@ func TestPermissionReviewDisabledConfigMatchesPreFeatureBuildRig(t *testing.T) {
 	t.Parallel()
 	stores, err := openTestStores(t)
 	if err != nil {
-		t.Fatalf("openStores() error = %v", err)
+		t.Fatalf("openTestStores() error = %v", err)
 	}
 	root := t.TempDir()
 	access, cfg := headlessTestAccess(t, Config{}, root)

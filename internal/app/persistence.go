@@ -77,13 +77,17 @@ type swarmStores struct {
 	// resourceStorage is this backend's rig.SessionResourceStorageProvider: the persisted
 	// on-disk provider for ensureStoresLocked's fsstore backend, the process-owned headless
 	// provider for headlessStores' process-shared in-memory backend, and nil for any
-	// swarmStores a narrow package test builds directly via openStores (most package tests
-	// are unconcerned with process-service tools). It is attached here, to swarmStores,
-	// rather than threaded as a new parameter through buildRig/openRuntimeAgent, matching
-	// how session/workspace/leaser already reach the rig — one more facade over the same
-	// backend, not a new call-chain parameter. buildRigWithRegistrationAndACP only installs
-	// rig.WithSessionResourceStorage when this is non-nil, so its absence changes nothing
-	// for a topology that does not declare tool.RequiresProcessServices (none does today).
+	// swarmStores a narrow package test builds directly via openStores (a package test that
+	// still needs one, because it assembles the real production swarm, uses openTestStores
+	// instead). It is attached here, to swarmStores, rather than threaded as a new parameter
+	// through buildRig/openRuntimeAgent, matching how session/workspace/leaser already reach
+	// the rig — one more facade over the same backend, not a new call-chain parameter.
+	// buildRigWithRegistrationAndACP only installs rig.WithSessionResourceStorage when this is
+	// non-nil, so its absence changes nothing for a topology that does not declare
+	// tool.RequiresProcessServices. Since Task 27, the builder and reviewer rosters' Bash
+	// definition DOES declare it in production, so both real assembly paths above always
+	// populate this field; only a topology with a scoped, process-free tool subset (e.g. a
+	// planner-only fixture) can still legitimately leave it nil.
 	resourceStorage rig.SessionResourceStorageProvider
 }
 

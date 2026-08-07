@@ -189,7 +189,7 @@ func TestMCPConfigFingerprintRestoreBehavior(t *testing.T) {
 
 	stores, err := openTestStores(t)
 	if err != nil {
-		t.Fatalf("openStores() error = %v", err)
+		t.Fatalf("openTestStores() error = %v", err)
 	}
 	root := t.TempDir()
 
@@ -263,7 +263,7 @@ func TestMCPAbsentConfigRestoresUnaffected(t *testing.T) {
 	t.Parallel()
 	stores, err := openTestStores(t)
 	if err != nil {
-		t.Fatalf("openStores() error = %v", err)
+		t.Fatalf("openTestStores() error = %v", err)
 	}
 	root := t.TempDir()
 

@@ -778,7 +778,7 @@ func TestPermissionReviewConfigFingerprintChanges(t *testing.T) {
 		t.Helper()
 		stores, err := openTestStores(t)
 		if err != nil {
-			t.Fatalf("openStores() error = %v", err)
+			t.Fatalf("openTestStores() error = %v", err)
 		}
 		root = t.TempDir()
 		access, cfg := headlessTestAccess(t, Config{}, root)
