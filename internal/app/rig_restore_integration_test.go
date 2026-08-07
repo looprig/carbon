@@ -790,3 +790,80 @@ func TestRigRestoreSiblingOwnershipScopes(t *testing.T) {
 		}
 	}
 }
+
+// TestProcessAdapterResolverIndependentOfHarnessTransport is Task 26B's
+// negative proof for "no Harness ProcessBinding, Rig option, lifecycle
+// option, or provider is used to transport the adapter": newProcessRunnerResolver
+// is built directly over a role's *sandbox.ExecutorSet -- the SAME
+// sessionAccess.builderSet field toolsets.go's own bashDefinition and
+// roleGate already resolve executors from -- and driven by a LoopID
+// obtained from a GENUINELY RESTORED production session over real fsstore.
+// No rig.Option, tool.ProcessBinding, Harness lifecycle registration, or
+// provider of any kind is constructed anywhere in this test: the resolver
+// and the executor set it captures are reached entirely through
+// RuntimeAgent's own unexported `access *sessionAccess` field and the
+// restored session's ActiveLoopID, never through rig.Define's option list.
+func TestProcessAdapterResolverIndependentOfHarnessTransport(t *testing.T) {
+	dataDir := t.TempDir()
+	workspace := t.TempDir()
+	t.Chdir(workspace)
+	client := &managedScript{fn: func(context.Context, inference.Request) ([]content.Chunk, error) {
+		return finalText("resolver-independence turn complete"), nil
+	}}
+
+	f1, err := NewSessionStoreFactory(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a1, err := f1.openWithClient(context.Background(), client, newModelFactory(), SessionSelector{}, Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionID := a1.SessionID()
+	primerLoopID := a1.ActiveLoopID()
+	if primerLoopID.IsZero() {
+		t.Fatal("primer LoopID is zero before the first restore")
+	}
+	if err := a1.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := f1.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	f2, err := NewSessionStoreFactory(dataDir)
+	if err != nil {
+		t.Fatalf("fresh NewSessionStoreFactory: %v", err)
+	}
+	t.Cleanup(func() { _ = f2.Close() })
+	a2, err := f2.openWithClient(context.Background(), client, newModelFactory(), SessionSelector{Resume: sessionID}, Config{})
+	if err != nil {
+		t.Fatalf("restore from fresh factory: %v", err)
+	}
+	t.Cleanup(func() { _ = a2.Close(context.Background()) })
+
+	restoredLoopID := a2.ActiveLoopID()
+	if restoredLoopID != primerLoopID {
+		t.Fatalf("restored ActiveLoopID = %v, want the same primer LoopID %v", restoredLoopID, primerLoopID)
+	}
+
+	if a2.access == nil || a2.access.builderSet == nil {
+		t.Fatal("restored RuntimeAgent has no builder *sandbox.ExecutorSet to resolve against")
+	}
+	resolver := newProcessRunnerResolver(a2.access.builderSet)
+	runner, err := resolver(context.Background(), restoredLoopID)
+	if err != nil {
+		t.Fatalf("resolver(restored primer LoopID): %v", err)
+	}
+	adapter, ok := runner.(processRunnerAdapter)
+	if !ok {
+		t.Fatalf("resolver returned %T, want processRunnerAdapter", runner)
+	}
+	direct, err := a2.access.builderSet.For(restoredLoopID.String())
+	if err != nil {
+		t.Fatalf("builderSet.For(restored primer LoopID) directly: %v", err)
+	}
+	if adapter.exec != direct {
+		t.Fatal("resolver's wrapped executor is not the SAME per-Loop executor builderSet.For resolves directly -- resolver and bashDefinition/roleGate must agree on the identical instance")
+	}
+}

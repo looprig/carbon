@@ -34,6 +34,15 @@ import (
 // per-Loop executor is the structural gate.GrantIssuer AND the confined command
 // runner, so a minted grant validates against the exact executor that runs the
 // command.
+//
+// process_adapter.go (same package) is this file's asynchronous-process
+// counterpart to grantedExecutor: newProcessRunnerResolver captures a role's
+// *sandbox.ExecutorSet and returns a tools.AsyncProcessRunnerResolver, a
+// closure that mechanically wraps that role's per-Loop *sandbox.Executor as a
+// harness tool.AsyncProcessRunner, resolved fresh on each call from the
+// LoopID Harness Bind supplies. This file only exposes that constructor; a
+// later task threads it into bashDefinition's build closure alongside the
+// existing synchronous grantedExecutor lookup.
 
 // maxReadBytes is CodeRig's per-file in-process read cap applied by the direct
 // read tools (ReadFile/Grep). Sandbox profile access still governs read
