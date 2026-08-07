@@ -795,6 +795,81 @@ func TestProcessAdapterUnattributedSignalDeathMapsToRunnerShutdown(t *testing.T)
 	_ = proc.Close(ctx)
 }
 
+// TestProcessAdapterDeriveReasonExitCodeWinsOverSignalSeverity is a pure,
+// direct unit test of deriveReason's central invariant -- doc-commented but,
+// before this test, never directly exercised: deriveReason is a pure
+// function of (exitCode, adapter.signalState), and ExitCode always wins.
+// TestProcessAdapterSignalMapsAndDerivesReason (real process spawning) only
+// ever exercises a process that DIES FROM the requested signal; this table
+// additionally covers the doc comment's own worked example -- "a process
+// that caught SIGTERM and chose to exit(0) exited; it was not killed" -- by
+// pairing every recorded signal severity (including none) against both a
+// signal-death exit code (-1) and non-signal-death exit codes (0 and a
+// representative nonzero value), with no real process spawning at all.
+func TestProcessAdapterDeriveReasonExitCodeWinsOverSignalSeverity(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		exitCode int
+		severity signalSeverity
+		want     tool.ProcessTerminalReason
+	}{
+		{"signal death, killed", -1, signalKilled, tool.ProcessTerminalKilled},
+		{"signal death, terminated", -1, signalTerminated, tool.ProcessTerminalTerminated},
+		{"signal death, interrupted", -1, signalInterrupted, tool.ProcessTerminalInterrupted},
+		{"signal death, no recorded signal", -1, signalNone, tool.ProcessTerminalRunnerShutdown},
+		{"clean exit 0 beats killed", 0, signalKilled, tool.ProcessTerminalExited},
+		{"clean exit 0 beats terminated", 0, signalTerminated, tool.ProcessTerminalExited},
+		{"clean exit 0 beats interrupted", 0, signalInterrupted, tool.ProcessTerminalExited},
+		{"clean exit 0, no recorded signal", 0, signalNone, tool.ProcessTerminalExited},
+		{"nonzero exit beats killed", 7, signalKilled, tool.ProcessTerminalExited},
+		{"nonzero exit beats terminated", 130, signalTerminated, tool.ProcessTerminalExited},
+		{"nonzero exit beats interrupted", 2, signalInterrupted, tool.ProcessTerminalExited},
+		{"nonzero exit, no recorded signal", 1, signalNone, tool.ProcessTerminalExited},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			p := &processAdapter{}
+			p.recordSignal(tc.severity)
+			if got := p.deriveReason(tc.exitCode); got != tc.want {
+				t.Fatalf("deriveReason(%d) with recorded severity %v = %v, want %v", tc.exitCode, tc.severity, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestProcessAdapterRecordSignalNeverDowngrades is a direct, real-signal-free
+// unit test of recordSignal's own doc-commented guarantee: severity only
+// ever escalates (kill dominates terminate dominates interrupt), regardless
+// of call order.
+func TestProcessAdapterRecordSignalNeverDowngrades(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		calls []signalSeverity
+		want  signalSeverity
+	}{
+		{"kill then interrupt stays killed", []signalSeverity{signalKilled, signalInterrupted}, signalKilled},
+		{"kill then terminate stays killed", []signalSeverity{signalKilled, signalTerminated}, signalKilled},
+		{"terminate then interrupt stays terminated", []signalSeverity{signalTerminated, signalInterrupted}, signalTerminated},
+		{"interrupt then terminate escalates", []signalSeverity{signalInterrupted, signalTerminated}, signalTerminated},
+		{"terminate then kill escalates", []signalSeverity{signalTerminated, signalKilled}, signalKilled},
+		{"repeated same severity stays put", []signalSeverity{signalTerminated, signalTerminated}, signalTerminated},
+		{"interrupt then kill escalates", []signalSeverity{signalInterrupted, signalKilled}, signalKilled},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			p := &processAdapter{}
+			for _, sev := range tc.calls {
+				p.recordSignal(sev)
+			}
+			if got := signalSeverity(p.signalState.Load()); got != tc.want {
+				t.Fatalf("signalState after calls %v = %v, want %v", tc.calls, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestProcessAdapterMapProcessSignalRejectsUnknownKind(t *testing.T) {
 	t.Parallel()
 	if _, _, ok := mapProcessSignal(tool.ProcessSignal(99)); ok {

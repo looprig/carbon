@@ -86,8 +86,6 @@ func (a processRunnerAdapter) PrepareProcess(ctx context.Context, req tool.Proce
 	return preparedProcessAdapter{prepared: prepared, tty: req.PTY}, nil
 }
 
-var _ tool.AsyncProcessRunner = processRunnerAdapter{}
-
 // mapProcessRequest is PrepareProcess's field mapping, extracted as a pure
 // function so every field — including Deadline, which nothing downstream
 // (Sandbox or the tools package) currently reads or enforces — can be
@@ -103,6 +101,8 @@ func mapProcessRequest(req tool.ProcessRequest) sandbox.ProcessOptions {
 		Deadline:    req.Deadline,
 	}
 }
+
+var _ tool.AsyncProcessRunner = processRunnerAdapter{}
 
 // preparedProcessAdapter adapts a *sandbox.PreparedProcess to
 // tool.PreparedProcess. tty is the PTY bit this preparation was requested
@@ -384,6 +384,19 @@ func (p *processAdapter) Wait(ctx context.Context) (tool.ProcessResult, error) {
 //   - signalNone (no adapter-issued signal explains this signal-death) ->
 //     ProcessTerminalRunnerShutdown
 //
+// Note on internal escalation: Sandbox's own Process.Signal(Terminate) can
+// internally auto-escalate to a real kill after the terminate-grace window
+// elapses (escalateAfterGrace -> dispatchKill), entirely inside the sandbox
+// package, without ever calling back into THIS adapter's Signal method. A
+// process that dies via that internal auto-escalation therefore still
+// reports ProcessTerminalTerminated here, not Killed — recordSignal only
+// ever fires from a call this adapter's own Signal makes, and Terminate is
+// the only call the caller ever made. This is intentional, not a gap: the
+// tracked severity reflects what the caller asked THIS ADAPTER for, not
+// which OS-level signal Sandbox ultimately used to honor that ask — Sandbox
+// escalating to SIGKILL is how it honors a Terminate request, not a
+// separate request this adapter should re-attribute.
+//
 // The signalNone case is a real, residual ambiguity: a signal-death with no
 // adapter-tracked cause could in principle be an external actor signaling
 // the OS process directly, outside this adapter's Signal method entirely.
@@ -501,8 +514,10 @@ func mapProcessSignal(kind tool.ProcessSignal) (sandbox.ProcessSignal, signalSev
 	}
 }
 
-// Close translates Sandbox's own Close, which is idempotent and tolerates a
-// nil receiver exactly like every other Process method here.
+// Close translates Sandbox's own Process.Close: idempotent, and — like
+// every sandbox.Process method this adapter wraps — safe to call on a nil
+// *sandbox.Process. (This adapter's own *processAdapter receiver is never
+// nil in practice: it is only ever constructed by newProcessAdapter.)
 func (p *processAdapter) Close(ctx context.Context) error {
 	if err := p.proc.Close(ctx); err != nil {
 		return mapCloseError(err)
@@ -552,10 +567,12 @@ func mapPrepareProcessError(err error) error {
 	if err == nil {
 		return nil
 	}
-	if errors.Is(err, sandbox.ErrProcessTTYUnsupported) || errors.Is(err, sandbox.ErrProcessConPTYUnavailable) {
+	switch {
+	case errors.Is(err, sandbox.ErrProcessTTYUnsupported), errors.Is(err, sandbox.ErrProcessConPTYUnavailable):
 		return &tool.ProcessError{Code: tool.ProcessErrorPTYUnavailable, Cause: err}
+	default:
+		return &tool.ProcessError{Code: tool.ProcessErrorSetupFailed, Cause: err}
 	}
-	return &tool.ProcessError{Code: tool.ProcessErrorSetupFailed, Cause: err}
 }
 
 // mapStartError classifies a Start-phase failure.
