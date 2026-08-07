@@ -444,9 +444,14 @@ func mustExecutedExactlyOnce(t *testing.T, client *bashScript) {
 // composition today (see file scope note).
 func TestPermissionReviewSafeCommandEligibleUnderRegisteredPolicy(t *testing.T) {
 	t.Parallel()
+	// AccessProfile: AccessTrusted is required for registration to actually
+	// enable (see the file-scope note above TestPermissionReviewEvidenceLookupAccessAndContainmentApproveRealTargets);
+	// without it registration.policy is the zero value and
+	// permissionReviewSubjectFixtureForCommand below fails on its empty Revision.
 	registration, err := newPermissionReviewRegistration(Config{
 		PermissionReviewEnabled: true,
 		PermissionReviewModel:   permissionReviewTestModel(),
+		AccessProfile:           AccessTrusted,
 	}, newScriptedClassifierClient())
 	if err != nil {
 		t.Fatalf("newPermissionReviewRegistration() error = %v", err)
@@ -990,9 +995,14 @@ func TestPermissionReviewClassifierRegisteredSessionConstructsAndExecutesTools(t
 // just proved a real session accepts.
 func TestPermissionReviewEvidenceKindsMatchClassifierRequirement(t *testing.T) {
 	t.Parallel()
+	// AccessProfile: AccessTrusted is required for registration to actually
+	// enable (see the file-scope note above TestPermissionReviewEvidenceLookupAccessAndContainmentApproveRealTargets);
+	// without it this silently returns the disabled zero value and
+	// evidenceKinds is nil.
 	registration, err := newPermissionReviewRegistration(Config{
 		PermissionReviewEnabled: true,
 		PermissionReviewModel:   permissionReviewTestModel(),
+		AccessProfile:           AccessTrusted,
 	}, newScriptedClassifierClient())
 	if err != nil {
 		t.Fatalf("newPermissionReviewRegistration() error = %v", err)
@@ -1027,15 +1037,25 @@ func TestPermissionReviewEvidenceLookupAccessAndContainmentApproveRealTargets(t 
 	root := canonicalTempDir(t)
 	writeEvidenceFile(t, root, "config/legacy.yaml", "old: true")
 
+	// AccessProfile must be AccessTrusted: newPermissionReviewRegistration
+	// (permission_review.go) silently disables permission review — returning
+	// the zero-value registration whose evidenceAccess/evidenceContainment
+	// are nil interfaces — for every profile except AccessTrusted (the
+	// "Access-profile gate" CLAUDE.md documents). AccessReadOnly here used to
+	// work because that gate did not exist when this test was written; using
+	// it now would silently produce a disabled registration and panic on the
+	// nil evidenceAccess/evidenceContainment below. SecurityCeiling is read
+	// back from registration.securityCeiling (not hand-typed) so the two
+	// values this check compares can never independently drift.
 	registration, err := newPermissionReviewRegistration(Config{
 		PermissionReviewEnabled: true,
 		PermissionReviewModel:   permissionReviewTestModel(),
-		AccessProfile:           AccessReadOnly,
+		AccessProfile:           AccessTrusted,
 	}, newScriptedClassifierClient())
 	if err != nil {
 		t.Fatalf("newPermissionReviewRegistration() error = %v", err)
 	}
-	policy := gate.EvidenceContainmentPolicy{ReadRoot: root, SecurityCeiling: string(AccessReadOnly)}
+	policy := gate.EvidenceContainmentPolicy{ReadRoot: root, SecurityCeiling: registration.securityCeiling}
 
 	for _, tc := range []struct {
 		name  string
@@ -1114,9 +1134,14 @@ func TestPermissionReviewHumanAnswersWhileClassifierRegistered(t *testing.T) {
 // closes.
 func TestPermissionReviewNeedsHumanIneligibleUnderRegisteredPolicy(t *testing.T) {
 	t.Parallel()
+	// AccessProfile: AccessTrusted is required for registration to actually
+	// enable (see the file-scope note above TestPermissionReviewEvidenceLookupAccessAndContainmentApproveRealTargets);
+	// without it registration.policy is the zero value and
+	// permissionReviewSubjectFixtureForCommand below fails on its empty Revision.
 	registration, err := newPermissionReviewRegistration(Config{
 		PermissionReviewEnabled: true,
 		PermissionReviewModel:   permissionReviewTestModel(),
+		AccessProfile:           AccessTrusted,
 	}, newScriptedClassifierClient())
 	if err != nil {
 		t.Fatalf("newPermissionReviewRegistration() error = %v", err)
@@ -1189,10 +1214,17 @@ func TestPermissionReviewCriticalRiskNeverEligible(t *testing.T) {
 		strict := strict
 		t.Run(fmt.Sprintf("strict=%t", strict), func(t *testing.T) {
 			t.Parallel()
+			// AccessProfile: AccessTrusted is required for registration to
+			// actually enable (see the file-scope note above
+			// TestPermissionReviewEvidenceLookupAccessAndContainmentApproveRealTargets);
+			// without it registration.policy is the zero value and
+			// permissionReviewSubjectFixtureForCommand below fails on its
+			// empty Revision.
 			registration, err := newPermissionReviewRegistration(Config{
 				PermissionReviewEnabled:      true,
 				PermissionReviewModel:        permissionReviewTestModel(),
 				PermissionReviewStrictPolicy: strict,
+				AccessProfile:                AccessTrusted,
 			}, newScriptedClassifierClient())
 			if err != nil {
 				t.Fatalf("newPermissionReviewRegistration() error = %v", err)
@@ -1228,9 +1260,14 @@ func TestPermissionReviewCriticalRiskNeverEligible(t *testing.T) {
 // never silently accepting it.
 func TestPermissionReviewStaleBasisRejectedByPolicyEvaluation(t *testing.T) {
 	t.Parallel()
+	// AccessProfile: AccessTrusted is required for registration to actually
+	// enable (see the file-scope note above TestPermissionReviewEvidenceLookupAccessAndContainmentApproveRealTargets);
+	// without it registration.policy is the zero value and
+	// permissionReviewSubjectFixtureForCommand below fails on its empty Revision.
 	registration, err := newPermissionReviewRegistration(Config{
 		PermissionReviewEnabled: true,
 		PermissionReviewModel:   permissionReviewTestModel(),
+		AccessProfile:           AccessTrusted,
 	}, newScriptedClassifierClient())
 	if err != nil {
 		t.Fatalf("newPermissionReviewRegistration() error = %v", err)
