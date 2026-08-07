@@ -117,6 +117,44 @@ func waitProcess(t *testing.T, proc tool.Process) tool.ProcessResult {
 // --- Step 1: "Harness request maps every field exactly once to Sandbox
 // options" ; "no Coderig parsing opaque grants" for Command/Directory/PTY ---
 
+// TestProcessAdapterMapProcessRequestFieldsExactly is a pure, direct
+// field-equality check of mapProcessRequest against every
+// tool.ProcessRequest field, including Deadline: nothing downstream
+// (Sandbox's own PrepareProcess, nor anything in the tools package) reads
+// or enforces ProcessOptions.Deadline today, so there is no behavioral
+// effect to observe end-to-end -- this test instead proves the field is
+// threaded through to the constructed sandbox.ProcessOptions value
+// unmodified, so a future regression is caught even before anything
+// downstream starts enforcing it.
+func TestProcessAdapterMapProcessRequestFieldsExactly(t *testing.T) {
+	t.Parallel()
+	execID := newUUID(t)
+	deadline := time.Now().Add(5 * time.Minute)
+	req := tool.ProcessRequest{
+		Command:           "true",
+		Directory:         "/some/dir",
+		Grants:            []string{"grant-a", "grant-b"},
+		OriginExecutionID: execID,
+		Deadline:          deadline,
+		PTY:               true,
+	}
+	got := mapProcessRequest(req)
+	want := sandbox.ProcessOptions{
+		Command:     "true",
+		Directory:   "/some/dir",
+		ExecutionID: execID.String(),
+		Grants:      []string{"grant-a", "grant-b"},
+		TTY:         true,
+		Deadline:    deadline,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("mapProcessRequest = %+v, want %+v", got, want)
+	}
+	if !got.Deadline.Equal(deadline) {
+		t.Fatalf("mapProcessRequest Deadline = %v, want %v", got.Deadline, deadline)
+	}
+}
+
 func TestProcessAdapterCommandAndDirectoryMapExactly(t *testing.T) {
 	t.Parallel()
 	root := canonicalTempDir(t)

@@ -72,15 +72,13 @@ type processRunnerAdapter struct{ exec *sandbox.Executor }
 //
 // Grants and the origin execution ID are passed through as opaque values:
 // this adapter never inspects, parses, or re-derives them.
+//
+// The field mapping itself lives in mapProcessRequest, a pure function, so
+// it can be tested directly (including fields like Deadline that nothing
+// downstream currently reads or enforces, and so have no observable runtime
+// effect to assert against otherwise).
 func (a processRunnerAdapter) PrepareProcess(ctx context.Context, req tool.ProcessRequest) (tool.PreparedProcess, error) {
-	opts := sandbox.ProcessOptions{
-		Command:     req.Command,
-		Directory:   req.Directory,
-		ExecutionID: req.OriginExecutionID.String(),
-		Grants:      req.Grants,
-		TTY:         req.PTY,
-		Deadline:    req.Deadline,
-	}
+	opts := mapProcessRequest(req)
 	prepared, err := a.exec.PrepareProcess(ctx, opts)
 	if err != nil {
 		return nil, mapPrepareProcessError(err)
@@ -89,6 +87,22 @@ func (a processRunnerAdapter) PrepareProcess(ctx context.Context, req tool.Proce
 }
 
 var _ tool.AsyncProcessRunner = processRunnerAdapter{}
+
+// mapProcessRequest is PrepareProcess's field mapping, extracted as a pure
+// function so every field — including Deadline, which nothing downstream
+// (Sandbox or the tools package) currently reads or enforces — can be
+// tested by direct field-equality against a real sandbox.ProcessOptions
+// value, without needing a live Sandbox executor call.
+func mapProcessRequest(req tool.ProcessRequest) sandbox.ProcessOptions {
+	return sandbox.ProcessOptions{
+		Command:     req.Command,
+		Directory:   req.Directory,
+		ExecutionID: req.OriginExecutionID.String(),
+		Grants:      req.Grants,
+		TTY:         req.PTY,
+		Deadline:    req.Deadline,
+	}
+}
 
 // preparedProcessAdapter adapts a *sandbox.PreparedProcess to
 // tool.PreparedProcess. tty is the PTY bit this preparation was requested
@@ -319,10 +333,10 @@ func (p *processAdapter) Wait(ctx context.Context) (tool.ProcessResult, error) {
 // into Harness's ProcessTerminalReason. Sandbox's own ProcessResult carries
 // no Reason of its own (only ExitCode/StartedAt/FinishedAt), so this adapter
 // derives one from two pieces of evidence it alone has access to: Go's own
-// os/exec exit-code convention, and this adapter's own record of which
-// signal (if any) IT dispatched through Signal, below.
+// POSIX os/exec exit-code convention, and this adapter's own record of
+// which signal (if any) IT dispatched through Signal, below.
 //
-// # Exited vs signal-death (ExitCode)
+// # Exited vs signal-death (ExitCode) — POSIX only
 //
 // Sandbox's Process.runWait reaps the child through the stdlib os/exec
 // package (or, for a backend-owned launch, a backend Execution.Wait that
@@ -337,6 +351,20 @@ func (p *processAdapter) Wait(ctx context.Context) (tool.ProcessResult, error) {
 // its own exit, so this adapter reports ProcessTerminalExited regardless of
 // whether a signal was ever requested through this adapter — a process that
 // caught SIGTERM and chose to exit(0) exited; it was not killed.
+//
+// This -1 convention is POSIX-specific (verified against the stdlib's own
+// syscall_bsd.go/syscall_aix.go/syscall_solaris.go): those platforms encode
+// "terminated by a signal" as a distinguishable wait-status shape ExitCode
+// maps to -1. Windows has no signals — syscall_windows.go's
+// WaitStatus.ExitStatus() returns the child's raw, literal exit code, so a
+// Windows process that happens to exit with status -1 would be
+// (mis)classified as a signal-death by this same logic. This is not
+// currently a live bug: Sandbox's own Signal delivery is unwired on
+// Windows today (Process.signaler stays nil there, per Sandbox's own
+// process.go), so this adapter has no Windows-relevant signal-attribution
+// behavior to get wrong yet, and this file's own Windows-relevant tests
+// skip accordingly. Revisit this comment (and likely this function) if
+// Sandbox ever wires real Windows signal delivery.
 //
 // # Attributing a signal-death (adapter-tracked signal state)
 //
