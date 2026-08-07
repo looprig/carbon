@@ -14,13 +14,13 @@ require (
 	github.com/looprig/core v0.5.0
 	github.com/looprig/foreignloops v0.1.1
 	github.com/looprig/fsstore v0.3.0
-	github.com/looprig/harness v0.20.0
+	github.com/looprig/harness v0.21.0
 	github.com/looprig/inference v0.7.0
 	github.com/looprig/llm v0.10.0
 	github.com/looprig/mcp v0.4.0
-	github.com/looprig/sandbox v0.5.1
+	github.com/looprig/sandbox v0.6.0
 	github.com/looprig/storage v0.3.0
-	github.com/looprig/tools v0.7.0
+	github.com/looprig/tools v0.8.0
 	github.com/looprig/tui v0.12.1
 	golang.org/x/sys v0.47.0
 )
@@ -53,6 +53,7 @@ require (
 	github.com/charmbracelet/x/windows v0.2.2 // indirect
 	github.com/clipperhouse/displaywidth v0.11.0 // indirect
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
+	github.com/creack/pty v1.1.24 // indirect
 	github.com/dlclark/regexp2/v2 v2.5.2 // indirect
 	github.com/felixge/httpsnoop v1.1.0 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
