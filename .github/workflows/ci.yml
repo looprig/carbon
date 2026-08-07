@@ -1,0 +1,227 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  GO_VERSION: "1.26.5"
+
+jobs:
+  # Format, vet, and the cgo-free -trimpath build on Linux (fast fail).
+  lint-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: gofmt
+        run: |
+          test -z "$(gofmt -l .)" || {
+            gofmt -l .
+            echo 'gofmt: files above need formatting'
+            exit 1
+          }
+      - name: go vet
+        run: go vet ./...
+      - name: build (cgo-free, -trimpath)
+        run: CGO_ENABLED=0 go build -trimpath ./...
+      - name: govulncheck
+        run: go tool govulncheck ./...
+
+  # macOS: real Sandbox execution under the Unconfined profile, and the
+  # Darwin fail-closed pre-spawn contract under Trusted -- this is the exact
+  # matrix Task 28's own supervised-process integration suite
+  # (process_integration_test.go/process_restore_integration_test.go) was
+  # written and verified against.
+  test-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: go test -race (default suite)
+        run: go test -race -count=1 ./...
+      - name: go test -tags integration -race (supervised commands end to end)
+        run: go test -tags integration -race -count=1 ./internal/app -run 'TestIntegrationProcess'
+
+  # Linux: the same supervised-process integration suite, on the platform
+  # Sandbox's own real containment backends (Landlock/seccomp/cgroups) cover
+  # separately in the sandbox module's own CI. Coderig's own suite here
+  # proves the composed Bash-to-Tools-to-Harness-to-Sandbox path end to end
+  # through Coderig's own composition, same as the macOS job.
+  test-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: go test -race (default suite)
+        run: go test -race -count=1 ./...
+      - name: go test -tags integration -race (supervised commands end to end)
+        run: go test -tags integration -race -count=1 ./internal/app -run 'TestIntegrationProcess'
+
+  # Compile every package's test binary independently. This catches
+  # architecture-specific Windows issues even when the live worker is x64.
+  windows-cross-compile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: windows amd64 package/test binaries
+        run: |
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath ./...
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go vet ./...
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -tags integration ./...
+      - name: windows arm64 package/test binaries
+        run: |
+          CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -trimpath ./...
+          CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -trimpath -tags integration ./...
+
+  # The standard-user runner must not have an installed broker. Labels are
+  # intentionally deployment-specific: absence of this worker fails/queues
+  # the required check rather than silently replacing live evidence. Mirrors
+  # ../sandbox/.github/workflows/ci.yml's own windows-restricted job idiom
+  # (live labeled self-hosted runner, "skip is failure" JSON-parsed result),
+  # reviewed and established in that repo's own Task 22C -- with one
+  # deliberate correction: `go test -json`'s own "skip" action event carries
+  # no Output text of its own (the skip reason streams earlier, as a
+  # separate "output" action for the same Test); this file's skip check
+  # therefore accumulates each test's own output log first and matches the
+  # allow marker against THAT, rather than against the "skip" event's
+  # (always-empty) Output field directly.
+  windows-restricted:
+    runs-on: [self-hosted, Windows, X64, sandbox-standard, sandbox-disposable]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: require standard-user token and no installed broker
+        shell: powershell
+        run: |
+          $principal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
+          if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+            throw "windows-restricted requires a non-administrator standard-user token"
+          }
+          $owned = Get-Service -Name 'lsb-svc-*' -ErrorAction SilentlyContinue
+          if ($owned) {
+            throw "windows-restricted requires no installed sandbox broker: $($owned.Name -join ', ')"
+          }
+      - name: supervised commands end to end, restricted broker (skip is failure)
+        shell: powershell
+        run: |
+          $lines = @(& go test -json -tags integration -race -count=1 ./internal/app -run 'TestIntegrationProcess')
+          $lines | ForEach-Object { Write-Output $_ }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $events = @($lines | ForEach-Object { try { $_ | ConvertFrom-Json } catch { $null } } | Where-Object { $_ })
+          $outputByTest = @{}
+          foreach ($e in $events) {
+            if ($e.Action -eq 'output' -and $e.Test) {
+              $key = "$($e.Package)::$($e.Test)"
+              $outputByTest[$key] = [string]$outputByTest[$key] + $e.Output
+            }
+          }
+          $skips = @($events | Where-Object {
+            $_.Action -eq 'skip' -and [string]$outputByTest["$($_.Package)::$($_.Test)"] -notmatch 'ALLOWED_PLATFORM_LIMITATION:'
+          })
+          if ($skips.Count -ne 0) {
+            $skips | ForEach-Object { Write-Error "requested live test skipped: $($_.Package) $($_.Test)" }
+            throw "requested supervised-process integration coverage did not execute under the restricted broker"
+          }
+      - name: default-tag process/adapter suite (skip is failure)
+        shell: powershell
+        run: |
+          $lines = @(& go test -json -race -count=1 ./internal/app -run 'Test(ProcessAdapter|ProcessTools)')
+          $lines | ForEach-Object { Write-Output $_ }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $events = @($lines | ForEach-Object { try { $_ | ConvertFrom-Json } catch { $null } } | Where-Object { $_ })
+          $outputByTest = @{}
+          foreach ($e in $events) {
+            if ($e.Action -eq 'output' -and $e.Test) {
+              $key = "$($e.Package)::$($e.Test)"
+              $outputByTest[$key] = [string]$outputByTest[$key] + $e.Output
+            }
+          }
+          $skips = @($events | Where-Object {
+            $_.Action -eq 'skip' -and [string]$outputByTest["$($_.Package)::$($_.Test)"] -notmatch 'ALLOWED_PLATFORM_LIMITATION:'
+          })
+          if ($skips.Count -ne 0) {
+            $skips | ForEach-Object { Write-Error "requested live test skipped: $($_.Package) $($_.Test)" }
+            throw "requested process adapter/tools coverage did not execute under the restricted broker"
+          }
+
+  # This worker is destroyed/reimaged after each job -- see
+  # ../sandbox/.github/workflows/ci.yml's own windows-elevated job for the
+  # idiom this mirrors (elevated token requirement, needs: windows-restricted
+  # ordering, "skip is failure" JSON-parsed result). Unlike sandbox's own
+  # elevated job, Coderig owns no broker install/state lifecycle of its own
+  # to verify or clean up here -- that is the sandbox module's own CI
+  # responsibility in its own repository; this job only proves Coderig's
+  # composed supervised-process path against whatever elevated broker
+  # environment the runner labels already provide.
+  windows-elevated:
+    needs: windows-restricted
+    runs-on: [self-hosted, Windows, X64, sandbox-elevated, sandbox-disposable]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: require elevated token
+        shell: powershell
+        run: |
+          $principal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
+          if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+            throw "windows-elevated requires an elevated token"
+          }
+      - name: supervised commands end to end, elevated broker (skip is failure)
+        shell: powershell
+        run: |
+          $lines = @(& go test -json -tags integration -race -count=1 ./internal/app -run 'TestIntegrationProcess')
+          $lines | ForEach-Object { Write-Output $_ }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $events = @($lines | ForEach-Object { try { $_ | ConvertFrom-Json } catch { $null } } | Where-Object { $_ })
+          $outputByTest = @{}
+          foreach ($e in $events) {
+            if ($e.Action -eq 'output' -and $e.Test) {
+              $key = "$($e.Package)::$($e.Test)"
+              $outputByTest[$key] = [string]$outputByTest[$key] + $e.Output
+            }
+          }
+          $skips = @($events | Where-Object {
+            $_.Action -eq 'skip' -and [string]$outputByTest["$($_.Package)::$($_.Test)"] -notmatch 'ALLOWED_PLATFORM_LIMITATION:'
+          })
+          if ($skips.Count -ne 0) {
+            $skips | ForEach-Object { Write-Error "requested live test skipped: $($_.Package) $($_.Test)" }
+            throw "requested supervised-process integration coverage did not execute under the elevated broker"
+          }
+      - name: default-tag process/adapter suite (skip is failure)
+        shell: powershell
+        run: |
+          $lines = @(& go test -json -race -count=1 ./internal/app -run 'Test(ProcessAdapter|ProcessTools)')
+          $lines | ForEach-Object { Write-Output $_ }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $events = @($lines | ForEach-Object { try { $_ | ConvertFrom-Json } catch { $null } } | Where-Object { $_ })
+          $outputByTest = @{}
+          foreach ($e in $events) {
+            if ($e.Action -eq 'output' -and $e.Test) {
+              $key = "$($e.Package)::$($e.Test)"
+              $outputByTest[$key] = [string]$outputByTest[$key] + $e.Output
+            }
+          }
+          $skips = @($events | Where-Object {
+            $_.Action -eq 'skip' -and [string]$outputByTest["$($_.Package)::$($_.Test)"] -notmatch 'ALLOWED_PLATFORM_LIMITATION:'
+          })
+          if ($skips.Count -ne 0) {
+            $skips | ForEach-Object { Write-Error "requested live test skipped: $($_.Package) $($_.Test)" }
+            throw "requested process adapter/tools coverage did not execute under the elevated broker"
+          }
