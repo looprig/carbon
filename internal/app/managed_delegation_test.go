@@ -30,7 +30,6 @@ import (
 	"github.com/looprig/harness/pkg/tool"
 	"github.com/looprig/inference"
 	stream "github.com/looprig/inference/stream"
-	"github.com/looprig/storage/memstore"
 	"github.com/looprig/tui"
 )
 
@@ -592,7 +591,7 @@ func TestRestoredAgentComposed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stores, err := openStores(memstore.New())
+	stores, err := openTestStores(t)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -763,7 +762,7 @@ func newTypedDelegateTestRig(t *testing.T, limits rig.DelegationLimits) (*sessio
 	if err != nil {
 		t.Fatal(err)
 	}
-	stores, err := openStores(memstore.New())
+	stores, err := openTestStores(t)
 	if err != nil {
 		t.Fatal(err)
 	}

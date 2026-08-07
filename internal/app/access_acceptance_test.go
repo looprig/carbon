@@ -20,7 +20,6 @@ import (
 	"github.com/looprig/inference/auth"
 	model "github.com/looprig/inference/model"
 	"github.com/looprig/sandbox"
-	"github.com/looprig/storage/memstore"
 	"github.com/looprig/tools/permission"
 )
 
@@ -356,6 +355,99 @@ func TestAcceptanceBuilderPermissionApprovalReachesStoreAndExecutorGrantPath(t *
 	}
 }
 
+// TestAcceptanceProcessEnabledBashSharesExecutorAcrossGateAndBuild extends
+// TestAcceptanceBuilderPermissionApprovalReachesStoreAndExecutorGrantPath's
+// grant-redemption proof through the REAL, session-supervised Bash
+// definition Task 27 wires into the builder roster: a grant minted by
+// access.builderGate.Authorize for one Loop ID validates when redeemed
+// through bashDefinition's OWN Build, invoked for that SAME Loop ID. Since a
+// minted grant only verifies against the EXACT *sandbox.Executor it was
+// authorized against, this end-to-end success proves bashDefinition's
+// retained synchronous set.For(bindings.LoopID.String()) lookup resolves
+// the IDENTICAL executor roleGate resolved for the identical Loop ID (both
+// call set.For on the SAME access.builderSet with the SAME LoopID string;
+// sandbox.ExecutorSet.For's own memoization, proven by the sandbox module,
+// is what makes a single lookup answer for both call sites) -- not a
+// different or stale one.
+func TestAcceptanceProcessEnabledBashSharesExecutorAcrossGateAndBuild(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("HTTPS_PROXY", "")
+	t.Setenv("HTTP_PROXY", "")
+	t.Setenv("NO_PROXY", "")
+	root := canonicalTempDir(t)
+	command := "echo task27-grant-path"
+
+	access, err := buildSessionAccess(Config{AccessProfile: AccessReadOnly}, root, true)
+	if err != nil {
+		t.Fatalf("buildSessionAccess(interactive): %v", err)
+	}
+	t.Cleanup(func() { _ = access.Close() })
+
+	provenanceContext := mustLoopProvenance(t)
+	provenance, ok := loop.ProvenanceFrom(provenanceContext)
+	if !ok {
+		t.Fatal("loop provenance missing from test context")
+	}
+	ctx := loop.WithApprovalRequester(provenanceContext, func(context.Context, gate.ApprovalPrompt) (gate.ApprovalAction, error) {
+		return gate.ApprovalApproveAlwaysWorkspace, nil
+	})
+	request := commandRequest(t, root, command)
+	resolution, err := access.builderGate.Authorize(ctx, request)
+	if err != nil {
+		t.Fatalf("Authorize(command): %v", err)
+	}
+	if !resolution.Approved || len(resolution.Grants) == 0 {
+		t.Fatalf("resolution approved=%v grants=%d, want true/nonzero", resolution.Approved, len(resolution.Grants))
+	}
+	executionID, err := uuid.Parse(request.ExecutionID)
+	if err != nil {
+		t.Fatalf("uuid.Parse(request.ExecutionID): %v", err)
+	}
+
+	sessionID, err := uuid.New()
+	if err != nil {
+		t.Fatalf("uuid.New() (session): %v", err)
+	}
+	definition := bashDefinition(access.builderSet, newProcessRunnerResolver(access.builderSet))
+	built, err := definition.Build(context.Background(), tool.Bindings{
+		SessionID: sessionID,
+		LoopID:    provenance.LoopID,
+		Workspace: &tool.WorkspaceBinding{Root: root, Coordinator: noopCoordinator{}, Observations: tool.NewWorkspaceObservations()},
+		Process:   &tool.ProcessBinding{Registry: &fakeSessionResourceRegistry{dir: t.TempDir()}},
+	})
+	if err != nil {
+		t.Fatalf("bashDefinition Build() error = %v", err)
+	}
+	if len(built) != 1 {
+		t.Fatalf("bashDefinition Build() returned %d tools, want 1", len(built))
+	}
+	preparer, ok := built[0].(tool.CallPreparer)
+	if !ok {
+		t.Fatalf("built Bash tool %T does not implement tool.CallPreparer", built[0])
+	}
+
+	argsJSON := `{"command": "` + command + `"}`
+	req, artifact, err := preparer.PrepareCall(context.Background(), executionID, argsJSON)
+	if err != nil {
+		t.Fatalf("Bash PrepareCall() error = %v", err)
+	}
+	runCtx := loop.WithPreparedCall(context.Background(), tool.PreparedCall{
+		ExecutionID: executionID,
+		Request:     req,
+		Artifact:    artifact,
+		Grants:      resolution.Grants,
+	})
+	result, err := built[0].InvokableRun(runCtx, argsJSON)
+	if err != nil {
+		t.Fatalf("Bash InvokableRun() returned a Go error %v; Bash never returns one", err)
+	}
+	text := toolResultText(t, result)
+	if !strings.Contains(text, "task27-grant-path") {
+		t.Fatalf("granted execution through bashDefinition's Build = %q, want it to contain the command's own output (grant did not validate against the resolved executor)", text)
+	}
+}
+
 func TestAcceptanceModelAndInteractivePermissionFilesRemainSeparated(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -616,7 +708,7 @@ func TestAcceptanceNewRestoreAuthorityParity(t *testing.T) {
 func TestAcceptanceFixedProfileInPresentationMetadata(t *testing.T) {
 	for _, profile := range []AccessProfile{AccessReadOnly, AccessTrusted} {
 		t.Run(string(profile), func(t *testing.T) {
-			stores, err := openStores(memstore.New())
+			stores, err := openTestStores(t)
 			if err != nil {
 				t.Fatalf("openStores: %v", err)
 			}
@@ -643,7 +735,7 @@ func TestAcceptanceFixedProfileInPresentationMetadata(t *testing.T) {
 // direct access Close is a no-op. This is the agent-level counterpart to the
 // access-level idempotence in TestSessionAccessCloseIsIdempotent.
 func TestAcceptanceAgentShutdownClosesExecutors(t *testing.T) {
-	stores, err := openStores(memstore.New())
+	stores, err := openTestStores(t)
 	if err != nil {
 		t.Fatalf("openStores: %v", err)
 	}

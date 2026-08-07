@@ -25,7 +25,6 @@ import (
 	"github.com/looprig/harness/pkg/tool"
 	"github.com/looprig/inference"
 	model "github.com/looprig/inference/model"
-	"github.com/looprig/storage/memstore"
 )
 
 type acpCompositionRecorder struct {
@@ -147,7 +146,7 @@ func testACPDelegationRig(t *testing.T, cfg Config) (*rig.Rig, *swarmStores, *de
 	}}
 	probe := &delegateProbe{}
 	definitions, root, cfg := task31ProductionDefinitions(t, client, probe, cfg)
-	stores, err := openStores(memstore.New())
+	stores, err := openTestStores(t)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -451,7 +450,7 @@ func TestACPCompositionWithoutProfilesUsesManagedNativeFallback(t *testing.T) {
 	probe := &delegateProbe{}
 	emptyComposition := testACPEmptyComposition(t)
 	definitions, root, noACPCfg := task31ProductionDefinitions(t, client, probe, Config{ACPChildren: emptyComposition})
-	stores, err := openStores(memstore.New())
+	stores, err := openTestStores(t)
 	if err != nil {
 		t.Fatal(err)
 	}

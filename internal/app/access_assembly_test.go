@@ -4,8 +4,6 @@ import (
 	"context"
 	"strings"
 	"testing"
-
-	"github.com/looprig/storage/memstore"
 )
 
 // TestSessionAccessPerRoleExecutorSeparation proves the session access wiring gives each role
@@ -67,9 +65,9 @@ func TestSessionAccessCloseIsIdempotent(t *testing.T) {
 // the changed profile changes the access-config digest folded into the rig fingerprint. The
 // same profile restores cleanly (new/restore parity over one assembly path).
 func TestRestoreRejectsAccessProfileDrift(t *testing.T) {
-	stores, err := openStores(memstore.New())
+	stores, err := openTestStores(t)
 	if err != nil {
-		t.Fatalf("openStores: %v", err)
+		t.Fatalf("openTestStores: %v", err)
 	}
 	root := t.TempDir()
 

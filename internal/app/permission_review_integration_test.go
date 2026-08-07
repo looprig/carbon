@@ -25,7 +25,6 @@ import (
 	"github.com/looprig/harness/pkg/tool"
 	"github.com/looprig/inference"
 	stream "github.com/looprig/inference/stream"
-	"github.com/looprig/storage/memstore"
 )
 
 // permission_review_integration_test.go is Task 24's end-to-end permission
@@ -254,7 +253,7 @@ func permissionReviewIntegrationAgentWithClassifier(t *testing.T, cfg Config, op
 	if err != nil {
 		t.Fatalf("newPermissionReviewRegistration() error = %v", err)
 	}
-	stores, err := openStores(memstore.New())
+	stores, err := openTestStores(t)
 	if err != nil {
 		t.Fatalf("openStores() error = %v", err)
 	}
@@ -1411,7 +1410,7 @@ func TestPermissionReviewApprovalReachesRealExecutorGrantPath(t *testing.T) {
 // because a disabled registration contributes NO rig options whatsoever.
 func TestPermissionReviewDisabledConfigMatchesPreFeatureBuildRig(t *testing.T) {
 	t.Parallel()
-	stores, err := openStores(memstore.New())
+	stores, err := openTestStores(t)
 	if err != nil {
 		t.Fatalf("openStores() error = %v", err)
 	}

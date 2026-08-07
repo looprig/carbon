@@ -16,7 +16,6 @@ import (
 	"github.com/looprig/harness/pkg/workspacestore"
 	model "github.com/looprig/inference/model"
 	mcpharness "github.com/looprig/mcp/pkg/harness"
-	"github.com/looprig/storage/memstore"
 )
 
 // mcp_integration_test.go proves Task 10's wiring: openRuntimeAgent's
@@ -55,9 +54,9 @@ func writeBadMCPConfigFixture(t *testing.T, home, serverName string) {
 
 func mustOpenStores(t *testing.T) *swarmStores {
 	t.Helper()
-	stores, err := openStores(memstore.New())
+	stores, err := openTestStores(t)
 	if err != nil {
-		t.Fatalf("openStores() error = %v", err)
+		t.Fatalf("openTestStores() error = %v", err)
 	}
 	return stores
 }

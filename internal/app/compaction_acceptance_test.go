@@ -619,6 +619,7 @@ func TestAcceptanceCompactionFinalizationFailureFaultsSession(t *testing.T) {
 			if err != nil {
 				t.Fatalf("openStores() error = %v", err)
 			}
+			stores.resourceStorage = testResourceStorageProvider{base: t.TempDir()}
 			client := &fakeLLM{
 				streamSteps: []fakeStreamStep{{chunks: []content.Chunk{&content.TextChunk{Text: "reply"}}}},
 				invokeSteps: []fakeInvokeStep{{

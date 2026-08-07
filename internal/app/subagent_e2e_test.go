@@ -26,7 +26,6 @@ import (
 	"github.com/looprig/inference"
 	model "github.com/looprig/inference/model"
 	inferenceStream "github.com/looprig/inference/stream"
-	"github.com/looprig/storage/memstore"
 )
 
 const task6ACPPermissionHelperPath = "task6-acp-permission-helper"
@@ -193,7 +192,7 @@ func TestACPRequestPermissionDeniesOutsidePostureWithoutNativePermissionWrites(t
 	if err != nil {
 		t.Fatalf("swarmDefinitions: %v", err)
 	}
-	stores, err := openStores(memstore.New())
+	stores, err := openTestStores(t)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -342,7 +341,7 @@ func TestAgentRuntimeChoicesEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("swarmDefinitions() error = %v", err)
 	}
-	stores, err := openStores(memstore.New())
+	stores, err := openTestStores(t)
 	if err != nil {
 		t.Fatal(err)
 	}

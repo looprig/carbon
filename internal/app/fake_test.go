@@ -3,15 +3,54 @@ package app
 import (
 	"context"
 	"io"
+	"path/filepath"
 	"sync"
 	"testing"
 
 	"github.com/looprig/core/content"
+	"github.com/looprig/core/uuid"
+	"github.com/looprig/harness/pkg/rig"
 	"github.com/looprig/inference"
 	model "github.com/looprig/inference/model"
 	stream "github.com/looprig/inference/stream"
 	"github.com/looprig/storage/memstore"
 )
+
+// testResourceStorageProvider is a throwaway rig.SessionResourceStorageProvider
+// backed by one t.TempDir() base, auto-cleaned by the testing package. It exists
+// because Task 27 gave the builder and reviewer rosters' Bash definition
+// tool.RequiresProcessServices, so ANY test that assembles the real production
+// swarm (swarmDefinitions) and feeds it through buildRig/rig.Define now needs
+// SOME session-resource-storage provider wired — exactly like production's
+// persistedResourceStorageProvider (persisted sessions) and
+// headlessResourceStorageProvider (headless sessions) already are. A test that
+// is unconcerned with process-service tools is unaffected by its presence: it
+// changes nothing for a topology that does not declare RequiresProcessServices,
+// matching swarmStores.resourceStorage's own doc comment.
+type testResourceStorageProvider struct{ base string }
+
+func (p testResourceStorageProvider) StorageForSession(_ context.Context, id uuid.UUID) (rig.SessionResourceStorage, error) {
+	return rig.SessionResourceStorage{
+		Path:     filepath.Join(p.base, id.String()),
+		Identity: "coderig:test-session-resource-storage/v1",
+	}, nil
+}
+
+var _ rig.SessionResourceStorageProvider = testResourceStorageProvider{}
+
+// openTestStores wraps openStores(memstore.New()) with a testResourceStorageProvider
+// so package tests that build the real production roster can assemble a rig
+// without hand-wiring persisted/headless resource storage themselves. See
+// testResourceStorageProvider's doc comment for why this became necessary.
+func openTestStores(t *testing.T) (*swarmStores, error) {
+	t.Helper()
+	stores, err := openStores(memstore.New())
+	if err != nil {
+		return nil, err
+	}
+	stores.resourceStorage = testResourceStorageProvider{base: t.TempDir()}
+	return stores, nil
+}
 
 // fakeInvokeStep scripts exactly one one-shot request. entered/release are
 // independent of the stream lane so tests can prove compaction blocks only the
@@ -204,9 +243,9 @@ func newTestAgent(t *testing.T, client inference.Client, cfg Config) *sessionAda
 	if err != nil {
 		t.Fatalf("swarmDefinitions() error = %v", err)
 	}
-	stores, err := openStores(memstore.New())
+	stores, err := openTestStores(t)
 	if err != nil {
-		t.Fatalf("openStores() error = %v", err)
+		t.Fatalf("openTestStores() error = %v", err)
 	}
 	assembly, err := buildRig(definitions, stores, root, cfg, false)
 	if err != nil {

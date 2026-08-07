@@ -22,7 +22,6 @@ import (
 	"github.com/looprig/harness/pkg/tool"
 	"github.com/looprig/inference/contextcount"
 	model "github.com/looprig/inference/model"
-	"github.com/looprig/storage/memstore"
 	"github.com/looprig/tui"
 )
 
@@ -133,6 +132,10 @@ func TestSwarmDefinitionsCompactionComposition(t *testing.T) {
 				SessionID: uuid.MustParse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
 				LoopID:    uuid.MustParse("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
 				Workspace: &tool.WorkspaceBinding{Root: root, Coordinator: &testWorkspaceCoordinator{}, Observations: tool.NewWorkspaceObservations()},
+				// builder and reviewer's Bash/process-companion definitions now
+				// declare tool.RequiresProcessServices (Task 27), so binding any
+				// of the three real roles requires a Process binding too.
+				Process: &tool.ProcessBinding{Registry: &fakeSessionResourceRegistry{dir: t.TempDir()}},
 			})
 			if bindErr != nil {
 				t.Fatalf("Bind() error = %v", bindErr)
@@ -304,7 +307,7 @@ func TestProductionModelsLoadExactlyOnceAndConfigureCurrentPrimer(t *testing.T) 
 		}, nil
 	}, func() (*swarmStores, error) {
 		storeCalls++
-		return openStores(memstore.New())
+		return openTestStores(t)
 	})
 	if err != nil {
 		t.Fatalf("newWithProductionModelsLoader() error = %v", err)
@@ -344,7 +347,7 @@ func TestProductionModelsMissingPrimerFailsBeforeStoreOpen(t *testing.T) {
 		return productionModels{}, nil
 	}, func() (*swarmStores, error) {
 		storeCalls++
-		return openStores(memstore.New())
+		return openTestStores(t)
 	})
 	if agent != nil {
 		t.Fatalf("agent = %T, want nil", agent)
@@ -368,7 +371,7 @@ func TestProductionModelsLoaderFailureHappensBeforeStoreOpen(t *testing.T) {
 		return productionModels{}, wantErr
 	}, func() (*swarmStores, error) {
 		storeCalls++
-		return openStores(memstore.New())
+		return openTestStores(t)
 	})
 	if agent != nil {
 		t.Fatalf("agent = %T, want nil", agent)

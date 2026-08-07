@@ -15,7 +15,6 @@ import (
 	"github.com/looprig/harness/pkg/session"
 	"github.com/looprig/harness/pkg/tool"
 	model "github.com/looprig/inference/model"
-	"github.com/looprig/storage/memstore"
 )
 
 // permission_review_test.go exercises Task 23's own scope: the CONFIG SURFACE
@@ -714,7 +713,7 @@ func TestPermissionReviewProgrammaticModelWinsOverModelsJSONThroughFullCompositi
 			PermissionReviewEnabled: true, PermissionReviewModel: permissionReviewTestModel(),
 		}
 		agent, err := newWithProductionModelsLoader(ctx, programmaticCfg, fileHasBadModel, func() (*swarmStores, error) {
-			return openStores(memstore.New())
+			return openTestStores(t)
 		})
 		if err != nil {
 			t.Fatalf("newWithProductionModelsLoader() error = %v, want success: the programmatic model, not the file's classifier-incapable one, must back the classifier", err)
@@ -723,7 +722,7 @@ func TestPermissionReviewProgrammaticModelWinsOverModelsJSONThroughFullCompositi
 
 		nothingProgrammaticCfg := Config{AccessProfile: AccessTrusted}
 		if _, err := newWithProductionModelsLoader(ctx, nothingProgrammaticCfg, fileHasBadModel, func() (*swarmStores, error) {
-			return openStores(memstore.New())
+			return openTestStores(t)
 		}); err == nil {
 			t.Fatal("negative control: newWithProductionModelsLoader() error = nil, want failure (the file's classifier-incapable model should have been adopted and rejected by commandsafety.New)")
 		}
@@ -777,7 +776,7 @@ func TestPermissionReviewConfigFingerprintChanges(t *testing.T) {
 	// comparing against.
 	newDisabledBaseline := func(t *testing.T) (stores *swarmStores, root string, sid uuid.UUID) {
 		t.Helper()
-		stores, err := openStores(memstore.New())
+		stores, err := openTestStores(t)
 		if err != nil {
 			t.Fatalf("openStores() error = %v", err)
 		}

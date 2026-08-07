@@ -7,7 +7,6 @@ import (
 
 	"github.com/looprig/harness/pkg/session"
 	mcpharness "github.com/looprig/mcp/pkg/harness"
-	"github.com/looprig/storage/memstore"
 )
 
 // mcpManagerDigest builds a Manager from specs exactly the way
@@ -188,7 +187,7 @@ func TestMCPConfigFingerprintRestoreBehavior(t *testing.T) {
 		t.Fatalf("baseline and changed ConfigDigest are identical (%q): test fixture does not actually change config", baselineDigest)
 	}
 
-	stores, err := openStores(memstore.New())
+	stores, err := openTestStores(t)
 	if err != nil {
 		t.Fatalf("openStores() error = %v", err)
 	}
@@ -262,7 +261,7 @@ func TestMCPConfigFingerprintRestoreBehavior(t *testing.T) {
 // implicit across unrelated tests.
 func TestMCPAbsentConfigRestoresUnaffected(t *testing.T) {
 	t.Parallel()
-	stores, err := openStores(memstore.New())
+	stores, err := openTestStores(t)
 	if err != nil {
 		t.Fatalf("openStores() error = %v", err)
 	}

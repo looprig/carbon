@@ -36,9 +36,9 @@ import (
 // private to the test.
 func mustHeadlessTestStores(t *testing.T) *swarmStores {
 	t.Helper()
-	stores, err := openStores(memstore.New())
+	stores, err := openTestStores(t)
 	if err != nil {
-		t.Fatalf("openStores(memstore) error = %v", err)
+		t.Fatalf("openTestStores() error = %v", err)
 	}
 	return stores
 }

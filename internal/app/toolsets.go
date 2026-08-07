@@ -172,12 +172,69 @@ func rolePolicyRevision(profile AccessProfile, role string) string {
 	return "coderig-access:" + role + ":" + string(profile) + ":" + familyPolicyRev
 }
 
-// bashDefinition builds the workspace-bound Bash definition backed by the role's
-// per-Loop confined executor. The build closure resolves the executor for the
-// bound Loop ID (the SAME instance the access gate uses as grant issuer), so a
-// grant minted during evaluation validates against the runner that executes the
-// command. Bash proposes only the product family catalog for automatic reuse.
-func bashDefinition(set *sandbox.ExecutorSet) tool.Definition {
+// bashDefinition builds the workspace-bound, session-supervised Bash
+// definition backed by the role's per-Loop confined executor for BOTH its
+// paths. The build closure retains the SAME synchronous
+// set.For(bindings.LoopID.String()) lookup this definition has always used
+// (the SAME instance the access gate resolves as grant issuer for the
+// identical Loop ID, so a grant minted during evaluation validates against
+// the runner that executes the command) for the foreground/confined-runner
+// path, and separately invokes resolver — captured from the caller, Task
+// 26B's newProcessRunnerResolver constructed over this SAME role executor
+// set — with the identical bindings.LoopID, for the background/async path.
+// resolver supplies the concrete tool.AsyncProcessRunner Task 15's
+// supervised Bash factory (bash.NewSupervisedFactory) requires; a nil
+// resolver, a resolver error, or a nil/typed-nil returned runner all abort
+// Build before any tool is produced. Bash proposes only the product family
+// catalog for automatic reuse. Used by the builder and reviewer rosters;
+// the planner keeps legacyBashDefinition's plain, non-supervised path.
+func bashDefinition(set *sandbox.ExecutorSet, resolver tools.AsyncProcessRunnerResolver) tool.Definition {
+	catalog := productFamilyEligibility()
+	return tool.NewDefinition("Bash", tool.RequiresWorkspace|tool.RequiresProcessServices, func(ctx context.Context, bindings tool.Bindings) ([]tool.InvokableTool, error) {
+		if bindings.Workspace == nil {
+			return nil, &WorkspaceRootError{}
+		}
+		executor, err := set.For(bindings.LoopID.String())
+		if err != nil {
+			return nil, err
+		}
+		if resolver == nil {
+			return nil, &tools.DefinitionBuildError{Definition: "Bash", Dependency: "resolver"}
+		}
+		runner, err := resolver(ctx, bindings.LoopID)
+		if err != nil {
+			return nil, &tools.DefinitionBuildError{Definition: "Bash", Dependency: "runner", Cause: err}
+		}
+		// WithWorkspaceCoordinator/WithObservations are deliberately omitted:
+		// bash.NewSupervisedFactory's returned factory always overwrites
+		// those two fields from bindings.Workspace itself (matching
+		// WriteFileDefinition/EditFileDefinition's identical "do not pass
+		// here" pattern in the tools package), so passing them again would
+		// be redundant.
+		factory, err := bash.NewSupervisedFactory(
+			bash.WithRunner(grantedExecutor{executor}),
+			bash.WithFamilyCatalog(catalog),
+		)
+		if err != nil {
+			return nil, err
+		}
+		built, err := factory(bindings, runner)
+		if err != nil {
+			return nil, err
+		}
+		return []tool.InvokableTool{built}, nil
+	})
+}
+
+// legacyBashDefinition builds the plain, non-supervised Bash definition:
+// bashDefinition's exact original body, preserved unchanged. It is used only
+// by the planner role. Planner's own roster doc comment scopes its Bash to
+// "read-only repository checks" and its role prompt explicitly hands off
+// implementation, build, and test work (the natural home for long-running
+// background commands) to the builder or reviewer — so planner deliberately
+// keeps the foreground-only path and never gets ProcessOutput/ProcessInput/
+// ProcessStop.
+func legacyBashDefinition(set *sandbox.ExecutorSet) tool.Definition {
 	catalog := productFamilyEligibility()
 	return tool.NewDefinition("Bash", tool.RequiresWorkspace, func(_ context.Context, bindings tool.Bindings) ([]tool.InvokableTool, error) {
 		if bindings.Workspace == nil {
@@ -197,8 +254,12 @@ func bashDefinition(set *sandbox.ExecutorSet) tool.Definition {
 }
 
 // builderToolDefinitions builds the builder's tool roster: read, mutate,
-// confined Bash, web, and the interaction utilities, plus the optional Skill
-// tool. Bash routes through the builder role's confined executor set.
+// session-supervised Bash, the background process companions, web, and the
+// interaction utilities, plus the optional Skill tool. Bash and the process
+// companions route through the builder role's confined executor set: Bash's
+// foreground path via the same synchronous per-Loop executor lookup as
+// before, its background path and the three companions via Task 26B's
+// resolver over the SAME set.
 func builderToolDefinitions(set *sandbox.ExecutorSet, client *http.Client, skillTool tool.Definition) []tool.Definition {
 	guard := coderigReadGuard{}
 	definitions := []tool.Definition{
@@ -207,7 +268,10 @@ func builderToolDefinitions(set *sandbox.ExecutorSet, client *http.Client, skill
 		tools.EditFileDefinition(editfile.WithHostWrites()),
 		tools.GlobDefinition(guard, glob.WithHostReads()),
 		tools.GrepDefinition(guard, grep.WithHostReads()),
-		bashDefinition(set),
+		bashDefinition(set, newProcessRunnerResolver(set)),
+		tools.ProcessOutputDefinition(),
+		tools.ProcessInputDefinition(),
+		tools.ProcessStopDefinition(),
 		tools.WebSearchDefinition(websearch.NewDuckDuckGoProvider(client)),
 		tools.FetchDefinition(client),
 		tools.TaskDefinitions(),
@@ -229,14 +293,19 @@ func operatorToolDefinitions(set *sandbox.ExecutorSet, client *http.Client, skil
 
 // plannerToolDefinitions builds the planner's read/research roster. It carries
 // no file-mutation tools; its terminal is confined by the read-only planner
-// profile. Bash is retained for read-only repository checks.
+// profile. Bash is retained for read-only repository checks ONLY — planner
+// deliberately keeps legacyBashDefinition's plain, foreground-only path and
+// gets no ProcessOutput/ProcessInput/ProcessStop: long-running background
+// command supervision belongs to the roles that actually implement, build,
+// and test (builder and reviewer), not to planner's read-only decomposition
+// role, whose own prompt hands that work off to them.
 func plannerToolDefinitions(set *sandbox.ExecutorSet, client *http.Client, skillTool tool.Definition) []tool.Definition {
 	guard := coderigReadGuard{}
 	definitions := []tool.Definition{
 		tools.ReadFileDefinition(guard, readfile.WithHostReads()),
 		tools.GlobDefinition(guard, glob.WithHostReads()),
 		tools.GrepDefinition(guard, grep.WithHostReads()),
-		bashDefinition(set),
+		legacyBashDefinition(set),
 		tools.WebSearchDefinition(websearch.NewDuckDuckGoProvider(client)),
 		tools.FetchDefinition(client),
 		tools.TaskDefinitions(),
@@ -248,17 +317,21 @@ func plannerToolDefinitions(set *sandbox.ExecutorSet, client *http.Client, skill
 	return definitions
 }
 
-// reviewerToolDefinitions builds the reviewer face's read-only critique roster:
-// read, glob/grep, confined Bash, and interaction utilities, plus the optional
-// Skill tool. It carries no file-mutation tools. Bash routes through the reviewer
-// role's restricted executor set.
+// reviewerToolDefinitions builds the reviewer face's read-only critique
+// roster: read, glob/grep, session-supervised Bash, the background process
+// companions, and interaction utilities, plus the optional Skill tool. It
+// carries no file-mutation tools. Bash and the process companions route
+// through the reviewer role's restricted executor set, exactly like builder's.
 func reviewerToolDefinitions(set *sandbox.ExecutorSet, skillTool tool.Definition) []tool.Definition {
 	guard := coderigReadGuard{}
 	definitions := []tool.Definition{
 		tools.ReadFileDefinition(guard, readfile.WithHostReads()),
 		tools.GlobDefinition(guard, glob.WithHostReads()),
 		tools.GrepDefinition(guard, grep.WithHostReads()),
-		bashDefinition(set),
+		bashDefinition(set, newProcessRunnerResolver(set)),
+		tools.ProcessOutputDefinition(),
+		tools.ProcessInputDefinition(),
+		tools.ProcessStopDefinition(),
 		tools.TaskDefinitions(),
 		tools.AskUserDefinition(),
 	}
