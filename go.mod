@@ -18,7 +18,7 @@ require (
 	github.com/looprig/inference v0.7.0
 	github.com/looprig/llm v0.10.0
 	github.com/looprig/mcp v0.4.0
-	github.com/looprig/sandbox v0.6.0
+	github.com/looprig/sandbox v0.7.0
 	github.com/looprig/storage v0.3.0
 	github.com/looprig/tools v0.8.0
 	github.com/looprig/tui v0.12.1
