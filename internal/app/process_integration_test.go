@@ -695,9 +695,20 @@ func TestIntegrationProcessOverflowsSpoolRetentionAndKeepsRunning(t *testing.T) 
 // machine for both:
 //
 //   - scenario 10 ("verify grant denial and effective workspace lease
-//     conflicts"): no sandbox grant is ever minted and no workspace lifetime
-//     lease is ever acquired, because PrepareProcess/Start itself fails
-//     before either step is reached -- the strongest possible denial;
+//     conflicts"): no sandbox grant is ever minted, but a real workspace
+//     lifetime lease IS genuinely acquired -- tools/bash/supervised.go's
+//     runSupervised has PrepareProcess succeed and then AcquireLifetime
+//     succeed -- before Supervisor.Start is ever called with that
+//     already-held lease. Start itself then reserves quota and persists a
+//     StateStarting manifest before ever calling prepared.Start (its own
+//     doc comment), and only inside that prepared.Start call does the real
+//     Darwin containment check actually fire and fail. On that failure
+//     Start releases every reservation it made, releases the lease, closes
+//     prepared, and transitions the manifest straight to StateFailed, so
+//     no process ever spawns and nothing survives the unwind -- still the
+//     strongest denial this platform can prove, but by acquiring and then
+//     cleanly releasing a lease (and quota, and a manifest), not by
+//     denying before any resource is ever touched;
 //   - scenario 13 ("mark live manifests lost without PID signalling"): no
 //     manifest ever reaches StateRunning at all (Start fails before Start's
 //     own StateRunning Save), so there is nothing for a later restore to
