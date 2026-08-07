@@ -914,3 +914,96 @@ func TestIntegrationProcessShutsDownWithNoDescendants(t *testing.T) {
 		t.Fatalf("marker file exists after Close(): a background descendant survived session shutdown")
 	}
 }
+
+// --- Regression: SessionIdle checkpoint must not block on a held background lease ---
+
+// TestIntegrationProcessBackgroundLeaseDoesNotBlockFollowUpTurn is a
+// permanent regression test for a real availability bug fixed in harness
+// commit c6d90e23 (internal/sessionruntime/checkpoint_controller.go): a
+// SessionIdle-triggered best-effort workspace checkpoint ran synchronously
+// on the owning loop's own actor goroutine and could block that goroutine --
+// including its ability to read the NEXT submitted command -- for up to the
+// full 60s snapshot-policy timeout (or fail a bounded-context caller
+// outright) whenever a background process still held the workspace
+// lifetime lease the checkpoint's permit acquire needed. That state is only
+// reachable since this session's long-running-command supervision shipped:
+// before background processes existed, nothing could hold a workspace
+// lease past a turn's own synchronous end. The fix bounds that specific
+// Acquire call to 200ms when a live synchronous caller is waiting on it,
+// reusing runBestEffort's existing "Acquire failed -> publish the trigger
+// without a checkpoint, retry on the next eligible boundary" fallback
+// instead of blocking the actor for nearly a minute.
+//
+// This starts a real background `sleep 5` (holding its own workspace lease
+// for 5s -- comfortably longer than this test's own assertions take, but
+// short enough that this test never has to wait for it to finish: like
+// scenario 15, teardown's Close() terminates it rather than this test
+// draining it to completion), then immediately submits an ordinary,
+// no-tool-call follow-up turn through runManagedTurnObserved's own bounded
+// 10s submit context and asserts it completes in well under a second. A
+// final, immediate ProcessOutput poll then confirms the background process
+// was STILL running at that point, proving the fast follow-up genuinely
+// raced a held lease rather than one that had already been released. Before
+// the fix this follow-up turn took roughly as long as the background
+// process's own remaining runtime (or failed outright once that exceeded
+// the bounded submit context); after the fix it completes in ~340-355ms.
+func TestIntegrationProcessBackgroundLeaseDoesNotBlockFollowUpTurn(t *testing.T) {
+	pia := openProcessIntegrationAgent(t)
+
+	var processID string
+	startFinal, _ := runProcessScript(t, pia, "start a background command",
+		func(string) []content.Chunk {
+			return bashCall("lease-start", `{"command": "sleep 5", "background": true}`)
+		},
+		func(prior string) []content.Chunk {
+			started := decodeBashResult(t, prior)
+			if started.Error != "" || started.ProcessID == "" || started.Status != "running" {
+				return []content.Chunk{&content.TextChunk{Text: fmt.Sprintf("unexpected background start: %+v", started)}}
+			}
+			processID = started.ProcessID
+			return []content.Chunk{&content.TextChunk{Text: "lease-started"}}
+		},
+	)
+	if startFinal != "lease-started" {
+		t.Fatalf("start final = %q, want lease-started", startFinal)
+	}
+
+	// Immediately submit an ordinary follow-up turn: no tool calls, just a
+	// plain reply. This is exactly the shape of turn a SessionIdle-triggered
+	// checkpoint gates: the FIRST idle boundary after the background start,
+	// while its lease is still held.
+	begin := time.Now()
+	followUpFinal, _ := runProcessScript(t, pia, "say hello",
+		func(string) []content.Chunk {
+			return []content.Chunk{&content.TextChunk{Text: "hello"}}
+		},
+	)
+	elapsed := time.Since(begin)
+	if followUpFinal != "hello" {
+		t.Fatalf("follow-up final = %q, want hello", followUpFinal)
+	}
+	const maxElapsed = 3 * time.Second
+	if elapsed > maxElapsed {
+		t.Fatalf("follow-up turn took %s, want under %s: a SessionIdle-triggered checkpoint blocked on the still-live background process's workspace lease (see this test's doc comment and harness commit c6d90e23)", elapsed, maxElapsed)
+	}
+
+	// Confirm the background process was STILL running at this point -- and
+	// so was still genuinely holding the workspace lease throughout the
+	// follow-up turn above -- otherwise a fast follow-up would prove
+	// nothing about the regression this test guards against.
+	statusFinal, _ := runProcessScript(t, pia, "check the background process is still live",
+		func(string) []content.Chunk {
+			return processOutputCall("lease-status", fmt.Sprintf(`{"process_id": %q, "cursor": 0}`, processID))
+		},
+		func(prior string) []content.Chunk {
+			status := decodeProcessResult(t, prior)
+			if status.Status != "running" {
+				return []content.Chunk{&content.TextChunk{Text: fmt.Sprintf("background process status = %q, want still running (otherwise this test proves nothing)", status.Status)}}
+			}
+			return []content.Chunk{&content.TextChunk{Text: "status-ok"}}
+		},
+	)
+	if statusFinal != "status-ok" {
+		t.Fatalf("status final = %q, want status-ok", statusFinal)
+	}
+}
