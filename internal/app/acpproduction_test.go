@@ -114,6 +114,14 @@ func TestPreflightProductionACPExecutableEnforcesAdapterSpecificSelectors(t *tes
 	}
 }
 
+func TestProductionACPCompositionRejectsInvalidAccessProfileBeforeCatalog(t *testing.T) {
+	t.Parallel()
+	_, err := newProductionACPCompositionWithPreflight(context.Background(), AccessProfile("invalid"), productionModels{}, nil)
+	if err != errACPAccessProfileUnavailable {
+		t.Fatalf("invalid production ACP access profile error = %v, want bounded access-profile error", err)
+	}
+}
+
 func TestProductionACPCompositionKeepsConfiguredGatewayRowsAlongsideOrdinaryRows(t *testing.T) {
 	executable, err := os.Executable()
 	if err != nil {
@@ -127,7 +135,7 @@ func TestProductionACPCompositionKeepsConfiguredGatewayRowsAlongsideOrdinaryRows
 	t.Setenv("CODEX_ACP_NATIVE_MODELS", "native=fixed-gpt")
 
 	configured := configuredProductionModelsForTest("configured-only")
-	composition, err := newProductionACPCompositionWithPreflight(context.Background(), configured, func(_ context.Context, probe ACPExecutableProbe) ACPPreflightResult {
+	composition, err := newProductionACPCompositionWithPreflight(context.Background(), DefaultAccessProfile, configured, func(_ context.Context, probe ACPExecutableProbe) ACPPreflightResult {
 		if probe.Credential != loop.CredentialGatewayBacked {
 			t.Fatalf("production preflight credential = %q, want gateway-backed", probe.Credential)
 		}

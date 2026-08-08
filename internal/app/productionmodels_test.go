@@ -31,7 +31,7 @@ func TestProductionModelsWithoutDelegateDefaultsCompileACPPath(t *testing.T) {
 		t.Fatalf("compileProductionModels() error = %v", err)
 	}
 
-	composition, err := newProductionACPCompositionWithPreflight(context.Background(), configured, func(_ context.Context, probe ACPExecutableProbe) ACPPreflightResult {
+	composition, err := newProductionACPCompositionWithPreflight(context.Background(), DefaultAccessProfile, configured, func(_ context.Context, probe ACPExecutableProbe) ACPPreflightResult {
 		return ACPPreflightResult{Ready: true, AdvertisedModels: append([]string(nil), probe.Models...)}
 	})
 	if err != nil {

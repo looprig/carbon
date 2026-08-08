@@ -11,7 +11,6 @@ import (
 	"github.com/looprig/coderig/internal/catalog/generic"
 	"github.com/looprig/core/content"
 	"github.com/looprig/core/uuid"
-	"github.com/looprig/foreignloops/driver"
 	"github.com/looprig/harness/pkg/command"
 	"github.com/looprig/harness/pkg/event"
 	"github.com/looprig/harness/pkg/foreign"
@@ -243,29 +242,6 @@ func assertTask31PrimersPresent(t *testing.T, rootIDs map[identity.AgentName]uui
 		if _, ok := lookup(rootIDs[name]); !ok {
 			t.Fatalf("primer %q is missing", name)
 		}
-	}
-}
-
-func TestACPPostureUsesGenericOnly(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		role    string
-		posture driver.Posture
-	}{
-		{role: string(generic.Name), posture: driver.PostureWorkspaceWrite},
-	}
-	for _, tt := range tests {
-		got, err := acpPostureFor(tt.role)
-		if err != nil {
-			t.Fatalf("acpPostureFor(%q): %v", tt.role, err)
-		}
-		if got != tt.posture {
-			t.Errorf("acpPostureFor(%q) = %q, want %q", tt.role, got, tt.posture)
-		}
-	}
-	// Removed agent identity is an explicit rejection fixture.
-	if _, err := acpPostureFor("operator"); err == nil {
-		t.Fatal("acpPostureFor(\"operator\") succeeded; stale role must be rejected")
 	}
 }
 

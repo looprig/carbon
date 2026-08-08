@@ -63,6 +63,22 @@ func ParseAccessProfile(name string) (AccessProfile, bool) {
 	}
 }
 
+// normalizeAccessProfile applies the product default and then validates the
+// selected profile through the same parser used at the CLI boundary. Every
+// composition path that consumes Config.AccessProfile uses this helper so an
+// empty value cannot accidentally widen authority or drift from the command
+// convention.
+func normalizeAccessProfile(profile AccessProfile) (AccessProfile, error) {
+	if profile == "" {
+		profile = DefaultAccessProfile
+	}
+	normalized, ok := ParseAccessProfile(string(profile))
+	if !ok {
+		return "", fmt.Errorf("coderig: unknown access profile %q", profile)
+	}
+	return normalized, nil
+}
+
 // coderigProfile constructs the immutable sandbox profile for the selected
 // product profile over the canonical workspace root. It uses direct construction
 // (not a generic registry) and validates exactly the three names. Unconfined

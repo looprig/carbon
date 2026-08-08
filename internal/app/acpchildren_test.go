@@ -19,18 +19,77 @@ import (
 	model "github.com/looprig/inference/model"
 )
 
-func TestACPPostureForGenericOnly(t *testing.T) {
+func TestACPPostureForAccessProfile(t *testing.T) {
 	t.Parallel()
-	got, err := acpPostureFor("generic")
-	if err != nil || got != driver.PostureWorkspaceWrite {
-		t.Fatalf("generic posture = %q, %v; want workspace-write", got, err)
+	tests := []struct {
+		name    string
+		profile AccessProfile
+		posture driver.Posture
+	}{
+		{name: "empty defaults to readonly", profile: "", posture: driver.PostureReadOnly},
+		{name: "readonly", profile: AccessReadOnly, posture: driver.PostureReadOnly},
+		{name: "trusted", profile: AccessTrusted, posture: driver.PostureWorkspaceWrite},
+		{name: "unconfined", profile: AccessUnconfined, posture: driver.PostureWorkspaceWrite},
 	}
-	// These removed agent names are explicit rejection fixtures: ACP posture
-	// accepts Generic only and must fail closed for every legacy/unknown name.
-	for _, role := range []string{"planner", "builder", "reviewer", "operator", "unknown"} {
-		if _, err := acpPostureFor(role); err == nil {
-			t.Fatalf("legacy/unknown role posture for %q succeeded", role)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := acpPostureFor(tt.profile)
+			if err != nil {
+				t.Fatalf("acpPostureFor(%q): %v", tt.profile, err)
+			}
+			if got != tt.posture {
+				t.Fatalf("acpPostureFor(%q) = %q, want %q", tt.profile, got, tt.posture)
+			}
+		})
+	}
+	for _, profile := range []AccessProfile{"write", "unknown"} {
+		if _, err := acpPostureFor(profile); err == nil {
+			t.Fatalf("acpPostureFor(%q) succeeded; invalid profile must fail closed", profile)
 		}
+	}
+}
+
+func TestNewACPCompositionCapturesEffectiveACPPosture(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		selected    AccessProfile
+		effective   AccessProfile
+		wantPosture driver.Posture
+	}{
+		{name: "empty profile defaults", selected: "", effective: DefaultAccessProfile, wantPosture: driver.PostureReadOnly},
+		{name: "readonly", selected: AccessReadOnly, effective: AccessReadOnly, wantPosture: driver.PostureReadOnly},
+		{name: "trusted", selected: AccessTrusted, effective: AccessTrusted, wantPosture: driver.PostureWorkspaceWrite},
+		{name: "unconfined", selected: AccessUnconfined, effective: AccessUnconfined, wantPosture: driver.PostureWorkspaceWrite},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			composition, err := NewACPComposition(ACPChildrenConfig{AccessProfile: tt.selected})
+			if err != nil {
+				t.Fatalf("NewACPComposition(%q): %v", tt.selected, err)
+			}
+			if composition.accessProfile != tt.effective || composition.posture != tt.wantPosture {
+				t.Fatalf("composition access=%q posture=%q, want access=%q posture=%q", composition.accessProfile, composition.posture, tt.effective, tt.wantPosture)
+			}
+		})
+	}
+}
+
+func TestNewACPCompositionRejectsInvalidAccessProfileBeforePreflight(t *testing.T) {
+	t.Parallel()
+	preflightCalls := 0
+	_, err := NewACPComposition(ACPChildrenConfig{
+		AccessProfile: AccessProfile("invalid"),
+		executablePreflight: func(context.Context, ACPExecutableProbe) ACPPreflightResult {
+			preflightCalls++
+			return ACPPreflightResult{Ready: true}
+		},
+	})
+	if err != errACPAccessProfileUnavailable {
+		t.Fatalf("NewACPComposition(invalid) error = %v, want bounded access-profile error", err)
+	}
+	if preflightCalls != 0 {
+		t.Fatalf("invalid access profile invoked %d preflight calls, want zero", preflightCalls)
 	}
 }
 

@@ -113,12 +113,8 @@ func TestCompileAgentRuntimeCatalogUsesPrimerOnlyForInProcessFallback(t *testing
 	if err != nil {
 		t.Fatalf("Resolve() error = %v", err)
 	}
-	client, selected, err := compiled.NativeTarget(resolved)
-	if err != nil {
-		t.Fatalf("NativeTarget() error = %v", err)
-	}
-	if client != primer.Client || selected.Key() != primer.Model.Key() || selected.Sampling.Effort != primer.DefaultEffort {
-		t.Fatalf("NativeTarget() = client %T model %#v, want primer target", client, selected)
+	if resolved.AgentHarness != looprigRuntimeHarness || resolved.Profile != looprigRuntimeProfile || resolved.ModelAlias != primer.Alias || resolved.Effort != primer.DefaultEffort {
+		t.Fatalf("Resolve() = %#v, want looprig/native primer target", resolved)
 	}
 }
 

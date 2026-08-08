@@ -4,7 +4,6 @@ import (
 	"fmt"
 
 	"github.com/looprig/coderig/internal/catalog/generic"
-	"github.com/looprig/harness/pkg/identity"
 	"github.com/looprig/harness/pkg/loop"
 	"github.com/looprig/inference"
 	model "github.com/looprig/inference/model"
@@ -180,31 +179,4 @@ func runtimeHarnessDescription(harness loop.AgentHarnessName) string {
 	default:
 		return ""
 	}
-}
-
-// NativeTarget returns the private client/model binding for an explicit
-// looprig/native selection. The returned model is pinned to the selected
-// effort; no credential or endpoint metadata is exposed through Harness.
-func (c ACPCompiledCatalog) NativeTarget(resolved loop.Resolved) (inference.Client, model.Model, error) {
-	if resolved.AgentHarness != looprigRuntimeHarness || resolved.Profile != looprigRuntimeProfile || resolved.Source != loop.RuntimeSourceNative {
-		return nil, model.Model{}, fmt.Errorf("coderig: native runtime target unavailable")
-	}
-	source, ok := c.gatewayTargets[resolved.ModelAlias]
-	if !ok || source.Client == nil || !containsACPEffort(source.Efforts, resolved.Effort) {
-		return nil, model.Model{}, fmt.Errorf("coderig: native runtime target unavailable")
-	}
-	selected := source.Model.Clone()
-	selected.Sampling.Effort = resolved.Effort
-	return source.Client, selected, nil
-}
-
-// ResolveNativeTarget resolves and returns the private binding for a selected
-// ordinary model. It is a convenience seam for composition and integration
-// tests; model-facing code still receives only the public runtime catalogue.
-func (c ACPCompiledCatalog) ResolveNativeTarget(agent identity.AgentName, alias loop.ModelAlias, effort model.Effort) (inference.Client, model.Model, error) {
-	resolved, err := c.RuntimeCatalog.ResolveWithExplicitSource(agent, looprigRuntimeHarness, loop.RuntimeSourceNative, alias, effort, true)
-	if err != nil {
-		return nil, model.Model{}, err
-	}
-	return c.NativeTarget(resolved)
 }

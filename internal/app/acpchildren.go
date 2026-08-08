@@ -23,6 +23,11 @@ import (
 
 var errACPChildUnavailable = errors.New("coderig: ACP child unavailable")
 
+// errACPAccessProfileUnavailable is intentionally fixed and bounded. An
+// invalid Config.AccessProfile must stop ACP composition before any child or
+// gateway launch without reflecting caller-controlled values in the error.
+var errACPAccessProfileUnavailable = errors.New("coderig: ACP access profile unavailable")
+
 // boundedACPChildError is the model-facing error boundary for ACP startup and
 // restore. ACP launch/RPC/stdio errors can contain executable paths, login
 // locations, URLs, provider messages, or stderr; none of those details belong
@@ -45,7 +50,10 @@ func boundedACPChildError(err error) error {
 // Executable paths are preflighted before a profile is registered. Env is
 // reduced to EnvAllowlist before it reaches the child process.
 type ACPChildrenConfig struct {
-	Catalog       ACPCompiledCatalog
+	Catalog ACPCompiledCatalog
+	// AccessProfile is the session-fixed CodeRig profile. Empty selects
+	// DefaultAccessProfile; NewACPComposition normalizes and validates it once.
+	AccessProfile AccessProfile
 	Executables   map[loop.AgentHarnessName]string
 	WorkspaceRoot string
 	Env           []string
@@ -68,6 +76,11 @@ type ACPChildrenConfig struct {
 	// preflightContext bounds production startup work to the caller's
 	// construction context. Lower-level callers default to Background.
 	preflightContext context.Context
+
+	// posture is derived once by NewACPComposition from AccessProfile and then
+	// captured by both the live and restored builders. It is deliberately
+	// unexported: callers cannot mutate a child posture after composition.
+	posture driver.Posture
 }
 
 // ACPExecutableProbe is the bounded, secret-free input to one ACP startup
@@ -101,12 +114,27 @@ type ACPComposition struct {
 	Live        foreign.Builder
 	Restored    foreign.RestoredBuilder
 	Diagnostics []string
+
+	// These values are captured for composition inspection. The builders use
+	// the same values retained in their private factory configuration.
+	accessProfile AccessProfile
+	posture       driver.Posture
 }
 
 // NewACPComposition preflights configured executable paths, registers only
 // cataloged ACP profiles, and returns a registry-backed builder pair. Missing
 // executables simply omit that harness; native primers remain usable.
 func NewACPComposition(config ACPChildrenConfig) (*ACPComposition, error) {
+	effectiveProfile, err := normalizeAccessProfile(config.AccessProfile)
+	if err != nil {
+		return nil, errACPAccessProfileUnavailable
+	}
+	posture, err := acpPostureFor(effectiveProfile)
+	if err != nil {
+		return nil, err
+	}
+	config.AccessProfile = effectiveProfile
+	config.posture = posture
 	if (config.Catalog.HasProfile("acp/claude-code") || config.Catalog.HasProfile("acp/codex")) && !cleanAbsolutePath(config.WorkspaceRoot) {
 		return nil, fmt.Errorf("coderig: ACP workspace root must be a clean absolute path")
 	}
@@ -214,11 +242,13 @@ func NewACPComposition(config ACPChildrenConfig) (*ACPComposition, error) {
 		}
 	}
 	return &ACPComposition{
-		Catalog:     config.Catalog,
-		Registry:    registry,
-		Live:        dispatchACPBuilder(registry),
-		Restored:    dispatchACPRestoredBuilder(registry),
-		Diagnostics: diagnostics,
+		Catalog:       config.Catalog,
+		Registry:      registry,
+		Live:          dispatchACPBuilder(registry),
+		Restored:      dispatchACPRestoredBuilder(registry),
+		Diagnostics:   diagnostics,
+		accessProfile: config.AccessProfile,
+		posture:       config.posture,
 	}, nil
 }
 
@@ -861,9 +891,16 @@ func (f *acpChildFactory) configFor(ctx context.Context, cfg loop.BoundDefinitio
 	if err != nil {
 		return loop.Resolved{}, acpdriver.Config{}, nil, err
 	}
-	posture, err := acpPostureFor(string(cfg.Name()))
-	if err != nil {
-		return loop.Resolved{}, acpdriver.Config{}, nil, err
+	posture := f.config.posture
+	if !posture.Valid() {
+		return loop.Resolved{}, acpdriver.Config{}, nil, errACPAccessProfileUnavailable
+	}
+	// Revalidate the captured posture against the session-fixed profile before
+	// every builder invocation. This prevents a mismatched test seam or future
+	// composition change from widening ACP authority.
+	expectedPosture, err := acpPostureFor(f.config.AccessProfile)
+	if err != nil || posture != expectedPosture {
+		return loop.Resolved{}, acpdriver.Config{}, nil, errACPAccessProfileUnavailable
 	}
 	var ownedGateway *ACPGateway
 	if resolved.Credential == loop.CredentialGatewayBacked {
@@ -986,12 +1023,18 @@ func resolveACPBoundRuntime(catalog ACPCompiledCatalog, cfg loop.BoundDefinition
 	return resolved, harness, nil
 }
 
-func acpPostureFor(agent string) (driver.Posture, error) {
-	switch agent {
-	case "generic":
+func acpPostureFor(profile AccessProfile) (driver.Posture, error) {
+	effective, err := normalizeAccessProfile(profile)
+	if err != nil {
+		return "", errACPAccessProfileUnavailable
+	}
+	switch effective {
+	case AccessReadOnly:
+		return driver.PostureReadOnly, nil
+	case AccessTrusted, AccessUnconfined:
 		return driver.PostureWorkspaceWrite, nil
 	default:
-		return "", fmt.Errorf("coderig: unsupported ACP agent posture")
+		return "", errACPAccessProfileUnavailable
 	}
 }
 

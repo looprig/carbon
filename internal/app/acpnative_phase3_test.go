@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/looprig/coderig/internal/catalog/generic"
+	"github.com/looprig/foreignloops/driver"
 	"github.com/looprig/harness/pkg/loop"
 	"github.com/looprig/harness/pkg/tool"
 	model "github.com/looprig/inference/model"
@@ -271,6 +272,8 @@ func TestACPChildConfigResolvesManagedNativeWithoutGateway(t *testing.T) {
 	}
 	factory := &acpChildFactory{config: ACPChildrenConfig{
 		Catalog:            catalog,
+		AccessProfile:      AccessReadOnly,
+		posture:            driver.PostureReadOnly,
 		Executables:        map[loop.AgentHarnessName]string{"codex": "/bin/codex"},
 		NativeEnvAllowlist: []string{"HOME"},
 	}}
@@ -281,7 +284,7 @@ func TestACPChildConfigResolvesManagedNativeWithoutGateway(t *testing.T) {
 	if ownedGateway != nil {
 		t.Fatal("managed native child constructed a gateway")
 	}
-	if resolved.Source != loop.RuntimeSourceNative || resolved.SelectionKind != loop.RuntimeSelectionHarnessManaged || childConfig.Credential != loop.CredentialNativeAuth || childConfig.ModelAlias != "" || childConfig.SmallModelAlias != "" || childConfig.Binding.BaseURL != "" || childConfig.Binding.Token != "" || childConfig.AgentSessionID != "existing-session" {
+	if resolved.Source != loop.RuntimeSourceNative || resolved.SelectionKind != loop.RuntimeSelectionHarnessManaged || childConfig.Credential != loop.CredentialNativeAuth || childConfig.ModelAlias != "" || childConfig.SmallModelAlias != "" || childConfig.Binding.BaseURL != "" || childConfig.Binding.Token != "" || childConfig.AgentSessionID != "existing-session" || childConfig.Posture != driver.PostureReadOnly {
 		t.Fatalf("managed native child config = %#v resolved=%#v", childConfig, resolved)
 	}
 }

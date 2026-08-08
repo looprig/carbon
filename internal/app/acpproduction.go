@@ -45,7 +45,7 @@ type ACPNativeAuthProbe struct {
 }
 
 func withProductionACPChildren(ctx context.Context, cfg Config, configured productionModels) (Config, error) {
-	composition, err := newProductionACPCompositionWithPreflight(ctx, configured, nil)
+	composition, err := newProductionACPCompositionWithPreflight(ctx, cfg.AccessProfile, configured, nil)
 	if err != nil {
 		return Config{}, err
 	}
@@ -55,7 +55,11 @@ func withProductionACPChildren(ctx context.Context, cfg Config, configured produ
 	return cfg, nil
 }
 
-func newProductionACPCompositionWithPreflight(ctx context.Context, configured productionModels, executablePreflight func(context.Context, ACPExecutableProbe) ACPPreflightResult) (*ACPComposition, error) {
+func newProductionACPCompositionWithPreflight(ctx context.Context, accessProfile AccessProfile, configured productionModels, executablePreflight func(context.Context, ACPExecutableProbe) ACPPreflightResult) (*ACPComposition, error) {
+	effectiveProfile, err := normalizeAccessProfile(accessProfile)
+	if err != nil {
+		return nil, errACPAccessProfileUnavailable
+	}
 	root, err := os.Getwd()
 	if err != nil {
 		return nil, fmt.Errorf("coderig: resolve ACP workspace root: %w", err)
@@ -70,7 +74,8 @@ func newProductionACPCompositionWithPreflight(ctx context.Context, configured pr
 		return nil, err
 	}
 	return NewACPComposition(ACPChildrenConfig{
-		Catalog: catalog,
+		Catalog:       catalog,
+		AccessProfile: effectiveProfile,
 		Executables: map[loop.AgentHarnessName]string{
 			"claude-code": resolveACPExecutable(os.Getenv(acpClaudeExecutableEnv), configured.ACPLaunchers["claude-code"], "claude-code-acp"),
 			"codex":       resolveACPExecutable(os.Getenv(acpCodexExecutableEnv), configured.ACPLaunchers["codex"], "codex-acp"),

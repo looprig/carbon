@@ -305,11 +305,10 @@ func buildSessionAccess(cfg Config, root string, interactive bool) (*sessionAcce
 }
 
 func buildSessionAccessWithPermissionFile(cfg Config, root string, interactive bool, explicitPermissionPath string) (*sessionAccess, error) {
-	profileName := cfg.AccessProfile
-	if profileName == "" {
-		profileName = DefaultAccessProfile
+	profileName, err := normalizeAccessProfile(cfg.AccessProfile)
+	if err != nil {
+		return nil, err
 	}
-
 	selected, err := coderigProfile(profileName, root)
 	if err != nil {
 		return nil, err
