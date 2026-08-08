@@ -10,6 +10,25 @@ import (
 	"github.com/looprig/inference/model"
 )
 
+func TestCompileACPRuntimeEntriesProducesNonDefaultGenericRows(t *testing.T) {
+	target := fixtureGatewaySource("fixture-a", &fakeLLM{})
+	raw, err := compileACPRuntimeEntries(acpCatalogInput{
+		GatewayTargets: []ACPGatewaySource{target},
+		ClaudeSmall:    target.Alias,
+	})
+	if err != nil {
+		t.Fatalf("compileACPRuntimeEntries() error = %v", err)
+	}
+	if len(raw.entries) != 2 {
+		t.Fatalf("raw entries = %#v, want Claude and Codex rows", raw.entries)
+	}
+	for _, entry := range raw.entries {
+		if entry.AgentType != "generic" || entry.Default {
+			t.Fatalf("raw ACP entry = %#v, want generic non-default row", entry)
+		}
+	}
+}
+
 func TestCompileACPCatalogUsesConfiguredTargetsAndDeterministicDefault(t *testing.T) {
 	clientA := &fakeLLM{}
 	clientB := &fakeLLM{}

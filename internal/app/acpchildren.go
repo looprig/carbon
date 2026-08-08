@@ -646,6 +646,9 @@ func firstACPGatewayResolved(catalog ACPCompiledCatalog, harness loop.AgentHarne
 }
 
 func filterACPPreflightCatalog(catalog ACPCompiledCatalog, decisions map[loop.AgentHarnessName]acpPreflightDecision) (ACPCompiledCatalog, error) {
+	// The ordinary Generic row is always retained and remains the sole
+	// product default. ACP entries were compiled non-default and are only
+	// retained when their source-specific preflight succeeds.
 	entries := make([]loop.RuntimeCatalogEntry, 0, len(catalog.entries))
 	for _, source := range catalog.entries {
 		if source.AgentHarness == looprigRuntimeHarness && source.Profile == looprigRuntimeProfile {
@@ -735,7 +738,6 @@ func filterACPPreflightCatalog(catalog ACPCompiledCatalog, decisions map[loop.Ag
 		}
 		entries = append(entries, entry)
 	}
-	entries = retainRuntimeEntriesWithConfiguredDefault(entries)
 	catalogRuntime, err := loop.NewRuntimeCatalog(entries)
 	if err != nil {
 		return ACPCompiledCatalog{}, err
@@ -750,47 +752,6 @@ func filterACPPreflightCatalog(catalog ACPCompiledCatalog, decisions map[loop.Ag
 		profiles:       profiles,
 		entries:        cloneACPEntries(entries),
 	}, nil
-}
-
-func retainRuntimeEntriesWithConfiguredDefault(entries []loop.RuntimeCatalogEntry) []loop.RuntimeCatalogEntry {
-	byRole := make(map[identity.AgentName][]int)
-	for index, entry := range entries {
-		byRole[entry.AgentType] = append(byRole[entry.AgentType], index)
-	}
-	roles := make([]identity.AgentName, 0, len(byRole))
-	for role := range byRole {
-		roles = append(roles, role)
-	}
-	sort.Slice(roles, func(i, j int) bool { return roles[i] < roles[j] })
-	retained := make([]loop.RuntimeCatalogEntry, 0, len(entries))
-	for _, role := range roles {
-		indexes := byRole[role]
-		defaultCount := 0
-		acpDefault := false
-		ordinaryIndex := -1
-		for _, index := range indexes {
-			entry := entries[index]
-			if entry.AgentHarness == looprigRuntimeHarness && entry.Profile == looprigRuntimeProfile {
-				ordinaryIndex = index
-			}
-			if entry.Default {
-				defaultCount++
-				acpDefault = acpDefault || entry.AgentHarness != looprigRuntimeHarness
-			}
-		}
-		if defaultCount == 0 {
-			if ordinaryIndex < 0 {
-				continue
-			}
-			entries[ordinaryIndex].Default = true
-		} else if acpDefault && ordinaryIndex >= 0 {
-			entries[ordinaryIndex].Default = false
-		}
-		for _, index := range indexes {
-			retained = append(retained, entries[index])
-		}
-	}
-	return retained
 }
 
 func containsModelEffort(efforts []model.Effort, wanted model.Effort) bool {

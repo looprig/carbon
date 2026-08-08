@@ -13,10 +13,6 @@ import (
 	"github.com/looprig/acp/launch"
 	"github.com/looprig/acp/protocol"
 	"github.com/looprig/acp/transport/stdio"
-	"github.com/looprig/coderig/internal/catalog/builder"
-	"github.com/looprig/coderig/internal/catalog/planner"
-	"github.com/looprig/coderig/internal/catalog/reviewer"
-	"github.com/looprig/harness/pkg/identity"
 	"github.com/looprig/harness/pkg/loop"
 )
 
@@ -64,19 +60,11 @@ func newProductionACPCompositionWithPreflight(ctx context.Context, configured pr
 	if err != nil {
 		return nil, fmt.Errorf("coderig: resolve ACP workspace root: %w", err)
 	}
-	acpCatalog, err := CompileACPCatalog(ACPCatalogInput{
-		AgentTypes:     []identity.AgentName{planner.Name, builder.Name, reviewer.Name},
+	catalog, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
 		GatewayTargets: configured.ACP,
+		PrimerTarget:   configuredPrimerRuntimeTarget(configured),
 		ClaudeSmall:    configured.ClaudeSmall,
 		NativeACP:      configured.NativeACP,
-	})
-	if err != nil {
-		return nil, err
-	}
-	catalog, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
-		AgentTypes:     []identity.AgentName{planner.Name, builder.Name, reviewer.Name},
-		GatewayTargets: configured.ACP,
-		ACP:            acpCatalog,
 	})
 	if err != nil {
 		return nil, err

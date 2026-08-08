@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/looprig/acp/launch"
+	"github.com/looprig/coderig/internal/catalog/generic"
 	"github.com/looprig/harness/pkg/loop"
 	"github.com/looprig/inference/model"
 )
@@ -148,7 +149,7 @@ func TestProductionACPCompositionKeepsConfiguredGatewayRowsAlongsideOrdinaryRows
 	if err != nil {
 		t.Fatal(err)
 	}
-	entries := composition.Catalog.RuntimeCatalog.EntriesFor("builder")
+	entries := composition.Catalog.RuntimeCatalog.EntriesFor(generic.Name)
 	if len(entries) != 3 {
 		t.Fatalf("builder entries = %#v, want ordinary plus configured Claude and Codex entries", entries)
 	}

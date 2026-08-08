@@ -3,6 +3,7 @@ package app
 import (
 	"fmt"
 
+	"github.com/looprig/coderig/internal/catalog/generic"
 	"github.com/looprig/harness/pkg/identity"
 	"github.com/looprig/harness/pkg/loop"
 	"github.com/looprig/inference"
@@ -17,59 +18,65 @@ const (
 	claudeRuntimeDescription                          = "Claude Code ACP harness when its profile is usable."
 )
 
-// AgentRuntimeCatalogInput is the composition-root input for the complete
-// parent-scoped runtime catalogue. ACP is optional: ordinary in-process rows
-// are compiled from the configured delegate targets even when ACP has no
-// usable profile.
-type AgentRuntimeCatalogInput struct {
-	AgentTypes     []identity.AgentName
-	GatewayTargets []ACPGatewaySource
-	ACP            ACPCompiledCatalog
+// GenericRuntimeSource is the private client/model binding used by Generic's
+// in-process fallback. It is separate from ACPGatewaySource so a primer-only
+// model cannot accidentally become an ACP row.
+type GenericRuntimeSource struct {
+	Alias         loop.ModelAlias
+	Description   string
+	Client        inference.Client
+	Model         model.Model
+	DefaultEffort model.Effort
+	Efforts       []model.Effort
 }
 
-// CompileAgentRuntimeCatalog compiles ordinary looprig/native rows and merges
-// already-compiled ACP rows. It is the only product-level catalogue compiler;
-// ACP preflight may later remove unusable ACP entries without removing the
-// ordinary in-process choice.
+// AgentRuntimeCatalogInput is the minimal composition-root input for the
+// complete parent-scoped runtime catalogue. GatewayTargets are the configured
+// delegate-capable targets admitted to both the in-process and ACP choices.
+// PrimerTarget is used only by the in-process Generic choice when no delegate
+// target exists; it is never exposed as an ACP model.
+type AgentRuntimeCatalogInput struct {
+	GatewayTargets []ACPGatewaySource
+	PrimerTarget   GenericRuntimeSource
+	ClaudeSmall    loop.ModelAlias
+	NativeACP      map[string]ACPNativeProfile
+}
+
+// CompileAgentRuntimeCatalog is the one product-level catalogue compiler. It
+// compiles raw optional ACP rows and the ordinary in-process Generic row, then
+// validates the complete set exactly once. ACP rows are never given a product
+// default: omitted runtime selectors always resolve to looprig/native.
 func CompileAgentRuntimeCatalog(input AgentRuntimeCatalogInput) (ACPCompiledCatalog, error) {
-	roles := normalizedAgentTypes(input.AgentTypes)
-	modelOptions, gatewayTargets, err := compileACPGatewayRows(input.GatewayTargets)
+	raw, err := compileACPRuntimeEntries(acpCatalogInput{
+		GatewayTargets: input.GatewayTargets,
+		ClaudeSmall:    input.ClaudeSmall,
+		NativeACP:      input.NativeACP,
+	})
 	if err != nil {
 		return ACPCompiledCatalog{}, err
 	}
-	if len(gatewayTargets) == 0 && len(input.ACP.gatewayTargets) != 0 {
-		gatewayTargets = cloneGatewayTargets(input.ACP.gatewayTargets)
-	}
 
-	entries := make([]loop.RuntimeCatalogEntry, 0, len(roles)+len(input.ACP.entries))
-	for _, role := range roles {
-		if len(modelOptions) == 0 {
-			continue
-		}
-		models := cloneRuntimeOptions(modelOptions)
-		for index := range models {
-			models[index].Source = loop.RuntimeSourceNative
-			models[index].Credential = loop.CredentialNativeAuth
-		}
-		entries = append(entries, loop.RuntimeCatalogEntry{
-			AgentType:     role,
-			AgentHarness:  looprigRuntimeHarness,
-			Profile:       looprigRuntimeProfile,
-			Description:   looprigRuntimeDescription,
-			Source:        loop.RuntimeSourceNative,
-			Credential:    loop.CredentialNativeAuth,
-			SelectionKind: loop.RuntimeSelectionExplicit,
-			Default:       true,
-			DefaultModel:  firstRuntimeAlias(models),
-			Models:        models,
-		})
+	ordinaryOptions, nativeTargets, err := compileGenericRuntimeOptions(raw.gatewayOptions, raw.gatewayTargets, input.PrimerTarget)
+	if err != nil {
+		return ACPCompiledCatalog{}, err
 	}
-	for _, entry := range input.ACP.entries {
+	entries := make([]loop.RuntimeCatalogEntry, 0, len(raw.entries)+1)
+	entries = append(entries, loop.RuntimeCatalogEntry{
+		AgentType:     generic.Name,
+		AgentHarness:  looprigRuntimeHarness,
+		Profile:       looprigRuntimeProfile,
+		Description:   looprigRuntimeDescription,
+		Source:        loop.RuntimeSourceNative,
+		Credential:    loop.CredentialNativeAuth,
+		SelectionKind: loop.RuntimeSelectionExplicit,
+		Default:       true,
+		DefaultModel:  firstRuntimeAlias(ordinaryOptions),
+		Models:        ordinaryOptions,
+	})
+	for _, entry := range raw.entries {
+		entry.AgentType = generic.Name
+		entry.Default = false
 		entries = append(entries, cloneACPEntry(entry))
-	}
-	entries = selectRuntimeDefaults(entries)
-	if len(entries) == 0 {
-		return ACPCompiledCatalog{RuntimeCatalog: mustEmptyRuntimeCatalog()}, nil
 	}
 
 	catalog, err := loop.NewRuntimeCatalog(entries)
@@ -80,12 +87,67 @@ func CompileAgentRuntimeCatalog(input AgentRuntimeCatalogInput) (ACPCompiledCata
 	for _, entry := range entries {
 		profiles[entry.Profile] = struct{}{}
 	}
+	for alias, source := range nativeTargets {
+		raw.gatewayTargets[alias] = source
+	}
 	return ACPCompiledCatalog{
 		RuntimeCatalog: catalog,
-		gatewayTargets: gatewayTargets,
+		gatewayTargets: raw.gatewayTargets,
 		profiles:       profiles,
 		entries:        cloneACPEntries(entries),
 	}, nil
+}
+
+// compileGenericRuntimeOptions uses delegate-capable rows for ordinary
+// in-process Generic selection. The primer is the explicit fallback when no
+// delegate row exists; it is deliberately not passed to the ACP compiler.
+func compileGenericRuntimeOptions(gatewayOptions []loop.RuntimeModelOption, gatewayTargets map[loop.ModelAlias]ACPGatewaySource, primer GenericRuntimeSource) ([]loop.RuntimeModelOption, map[loop.ModelAlias]ACPGatewaySource, error) {
+	if len(gatewayOptions) != 0 {
+		options := cloneRuntimeOptions(gatewayOptions)
+		for index := range options {
+			options[index].Source = loop.RuntimeSourceNative
+			options[index].Credential = loop.CredentialNativeAuth
+		}
+		return options, cloneGatewayTargets(gatewayTargets), nil
+	}
+	if primer.Alias == "" {
+		return nil, nil, fmt.Errorf("coderig: Generic runtime requires a configured primer")
+	}
+	options, targetsByAlias, err := compileACPGatewayRows([]ACPGatewaySource{{
+		Alias:         primer.Alias,
+		Description:   primer.Description,
+		Client:        primer.Client,
+		Model:         primer.Model,
+		DefaultEffort: primer.DefaultEffort,
+		Efforts:       append([]model.Effort(nil), primer.Efforts...),
+	}})
+	if err != nil {
+		return nil, nil, err
+	}
+	for index := range options {
+		options[index].Source = loop.RuntimeSourceNative
+		options[index].Credential = loop.CredentialNativeAuth
+	}
+	return options, targetsByAlias, nil
+}
+
+func configuredPrimerRuntimeTarget(configured productionModels) GenericRuntimeSource {
+	description := ""
+	for _, candidate := range configured.PrimerCandidates {
+		if candidate.Alias == configured.PrimerAlias {
+			description = candidate.Description
+			break
+		}
+	}
+	defaultEffort := configured.PrimerModel.Sampling.Effort
+	return GenericRuntimeSource{
+		Alias:         loop.ModelAlias(configured.PrimerAlias),
+		Description:   description,
+		Client:        configured.PrimerClient,
+		Model:         configured.PrimerModel,
+		DefaultEffort: defaultEffort,
+		Efforts:       append([]model.Effort(nil), configured.PrimerEfforts...),
+	}
 }
 
 func cloneGatewayTargets(input map[loop.ModelAlias]ACPGatewaySource) map[loop.ModelAlias]ACPGatewaySource {
@@ -96,51 +158,6 @@ func cloneGatewayTargets(input map[loop.ModelAlias]ACPGatewaySource) map[loop.Mo
 		result[alias] = source
 	}
 	return result
-}
-
-// selectRuntimeDefaults gives a usable ACP default precedence over the
-// ordinary row. If ACP is unavailable, the ordinary row remains the one
-// deterministic default. A legacy ACP-only catalogue with no default is
-// dropped for that role, preserving the pre-general-catalogue fail-closed
-// behavior of lower-level ACP tests.
-func selectRuntimeDefaults(entries []loop.RuntimeCatalogEntry) []loop.RuntimeCatalogEntry {
-	roles := make(map[identity.AgentName]struct{})
-	for _, entry := range entries {
-		roles[entry.AgentType] = struct{}{}
-	}
-	for role := range roles {
-		acpDefault := false
-		ordinary := false
-		defaultCount := 0
-		for _, entry := range entries {
-			if entry.AgentType != role {
-				continue
-			}
-			if entry.AgentHarness == looprigRuntimeHarness {
-				ordinary = true
-			}
-			if entry.Default {
-				defaultCount++
-				acpDefault = acpDefault || entry.AgentHarness != looprigRuntimeHarness
-			}
-		}
-		if acpDefault {
-			for index := range entries {
-				if entries[index].AgentType == role && entries[index].AgentHarness == looprigRuntimeHarness {
-					entries[index].Default = false
-				}
-			}
-			continue
-		}
-		if defaultCount == 0 && ordinary {
-			for index := range entries {
-				if entries[index].AgentType == role && entries[index].AgentHarness == looprigRuntimeHarness {
-					entries[index].Default = true
-				}
-			}
-		}
-	}
-	return entries
 }
 
 // runtimeHarnessDescription is deliberately CodeRig-owned. It is stable

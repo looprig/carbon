@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/looprig/coderig/internal/catalog/builder"
+	"github.com/looprig/coderig/internal/catalog/generic"
 	"github.com/looprig/core/uuid"
 	"github.com/looprig/harness/pkg/event"
 	"github.com/looprig/harness/pkg/hustle"
@@ -288,26 +289,25 @@ func TestSecretRedactionAcrossModelCatalogueGatewayFingerprintAndDurableEvents(t
 	})
 	captureErrorFormats("client factory failure", factoryErr)
 
-	compiled, err := CompileACPCatalog(ACPCatalogInput{
-		AgentTypes:     []identity.AgentName{"planner", "builder", "reviewer"},
+	compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
 		GatewayTargets: configured.ACP,
+		PrimerTarget:   configuredPrimerRuntimeTarget(configured),
 		ClaudeSmall:    configured.ClaudeSmall,
+		NativeACP:      configured.NativeACP,
 	})
 	if err != nil {
 		t.Fatalf("CompileACPCatalog: %v", err)
 	}
 	capture("runtime catalogue digest", compiled.RuntimeCatalog.Digest())
-	for _, role := range []identity.AgentName{"planner", "builder", "reviewer"} {
-		capture("runtime catalogue "+string(role), compiled.RuntimeCatalog.EntriesFor(role))
-	}
+	capture("runtime catalogue "+string(generic.Name), compiled.RuntimeCatalog.EntriesFor(generic.Name))
 	duplicateTargets := append(append([]ACPGatewaySource(nil), configured.ACP...), configured.ACP[0])
-	_, catalogueErr := CompileACPCatalog(ACPCatalogInput{
-		AgentTypes:     []identity.AgentName{"builder"},
+	_, catalogueErr := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
 		GatewayTargets: duplicateTargets,
+		PrimerTarget:   configuredPrimerRuntimeTarget(configured),
 	})
 	captureErrorFormats("catalogue compilation failure", catalogueErr)
 
-	resolved, err := compiled.RuntimeCatalog.Resolve("builder", "codex", "zeta", model.EffortHigh)
+	resolved, err := compiled.RuntimeCatalog.Resolve(generic.Name, "codex", "zeta", model.EffortHigh)
 	if err != nil {
 		t.Fatalf("resolve gateway target: %v", err)
 	}
@@ -357,7 +357,7 @@ func TestSecretRedactionAcrossModelCatalogueGatewayFingerprintAndDurableEvents(t
 	if !preflightCalled {
 		t.Fatal("ACP preflight callback was not called")
 	}
-	capture("failed ACP preflight catalogue", failedPreflight.Catalog.RuntimeCatalog.EntriesFor("builder"))
+	capture("failed ACP preflight catalogue", failedPreflight.Catalog.RuntimeCatalog.EntriesFor(generic.Name))
 	captureErrorFormats("ACP bounded preflight failure", boundedACPChildError(errors.New("preflight failed: "+sentinel)))
 
 	fingerprintFields := agentFingerprintFields(Config{

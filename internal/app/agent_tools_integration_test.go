@@ -11,11 +11,10 @@ import (
 	"testing"
 
 	"github.com/looprig/coderig/internal/catalog/builder"
+	"github.com/looprig/coderig/internal/catalog/generic"
 	"github.com/looprig/coderig/internal/catalog/planner"
-	"github.com/looprig/coderig/internal/catalog/reviewer"
 	"github.com/looprig/core/content"
 	"github.com/looprig/harness/pkg/event"
-	"github.com/looprig/harness/pkg/identity"
 	"github.com/looprig/harness/pkg/loop"
 	"github.com/looprig/inference"
 	model "github.com/looprig/inference/model"
@@ -31,7 +30,6 @@ func agentRuntimeModel(provider model.ProviderName, format model.APIFormat, name
 func agentToolRuntimeCatalog(t *testing.T, client inference.Client) loop.RuntimeCatalog {
 	t.Helper()
 	compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
-		AgentTypes: []identity.AgentName{planner.Name, builder.Name, reviewer.Name},
 		GatewayTargets: []ACPGatewaySource{
 			{
 				Alias: "alpha", Description: "Fast implementation model.", Client: client,
@@ -46,11 +44,12 @@ func agentToolRuntimeCatalog(t *testing.T, client inference.Client) loop.Runtime
 				Efforts:       []model.Effort{model.EffortHigh, model.EffortMax},
 			},
 		},
+		PrimerTarget: runtimeCatalogPrimer(),
 	})
 	if err != nil {
 		t.Fatalf("CompileAgentRuntimeCatalog() error = %v", err)
 	}
-	if _, err := compiled.RuntimeCatalog.ResolveWithExplicitSource(planner.Name, looprigRuntimeHarness, loop.RuntimeSourceNative, "alpha", model.EffortLow, true); err != nil {
+	if _, err := compiled.RuntimeCatalog.ResolveWithExplicitSource(generic.Name, looprigRuntimeHarness, loop.RuntimeSourceNative, "alpha", model.EffortLow, true); err != nil {
 		t.Fatalf("compiled native alpha/low selection: %v", err)
 	}
 	return compiled.RuntimeCatalog

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/looprig/acp/launch"
+	"github.com/looprig/coderig/internal/catalog/generic"
 	"github.com/looprig/harness/pkg/foreign"
 	"github.com/looprig/harness/pkg/identity"
 	"github.com/looprig/harness/pkg/loop"
@@ -335,7 +336,7 @@ func TestNewACPCompositionDoesNotSubstituteUnavailableFirstACPEntry(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	compiled := testACPGatewayCatalog(t)
+	compiled := testGenericACPGatewayCatalog(t)
 	composition, err := NewACPComposition(ACPChildrenConfig{
 		Catalog:       compiled,
 		Executables:   map[loop.AgentHarnessName]string{"claude-code": executable, "codex": executable},
@@ -357,9 +358,35 @@ func TestNewACPCompositionDoesNotSubstituteUnavailableFirstACPEntry(t *testing.T
 	if composition == nil {
 		t.Fatal("NewACPComposition() returned nil composition")
 	}
-	if entries := composition.Catalog.RuntimeCatalog.EntriesFor("worker"); len(entries) != 0 {
-		t.Fatalf("NewACPComposition() substituted another harness: %#v", entries)
+	entries := composition.Catalog.RuntimeCatalog.EntriesFor(generic.Name)
+	if len(entries) != 2 {
+		t.Fatalf("NewACPComposition() entries = %#v, want Generic native default plus ready Codex", entries)
 	}
+	for _, entry := range entries {
+		if entry.AgentHarness == looprigRuntimeHarness && !entry.Default {
+			t.Fatalf("ordinary Generic row lost default after ACP filtering: %#v", entry)
+		}
+		if entry.AgentHarness == "claude-code" {
+			t.Fatalf("unavailable Claude row survived preflight: %#v", entry)
+		}
+	}
+}
+
+func testGenericACPGatewayCatalog(t *testing.T) ACPCompiledCatalog {
+	t.Helper()
+	targets := legacyTestGatewayTargets(map[model.ProviderName]inference.Client{
+		"anthropic": &fakeLLM{},
+		"openai":    &fakeLLM{},
+	})
+	compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
+		GatewayTargets: targets,
+		PrimerTarget:   runtimeCatalogPrimer(),
+		ClaudeSmall:    "sonnet-5",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return compiled
 }
 
 func TestNewACPCompositionPreflightHonorsCanceledContext(t *testing.T) {
