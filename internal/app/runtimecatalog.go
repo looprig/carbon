@@ -17,6 +17,17 @@ const (
 	claudeRuntimeDescription                          = "Claude Code ACP harness when its profile is usable."
 )
 
+// configuredDelegateDefault is retained temporarily for the pre-generic ACP
+// catalogue API. Model configuration no longer supplies this runtime input;
+// Task 3 removes the compatibility API when the catalogue is fixed to the
+// Generic agent.
+type configuredDelegateDefault struct {
+	Harness loop.AgentHarnessName
+	Source  loop.RuntimeSourceName
+	Model   loop.ModelAlias
+	Effort  model.Effort
+}
+
 // AgentRuntimeCatalogInput is the composition-root input for the complete
 // parent-scoped runtime catalogue. ACP is optional: ordinary in-process rows
 // are compiled from the configured delegate targets even when ACP has no

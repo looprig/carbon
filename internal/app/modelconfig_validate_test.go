@@ -51,45 +51,11 @@ func TestValidateModelConfig(t *testing.T) {
 			c.Models[0].APIFormat = "anthropic"
 			c.Models[0].BaseURL = ""
 		}},
-		{name: "unknown delegate role", mutate: func(c *modelConfigFile) { c.DelegateDefaults["operator"] = c.DelegateDefaults["planner"] }},
-		{name: "missing delegate role", mutate: func(c *modelConfigFile) { delete(c.DelegateDefaults, "reviewer") }},
-		{name: "invalid harness", mutate: func(c *modelConfigFile) {
-			d := c.DelegateDefaults["planner"]
-			d.Harness = "cursor"
-			c.DelegateDefaults["planner"] = d
-		}},
-		{name: "empty delegate default model", mutate: func(c *modelConfigFile) {
-			d := c.DelegateDefaults["planner"]
-			d.Model = ""
-			c.DelegateDefaults["planner"] = d
-		}},
-		{name: "padded default model", mutate: func(c *modelConfigFile) {
-			d := c.DelegateDefaults["planner"]
-			d.Model = "local "
-			c.DelegateDefaults["planner"] = d
-		}},
-		{name: "default model not delegate capable", mutate: func(c *modelConfigFile) { c.Models[0].Uses = []string{"primer"} }},
-		{name: "default effort not admitted by model", mutate: func(c *modelConfigFile) {
-			d := c.DelegateDefaults["planner"]
-			d.Effort = "low"
-			c.DelegateDefaults["planner"] = d
-		}},
-		{name: "Claude default without small model", mutate: func(c *modelConfigFile) {
-			d := c.DelegateDefaults["planner"]
-			d.Harness = "claude-code"
-			c.DelegateDefaults["planner"] = d
-		}},
 		{name: "Claude small model not delegate capable", mutate: func(c *modelConfigFile) {
-			d := c.DelegateDefaults["planner"]
-			d.Harness = "claude-code"
-			c.DelegateDefaults["planner"] = d
 			c.ClaudeCodeSmallModel = "local"
 			c.Models[0].Uses = []string{"primer"}
 		}},
 		{name: "Claude small model lacks tools", mutate: func(c *modelConfigFile) {
-			d := c.DelegateDefaults["planner"]
-			d.Harness = "claude-code"
-			c.DelegateDefaults["planner"] = d
 			c.ClaudeCodeSmallModel = "small"
 			small := c.Models[0]
 			small.Alias = "small"
@@ -237,11 +203,6 @@ func TestNormalizeModelConfigPreservesOptionalFields(t *testing.T) {
 	input := `{
 		"version": 2,
 		"primer_default": "local",
-		"delegate_defaults": {
-			"planner": {"harness":"codex","model":"local","effort":"none"},
-			"builder": {"harness":"codex","model":"local","effort":"none"},
-			"reviewer": {"harness":"codex","model":"local","effort":"none"}
-		},
 		"models": [{
 			"alias": "local",
 			"description": "Local in-process coding model.",
@@ -309,11 +270,6 @@ func TestNormalizeModelConfig(t *testing.T) {
 	config.Models[0].Efforts = []string{"high", "none", "low"}
 	config.Models[0].DefaultEffort = "high"
 	config.PrimerDefault = "zeta"
-	for role, value := range config.DelegateDefaults {
-		value.Model = "zeta"
-		value.Effort = "high"
-		config.DelegateDefaults[role] = value
-	}
 	alpha := config.Models[0]
 	alpha.Alias = "alpha"
 	alpha.Uses = []string{"delegate"}
@@ -334,9 +290,6 @@ func TestNormalizeModelConfig(t *testing.T) {
 	wantEfforts := []model.Effort{model.EffortNone, model.EffortLow, model.EffortHigh}
 	if !equalEfforts(got.Models[1].Efforts, wantEfforts) {
 		t.Errorf("efforts = %v, want %v", got.Models[1].Efforts, wantEfforts)
-	}
-	if len(got.DelegateDefaults) != 3 || got.DelegateDefaults[0].Role != "planner" || got.DelegateDefaults[1].Role != "builder" || got.DelegateDefaults[2].Role != "reviewer" {
-		t.Errorf("delegate default order = %+v", got.DelegateDefaults)
 	}
 	constructed := got.Models[1].Model
 	if constructed.Provider != "openai" || constructed.APIFormat != model.APIFormatOpenAIResponses || constructed.Name != "qwen3-coder" || constructed.Sampling.Effort != model.EffortHigh {
@@ -400,10 +353,6 @@ func validDecodedModelConfig(t *testing.T) modelConfigFile {
 func setSingleModelConfigAlias(config *modelConfigFile, alias string) {
 	config.Models[0].Alias = alias
 	config.PrimerDefault = alias
-	for role, value := range config.DelegateDefaults {
-		value.Model = alias
-		config.DelegateDefaults[role] = value
-	}
 }
 
 func makeOpenAIModel(target *modelTargetConfig) {

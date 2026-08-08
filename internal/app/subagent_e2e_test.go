@@ -131,7 +131,7 @@ func TestACPRequestPermissionDeniesOutsidePostureWithoutNativePermissionWrites(t
 		AgentTypes:     []identity.AgentName{builder.Name},
 		GatewayTargets: configured.ACP,
 		Defaults: map[identity.AgentName]configuredDelegateDefault{
-			builder.Name: configured.Defaults[builder.Name],
+			builder.Name: {Harness: "codex", Model: "fixture-model", Effort: model.EffortNone},
 		},
 	})
 	if err != nil {

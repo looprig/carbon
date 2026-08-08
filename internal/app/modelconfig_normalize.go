@@ -9,18 +9,14 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/looprig/harness/pkg/loop"
 	"github.com/looprig/inference/auth"
 	model "github.com/looprig/inference/model"
 	"github.com/looprig/llm"
 )
 
-var modelConfigDelegateRoleOrder = [...]string{"planner", "builder", "reviewer"}
-
 type normalizedModelConfig struct {
 	PrimerDefault        string
 	ClaudeCodeSmallModel string
-	DelegateDefaults     []normalizedDelegateDefault
 	Models               []normalizedModelTarget
 	NativeACP            map[string]normalizedNativeACPProfile
 	PermissionReview     *normalizedPermissionReview
@@ -34,15 +30,6 @@ type normalizedModelConfig struct {
 type normalizedPermissionReview struct {
 	Model  string
 	Strict bool
-}
-
-type normalizedDelegateDefault struct {
-	Role      string
-	Harness   string
-	Source    loop.RuntimeSourceName
-	Model     string
-	Effort    model.Effort
-	EffortSet bool
 }
 
 type normalizedNativeACPProfile struct {
@@ -113,71 +100,6 @@ func normalizeModelConfig(config modelConfigFile) (normalizedModelConfig, error)
 	}
 	normalized.PrimerDefault = config.PrimerDefault
 
-	if len(config.DelegateDefaults) != len(modelConfigDelegateRoleOrder) {
-		return normalizedModelConfig{}, modelConfigValidationError("delegate_defaults must contain exactly planner, builder, and reviewer")
-	}
-	normalized.DelegateDefaults = make([]normalizedDelegateDefault, 0, len(modelConfigDelegateRoleOrder))
-	claudeDefault := false
-	for _, role := range modelConfigDelegateRoleOrder {
-		value, ok := config.DelegateDefaults[role]
-		if !ok {
-			return normalizedModelConfig{}, modelConfigValidationError("delegate_defaults is missing a required role")
-		}
-		if value.Harness != "codex" && value.Harness != "claude-code" {
-			return normalizedModelConfig{}, modelConfigValidationError("delegate default harness must be codex or claude-code")
-		}
-		source := loop.RuntimeSourceGateway
-		if value.Source != "" {
-			switch value.Source {
-			case string(loop.RuntimeSourceGateway):
-				source = loop.RuntimeSourceGateway
-			case string(loop.RuntimeSourceNative):
-				source = loop.RuntimeSourceNative
-			default:
-				return normalizedModelConfig{}, modelConfigValidationError("delegate default source must be gateway or native")
-			}
-		}
-
-		var effort model.Effort
-		if source == loop.RuntimeSourceGateway {
-			if !isExactNonEmptyModelConfigString(value.Model) {
-				return normalizedModelConfig{}, modelConfigValidationError("delegate default model must be non-empty and unpadded")
-			}
-			target, exists := byAlias[value.Model]
-			if !exists || !containsModelConfigUse(target.Uses, "delegate") {
-				return normalizedModelConfig{}, modelConfigValidationError("delegate default model must be delegate-capable")
-			}
-			var valid bool
-			effort, valid = neutralModelConfigEffort(value.Effort)
-			if !valid || !containsModelConfigEffort(target.Efforts, effort) {
-				return normalizedModelConfig{}, modelConfigValidationError("delegate default effort must be admitted by its model")
-			}
-			claudeDefault = claudeDefault || value.Harness == "claude-code"
-		} else {
-			profile, exists := nativeACPProfileFor(normalized.NativeACP, value.Harness)
-			if !exists || !profile.Enabled {
-				return normalizedModelConfig{}, modelConfigValidationError("native delegate default requires an enabled native_acp profile")
-			}
-			if value.Effort != "" {
-				return normalizedModelConfig{}, modelConfigValidationError("native delegate defaults must not override effort")
-			}
-			if profile.Models == nil {
-				if value.Model != "" {
-					return normalizedModelConfig{}, modelConfigValidationError("native harness-managed defaults must omit model")
-				}
-			} else {
-				if !isExactNonEmptyModelConfigString(value.Model) || !containsNativeACPString(profile.Models, value.Model) {
-					return normalizedModelConfig{}, modelConfigValidationError("native delegate default model must name a configured native alias")
-				}
-			}
-			effort = model.EffortNone
-		}
-		normalized.DelegateDefaults = append(normalized.DelegateDefaults, normalizedDelegateDefault{
-			Role: role, Harness: value.Harness, Source: source, Model: value.Model, Effort: effort,
-			EffortSet: source == loop.RuntimeSourceGateway,
-		})
-	}
-
 	if config.ClaudeCodeSmallModel != "" {
 		if !isExactNonEmptyModelConfigString(config.ClaudeCodeSmallModel) {
 			return normalizedModelConfig{}, modelConfigValidationError("claude_code_small_model must be unpadded")
@@ -190,8 +112,6 @@ func normalizeModelConfig(config modelConfigFile) (normalizedModelConfig, error)
 			return normalizedModelConfig{}, modelConfigValidationError("claude_code_small_model must support tools")
 		}
 		normalized.ClaudeCodeSmallModel = config.ClaudeCodeSmallModel
-	} else if claudeDefault {
-		return normalizedModelConfig{}, modelConfigValidationError("claude-code defaults require claude_code_small_model")
 	}
 
 	if config.PermissionReview != nil {
@@ -275,20 +195,6 @@ func normalizeACPLaunchers(config map[string]acpLauncherConfig) (map[string]norm
 		launchers[harness] = normalizedACPLauncher{Harness: harness, Executable: entry.Executable}
 	}
 	return launchers, nil
-}
-
-func nativeACPProfileFor(profiles map[string]normalizedNativeACPProfile, harness string) (normalizedNativeACPProfile, bool) {
-	profile, ok := profiles[harness]
-	return profile, ok
-}
-
-func containsNativeACPString(values []string, wanted string) bool {
-	for _, value := range values {
-		if value == wanted {
-			return true
-		}
-	}
-	return false
 }
 
 func normalizeModelTarget(target modelTargetConfig) (normalizedModelTarget, error) {
@@ -534,21 +440,12 @@ func containsModelConfigUse(uses []string, want string) bool {
 	return false
 }
 
-func containsModelConfigEffort(efforts []model.Effort, want model.Effort) bool {
-	for _, effort := range efforts {
-		if effort == want {
-			return true
-		}
-	}
-	return false
-}
-
 func modelConfigValidationError(reason string) *ModelConfigError {
 	return modelConfigFailure("validate", errors.New(reason))
 }
 
 func (c normalizedModelConfig) String() string {
-	return fmt.Sprintf("model config primer=%q claude_small=%q defaults=%d models=%d native_profiles=%d", c.PrimerDefault, c.ClaudeCodeSmallModel, len(c.DelegateDefaults), len(c.Models), len(c.NativeACP))
+	return fmt.Sprintf("model config primer=%q claude_small=%q models=%d native_profiles=%d", c.PrimerDefault, c.ClaudeCodeSmallModel, len(c.Models), len(c.NativeACP))
 }
 
 func (c normalizedModelConfig) GoString() string { return c.String() }

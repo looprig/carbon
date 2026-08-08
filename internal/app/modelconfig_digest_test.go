@@ -68,7 +68,7 @@ func TestDigestModelConfigCoversSecretFreeAdmissionFields(t *testing.T) {
 			c.Models[0].Model.Sampling.Effort = model.EffortLow
 		}},
 		{name: "primer default", mutate: func(c *normalizedModelConfig) { c.PrimerDefault = "changed" }},
-		{name: "delegate default", mutate: func(c *normalizedModelConfig) { c.DelegateDefaults[0].Effort = model.EffortLow }},
+		{name: "Claude small model", mutate: func(c *normalizedModelConfig) { c.ClaudeCodeSmallModel = "zeta" }},
 		{name: "description", mutate: func(c *normalizedModelConfig) { c.Models[0].Description = "different presentation guidance" }},
 	}
 	for _, tt := range tests {
@@ -174,11 +174,6 @@ func digestModelConfigFixture(t *testing.T, apiKey string) modelConfigFile {
 	config.Models[0].Efforts = []string{"high", "none", "low"}
 	config.Models[0].DefaultEffort = "high"
 	config.PrimerDefault = "zeta"
-	for role, value := range config.DelegateDefaults {
-		value.Model = "zeta"
-		value.Effort = "high"
-		config.DelegateDefaults[role] = value
-	}
 	// alpha shares zeta's provider target but is delegate-only (not primer):
 	// compileProductionModels rejects two primer-tagged aliases resolving to
 	// the identical provider target (see
@@ -200,7 +195,6 @@ func reverseStrings(values []string) {
 
 func cloneNormalizedModelConfig(input normalizedModelConfig) normalizedModelConfig {
 	cloned := input
-	cloned.DelegateDefaults = append([]normalizedDelegateDefault(nil), input.DelegateDefaults...)
 	if input.NativeACP != nil {
 		cloned.NativeACP = make(map[string]normalizedNativeACPProfile, len(input.NativeACP))
 		for harness, profile := range input.NativeACP {
