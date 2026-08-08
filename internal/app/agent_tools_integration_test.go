@@ -5,14 +5,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/looprig/acp/protocol"
 	"github.com/looprig/coderig/internal/catalog/generic"
 	"github.com/looprig/core/content"
+	"github.com/looprig/core/uuid"
 	"github.com/looprig/harness/pkg/event"
+	"github.com/looprig/harness/pkg/foreign"
 	"github.com/looprig/harness/pkg/loop"
 	"github.com/looprig/inference"
 	model "github.com/looprig/inference/model"
@@ -399,5 +403,74 @@ func TestAgentToolsRejectIncompatibleNativeModelEffort(t *testing.T) {
 	}
 	if !strings.Contains(result, "unknown_runtime") {
 		t.Fatalf("incompatible selection result = %q, want bounded unknown_runtime error", result)
+	}
+}
+
+func TestAssembledStartAgentACPFailureUsesSafeDetail(t *testing.T) {
+	const safeDetail = "ACP error -32000: usage limit reached; resets at 3:00 PM"
+	probe, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		if strings.Contains(err.Error(), "operation not permitted") || strings.Contains(err.Error(), "listen tcp") {
+			t.Skipf("loopback listeners unavailable in this sandbox: %v", err)
+		}
+		t.Fatalf("probe loopback listener: %v", err)
+	}
+	_ = probe.Close()
+	client := &managedScript{}
+	native := &recordingAgentRuntimeClient{}
+	compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
+		NativeACP: map[string]ACPNativeProfile{"codex": {
+			Harness: "codex", Enabled: true,
+			ModelOptions: []ACPNativeModelOption{{
+				Alias: "native-codex", Model: "native-codex",
+				Efforts: []model.Effort{model.EffortHigh}, DefaultEffort: model.EffortHigh,
+			}},
+		}},
+		PrimerTarget: runtimeCatalogPrimer(),
+	})
+	if err != nil {
+		t.Fatalf("CompileAgentRuntimeCatalog(): %v", err)
+	}
+	protocolCause := fmt.Errorf("stderr path=/private/acp token=secret")
+	protocolFailure := protocol.AuthRequired("usage limit reached; resets at 3:00 PM", protocolCause).WithData(map[string]string{
+		"path": "/private/acp", "url": "https://provider.invalid/token", "token": "secret",
+	})
+	composition := &ACPComposition{
+		Catalog: compiled,
+		Live: func(
+			context.Context,
+			uuid.UUID, uuid.UUID, loop.Provenance, foreign.EventPublisher, loop.BoundDefinition,
+			func() (uuid.UUID, error), *event.Factory,
+		) (loop.Backend, string, error) {
+			return nil, "", boundedACPChildError(protocolFailure)
+		},
+		Restored: func(
+			context.Context,
+			uuid.UUID, uuid.UUID, loop.Provenance, foreign.EventPublisher, loop.BoundDefinition,
+			func() (uuid.UUID, error), *event.Factory, foreign.RestoredForeign,
+		) (loop.Backend, error) {
+			return nil, boundedACPChildError(protocolFailure)
+		},
+	}
+	step := 0
+	client.fn = func(_ context.Context, req inference.Request) ([]content.Chunk, error) {
+		if !requestHasRole(req, generic.Name) {
+			return nil, fmt.Errorf("unexpected role in ACP failure integration request")
+		}
+		if step == 0 {
+			step++
+			return startAgentCall("acp-failure", `{"agent_type":"generic","instructions":"run ACP","agent_harness":"codex","model":"native-codex","effort":"high"}`), nil
+		}
+		if got := lastToolText(req); got != "error: agent failed: "+safeDetail {
+			return nil, fmt.Errorf("StartAgent ACP failure result = %q, want safe detail", got)
+		}
+		return finalText("ACP failure formatted safely"), nil
+	}
+	agent := newTestAgent(t, agentRuntimeRouter(t, client, native), Config{
+		ACPChildren:    composition,
+		RuntimeCatalog: compiled.RuntimeCatalog,
+	})
+	if got := runManagedTurn(t, agent, "start the ACP child"); got != "ACP failure formatted safely" {
+		t.Fatalf("final = %q", got)
 	}
 }

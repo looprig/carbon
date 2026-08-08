@@ -9,8 +9,11 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/looprig/acp/launch"
+	"github.com/looprig/acp/protocol"
 	"github.com/looprig/core/uuid"
 	"github.com/looprig/foreignloops/driver"
 	acpdriver "github.com/looprig/foreignloops/driver/acp"
@@ -23,6 +26,30 @@ import (
 
 var errACPChildUnavailable = errors.New("coderig: ACP child unavailable")
 
+// maxACPModelFacingErrorBytes bounds the complete ACP construction detail,
+// including its fixed prefix. This matches foreignloops' ACP turn projection
+// so both child-failure paths have the same model-facing byte ceiling.
+const maxACPModelFacingErrorBytes = 512
+
+// acpChildModelFacingError is the only ACP construction error that opts into
+// Harness's model-facing failure detail. The concrete type stays private; the
+// public boundary is the narrow ModelFacingError method.
+type acpChildModelFacingError struct{ detail string }
+
+func (e *acpChildModelFacingError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return e.detail
+}
+
+func (e *acpChildModelFacingError) ModelFacingError() string {
+	if e == nil {
+		return ""
+	}
+	return e.detail
+}
+
 // errACPAccessProfileUnavailable is intentionally fixed and bounded. An
 // invalid Config.AccessProfile must stop ACP composition before any child or
 // gateway launch without reflecting caller-controlled values in the error.
@@ -31,8 +58,10 @@ var errACPAccessProfileUnavailable = errors.New("coderig: ACP access profile una
 // boundedACPChildError is the model-facing error boundary for ACP startup and
 // restore. ACP launch/RPC/stdio errors can contain executable paths, login
 // locations, URLs, provider messages, or stderr; none of those details belong
-// in an agent result or durable Harness error. Keep cancellation recognizable
-// for controller shutdown, but collapse every other cause to one fixed result.
+// in an agent result or durable Harness error. Only an ACP protocol Error or
+// Fault contributes the explicitly bounded Code/Message projection. Keep
+// cancellation recognizable for controller shutdown, but collapse every other
+// cause to one fixed result.
 func boundedACPChildError(err error) error {
 	if err == nil {
 		return nil
@@ -43,7 +72,66 @@ func boundedACPChildError(err error) error {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return context.DeadlineExceeded
 	}
+	if detail, ok := boundedACPProtocolErrorDetail(err); ok {
+		return &acpChildModelFacingError{detail: detail}
+	}
 	return errACPChildUnavailable
+}
+
+// boundedACPProtocolErrorDetail intentionally reads only the exported Code and
+// Message fields from an ACP wire error. It never calls Error, inspects Data,
+// or unwraps the protocol fault's local cause.
+func boundedACPProtocolErrorDetail(err error) (string, bool) {
+	var fault *protocol.Fault
+	if errors.As(err, &fault) && fault != nil {
+		return formatACPModelFacingError(fault.Code, fault.Message), true
+	}
+	var wireErr *protocol.Error
+	if errors.As(err, &wireErr) && wireErr != nil {
+		return formatACPModelFacingError(wireErr.Code, wireErr.Message), true
+	}
+	return "", false
+}
+
+func formatACPModelFacingError(code protocol.ErrorCode, message string) string {
+	message = normalizeACPModelFacingMessage(message)
+	detail := fmt.Sprintf("ACP error %d", code)
+	if message != "" {
+		detail += ": " + message
+	}
+	return truncateACPModelFacingUTF8(detail, maxACPModelFacingErrorBytes)
+}
+
+func normalizeACPModelFacingMessage(message string) string {
+	message = strings.ToValidUTF8(message, "\uFFFD")
+	var normalized strings.Builder
+	normalized.Grow(len(message))
+	for _, r := range message {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || r == '\u2028' || r == '\u2029' {
+			normalized.WriteByte(' ')
+			continue
+		}
+		normalized.WriteRune(r)
+	}
+	return strings.Join(strings.Fields(normalized.String()), " ")
+}
+
+func truncateACPModelFacingUTF8(value string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
+	if len(value) <= maxBytes {
+		return value
+	}
+	end := 0
+	for end < len(value) {
+		_, size := utf8.DecodeRuneInString(value[end:])
+		if end+size > maxBytes {
+			break
+		}
+		end += size
+	}
+	return value[:end]
 }
 
 // ACPChildrenConfig is the composition-root input for delegated ACP loops.
@@ -796,6 +884,10 @@ func (f *acpChildFactory) configFor(ctx context.Context, cfg loop.BoundDefinitio
 		_ = ownedGateway.Close(context.Background())
 		return loop.Resolved{}, acpdriver.Config{}, nil, err
 	}
+	effort := ""
+	if resolved.Credential == loop.CredentialNativeAuth {
+		effort = string(resolved.Effort)
+	}
 	return resolved, acpdriver.Config{
 		Harness:         acpdriver.Harness(harness),
 		Executable:      f.config.Executables[harness],
@@ -803,6 +895,7 @@ func (f *acpChildFactory) configFor(ctx context.Context, cfg loop.BoundDefinitio
 		Credential:      resolved.Credential,
 		Binding:         binding,
 		ModelAlias:      modelAlias,
+		Effort:          effort,
 		SmallModelAlias: smallModelAlias,
 		Posture:         posture,
 		AgentSessionID:  agentSessionID,
@@ -938,7 +1031,7 @@ func dispatchACPBuilder(registry *foreign.BuilderRegistry) foreign.Builder {
 	return func(loopCtx context.Context, sessionID, loopID uuid.UUID, parent loop.Provenance, pub foreign.EventPublisher, cfg loop.BoundDefinition, idGen func() (uuid.UUID, error), fac *event.Factory) (loop.Backend, string, error) {
 		builder, _, err := registry.Builder(cfg.RuntimeProfile())
 		if err != nil {
-			return nil, "", err
+			return nil, "", boundedACPChildError(err)
 		}
 		return builder(loopCtx, sessionID, loopID, parent, pub, cfg, idGen, fac)
 	}
@@ -948,7 +1041,7 @@ func dispatchACPRestoredBuilder(registry *foreign.BuilderRegistry) foreign.Resto
 	return func(loopCtx context.Context, sessionID, loopID uuid.UUID, parent loop.Provenance, pub foreign.EventPublisher, cfg loop.BoundDefinition, idGen func() (uuid.UUID, error), fac *event.Factory, seed foreign.RestoredForeign) (loop.Backend, error) {
 		_, builder, err := registry.Builder(cfg.RuntimeProfile())
 		if err != nil {
-			return nil, err
+			return nil, boundedACPChildError(err)
 		}
 		return builder(loopCtx, sessionID, loopID, parent, pub, cfg, idGen, fac, seed)
 	}

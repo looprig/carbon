@@ -3,13 +3,16 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/looprig/acp/launch"
+	"github.com/looprig/acp/protocol"
 	"github.com/looprig/coderig/internal/catalog/generic"
 	"github.com/looprig/core/content"
 	"github.com/looprig/core/uuid"
@@ -222,7 +225,6 @@ func acpPostureMatrixCatalog(t *testing.T, harness loop.AgentHarnessName, creden
 		input.NativeACP = map[string]ACPNativeProfile{string(harness): {
 			Harness: harness,
 			Enabled: true,
-			Models:  []loop.ModelAlias{alias},
 		}}
 		input.PrimerTarget = runtimeCatalogPrimer()
 	}
@@ -248,15 +250,23 @@ func acpPostureMatrixBound(t *testing.T, catalog ACPCompiledCatalog, harness loo
 	if err != nil {
 		t.Fatalf("definition.Bind(): %v", err)
 	}
-	alias := loop.ModelAlias("posture-matrix-codex")
-	if harness == "claude-code" {
-		alias = "sonnet-5"
-	}
 	source := loop.RuntimeSourceNative
 	effort := model.EffortNone
+	alias := loop.ModelAlias("")
 	if credential == loop.CredentialGatewayBacked {
 		source = loop.RuntimeSourceGateway
 		effort = model.EffortMedium
+		alias = "posture-matrix-codex"
+		if harness == "claude-code" {
+			alias = "sonnet-5"
+		}
+	}
+	if credential == loop.CredentialNativeAuth {
+		bound, err = loop.OverrideBoundRuntimeManaged(bound, loop.RuntimeProfileName("acp/"+string(harness)))
+		if err != nil {
+			t.Fatalf("OverrideBoundRuntimeManaged(): %v", err)
+		}
+		return bound
 	}
 	resolved, err := catalog.RuntimeCatalog.ResolveWithExplicitSource(generic.Name, harness, source, alias, effort, true)
 	if err != nil {
@@ -325,6 +335,192 @@ func TestBoundedACPChildErrorDoesNotExposeProcessDetails(t *testing.T) {
 	}
 	if boundedACPChildError(context.Canceled) != context.Canceled {
 		t.Fatal("context cancellation was not preserved")
+	}
+}
+
+func TestBoundedACPChildErrorProjectsOnlyProtocolCodeAndMessage(t *testing.T) {
+	t.Parallel()
+	const (
+		pathSentinel  = "/private/acp/login"
+		urlSentinel   = "https://provider.invalid/token"
+		tokenSentinel = "token=do-not-disclose"
+		causeSentinel = "child stderr: " + pathSentinel + " " + urlSentinel + " " + tokenSentinel
+	)
+	cause := errors.New(causeSentinel)
+	fault := protocol.InternalError("usage limit\nreached\t\x00", cause).WithData(map[string]string{
+		"path": pathSentinel, "url": urlSentinel, "token": tokenSentinel,
+	})
+	got := boundedACPChildError(fmt.Errorf("acp child setup: %w", fault))
+	var modelFacing interface{ ModelFacingError() string }
+	if !errors.As(got, &modelFacing) || modelFacing == nil {
+		t.Fatalf("bounded protocol error = %T %v, want ModelFacingError", got, got)
+	}
+	if got := modelFacing.ModelFacingError(); got != "ACP error -32603: usage limit reached" {
+		t.Fatalf("ModelFacingError() = %q, want normalized code/message", got)
+	}
+	if got.Error() != "ACP error -32603: usage limit reached" {
+		t.Fatalf("Error() = %q, want only bounded detail", got)
+	}
+	for _, sentinel := range []string{pathSentinel, urlSentinel, tokenSentinel, causeSentinel, "\n", "\r", "\t", "\x00"} {
+		if strings.Contains(got.Error(), sentinel) {
+			t.Fatalf("bounded protocol error leaked %q: %q", sentinel, got)
+		}
+	}
+	var gotFault *protocol.Fault
+	if errors.As(got, &gotFault) {
+		t.Fatal("bounded protocol error retained protocol fault chain")
+	}
+	if errors.Is(got, cause) {
+		t.Fatal("bounded protocol error retained unwrapped cause")
+	}
+}
+
+func TestBoundedACPChildErrorAcceptsWireErrorAndBoundsMalformedMessage(t *testing.T) {
+	t.Parallel()
+	const maxBytes = 512
+	message := strings.Repeat("界", 400) + "\xff\n\r\t" + strings.Repeat("x", 400)
+	got := boundedACPChildError(&protocol.Error{Code: protocol.ErrorCodeAuthenticationRequired, Message: message})
+	var modelFacing interface{ ModelFacingError() string }
+	if !errors.As(got, &modelFacing) || modelFacing == nil {
+		t.Fatalf("bounded wire error = %T %v, want ModelFacingError", got, got)
+	}
+	detail := modelFacing.ModelFacingError()
+	if !strings.HasPrefix(detail, "ACP error -32000: ") {
+		t.Fatalf("wire detail = %q, want ACP code prefix", detail)
+	}
+	if len(detail) > maxBytes {
+		t.Fatalf("wire detail bytes = %d, want <= %d", len(detail), maxBytes)
+	}
+	if !utf8.ValidString(detail) {
+		t.Fatal("wire detail is invalid UTF-8")
+	}
+	if strings.ContainsAny(detail, "\r\n\t\x00") {
+		t.Fatalf("wire detail contains control characters: %q", detail)
+	}
+	var gotWire *protocol.Error
+	if errors.As(got, &gotWire) {
+		t.Fatal("bounded wire error retained protocol error chain")
+	}
+}
+
+func TestBoundedACPChildErrorKeepsCancellationAndDeadlineIdentity(t *testing.T) {
+	t.Parallel()
+	for _, sentinel := range []error{context.Canceled, context.DeadlineExceeded} {
+		got := boundedACPChildError(fmt.Errorf("child setup: %w", sentinel))
+		if !errors.Is(got, sentinel) {
+			t.Fatalf("bounded %v = %v, errors.Is false", sentinel, got)
+		}
+		var modelFacing interface{ ModelFacingError() string }
+		if errors.As(got, &modelFacing) {
+			t.Fatalf("bounded %v unexpectedly implements ModelFacingError", sentinel)
+		}
+	}
+}
+
+func TestBoundedACPChildErrorKeepsArbitraryFailuresGeneric(t *testing.T) {
+	t.Parallel()
+	got := boundedACPChildError(errors.New("internal path=/private/acp token=secret"))
+	if got != errACPChildUnavailable {
+		t.Fatalf("bounded arbitrary error = %v, want fixed sentinel", got)
+	}
+	var modelFacing interface{ ModelFacingError() string }
+	if errors.As(got, &modelFacing) {
+		t.Fatal("generic ACP child error unexpectedly implements ModelFacingError")
+	}
+}
+
+func TestACPChildConfigReceivesNativeResolvedEffort(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		harness loop.AgentHarnessName
+		alias   loop.ModelAlias
+	}{
+		{name: "codex", harness: "codex", alias: "native-codex"},
+		{name: "claude", harness: "claude-code", alias: "native-claude"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
+				NativeACP: map[string]ACPNativeProfile{string(tt.harness): {
+					Harness: tt.harness,
+					Enabled: true,
+					ModelOptions: []ACPNativeModelOption{{
+						Alias: tt.alias, Model: string(tt.alias),
+						Efforts: []model.Effort{model.EffortHigh}, DefaultEffort: model.EffortHigh,
+					}},
+				}},
+				PrimerTarget: runtimeCatalogPrimer(),
+			})
+			if err != nil {
+				t.Fatalf("CompileAgentRuntimeCatalog(): %v", err)
+			}
+			definition, err := loop.Define(
+				loop.WithName(generic.Name),
+				loop.WithInference(&fakeLLM{}, testModel()),
+				loop.WithPolicyRevision("acp-child-effort-test"),
+			)
+			if err != nil {
+				t.Fatalf("loop.Define(): %v", err)
+			}
+			bound, err := definition.Bind(context.Background(), tool.Bindings{SessionID: mustUUID(t), LoopID: mustUUID(t)})
+			if err != nil {
+				t.Fatalf("definition.Bind(): %v", err)
+			}
+			resolved, err := compiled.RuntimeCatalog.ResolveWithExplicitSource(generic.Name, tt.harness, loop.RuntimeSourceNative, tt.alias, model.EffortHigh, true)
+			if err != nil {
+				t.Fatalf("ResolveWithExplicitSource(): %v", err)
+			}
+			bound, err = loop.OverrideBoundRuntimeSelectionWithIdentity(bound, resolved.Profile, resolved.ModelAlias, resolved.Target, resolved.Effort, resolved.Source, resolved.SelectionKind)
+			if err != nil {
+				t.Fatalf("OverrideBoundRuntimeSelectionWithIdentity(): %v", err)
+			}
+			factory := &acpChildFactory{config: ACPChildrenConfig{Catalog: compiled, AccessProfile: AccessReadOnly, posture: driver.PostureReadOnly}}
+			_, config, ownedGateway, err := factory.configFor(context.Background(), bound, "")
+			if err != nil {
+				t.Fatalf("configFor(): %v", err)
+			}
+			if ownedGateway != nil {
+				t.Fatal("native config unexpectedly owns a gateway")
+			}
+			if config.Effort != string(model.EffortHigh) {
+				t.Fatalf("%s config.Effort = %q, want %q", tt.harness, config.Effort, model.EffortHigh)
+			}
+		})
+	}
+}
+
+func TestACPChildConfigKeepsHarnessManagedModelAndEffortEmpty(t *testing.T) {
+	t.Parallel()
+	compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
+		NativeACP:    map[string]ACPNativeProfile{"codex": {Harness: "codex", Enabled: true}},
+		PrimerTarget: runtimeCatalogPrimer(),
+	})
+	if err != nil {
+		t.Fatalf("CompileAgentRuntimeCatalog(): %v", err)
+	}
+	definition, err := loop.Define(loop.WithName(generic.Name), loop.WithInference(&fakeLLM{}, testModel()), loop.WithPolicyRevision("acp-child-managed-test"))
+	if err != nil {
+		t.Fatalf("loop.Define(): %v", err)
+	}
+	bound, err := definition.Bind(context.Background(), tool.Bindings{SessionID: mustUUID(t), LoopID: mustUUID(t)})
+	if err != nil {
+		t.Fatalf("definition.Bind(): %v", err)
+	}
+	bound, err = loop.OverrideBoundRuntimeManaged(bound, "acp/codex")
+	if err != nil {
+		t.Fatalf("OverrideBoundRuntimeManaged(): %v", err)
+	}
+	factory := &acpChildFactory{config: ACPChildrenConfig{Catalog: compiled, AccessProfile: AccessReadOnly, posture: driver.PostureReadOnly}}
+	_, config, ownedGateway, err := factory.configFor(context.Background(), bound, "")
+	if err != nil {
+		t.Fatalf("configFor(): %v", err)
+	}
+	if ownedGateway != nil {
+		t.Fatal("harness-managed native config unexpectedly owns a gateway")
+	}
+	if config.ModelAlias != "" || config.Effort != "" {
+		t.Fatalf("harness-managed config model/effort = %q/%q, want empty", config.ModelAlias, config.Effort)
 	}
 }
 
