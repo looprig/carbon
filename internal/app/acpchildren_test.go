@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/looprig/acp/launch"
@@ -250,6 +251,13 @@ func TestACPChildEnvironmentAndGatewayPreflightExcludeParentSecrets(t *testing.T
 		t.Fatal(err)
 	}
 	compiled := testACPGatewayCatalog(t)
+	// probes is written from more than one goroutine: claude-code and codex
+	// now preflight concurrently (each on its own goroutine), and codex's own
+	// per-alias loop runs on its goroutine while claude-code's single call
+	// runs on the other. probesMu is the only change needed to keep this
+	// fake safe for concurrent invocation; every assertion below is
+	// unchanged.
+	var probesMu sync.Mutex
 	probes := make([]ACPExecutableProbe, 0, 2)
 	composition, err := NewACPComposition(ACPChildrenConfig{
 		Catalog:       compiled,
@@ -277,7 +285,9 @@ func TestACPChildEnvironmentAndGatewayPreflightExcludeParentSecrets(t *testing.T
 			Token:   "test-token",
 		},
 		executablePreflight: func(_ context.Context, probe ACPExecutableProbe) ACPPreflightResult {
+			probesMu.Lock()
 			probes = append(probes, probe)
+			probesMu.Unlock()
 			if probe.Credential != loop.CredentialGatewayBacked || probe.SharedProxy == nil || probe.SharedProxy.BaseURL != "http://127.0.0.1:1" || probe.SharedProxy.Token != "test-token" {
 				return ACPPreflightResult{}
 			}
@@ -296,7 +306,10 @@ func TestACPChildEnvironmentAndGatewayPreflightExcludeParentSecrets(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(probes) == 0 {
+	probesMu.Lock()
+	sawProbes := len(probes) != 0
+	probesMu.Unlock()
+	if !sawProbes {
 		t.Fatal("gateway preflight did not run")
 	}
 	claudeEntries := composition.Catalog.RuntimeCatalog.EntriesFor("worker")

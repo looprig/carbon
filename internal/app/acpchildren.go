@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/looprig/acp/launch"
 	"github.com/looprig/core/uuid"
@@ -122,24 +123,75 @@ func NewACPComposition(config ACPChildrenConfig) (*ACPComposition, error) {
 	if preflightContext == nil {
 		preflightContext = context.Background()
 	}
-	for _, profile := range []loop.RuntimeProfileName{"acp/claude-code", "acp/codex"} {
+
+	// Two harnesses' preflights touch completely independent executables,
+	// catalog entries, and (per-harness) gateway instances, so the slow I/O
+	// step below runs concurrently instead of sequentially. The cheap,
+	// synchronous, non-I/O gating checks (HasProfile/executable presence/
+	// executable-bit) stay in this single sequential pass, exactly as
+	// before, so their ordering and short-circuit-on-cancellation behavior
+	// is unchanged; only the slow preflightACPProfile call itself is
+	// deferred into a job list and run concurrently below.
+	profiles := []loop.RuntimeProfileName{"acp/claude-code", "acp/codex"}
+	outcomes := make([]acpHarnessPreflightOutcome, len(profiles))
+	type acpHarnessPreflightJob struct {
+		index   int
+		harness loop.AgentHarnessName
+	}
+	var jobs []acpHarnessPreflightJob
+	for i, profile := range profiles {
 		if preflightContext.Err() != nil {
 			break
 		}
 		if !config.Catalog.HasProfile(profile) {
 			continue
 		}
+		outcomes[i].configured = true
 		harness := loop.AgentHarnessName(strings.TrimPrefix(string(profile), "acp/"))
 		executable := config.Executables[harness]
 		if executable == "" {
-			diagnostics = append(diagnostics, acpDiagnosticNoExecutable(harness))
+			outcomes[i].diagnostic = acpDiagnosticNoExecutable(harness)
 			continue
 		}
 		if !preflightACPExecutable(executable) {
-			diagnostics = append(diagnostics, acpDiagnosticExecutableNotRunnable(harness))
+			outcomes[i].diagnostic = acpDiagnosticExecutableNotRunnable(harness)
 			continue
 		}
-		decision := preflightACPProfile(preflightContext, config, harness, preflight)
+		outcomes[i].needsPreflight = true
+		jobs = append(jobs, acpHarnessPreflightJob{index: i, harness: harness})
+	}
+
+	// Each goroutine below writes only to its own pre-allocated slot in
+	// outcomes (indexed by its job's position), so there is no shared
+	// mutable state between them; the deterministic merge into
+	// decisions/diagnostics happens afterward, sequentially, in the
+	// original profile order.
+	if len(jobs) > 0 && preflightContext.Err() == nil {
+		var wg sync.WaitGroup
+		wg.Add(len(jobs))
+		for _, job := range jobs {
+			go func(job acpHarnessPreflightJob) {
+				defer wg.Done()
+				outcomes[job.index].decision = preflightACPProfile(preflightContext, config, job.harness, preflight)
+			}(job)
+		}
+		wg.Wait()
+	}
+
+	for i, profile := range profiles {
+		outcome := outcomes[i]
+		if !outcome.configured {
+			continue
+		}
+		harness := loop.AgentHarnessName(strings.TrimPrefix(string(profile), "acp/"))
+		if outcome.diagnostic != "" {
+			diagnostics = append(diagnostics, outcome.diagnostic)
+			continue
+		}
+		if !outcome.needsPreflight {
+			continue
+		}
+		decision := outcome.decision
 		if decision.gatewayReady || decision.nativeReady {
 			decisions[harness] = decision
 			continue
@@ -272,6 +324,20 @@ type acpPreflightDecision struct {
 	nativeAttempted  bool
 }
 
+// acpHarnessPreflightOutcome is NewACPComposition's per-harness merge slot.
+// configured mirrors config.Catalog.HasProfile for that harness's profile;
+// diagnostic is set only by the fast, synchronous pre-checks (no executable
+// configured, or a configured executable that failed the runnable check).
+// needsPreflight and decision are populated only when the harness passed
+// those fast checks and therefore had a job dispatched to the concurrent
+// preflight phase.
+type acpHarnessPreflightOutcome struct {
+	configured     bool
+	diagnostic     string
+	needsPreflight bool
+	decision       acpPreflightDecision
+}
+
 type acpRuntimeModel struct {
 	entry  loop.RuntimeCatalogEntry
 	option loop.RuntimeModelOption
@@ -314,21 +380,52 @@ func preflightACPProfile(ctx context.Context, config ACPChildrenConfig, harness 
 
 	decision.gatewayAttempted = len(gatewayModels) > 0
 	decision.nativeAttempted = nativeManaged || len(nativeModels) > 0
-	if len(gatewayModels) > 0 && preflightACPSharedGateway(ctx, config, harness, gatewayModels, preflight, &decision) {
-		decision.gatewayReady = true
+
+	// The gateway preflight and the native-managed preflight are each other's
+	// only concurrent writers here, and they write disjoint state: the
+	// gateway goroutine mutates decision.gatewayAliases (via the *decision
+	// pointer passed to preflightACPSharedGateway) and reports its own
+	// readiness through gatewayReady, a local variable the main goroutine
+	// only reads after wg.Wait(); the native-managed goroutine writes only
+	// its own local nativeManagedReady, never decision directly. Both are
+	// folded into decision sequentially, after the join, so there is no
+	// concurrent access to any single field. preflightNativeModels (the
+	// explicit-native-alias path, which writes decision.nativeAliases) stays
+	// out of this concurrent phase and runs afterward, sequentially, exactly
+	// as before -- it is a per-alias sequential loop in its own right and
+	// folding it in was judged not to be a clean, low-risk fit for this pass.
+	var wg sync.WaitGroup
+	var gatewayReady, nativeManagedReady bool
+	if len(gatewayModels) > 0 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			gatewayReady = preflightACPSharedGateway(ctx, config, harness, gatewayModels, preflight, &decision)
+		}()
 	}
-	if nativeManaged && ctx.Err() == nil {
-		result := preflight(ctx, ACPExecutableProbe{
-			ACPNativeAuthProbe: ACPNativeAuthProbe{
-				Harness:       harness,
-				Executable:    config.Executables[harness],
-				WorkspaceRoot: config.WorkspaceRoot,
-				Env:           config.envForCredential(loop.CredentialNativeAuth),
-			},
-			Credential: loop.CredentialNativeAuth,
-		})
-		decision.nativeManagedReady = result.Ready
+	if nativeManaged {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if ctx.Err() != nil {
+				return
+			}
+			result := preflight(ctx, ACPExecutableProbe{
+				ACPNativeAuthProbe: ACPNativeAuthProbe{
+					Harness:       harness,
+					Executable:    config.Executables[harness],
+					WorkspaceRoot: config.WorkspaceRoot,
+					Env:           config.envForCredential(loop.CredentialNativeAuth),
+				},
+				Credential: loop.CredentialNativeAuth,
+			})
+			nativeManagedReady = result.Ready
+		}()
 	}
+	wg.Wait()
+	decision.gatewayReady = gatewayReady
+	decision.nativeManagedReady = nativeManagedReady
+
 	if len(nativeModels) > 0 && ctx.Err() == nil {
 		preflightNativeModels(ctx, config, harness, nativeModels, preflight, &decision)
 	}
