@@ -1,9 +1,12 @@
 package app
 
 import (
+	"time"
+
 	"github.com/looprig/inference"
 	"github.com/looprig/inference/auth"
 	"github.com/looprig/inference/model"
+	"github.com/looprig/inference/retry"
 	"github.com/looprig/llm/auto"
 )
 
@@ -11,6 +14,26 @@ import (
 // model identity. The provider credential remains bound only to its client.
 func newModelFactoryFor(base model.Model) ModelFactory {
 	return func() model.Model { return base }
+}
+
+// defaultRetryPolicy is the session-wide inference retry schedule agreed in
+// inference/docs/plans/2026-08-08-retry-client-design.md: three stable 2s
+// retries, then exponential to a 30s cap, six attempts total.
+var defaultRetryPolicy = retry.Policy{
+	StableRetries: 3,
+	StableDelay:   2 * time.Second,
+	MaxAttempts:   6,
+	MaxDelay:      30 * time.Second,
+}
+
+// newProductionClient builds the concrete provider client and decorates it
+// with the default retry schedule.
+func newProductionClient(selected model.Model, key auth.APIKey) (inference.Client, error) {
+	client, err := auto.New(selected, key)
+	if err != nil {
+		return nil, err
+	}
+	return retry.New(client, defaultRetryPolicy)
 }
 
 // loadProductionModels is the process-composition boundary for models.json.
@@ -24,7 +47,7 @@ func loadProductionModels(home string) (productionModels, error) {
 		return productionModels{}, err
 	}
 	return loadProductionModelsFrom(path, func(selected model.Model, key auth.APIKey) (inference.Client, error) {
-		return auto.New(selected, key)
+		return newProductionClient(selected, key)
 	})
 }
 
