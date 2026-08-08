@@ -52,7 +52,7 @@ var (
 	acpChildMessageBearerPattern           = regexp.MustCompile(`(?i)\bBearer\s+[A-Za-z0-9][A-Za-z0-9._~+/=-]*`)
 	acpChildMessageUnixPathPattern         = regexp.MustCompile(`/[^\s,;)}\]<>"']+`)
 	acpChildMessageWindowsPathPattern      = regexp.MustCompile(`(?i)[A-Za-z]:[\\/][^\s,;)}\]<>"']*`)
-	acpChildCredentialTokenPattern         = regexp.MustCompile(`(?i)\b(?:sk|pk|ghp|gho|ghu|ghs|ghr|xox[baprs]|AIza)[-_][a-z0-9][a-z0-9._-]*\b`)
+	acpChildCredentialTokenPattern         = regexp.MustCompile(`(?i)\b(?:(?:sk|pk|ghp|gho|ghu|ghs|ghr|xox[baprs])[-_][a-z0-9][a-z0-9._-]*|AIza[0-9A-Za-z_-]+|(?:AKIA|ASIA|AIDA|AROA)[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)\b`)
 )
 
 // acpChildModelFacingError is the only ACP construction error that opts into
@@ -897,6 +897,7 @@ func filterACPPreflightCatalog(catalog ACPCompiledCatalog, decisions map[loop.Ag
 	return ACPCompiledCatalog{
 		RuntimeCatalog: catalogRuntime,
 		gatewayTargets: catalog.gatewayTargets,
+		nativeModels:   cloneACPNativeModelMappings(catalog.nativeModels),
 		profiles:       profiles,
 		entries:        cloneACPEntries(entries),
 	}, nil
@@ -929,6 +930,7 @@ func filterACPStaticCatalog(catalog ACPCompiledCatalog, runnable map[loop.AgentH
 	return ACPCompiledCatalog{
 		RuntimeCatalog: runtimeCatalog,
 		gatewayTargets: catalog.gatewayTargets,
+		nativeModels:   cloneACPNativeModelMappings(catalog.nativeModels),
 		profiles:       profiles,
 		entries:        cloneACPEntries(entries),
 	}, nil
@@ -1095,7 +1097,10 @@ func acpChildModelAliases(catalog ACPCompiledCatalog, agent identity.AgentName, 
 		if resolved.ModelAlias == "" {
 			return "", "", fmt.Errorf("coderig: native ACP model unavailable")
 		}
-		modelAlias := string(resolved.ModelAlias)
+		modelAlias, err := catalog.nativeModelID(harness, resolved.ModelAlias)
+		if err != nil {
+			return "", "", err
+		}
 		smallModelAlias := resolved.NativeSmallModel
 		if harness == "claude-code" && smallModelAlias == "" {
 			smallModelAlias = modelAlias

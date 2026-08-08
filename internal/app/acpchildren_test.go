@@ -517,6 +517,42 @@ func TestBoundedACPChildErrorRedactsDirectProtocolMessage(t *testing.T) {
 	}
 }
 
+func TestBoundedACPChildErrorRedactsBareCredentialForms(t *testing.T) {
+	t.Parallel()
+	const reset = "usage limit reached; resets at 3:00 PM"
+	tests := []struct {
+		name   string
+		secret string
+	}{
+		{name: "bearer token", secret: "Bearer bearer-token_123"},
+		{name: "openai key", secret: "sk-live-0123456789abcdef"},
+		{name: "github token", secret: "ghp_0123456789abcdef"},
+		{name: "xox token", secret: "xoxb-0123456789abcdef"},
+		{name: "google api key", secret: "AIzaSyA-0123456789_AbCdEfGhIjKlMnOpQrStUv"},
+		{name: "aws access key", secret: "AKIAIOSFODNN7EXAMPLE"},
+		{name: "jwt", secret: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := boundedACPChildError(&protocol.Error{
+				Code:    protocol.ErrorCodeAuthenticationRequired,
+				Message: reset + "; credential " + tt.secret,
+			})
+			var modelFacing interface{ ModelFacingError() string }
+			if !errors.As(got, &modelFacing) || modelFacing == nil {
+				t.Fatal("protocol error did not produce ModelFacingError")
+			}
+			detail := modelFacing.ModelFacingError()
+			if strings.Contains(detail, tt.secret) {
+				t.Fatal("bare credential reached ModelFacingError")
+			}
+			if !strings.Contains(detail, reset) {
+				t.Fatal("useful reset wording was redacted")
+			}
+		})
+	}
+}
+
 func TestACPChildConfigReceivesNativeResolvedEffort(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -706,6 +742,87 @@ func TestACPChildConfigNativeNonNoneEffortPropagatesExactly(t *testing.T) {
 				t.Fatalf("native %s effort = %q, want %q", tt.harness, childConfig.Effort, tt.effort)
 			}
 		})
+	}
+}
+
+func TestACPChildConfigUsesAdapterModelForFriendlyNativeAlias(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name         string
+		harness      loop.AgentHarnessName
+		alias        loop.ModelAlias
+		adapterID    string
+		effort       model.Effort
+		configEffort string
+	}{
+		{name: "codex non-none", harness: "codex", alias: "friendly-codex", adapterID: "actual-codex", effort: model.EffortHigh, configEffort: string(model.EffortHigh)},
+		{name: "claude non-none", harness: "claude-code", alias: "friendly-claude", adapterID: "actual-claude", effort: model.EffortHigh, configEffort: string(model.EffortHigh)},
+		{name: "codex model-only none", harness: "codex", alias: "friendly-codex-none", adapterID: "actual-codex-none", effort: model.EffortNone},
+		{name: "claude structured none", harness: "claude-code", alias: "friendly-claude-none", adapterID: "actual-claude-none", effort: model.EffortNone},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
+				NativeACP: map[string]ACPNativeProfile{string(tt.harness): {
+					Harness: tt.harness, Enabled: true,
+					ModelOptions: []ACPNativeModelOption{{
+						Alias: tt.alias, Model: tt.adapterID,
+						Efforts: []model.Effort{tt.effort}, DefaultEffort: tt.effort,
+					}},
+				}},
+				PrimerTarget: runtimeCatalogPrimer(),
+			})
+			if err != nil {
+				t.Fatalf("CompileAgentRuntimeCatalog(): %v", err)
+			}
+			resolved, err := compiled.RuntimeCatalog.ResolveWithExplicitSource(generic.Name, tt.harness, loop.RuntimeSourceNative, tt.alias, tt.effort, true)
+			if err != nil {
+				t.Fatalf("ResolveWithExplicitSource(): %v", err)
+			}
+			if resolved.ModelAlias != tt.alias {
+				t.Fatalf("resolved model alias = %q, want %q", resolved.ModelAlias, tt.alias)
+			}
+			bound := testACPChildBound(t, resolved)
+			factory := &acpChildFactory{config: ACPChildrenConfig{Catalog: compiled, AccessProfile: AccessReadOnly, posture: driver.PostureReadOnly}}
+			_, childConfig, ownedGateway, err := factory.configFor(context.Background(), bound, "")
+			if err != nil {
+				t.Fatalf("configFor(): %v", err)
+			}
+			if ownedGateway != nil {
+				t.Fatal("native config unexpectedly owns a gateway")
+			}
+			if childConfig.ModelAlias != tt.adapterID || childConfig.Effort != tt.configEffort {
+				t.Fatalf("native %s config model=%q effort=%q, want model=%q effort=%q", tt.harness, childConfig.ModelAlias, childConfig.Effort, tt.adapterID, tt.configEffort)
+			}
+		})
+	}
+}
+
+func TestACPChildConfigFailsClosedWhenNativeAdapterMappingMissing(t *testing.T) {
+	t.Parallel()
+	const alias = loop.ModelAlias("friendly-codex")
+	compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
+		NativeACP: map[string]ACPNativeProfile{"codex": {
+			Harness: "codex", Enabled: true,
+			ModelOptions: []ACPNativeModelOption{{
+				Alias: alias, Model: "actual-codex",
+				Efforts: []model.Effort{model.EffortHigh}, DefaultEffort: model.EffortHigh,
+			}},
+		}},
+		PrimerTarget: runtimeCatalogPrimer(),
+	})
+	if err != nil {
+		t.Fatalf("CompileAgentRuntimeCatalog(): %v", err)
+	}
+	resolved, err := compiled.RuntimeCatalog.ResolveWithExplicitSource(generic.Name, "codex", loop.RuntimeSourceNative, alias, model.EffortHigh, true)
+	if err != nil {
+		t.Fatalf("ResolveWithExplicitSource(): %v", err)
+	}
+	bound := testACPChildBound(t, resolved)
+	compiled.nativeModels = nil
+	factory := &acpChildFactory{config: ACPChildrenConfig{Catalog: compiled, AccessProfile: AccessReadOnly, posture: driver.PostureReadOnly}}
+	if _, _, _, err := factory.configFor(context.Background(), bound, ""); err == nil {
+		t.Fatal("configFor() succeeded without a native adapter model mapping")
 	}
 }
 

@@ -72,10 +72,18 @@ type acpCatalogInput struct {
 	NativeAuth     []ACPNativeAuthSource
 }
 
+// acpNativeModelKey identifies one model-facing native ACP choice without
+// encoding the adapter model ID in a synthetic RuntimeModel target name.
+type acpNativeModelKey struct {
+	Harness loop.AgentHarnessName
+	Alias   loop.ModelAlias
+}
+
 type acpRuntimeEntries struct {
 	entries        []loop.RuntimeCatalogEntry
 	gatewayOptions []loop.RuntimeModelOption
 	gatewayTargets map[loop.ModelAlias]ACPGatewaySource
+	nativeModels   map[acpNativeModelKey]string
 }
 
 // ACPCompiledCatalog is the single compiled source of truth consumed by both
@@ -84,6 +92,7 @@ type ACPCompiledCatalog struct {
 	RuntimeCatalog loop.RuntimeCatalog
 
 	gatewayTargets map[loop.ModelAlias]ACPGatewaySource
+	nativeModels   map[acpNativeModelKey]string
 	profiles       map[loop.RuntimeProfileName]struct{}
 	entries        []loop.RuntimeCatalogEntry
 }
@@ -116,6 +125,14 @@ func compileACPRuntimeEntries(input acpCatalogInput) (acpRuntimeEntries, error) 
 	if err != nil {
 		return acpRuntimeEntries{}, err
 	}
+	nativeModels := make(map[acpNativeModelKey]string)
+	for _, profile := range nativeProfiles {
+		for _, choice := range profile.ModelOptions {
+			if err := addACPNativeModelMapping(nativeModels, profile.Harness, choice.Alias, choice.Model); err != nil {
+				return acpRuntimeEntries{}, err
+			}
+		}
+	}
 	nativeAliases := make(map[loop.ModelAlias]struct{})
 	for _, options := range nativeByHarness {
 		for _, option := range options {
@@ -137,6 +154,9 @@ func compileACPRuntimeEntries(input acpCatalogInput) (acpRuntimeEntries, error) 
 		if _, exists := nativeAliases[source.Alias]; exists {
 			return acpRuntimeEntries{}, fmt.Errorf("coderig: duplicate ACP native alias")
 		}
+		if err := addACPNativeModelMapping(nativeModels, source.Harness, source.Alias, source.Model.Name); err != nil {
+			return acpRuntimeEntries{}, err
+		}
 		nativeByHarness[source.Harness] = append(nativeByHarness[source.Harness], runtimeOptionFromNative(source))
 		nativeAliases[source.Alias] = struct{}{}
 	}
@@ -149,7 +169,7 @@ func compileACPRuntimeEntries(input acpCatalogInput) (acpRuntimeEntries, error) 
 		}
 	}
 	if len(rows) == 0 && len(nativeByHarness) == 0 && !hasEnabledNativeProfile {
-		return acpRuntimeEntries{gatewayTargets: gatewayRows}, nil
+		return acpRuntimeEntries{gatewayTargets: gatewayRows, nativeModels: nativeModels}, nil
 	}
 	if input.ClaudeSmall != "" && !hasRuntimeAlias(rows, input.ClaudeSmall) {
 		return acpRuntimeEntries{}, fmt.Errorf("coderig: ACP Claude small model unavailable")
@@ -219,7 +239,7 @@ func compileACPRuntimeEntries(input acpCatalogInput) (acpRuntimeEntries, error) 
 			entries = append(entries, *gatewayEntry)
 		}
 	}
-	return acpRuntimeEntries{entries: entries, gatewayOptions: rows, gatewayTargets: gatewayRows}, nil
+	return acpRuntimeEntries{entries: entries, gatewayOptions: rows, gatewayTargets: gatewayRows, nativeModels: nativeModels}, nil
 }
 
 func compileACPNativeProfiles(profiles []ACPNativeProfile) ([]ACPNativeProfile, map[loop.AgentHarnessName][]loop.RuntimeModelOption, error) {
@@ -370,6 +390,29 @@ func cloneACPNativeModelOptions(input []ACPNativeModelOption) []ACPNativeModelOp
 	for i, option := range input {
 		result[i] = option
 		result[i].Efforts = append([]model.Effort(nil), option.Efforts...)
+	}
+	return result
+}
+
+func addACPNativeModelMapping(mappings map[acpNativeModelKey]string, harness loop.AgentHarnessName, alias loop.ModelAlias, modelID string) error {
+	if mappings == nil || harness == "" || alias == "" || modelID == "" {
+		return fmt.Errorf("coderig: ACP native model mapping unavailable")
+	}
+	key := acpNativeModelKey{Harness: harness, Alias: alias}
+	if _, exists := mappings[key]; exists {
+		return fmt.Errorf("coderig: ambiguous ACP native model mapping")
+	}
+	mappings[key] = modelID
+	return nil
+}
+
+func cloneACPNativeModelMappings(input map[acpNativeModelKey]string) map[acpNativeModelKey]string {
+	if input == nil {
+		return nil
+	}
+	result := make(map[acpNativeModelKey]string, len(input))
+	for key, modelID := range input {
+		result[key] = modelID
 	}
 	return result
 }
@@ -536,6 +579,17 @@ func (c ACPCompiledCatalog) ResolveGatewayTarget(alias loop.ModelAlias, effort m
 func (c ACPCompiledCatalog) HasProfile(profile loop.RuntimeProfileName) bool {
 	_, ok := c.profiles[profile]
 	return ok
+}
+
+func (c ACPCompiledCatalog) nativeModelID(harness loop.AgentHarnessName, alias loop.ModelAlias) (string, error) {
+	if harness == "" || alias == "" {
+		return "", fmt.Errorf("coderig: ACP native model mapping unavailable")
+	}
+	modelID, ok := c.nativeModels[acpNativeModelKey{Harness: harness, Alias: alias}]
+	if !ok || modelID == "" {
+		return "", fmt.Errorf("coderig: ACP native model mapping unavailable")
+	}
+	return modelID, nil
 }
 
 func cloneACPEntries(entries []loop.RuntimeCatalogEntry) []loop.RuntimeCatalogEntry {
