@@ -18,12 +18,12 @@ func newModelFactoryFor(base model.Model) ModelFactory {
 
 // defaultRetryPolicy is the session-wide inference retry schedule agreed in
 // inference/docs/plans/2026-08-08-retry-client-design.md: three stable 2s
-// retries, then exponential to a 30s cap, six attempts total.
+// retries, then exponential to a 256s cap, ten attempts total.
 var defaultRetryPolicy = retry.Policy{
 	StableRetries: 3,
 	StableDelay:   2 * time.Second,
-	MaxAttempts:   6,
-	MaxDelay:      30 * time.Second,
+	MaxAttempts:   10,
+	MaxDelay:      256 * time.Second,
 }
 
 // newProductionClient builds the concrete provider client and decorates it
