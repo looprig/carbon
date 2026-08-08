@@ -58,9 +58,15 @@ this repository.
   metadata only and never provider keys or native permission files. Gateway
   children receive only the loopback proxy environment; native children
   receive only the isolated harness-login environment. An absent or disabled
-  `native_acp` profile is unavailable; omitted `models` means harness-managed
-  selection, while an explicit non-empty list must be a unique list of valid
-  native model aliases.
+  `native_acp` profile is unavailable. For an enabled profile, omitted or
+  `null` `models` means harness-managed selection; a configured non-empty list
+  is a strict allowlist of structured `{ "model", "efforts", "default_effort" }`
+  entries. Legacy string entries remain accepted for compatibility and retain
+  model-only (`none`) behavior. Runtime model/effort support and adapter/session
+  availability are checked lazily when the child starts, not by a live ACP
+  session during CodeRig startup. Bounded ACP protocol code/message details may
+  reach the parent on launch or prompt failure; paths, stderr, environment values, and
+  wrapped causes do not.
 - **Fail closed.** When access, permission, identity, or durable policy
   state is uncertain, deny by default.
 - **Typed errors when callers classify or recover; wrapped ordinary errors
@@ -161,13 +167,42 @@ The `.env` file, when used by `make run`, is only for launcher settings such as
 ACP executable path overrides; it is not a provider-key source.
 
 Native ACP configuration is an optional `native_acp` object in the same file.
-An enabled profile may omit `models` to let Claude Code or Codex use its
-already-configured login/default model. If `models` is present, it must be
-non-empty and contain unique valid native model aliases. Native ACP choices are
-explicit runtime selections, not ordinary defaults. Native ACP preflight uses
-no gateway proxy and its child environment is limited to the harness login
-allowlist; gateway ACP uses the loopback proxy and excludes that login
-environment.
+An enabled profile may omit `models`, or set it to `null`, to let Claude Code
+or Codex use its already-configured login/default model. If `models` is
+present as a list, it must be non-empty and is a strict allowlist. New entries
+should use the structured form:
+
+```json
+{
+  "native_acp": {
+    "codex": {
+      "enabled": true,
+      "models": [
+        {
+          "model": "gpt-5.6-sol",
+          "efforts": ["medium", "high"],
+          "default_effort": "medium"
+        }
+      ]
+    }
+  }
+}
+```
+
+Each structured entry requires `model`, a non-empty `efforts` list, and a
+`default_effort` contained in that list. Legacy string entries remain accepted
+for compatibility and retain model-only behavior, normalized as effort
+`none`/default `none`. A configured list is strict: only its models and
+efforts are advertised and accepted, with no fallback selection. CodeRig does
+static decoding, normalization, and executable path checks at startup, but
+validates the selected model, effort, and adapter/session availability lazily
+  when `StartAgent` launches the child; the child's runtime handshake is not
+  opened during startup. Native children
+use no gateway proxy and receive only the harness-login allowlist; gateway ACP
+uses the loopback proxy and excludes that login environment. Launch and prompt
+failures expose only bounded ACP protocol code/message details to the parent;
+raw error data, paths, stderr, environment values, and wrapped causes remain
+private.
 
 ## Tests
 

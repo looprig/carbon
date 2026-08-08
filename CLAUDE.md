@@ -62,9 +62,23 @@ limit ordinal or any in-session authority-mutation surface.
 - Native permission persistence is separate and remains per workspace at `~/.looprig/coderig/workspaces/<sha256(canonical-workspace)>/permissions.json`. The global model catalogue is not a permission store.
 - ACP children may be gateway-backed or native-auth and receive posture metadata only. Gateway children use the loopback proxy; native children use the selected harness's existing login state. Neither receives provider API keys or a native `permissions.json`; CodeRig owns sandbox and permission enforcement.
 - `native_acp` is optional. An absent or disabled profile contributes no native
-  runtime. An enabled profile with omitted `models` is harness-managed and
-  passes no model or effort selector; an explicit non-empty `models` list is a
-  sorted, unique list of valid native model aliases.
+  runtime. An enabled profile's `models` may be omitted or explicitly `null` to
+  leave selection to the harness; CodeRig passes no model or effort selector in
+  that mode. A configured non-empty list is a strict allowlist. Its preferred
+  structured entries are `{ "model": "<id>", "efforts": ["<effort>"],
+  "default_effort": "<effort>" }`; `default_effort` must be one of the listed
+  efforts, and `StartAgent` may select only those model/effort pairs. Legacy
+  string entries remain accepted for compatibility and retain model-only
+  behavior (the normalized effort is `none`); they do not make structured
+  entries model-only.
+- Native model/effort support and runtime adapter/session availability are
+  validated lazily when a selected child starts and the adapter advertises its
+  runtime choices. CodeRig performs static decode/normalization and executable
+  path checks only; it does not open a live ACP session during startup.
+- ACP launch and prompt failures propagate only the bounded ACP protocol error
+  code/message to the parent. Paths, stderr, environment details, raw error
+  data, and wrapped causes stay outside model-facing results and durable
+  errors.
 - Defaults are source-aware: omitted `source` remains gateway-backed, while native defaults must set `source: "native"`. Native login environment variables are isolated by the native allowlist and must not be replaced with provider-key or model-selection environment variables.
 - Production assembly must not reintroduce frozen model rows, fixed model aliases, provider-key environment reads, or native-model environment variables. The external catalogue is authoritative. Environment variables used to locate ACP executables are launcher settings, not model credentials.
 
