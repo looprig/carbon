@@ -4,28 +4,67 @@ CodeRig is the reference coding Rig built from looprig modules. This repository 
 
 ## Architecture
 
-- `internal/app/swarm.go` assembles the primary operator and the fixed leaf Loops.
-- `internal/app/access.go` owns the three named product access profiles, the independent reviewer restriction, the product `tool.invoke`/`context.load` access source, and the secret-free access-config digest. `internal/app/egress.go` resolves the parent proxy environment into one validated session egress route. `internal/app/permissions.go` owns the automatic Bash-family catalog and the permission-file locations.
-- `internal/app/toolsets.go` performs direct sandbox assembly: one `sandbox.ExecutorSet` per role authority, the combined `harness/pkg/gate` access gate per role (which resolves the calling loop's executor by Loop ID and binds it as the structural grant issuer), and the standard tool definitions bound to that set. There is no policy-translation bridge.
-- `internal/catalog/operator` and `internal/catalog/reviewer` own role identity and prompts.
-- `cmd/coderig` imports the private `internal/app` composition boundary. The module root has no Go package.
-- The primary operator may delegate to a non-delegating operator or reviewer. Leaves do not receive delegation capability. The operator-primary and operator leaf share the operator profile but get separate executor instances (separate grants and scratch HOME) keyed by Loop ID; the reviewer always uses `sandbox.Restrict(selected, reviewerCeiling)` and its own executor set.
-- Each Loop receives only the individual tools it needs. The reviewer has no file mutation tools.
-- `github.com/looprig/tools` provides optional standard tools; `github.com/looprig/sandbox` provides profiles, executors, grants, and the egress proxy; `github.com/looprig/harness/pkg/gate` provides dependency-free access evaluation and prompt routing. CodeRig wires these directly.
-- `github.com/looprig/tui/sessionadapter` adapts a session controller to the TUI. The composition-root `RuntimeAgent` also implements `tui.SessionPresenter`, supplying the session's fixed profile name, workspace root, and permission diagnostics.
-- The access profile is FIXED at Open and never changes in-session; the TUI only displays it. New, restore, headless, and interactive construction share one `Open` path (`openRuntimeAgent`); interactive and headless differ only in the permission store (workspace vs read-only) and the gate evaluator (interactive vs headless). The runtime agent OWNS every executor-set closer: a partial-construction failure closes what it built, and shutdown closes each set exactly once. A changed selected profile, reviewer restriction, or egress route identity/guarantees changes the durable access-config digest and so rejects a restore.
+- `internal/app/assembly.go` assembles one fixed `generic` loop definition from
+  `internal/catalog/generic`. Generic is the sole primer and may self-delegate
+  through the managed delegation path; there is no multi-agent product
+  topology.
+- `internal/app/access.go` owns the three named sandbox access profiles, one
+  product `tool.invoke`/`context.load` access source, and one secret-free,
+  session-level access-config digest. `internal/app/egress.go` resolves the
+  parent proxy environment into one validated session egress route.
+- `internal/app/toolsets.go` builds one `sandbox.ExecutorSet`, one combined
+  `harness/pkg/gate` gate, and Generic's complete CodeRig tool roster per
+  session. The set resolves a distinct executor (separate grants and scratch
+  HOME) for each Loop ID. The roster is ReadFile, WriteFile, EditFile, Bash,
+  ProcessOutput, ProcessInput, ProcessStop, WebSearch, Fetch, Task, AskUser,
+  and optional Skill; CodeRig has no dedicated Glob or Grep tools because Bash
+  handles search and discovery. There is no policy-translation or compatibility
+  bridge.
+- `cmd/coderig` imports the private `internal/app` composition boundary. The
+  module root has no Go package.
+- `github.com/looprig/tools` provides standard tools; `github.com/looprig/sandbox`
+  provides profiles, executors, grants, and the egress proxy; and
+  `github.com/looprig/harness/pkg/gate` provides dependency-free access
+  evaluation and prompt routing. CodeRig wires these directly.
+- `github.com/looprig/tui/sessionadapter` adapts a session controller to the
+  TUI. The composition-root `RuntimeAgent` also implements
+  `tui.SessionPresenter`, supplying the session's fixed profile name, workspace
+  root, and permission diagnostics.
+- The access profile is fixed at Open and never changes in-session; the TUI
+  only displays it. New, restore, headless, and interactive construction share
+  one `openRuntimeAgent` path; interactive and headless differ only in the
+  permission store and gate evaluator. The runtime agent owns the executor-set
+  closer: partial-construction failure closes what it built, and shutdown closes
+  the set exactly once. A changed profile, Generic access policy, or egress
+  identity/guarantee changes the durable access digest and rejects a restore.
 
-Do not add an open-ended agent registry. The primer loop may expose a bounded picker over models.json entries tagged primer-capable (uses: ["primer", ...]); delegate roles remain fixed via delegate_defaults. The primer loop's declared inference transports span both the primer-capable roster and configured gateway-backed delegate models, since native delegate loops are ordinary Loop instances subject to the same transport-declaration and restore rules as the primer. Do not reintroduce a confinement bridge, a security-limit ordinal, or any in-session authority-mutation surface.
+Do not add an open-ended agent registry or compatibility bridge. The only
+CodeRig agent identity and prompt are Generic's. The primer model picker is
+bounded by `models.json` entries tagged `primer`; `delegate_defaults` is not a
+supported field. Ordinary delegation resolves to the in-process `looprig/native`
+runtime by default. Codex and Claude Code are explicit optional ACP alternatives
+for Generic, not additional CodeRig identities. Do not reintroduce a security
+limit ordinal or any in-session authority-mutation surface.
 
 ## Model catalogue and credentials
 
 - All fixed `~/.looprig/coderig/...` paths in this file (`models.json`, `mcp.json`, `workspaces/<hash>/permissions.json`, the default session-store root) are relative to the resolved CodeRig home: `Config.HomeDir` when set (must be absolute, used exactly as given; validated once at construction, fail closed otherwise), else `~/.looprig/coderig`. One resolver (`internal/app/home.go`'s `looprigHome`) is the single place this is computed; there is no CLI flag or environment variable for it. This directory is CodeRig-specific — harness's sessionstore/workspacestore have no notion of "which product" is calling them, so a different looprig-platform agent product gets its own home, never this one (a prior product, `swe`, shared the bare `~/.looprig` directory before being retired; CodeRig does not repeat that).
-- The `planner`, `builder`, and `reviewer` roster and its role policy remain fixed in code. Production model data is external configuration, loaded once at the composition boundary from `~/.looprig/coderig/models.json`. The file may also carry an optional top-level `permission_review` section that can enable classifier-based automatic permission review; see "Permission review" below for what it does and does not override.
+- Generic's identity and prompt remain fixed in code. Production model data is
+  external configuration, loaded once at the composition boundary from
+  `~/.looprig/coderig/models.json`. The file has no `delegate_defaults` field;
+  ordinary runtime selection is in-process `looprig/native`, while explicit
+  Codex and Claude Code ACP alternatives are optional. It may also carry an
+  optional top-level `permission_review` section that enables classifier-based
+  automatic permission review; see "Permission review" below for what it does
+  and does not override.
 - The model catalogue is operator-managed and read-only to CodeRig: the loader never creates, rewrites, or changes the mode of the file. On Unix, the file must be owner-only (`0600`), must be a regular file, and must not be a symlink.
 - Inline API keys are permitted only in this machine-wide-per-product file because it is outside repositories and owner-only. Never put provider keys in `.env`, provider-key environment variables, command-line arguments, logs, fingerprints, permission files, or child environments.
 - Native permission persistence is separate and remains per workspace at `~/.looprig/coderig/workspaces/<sha256(canonical-workspace)>/permissions.json`. The global model catalogue is not a permission store.
 - ACP children may be gateway-backed or native-auth and receive posture metadata only. Gateway children use the loopback proxy; native children use the selected harness's existing login state. Neither receives provider API keys or a native `permissions.json`; CodeRig owns sandbox and permission enforcement.
-- `native_acp` is optional. An absent or disabled profile contributes no native runtime. An enabled profile with omitted `models` is harness-managed and passes no model or effort selector; an explicit non-empty `models` list requires each native delegate default to name one configured alias.
+- `native_acp` is optional. An absent or disabled profile contributes no native
+  runtime. An enabled profile with omitted `models` is harness-managed and
+  passes no model or effort selector; an explicit non-empty `models` list is a
+  sorted, unique list of valid native model aliases.
 - Defaults are source-aware: omitted `source` remains gateway-backed, while native defaults must set `source: "native"`. Native login environment variables are isolated by the native allowlist and must not be replaced with provider-key or model-selection environment variables.
 - Production assembly must not reintroduce frozen model rows, fixed model aliases, provider-key environment reads, or native-model environment variables. The external catalogue is authoritative. Environment variables used to locate ACP executables are launcher settings, not model credentials.
 
@@ -68,7 +107,7 @@ duplicates ceiling-comparison/eligibility logic locally.
 - **Model capability requirements** — `Config.PermissionReviewModel` is
   required whenever `PermissionReviewEnabled` is true (rejected at
   construction with `*PermissionReviewConfigError` otherwise). CodeRig never
-  reuses an operator Loop's current model for this; the classifier needs an
+  reuses Generic's current model for this; the classifier needs an
   explicitly named model that supports tool use and structured output
   together (`commandsafety.New` enforces this and fails construction if the
   named model doesn't qualify).
@@ -119,7 +158,7 @@ CodeRig can optionally compose MCP servers from an operator-managed
 Loading and validation live in `internal/app/mcpconfig.go`; assembly
 (transports, bindings, the Manager, adoption, and lifecycle) lives in
 `internal/app/mcp.go` and is composed inside `openRuntimeAgent`
-(`internal/app/swarm.go`), so new, restore, interactive, and headless
+(`internal/app/assembly.go`), so new, restore, interactive, and headless
 sessions all get it the same way. CodeRig wires
 `github.com/looprig/mcp`'s `pkg/harness` Manager/Bindings/Adopter and its
 transport factories directly; it adds no policy-translation layer of its
@@ -144,12 +183,11 @@ own.
   mode-changed by CodeRig. An absent file disables the feature entirely —
   zero MCP assembly, a byte-for-byte identical rig to one with no `mcp.json`
   at all.
-- **Roles extension** — `roles` is optional and drawn from `planner`,
-  `builder`, `reviewer` (the fixed `internal/catalog` loop identities);
-  empty or absent means all three. A binding's visibility selects by loop
-  **name**, not loop ID, since bindings are built before the session mints
-  loop IDs — a runtime-spawned delegate of a role shares its name and
-  inherits its visibility. Unknown role names are a config error.
+- **Generic visibility extension** — `roles` is optional and accepts only
+  `"generic"`. Empty or absent means Generic. A binding's visibility selects
+  by loop **name**, not loop ID, since bindings are built before the session
+  mints loop IDs; a self-delegated Generic loop inherits the same visibility.
+  Unknown names are a config error.
 - **Fail-closed posture — two different failure modes, not one** — an
   invalid or insecure `mcp.json`, including a stdio `command` that does not
   resolve on `$PATH` (checked via `exec.LookPath` at construction), fails
@@ -164,7 +202,7 @@ own.
   the session either.
 - **Permissions** — every MCP tool call carries `tool.invoke` with identity
   `mcp:<binding>:<tool>` and routes through the same product access source
-  and role gates every other tool does; `newProductAccessSource` already
+  and the same access gate every other tool uses; `newProductAccessSource` already
   answers `AccessGated` for any non-empty `tool.invoke` scope
   (`internal/app/access.go`), so MCP tools get "ask" with no dedicated
   wiring. The command-safety permission classifier (see "Permission review"
@@ -182,7 +220,7 @@ own.
   (`internal/app/persistence.go`'s `agentFingerprintFields`) before
   `rig.NewSession`. The digest is secret-free by the mcp module's own
   contract — binding name, transport kind, redacted origin, capability/
-  filter/limits/compat digests, and role-visibility digest, never a header
+  filter/limits/compat digests, and Generic-visibility digest, never a header
   or env **value** — so changing the server set, a URL, or role visibility
   is now correctly a **rejected drift** on restore by default, the same
   pattern as the "Restore behavior" bullet above: escaping it requires the
@@ -206,11 +244,12 @@ own.
   `newWithClient`) does not compose MCP; only `SessionStoreFactory.Open` →
   `openRuntimeAgent` does, and `cmd/coderig` exclusively uses that path.
   This is a real, pre-existing gap flagged in code comments
-  (`runtime_controls.go`, `swarm.go`), not something this feature closes.
+  (`runtime_controls.go`, `assembly.go`), not something this feature closes.
 
 ## Placement
 
-Keep behavior here when it is specific to a coding Rig, such as prompts, role tool selection, coding modes, model defaults, and product flags.
+Keep behavior here when it is specific to a coding Rig, such as Generic's
+prompt and tool roster, coding modes, model defaults, and product flags.
 
 Move behavior to its owning module when it is reusable across products. Examples include session adapters, standard tool implementations, sandbox profile/executor/grant enforcement, gate evaluation, persistence mechanics, and generic Loop or Rig lifecycle behavior.
 

@@ -37,6 +37,7 @@ func TestCompileAgentRuntimeCatalogContainsOnlyGenericWithInProcessDefault(t *te
 	if defaults != 1 {
 		t.Fatalf("Generic defaults = %d, want exactly one: %#v", defaults, entries)
 	}
+	// Legacy identities are rejection fixtures: the compiled catalog is Generic-only.
 	for _, legacy := range []identity.AgentName{"planner", "builder", "reviewer"} {
 		if got := compiled.RuntimeCatalog.EntriesFor(legacy); got != nil {
 			t.Fatalf("legacy entries for %q = %#v, want nil", legacy, got)

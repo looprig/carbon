@@ -41,7 +41,7 @@ func buildSkillAllow(agents []skillScope) map[identity.AgentName]map[string]stru
 
 // skillScope is the minimal (agent name, allowed-skill names) pair the loader
 // allow-map is built from — narrower than a full Agent (least privilege: the
-// allow-map builder needs only identity + the skill set).
+// allow-map construction needs only identity + the skill set).
 type skillScope struct {
 	name   identity.AgentName
 	skills []string

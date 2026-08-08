@@ -26,7 +26,7 @@ var (
 	_ = loop.Define
 	_ session.SessionController
 	_ = event.ActiveLoopChanged{}
-	_ = event.LoopStarted{DisplayName: "operator"}
+	_ = event.LoopStarted{DisplayName: "generic"}
 	_ tui.Agent
 	_ = loop.WithDisplayName
 	_ = rig.WithOffloadGC

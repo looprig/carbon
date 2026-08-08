@@ -527,10 +527,10 @@ func TestAgentFingerprintBoundsProductionLengthModelAndRuntimeCatalogRevisions(t
 
 // TestAccessConfigInvalidatesFingerprintFields proves the durable access
 // configuration is drift-detecting at the rig-fingerprint boundary: a
-// product-profile, reviewer-restriction, or egress-boundary change (all folded
-// into AccessConfigRev), or the selected profile name, changes the rig-level
-// fingerprint fields, so a restore with different authority is a mismatch rather
-// than a silent authority change.
+// product-access or egress-boundary change (all folded into AccessConfigRev),
+// or the selected profile name, changes the rig-level fingerprint fields, so a
+// restore with different authority is a mismatch rather than a silent authority
+// change.
 func TestAccessConfigInvalidatesFingerprintFields(t *testing.T) {
 	t.Parallel()
 
@@ -539,7 +539,7 @@ func TestAccessConfigInvalidatesFingerprintFields(t *testing.T) {
 	if got := agentFingerprintFields(Config{AccessProfile: AccessReadOnly, AccessConfigRev: "rev-a"}); !reflect.DeepEqual(got, base) {
 		t.Fatalf("identical access config produced different fields:\n got=%+v\nbase=%+v", got, base)
 	}
-	// A changed access digest (profile/reviewer/egress change) must invalidate.
+	// A changed access digest (profile/effective-policy/egress change) must invalidate.
 	if got := agentFingerprintFields(Config{AccessProfile: AccessReadOnly, AccessConfigRev: "rev-b"}); reflect.DeepEqual(got, base) {
 		t.Error("changed AccessConfigRev did not change the fingerprint fields")
 	}

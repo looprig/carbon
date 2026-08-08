@@ -228,7 +228,7 @@ func TestNormalizeMCPConfigRejectsInvalidServers(t *testing.T) {
 		{name: "url unsupported scheme", binding: "docs", base: validHTTPMCPServerConfig, mutate: func(c *mcpServerConfig) { c.URL = "ftp://mcp.example.test/mcp" }},
 		{name: "url has userinfo", binding: "docs", base: validHTTPMCPServerConfig, mutate: func(c *mcpServerConfig) { c.URL = "https://user:pass@mcp.example.test/mcp" }},
 
-		// roles accepts only generic; unknown/duplicate errors.
+		// Legacy role is a rejection fixture; roles accepts only generic.
 		{name: "legacy role is unknown", binding: "docs", mutate: func(c *mcpServerConfig) { c.Roles = []string{"planner"} }},
 		{name: "duplicate roles", binding: "docs", mutate: func(c *mcpServerConfig) { c.Roles = []string{"generic", "generic"} }},
 		{name: "padded role is unknown", binding: "docs", mutate: func(c *mcpServerConfig) { c.Roles = []string{"generic "} }},

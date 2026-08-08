@@ -440,7 +440,7 @@ func (a *mcpSessionAssembly) close(ctx context.Context) {
 // session-fixed access wiring (interactive or headless), folds its secret-free
 // digest into the config fingerprint, optionally discovers and constructs an MCP
 // Manager from <home>/mcp.json (nil when the file is absent or empty -- every
-// touch point below nil-checks it via mcpSessionAssembly), builds the three
+// touch point below nil-checks it via mcpSessionAssembly), builds the one
 // Generic definition and one rig over the injected stores, opens (Resume zero) or
 // restores the session, attaches the MCP composition to it, and returns the
 // runtime agent that OWNS the executor-set and MCP closers. Any failure after the

@@ -158,9 +158,9 @@ func conversationCompactionPolicy() loop.CompactionPolicy {
 }
 
 // conversationHustleLimits reserves one blocking execution slot and enough
-// queue capacity for one coalesced attempt from each of CodeRig's three native
-// loops. CodeRig registers no background hustle, but harness requires the unused
-// lane to remain explicitly bounded.
+// queue capacity for one coalesced attempt from each native Loop instance in
+// the session. CodeRig registers no background hustle, but harness requires
+// the unused lane to remain explicitly bounded.
 func conversationHustleLimits() rig.HustleLimits {
 	return rig.HustleLimits{
 		BlockingConcurrent:   1,

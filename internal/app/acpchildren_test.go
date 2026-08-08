@@ -25,6 +25,8 @@ func TestACPPostureForGenericOnly(t *testing.T) {
 	if err != nil || got != driver.PostureWorkspaceWrite {
 		t.Fatalf("generic posture = %q, %v; want workspace-write", got, err)
 	}
+	// These removed agent names are explicit rejection fixtures: ACP posture
+	// accepts Generic only and must fail closed for every legacy/unknown name.
 	for _, role := range []string{"planner", "builder", "reviewer", "operator", "unknown"} {
 		if _, err := acpPostureFor(role); err == nil {
 			t.Fatalf("legacy/unknown role posture for %q succeeded", role)

@@ -1,8 +1,8 @@
 // Command coderig is the CodeRig TUI entry point and composition root. It parses the CLI
 // invocation (--list / --resume / --data-dir), opens the session-store factory (one on-disk
 // fsstore-backed session store shared by every session), and either prints the session list
-// (--list) or hands the shared TUI runtime (runtime.Run) a thunk that opens/resumes the PERSISTED
-// swarm session. It is wiring only: all runtime behavior (logging, signal teardown, the TUI)
+// (--list) or hands the shared TUI runtime (runtime.Run) a thunk that opens/resumes the persisted
+// Generic session. It is wiring only: all runtime behavior (logging, signal teardown, the TUI)
 // lives in tui, and all Session/persistence behavior lives in the internal app package.
 package main
 
@@ -187,7 +187,7 @@ func printSessions(w io.Writer, metas []sessionstore.SessionMeta) error {
 type sessionOpen func(context.Context, coderig.SessionSelector, coderig.Config) (tui.Agent, error)
 
 // openThunk builds the tui.OpenAgent the runtime drives. It returns a closure that opens a
-// PERSISTED swarm session: the FIRST call honors resume (a non-zero id restores that
+// persisted Generic session: the FIRST call honors resume (a non-zero id restores that
 // session); every later call (a /clear reopen) starts a fresh NEW session, so /clear never
 // re-restores the same id. The CLI serializes lifecycle handoff by closing the live session
 // before invoking this opener for /clear. cfg carries the human-set construction modes

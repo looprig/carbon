@@ -15,7 +15,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/looprig/coderig/internal/catalog/generic"
 	"github.com/looprig/core/content"
 	"github.com/looprig/core/uuid"
 	"github.com/looprig/harness/pkg/event"
@@ -188,7 +187,7 @@ func waitMCPBindingReady(t *testing.T, agent *RuntimeAgent, binding string, time
 }
 
 // mcpEchoScript is a deterministic fake inference.Client driving ONE
-// operator turn that calls one named tool exactly once with argsJSON, then
+// Generic turn that calls one named tool exactly once with argsJSON, then
 // answers with a final text message once it observes the tool's own result
 // text. It mirrors permission_review_integration_test.go's bashScript
 // (same file, //go:build integration, so that type is already compiled
@@ -532,7 +531,8 @@ func TestMCPLiveStdioFirstInvokeHeadlessDeniesWithTypedApprovalRequired(t *testi
 }
 
 // ================================================================
-// Assertion 3: a Generic-only binding is hidden from legacy role names.
+// Assertion 3: a Generic-only binding is hidden from legacy role names. The
+// legacy names below are intentional rejection fixtures.
 // ================================================================
 
 // TestMCPLiveStdioGenericOnlyVisibility proves Visibility restriction against

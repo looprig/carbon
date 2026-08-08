@@ -895,7 +895,7 @@ func (f *acpChildFactory) configFor(ctx context.Context, cfg loop.BoundDefinitio
 	}, ownedGateway, nil
 }
 
-func acpChildModelAliases(catalog ACPCompiledCatalog, role identity.AgentName, harness loop.AgentHarnessName, resolved loop.Resolved) (string, string, error) {
+func acpChildModelAliases(catalog ACPCompiledCatalog, agent identity.AgentName, harness loop.AgentHarnessName, resolved loop.Resolved) (string, string, error) {
 	if resolved.Credential == loop.CredentialNativeAuth {
 		if resolved.SelectionKind == loop.RuntimeSelectionHarnessManaged {
 			return "", "", nil
@@ -917,7 +917,7 @@ func acpChildModelAliases(catalog ACPCompiledCatalog, role identity.AgentName, h
 	if harness != "claude-code" || resolved.SmallModel == "" {
 		return modelAlias, "", nil
 	}
-	smallResolved, err := catalog.RuntimeCatalog.ResolveWithExplicitEffort(role, harness, resolved.SmallModel, model.EffortNone, false)
+	smallResolved, err := catalog.RuntimeCatalog.ResolveWithExplicitEffort(agent, harness, resolved.SmallModel, model.EffortNone, false)
 	if err != nil || smallResolved.Credential != loop.CredentialGatewayBacked || smallResolved.TargetAlias == "" {
 		return "", "", fmt.Errorf("coderig: ACP small target alias unavailable")
 	}
@@ -986,12 +986,12 @@ func resolveACPBoundRuntime(catalog ACPCompiledCatalog, cfg loop.BoundDefinition
 	return resolved, harness, nil
 }
 
-func acpPostureFor(role string) (driver.Posture, error) {
-	switch role {
+func acpPostureFor(agent string) (driver.Posture, error) {
+	switch agent {
 	case "generic":
 		return driver.PostureWorkspaceWrite, nil
 	default:
-		return "", fmt.Errorf("coderig: unsupported ACP role posture")
+		return "", fmt.Errorf("coderig: unsupported ACP agent posture")
 	}
 }
 

@@ -878,14 +878,14 @@ func TestSessionStoreFactoryCloseAndListAreSerialized(t *testing.T) {
 }
 
 // ModelFactory is a plain func type; this compile-time assertion documents its shape: it
-// yields the swarm's shared, secret-free model.Model identity (no system, no secret).
+// yields the Generic session's shared, secret-free model.Model identity (no system, no secret).
 var _ ModelFactory = func() model.Model {
 	return model.Model{}
 }
 
 // --- Session resource-storage composition (persisted + headless providers) ---
 //
-// No CodeRig role declares tool.RequiresProcessServices today (that lands with the
+// No CodeRig Loop definition declares tool.RequiresProcessServices today (that lands with the
 // process-supervision tools themselves, a later task), so these tests exercise the two
 // providers directly and, where the actual harness restore/identity-anchor behavior is what
 // is under test, over a minimal standalone rig assembled with a probe loop.Definition that
@@ -926,7 +926,7 @@ func processResourceStorageDefinition(t *testing.T) loop.Definition {
 	return definition
 }
 
-// processResourceStorageRig assembles a standalone rig (independent of the production swarm
+// processResourceStorageRig assembles a standalone rig (independent of the production Generic
 // topology) over store with provider installed as its session resource-storage provider.
 func processResourceStorageRig(t *testing.T, store *sessionstore.Store, provider rig.SessionResourceStorageProvider) *rig.Rig {
 	t.Helper()

@@ -263,6 +263,7 @@ func TestACPPostureUsesGenericOnly(t *testing.T) {
 			t.Errorf("acpPostureFor(%q) = %q, want %q", tt.role, got, tt.posture)
 		}
 	}
+	// Removed agent identity is an explicit rejection fixture.
 	if _, err := acpPostureFor("operator"); err == nil {
 		t.Fatal("acpPostureFor(\"operator\") succeeded; stale role must be rejected")
 	}

@@ -402,7 +402,7 @@ func (c ACPCompiledCatalog) GatewayTarget(resolved loop.Resolved) (gateway.Targe
 }
 
 // ResolveGatewayTarget is a convenience seam for gateway construction tests
-// and callers that have not yet selected a role/harness entry.
+// and callers that have not yet selected an agent/harness entry.
 func (c ACPCompiledCatalog) ResolveGatewayTarget(alias loop.ModelAlias, effort model.Effort) (gateway.Target, error) {
 	source, ok := c.gatewayTargets[alias]
 	if !ok {

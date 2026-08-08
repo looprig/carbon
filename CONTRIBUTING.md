@@ -19,22 +19,28 @@ this repository.
 ## Design and security rules (the short version)
 
 - **Placement discipline.** Keep behavior here when it is specific to a
-  coding Rig — prompts, role tool selection, coding modes, model defaults,
+  coding Rig — Generic's prompt and tool roster, coding modes, model defaults,
   product flags. Move behavior to its owning module (`looprig/tools`,
   `looprig/sandbox`, `looprig/harness`, `looprig/tui`, ...) when it is
   reusable across products. Prefer direct assembly over local wrappers that
   only rename another module's API.
-- **No generic agent registry or model tier catalog.** The roster is a
-  small fixed set of Loop definitions, and role policy remains fixed in code.
-  Production loads model data once from the operator-managed
-  `~/.looprig/models.json`; do not reintroduce frozen production rows, fixed
-  model aliases, provider-key environment reads, or native-model environment
-  variables. Do not reintroduce a confinement bridge, a security-limit
-  ordinal, or any in-session authority-mutation surface.
-- **Least privilege per Loop.** Give each Loop the minimum tool set and the
-  least-authority access profile it needs. Keep mutating, command, and
-  network effects human-gated unless enforced guarantees justify automatic
-  approval.
+- **One Generic agent.** `internal/catalog/generic` owns CodeRig's one fixed
+  `generic` identity and prompt. Generic is the sole primer and self-delegates
+  through the managed loop path. There is no open-ended agent registry,
+  compatibility bridge, or multi-agent product topology.
+- **One session access authority.** Each session builds one sandbox executor
+  set and one combined access gate; each Loop ID resolves to its own executor
+  in that set. Generic receives the complete CodeRig roster: ReadFile,
+  WriteFile, EditFile, Bash, ProcessOutput, ProcessInput, ProcessStop,
+  WebSearch, Fetch, Task, AskUser, and optional Skill. CodeRig has no dedicated
+  Glob or Grep tools; Bash handles search and discovery.
+- **Runtime selection.** Ordinary delegation defaults to the in-process
+  `looprig/native` runtime. Codex and Claude Code are explicit optional ACP
+  alternatives for Generic. `models.json` has no `delegate_defaults` field;
+  do not add one or reintroduce frozen production rows, provider-key
+  environment reads, or native-model environment variables.
+- **Least privilege.** Keep mutating, command, and network effects
+  human-gated unless enforced guarantees justify automatic approval.
 - **Bash is intentionally shell-based.** Permission checks and OS
   confinement are its boundaries — validate CLI input before constructing
   the Rig.
@@ -42,18 +48,19 @@ this repository.
   live only inside the sandbox egress route and never enter the
   fingerprint, permission file, logs, or child environment. Inline provider
   keys are permitted only in the external, owner-only `0600`
-  `~/.looprig/models.json`; never put them in `.env` or a shell command.
+  `~/.looprig/coderig/models.json`; never put them in `.env` or a shell
+  command.
 - **Keep model and permission boundaries separate.** CodeRig only reads the
   global model catalogue and never writes or chmods it. Native permissions
   remain per workspace at
-  `~/.looprig/workspaces/<sha256(canonical-workspace)>/permissions.json`.
+  `~/.looprig/coderig/workspaces/<sha256(canonical-workspace)>/permissions.json`.
   ACP children may be gateway-backed or native-auth, but both receive posture
   metadata only and never provider keys or native permission files. Gateway
   children receive only the loopback proxy environment; native children
   receive only the isolated harness-login environment. An absent or disabled
   `native_acp` profile is unavailable; omitted `models` means harness-managed
-  selection, while an explicit non-empty list requires source-aware defaults
-  to name configured aliases.
+  selection, while an explicit non-empty list must be a unique list of valid
+  native model aliases.
 - **Fail closed.** When access, permission, identity, or durable policy
   state is uncertain, deny by default.
 - **Typed errors when callers classify or recover; wrapped ordinary errors
@@ -78,14 +85,14 @@ make secure    # lint + vuln
 ## Configure production models
 
 CodeRig reads its machine-wide model catalogue once from
-`~/.looprig/models.json` when production dependencies are assembled. It does
+`~/.looprig/coderig/models.json` when production dependencies are assembled. It does
 not create or modify this file. Create it with an editor, then restrict it to
 the owner:
 
 ```sh
-mkdir -p ~/.looprig
-$EDITOR ~/.looprig/models.json
-chmod 600 ~/.looprig/models.json
+mkdir -p ~/.looprig/coderig
+$EDITOR ~/.looprig/coderig/models.json
+chmod 600 ~/.looprig/coderig/models.json
 ```
 
 Do not paste a real key into a shell command: shell history, process listings,
@@ -96,37 +103,45 @@ model; `FAKE_EXAMPLE_KEY_DO_NOT_USE` is deliberately unusable:
 ```json
 {
   "version": 2,
-  "primer_default": "local-builder",
-  "claude_code_small_model": "remote-delegate",
-  "delegate_defaults": {
-    "planner": {"harness": "codex", "model": "remote-delegate", "effort": "high"},
-    "builder": {"harness": "claude-code", "model": "remote-delegate", "effort": "high"},
-    "reviewer": {"harness": "claude-code", "model": "remote-delegate", "effort": "medium"}
-  },
+  "primer_default": "local-generic",
   "models": [
     {
-      "alias": "local-builder",
-      "description": "Fast local coding model for implementation work.",
+      "alias": "local-generic",
+      "description": "Fast local model for the Generic coding agent.",
       "provider": "lmstudio",
       "api_format": "openai",
       "base_url": "http://localhost:1234/v1",
       "model": "local-tool-model",
       "api_key": "",
       "uses": ["primer", "delegate"],
-      "capabilities": {"tools": true, "thinking": false},
+      "capabilities": {
+        "tools": true,
+        "thinking": false,
+        "images": false,
+        "prompt_caching": false,
+        "structured_output": false,
+        "structured_output_with_tools": false
+      },
       "efforts": ["none"],
       "default_effort": "none"
     },
     {
-      "alias": "remote-delegate",
-      "description": "Reliable hosted model for delegated planning and review.",
+      "alias": "remote-generic",
+      "description": "Reliable hosted model for explicit Generic delegation.",
       "provider": "openai",
       "api_format": "openai-responses",
-      "base_url": "",
+      "base_url": "https://api.openai.com/v1",
       "model": "example-remote-model",
       "api_key": "FAKE_EXAMPLE_KEY_DO_NOT_USE",
       "uses": ["delegate"],
-      "capabilities": {"tools": true, "thinking": true},
+      "capabilities": {
+        "tools": true,
+        "thinking": true,
+        "images": false,
+        "prompt_caching": false,
+        "structured_output": false,
+        "structured_output_with_tools": false
+      },
       "efforts": ["medium", "high"],
       "default_effort": "high"
     }
@@ -139,17 +154,20 @@ Version 2 is required; CodeRig does not rewrite or migrate an existing file.
 Every model that lists `delegate` in `uses` must include a bounded, single-line
 `description`. These descriptions are shown in the `StartAgent` tool's runtime
 catalogue, not repeated in the system prompt.
+There is no `delegate_defaults` field: ordinary delegation uses the
+`looprig/native` runtime by default. Codex and Claude Code ACP runtimes are
+optional and must be selected explicitly for Generic.
 The `.env` file, when used by `make run`, is only for launcher settings such as
 ACP executable path overrides; it is not a provider-key source.
 
 Native ACP configuration is an optional `native_acp` object in the same file.
 An enabled profile may omit `models` to let Claude Code or Codex use its
 already-configured login/default model. If `models` is present, it must be
-non-empty; each explicit native default names one of those aliases. Set
-`source: "native"` on a delegate default to select that profile. Native ACP
-preflight uses no gateway proxy and its child environment is limited to the
-harness login allowlist; gateway ACP uses the loopback proxy and excludes that
-login environment.
+non-empty and contain unique valid native model aliases. Native ACP choices are
+explicit runtime selections, not ordinary defaults. Native ACP preflight uses
+no gateway proxy and its child environment is limited to the harness login
+allowlist; gateway ACP uses the loopback proxy and excludes that login
+environment.
 
 ## Tests
 

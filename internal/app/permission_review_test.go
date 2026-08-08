@@ -335,7 +335,7 @@ func TestPermissionReviewTrustedProfileGate(t *testing.T) {
 // TestPermissionReviewNamedModelRequired proves requirement 3: enabling
 // permission review without a named PermissionReviewModel fails closed with a
 // typed *PermissionReviewConfigError, rather than silently reusing an
-// operator Loop's model.
+// Generic Loop's model.
 func TestPermissionReviewNamedModelRequired(t *testing.T) {
 	t.Parallel()
 
@@ -513,7 +513,7 @@ func TestPermissionReviewDoesNotWidenAccessCeiling(t *testing.T) {
 
 // TestPermissionReviewHeadlessComposesSafely proves requirement 7: enabling
 // permission review in a headless (unattended) session changes nothing about
-// headless mode's existing fail-closed gate wiring — all role gates stay
+// headless mode's existing fail-closed gate wiring — all access gates stay
 // non-interactive with no rule writer (gate.NewHeadlessEvaluator, exactly as
 // buildHeadlessAccess already selects for every headless session) — and the
 // resulting composition still passes rig.Define, so permission review composes
@@ -738,8 +738,8 @@ func TestPermissionReviewProgrammaticModelWinsOverModelsJSONThroughFullCompositi
 // event.DefaultPolicyDecider). Harness's pkg/event/drift.go now carries a
 // dedicated ConfigManifest.PermissionReviewConfigured signal, compared
 // DIRECTIONALLY: disabled -> enabled is event.DriftWarn ("design §21: never
-// silently resumes with a different reviewer" — exactly the bug this fix
-// closes), enabled -> disabled stays event.DriftInfo (strictly narrower, more
+// silently resumes with a different permission-review configuration" — exactly
+// the bug this fix closes), enabled -> disabled stays event.DriftInfo (strictly narrower, more
 // human control). event.DefaultPolicyDecider (pkg/session/decider.go, the
 // Harness default CodeRig never overrides with a custom RestoreDecider)
 // rejects on ANY Warn change, so RestoreSession now returns a typed
@@ -751,7 +751,7 @@ func TestPermissionReviewProgrammaticModelWinsOverModelsJSONThroughFullCompositi
 // already establishes CodeRig's existing convention for every other kind of
 // rejected restore drift (access-profile change) — surface the plain
 // rejection error to the caller and require the SAME explicit,
-// caller-supplied SessionSelector.AllowConfigMismatch an operator would use
+// caller-supplied SessionSelector.AllowConfigMismatch a caller would use
 // for any other deliberate config change, rather than inventing a
 // permission-review-specific auto-accept path. This test proves both halves:
 // the default (no override) rejects, and the existing override still works

@@ -66,6 +66,8 @@ func TestMCPDefinitionsStdioHappyPath(t *testing.T) {
 	if !binding.Visibility.Permits(loopID, "generic") {
 		t.Errorf("binding.Visibility.Permits(_, generic) = false, want true (roles empty -> generic)")
 	}
+	// Removed names and an unknown name are rejection fixtures; only Generic
+	// visibility is accepted.
 	for _, role := range []string{"planner", "builder", "reviewer", "not-a-role"} {
 		if binding.Visibility.Permits(loopID, role) {
 			t.Errorf("binding.Visibility.Permits(_, %q) = true, want false", role)
@@ -104,6 +106,7 @@ func TestMCPDefinitionsVisibilityDefaultsToGenericWhenEmpty(t *testing.T) {
 	if !binding.Visibility.Permits(loopID, "generic") {
 		t.Errorf("empty roles: Permits(_, generic) = false, want true")
 	}
+	// Legacy role names remain explicit hidden-visibility fixtures.
 	for _, role := range []string{"planner", "builder", "reviewer"} {
 		if binding.Visibility.Permits(loopID, role) {
 			t.Errorf("empty roles: Permits(_, %q) = true, want false", role)
@@ -128,6 +131,7 @@ func TestMCPDefinitionsVisibilityHonorsExplicitGenericRole(t *testing.T) {
 	if !binding.Visibility.Permits(loopID, "generic") {
 		t.Errorf("explicit roles: Permits(_, generic) = false, want true")
 	}
+	// Legacy role names remain explicit hidden-visibility fixtures.
 	for _, role := range []string{"planner", "builder", "reviewer"} {
 		if binding.Visibility.Permits(loopID, role) {
 			t.Errorf("explicit roles [generic]: Permits(_, %q) = true, want false", role)

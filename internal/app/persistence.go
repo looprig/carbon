@@ -28,7 +28,7 @@ import (
 // quiescence, and offload-blob GC — so this layer only opens the store facades, builds one
 // immutable rig per resolved Open (a fresh rig per config; /clear rebuilds with the same
 // process config), and hands NewSession/RestoreSession to the sessionAdapter adapter. The
-// headless New path (assembly.go) shares the SAME rig builder over a process-shared in-memory
+// headless New path (assembly.go) shares the SAME rig assembly over a process-shared in-memory
 // store, so headless and persisted sessions are identical but for the backend.
 
 // offloadGCInterval is how often the rig runs one offload-blob GC pass; offloadGCTimeout
@@ -303,7 +303,7 @@ func accessAppFields(profile AccessProfile) map[string]string {
 // actually enable it (openSessionWithDefinitions, called from assembly.go, where the inference
 // Client the classifier needs is available) call buildRigForDelegationCaps directly with an
 // explicit registration instead. buildRig stays the plain default-composition path most
-// existing callers (production's delegation defaults, and every test unconcerned with
+// existing callers (production's default delegation limits, and every test unconcerned with
 // permission review) use unchanged.
 func buildRig(definitions []loop.Definition, stores *sessionStores, root string, cfg Config, allowMismatch bool) (*rig.Rig, error) {
 	return buildRigForDelegationCaps(definitions, stores, root, cfg, allowMismatch, rig.DelegationLimits{Depth: delegationSpawnDepth, Quota: delegationSpawnQuota}, permissionReviewRegistration{})
@@ -609,7 +609,7 @@ func (f *SessionStoreFactory) Open(ctx context.Context, sel SessionSelector, cfg
 	return agent, nil
 }
 
-// openWithClient resolves the workspace root, builds the three loop definitions and one rig
+// openWithClient resolves the workspace root, builds the one Generic loop definition and one rig
 // over the shared store, and opens (Resume zero) or restores the session. It is the seam the
 // integration tests drive with an injected fake client. A resume threads
 // sel.AllowConfigMismatch into the rig so a deliberate config change can proceed.

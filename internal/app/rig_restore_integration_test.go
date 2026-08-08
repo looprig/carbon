@@ -394,9 +394,9 @@ func TestAgentToolsFSStorePersistence(t *testing.T) {
 	}
 }
 
-// TestManagedDelegateDeclaredModeFSStore uses the production managed-topology shape with
-// the one deliberate test-only difference Task 7 permits: the operator leaf declares a
-// named mode. It complements the production-definition rejection test by proving a mode
+// TestManagedDelegateDeclaredModeFSStore uses a Generic-only managed topology with
+// the one deliberate test-only difference: the Generic child declares
+// a named mode. It complements the production-definition rejection test by proving a mode
 // is accepted only when present in the target definition.
 func TestManagedDelegateDeclaredModeFSStore(t *testing.T) {
 	dataDir, root := t.TempDir(), t.TempDir()
@@ -409,7 +409,7 @@ func TestManagedDelegateDeclaredModeFSStore(t *testing.T) {
 		if strings.Contains(req.System, "mode-test-primary") {
 			primaryCalls++
 			if primaryCalls == 1 {
-				return startAgentCall("declared-mode", `{"agent_type":"operator","instructions":"plan it","agent_mode":"plan"}`), nil
+				return startAgentCall("declared-mode", `{"agent_type":"generic","instructions":"plan it","agent_mode":"plan"}`), nil
 			}
 			return finalText("declared mode complete"), nil
 		}
@@ -419,7 +419,7 @@ func TestManagedDelegateDeclaredModeFSStore(t *testing.T) {
 		return finalText("mode child complete"), nil
 	}
 	modeModel := testModel()
-	modeModel.Name = "declared-build-model"
+	modeModel.Name = "declared-generic-model"
 	definitions := func(t *testing.T) []loop.Definition {
 		t.Helper()
 		primer, err := loop.Define(
@@ -431,15 +431,15 @@ func TestManagedDelegateDeclaredModeFSStore(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		leaf, err := loop.Define(
+		child, err := loop.Define(
 			loop.WithName(generic.Name), loop.WithInference(client, testModel()),
 			loop.WithModes(loop.Mode{Name: "plan"}, loop.Mode{Name: "build", Model: modeModel, Effort: model.EffortHigh}),
-			loop.WithInitialMode("plan"), loop.WithPolicyRevision("mode-test-leaf-v1"),
+			loop.WithInitialMode("plan"), loop.WithPolicyRevision("mode-test-child-v1"),
 		)
 		if err != nil {
 			t.Fatal(err)
 		}
-		return []loop.Definition{primer, leaf}
+		return []loop.Definition{primer, child}
 	}
 	f1, err := NewSessionStoreFactory(dataDir)
 	if err != nil {
@@ -792,7 +792,7 @@ func TestRigRestoreSiblingOwnershipScopes(t *testing.T) {
 // TestProcessAdapterResolverIndependentOfHarnessTransport is Task 26B's
 // negative proof for "no Harness ProcessBinding, Rig option, lifecycle
 // option, or provider is used to transport the adapter": newProcessRunnerResolver
-// is built directly over a role's *sandbox.ExecutorSet -- the SAME
+// is built directly over the session's *sandbox.ExecutorSet -- the SAME
 // sessionAccess.set field toolsets.go's own bashDefinition and
 // accessGate already resolve executors from -- and driven by a LoopID
 // obtained from a GENUINELY RESTORED production session over real fsstore.

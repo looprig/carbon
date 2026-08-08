@@ -97,6 +97,8 @@ func TestModelConfigWithoutDelegateDefaultsIsValid(t *testing.T) {
 }
 
 func TestDecodeModelConfigRejectsRemovedDelegateDefaults(t *testing.T) {
+	// This wire value is a strict-rejection fixture for the removed field; it
+	// must not be accepted or migrated.
 	input := strings.Replace(
 		validLMStudioModelConfig,
 		`"models":`,
