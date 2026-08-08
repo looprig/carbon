@@ -53,7 +53,7 @@ func TestRuntimeSkillsWorkspaceLoadGatedEndToEnd(t *testing.T) {
 	var skillResult string
 	client := &managedScript{}
 	client.fn = func(_ context.Context, req inference.Request) ([]content.Chunk, error) {
-		if strings.Contains(req.System, `<role name="`+string(generic.Name)+`">`) && phase == "initial" && step == 0 {
+		if requestHasRole(req, generic.Name) && phase == "initial" && step == 0 {
 			step++
 			return startAgentCall("skill-delegate", `{"agent_type":"generic","instructions":"prepare for restore"}`), nil
 		}

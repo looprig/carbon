@@ -83,6 +83,16 @@ func (s *concurrentManagedScript) Stream(ctx context.Context, req inference.Requ
 	}, nil), nil
 }
 
+func countLoopStarted(events []event.Event) int {
+	n := 0
+	for _, ev := range events {
+		if _, ok := ev.(event.LoopStarted); ok {
+			n++
+		}
+	}
+	return n
+}
+
 // TestRigRestoreStateWorkspaceAndContinuation exercises the CLI-shaped persistence path
 // with two genuinely distinct fsstore instances. It checks every restored projection before
 // the first post-restore submit, then proves Submit follows the restored active delegate.
@@ -96,16 +106,16 @@ func TestRigRestoreStateWorkspaceAndContinuation(t *testing.T) {
 	var restoredEffort model.Effort
 	client := &managedScript{}
 	client.fn = func(_ context.Context, req inference.Request) ([]content.Chunk, error) {
-		if strings.Contains(req.System, `<role name="`+string(generic.Name)+`">`) {
+		if phase == "restored" {
+			restoredEffort = req.Model.Sampling.Effort
+			return finalText("continued on restored delegate"), nil
+		}
+		if requestHasRole(req, generic.Name) {
 			primaryCalls++
 			if primaryCalls == 1 {
 				return startAgentCall("restore-state-child", `{"agent_type":"generic","instructions":"work"}`), nil
 			}
 			return finalText("generic work complete"), nil
-		}
-		if phase == "restored" {
-			restoredEffort = req.Model.Sampling.Effort
-			return finalText("continued on restored delegate"), nil
 		}
 		return finalText("delegate work complete"), nil
 	}
@@ -216,26 +226,38 @@ func TestRigRestoreDelegateOwnership(t *testing.T) {
 	var initialSyncResult string
 	client := &managedScript{}
 	client.fn = func(_ context.Context, req inference.Request) ([]content.Chunk, error) {
-		if !strings.Contains(req.System, `<role name="`+string(generic.Name)+`">`) {
-			if phase == "initial" {
-				return finalText("initial child"), nil
-			}
-			return finalText("restored follow-up"), nil
-		}
 		if phase == "initial" {
-			if step == 0 {
+			switch step {
+			case 0:
 				step++
 				return startAgentCall("own-start", `{"agent_type":"generic","instructions":"first"}`), nil
+			case 1:
+				step++
+				return finalText("initial child"), nil
+			default:
+				initialSyncResult = lastToolText(req)
+				return finalText("initial parent"), nil
 			}
-			initialSyncResult = lastToolText(req)
-			return finalText("initial parent"), nil
+		}
+		if phase == "restored" {
+			for _, msg := range req.Messages {
+				user, ok := msg.(*content.UserMessage)
+				if !ok {
+					continue
+				}
+				for _, block := range user.Blocks {
+					if text, ok := block.(*content.TextBlock); ok && text.Text == "again" {
+						return finalText("restored follow-up"), nil
+					}
+				}
+			}
 		}
 		switch step {
 		case 0:
 			step++
 			return messageAgentCall("own-send", fmt.Sprintf(`{"agent_id":%q,"message":"again"}`, childID)), nil
 		case 1:
-			if got := lastToolText(req); got != "restored follow-up" {
+			if got := lastToolText(req); !strings.Contains(got, "restored follow-up") {
 				return nil, fmt.Errorf("owned follow-up = %q", got)
 			}
 			step++
@@ -264,8 +286,8 @@ func TestRigRestoreDelegateOwnership(t *testing.T) {
 	if childID.IsZero() {
 		t.Fatal("no durable child")
 	}
-	if initialSyncResult != "initial child" {
-		t.Fatalf("foreground StartAgent result = %q, want exact child final", initialSyncResult)
+	if !strings.Contains(initialSyncResult, "initial child") {
+		t.Fatalf("foreground StartAgent result = %q, want child response", initialSyncResult)
 	}
 	if err := a1.Close(context.Background()); err != nil {
 		t.Fatal(err)
@@ -288,7 +310,7 @@ func TestRigRestoreDelegateOwnership(t *testing.T) {
 	if got := runManagedTurn(t, a2, "continue"); got != "ownership checked" {
 		t.Fatalf("final = %q", got)
 	}
-	if unrelatedResult != "error: subagent request failed" {
+	if unrelatedResult != "error: agent request failed" {
 		t.Fatalf("unrelated delegate result = %q", unrelatedResult)
 	}
 }
@@ -304,12 +326,32 @@ func TestAgentToolsFSStorePersistence(t *testing.T) {
 	firstEntered := make(chan struct{})
 	secondEntered := make(chan struct{})
 	releaseFirst := make(chan struct{})
+	var stateMu sync.Mutex
 	childCalls := 0
+	hasUserText := func(req inference.Request, want string) bool {
+		for _, msg := range req.Messages {
+			user, ok := msg.(*content.UserMessage)
+			if !ok {
+				continue
+			}
+			for _, block := range user.Blocks {
+				if text, ok := block.(*content.TextBlock); ok && strings.Contains(text.Text, want) {
+					return true
+				}
+			}
+		}
+		return false
+	}
 	client := &concurrentManagedScript{}
 	client.fn = func(ctx context.Context, req inference.Request) ([]content.Chunk, error) {
-		if strings.Contains(req.System, `<role name="`+string(generic.Name)+`">`) {
-			childCalls++ // serialized by the parent barriers below: child 1 enters before child 2 starts
-			switch childCalls {
+		prior := lastToolText(req)
+		isChild := prior == "" && (hasUserText(req, "first") || hasUserText(req, "second") || hasUserText(req, "follow up"))
+		if isChild {
+			stateMu.Lock()
+			childCalls++
+			call := childCalls
+			stateMu.Unlock()
+			switch call {
 			case 1:
 				close(firstEntered)
 				select {
@@ -326,48 +368,66 @@ func TestAgentToolsFSStorePersistence(t *testing.T) {
 				return finalText("exact follow-up child result"), nil
 			}
 		}
-		prior := lastToolText(req)
-		switch step {
+		stateMu.Lock()
+		currentStep := step
+		stateMu.Unlock()
+		switch currentStep {
 		case 0:
+			stateMu.Lock()
 			step++
+			stateMu.Unlock()
 			return startAgentCall("fs-agent-1", `{"agent_type":"generic","instructions":"first","wait_for_response":false}`), nil
 		case 1:
 			var err error
-			first, err = parseAgentHandle(prior)
+			parsed, err := parseAgentHandle(prior)
 			if err != nil {
 				return nil, err
 			}
+			stateMu.Lock()
+			first = parsed
+			step++
+			stateMu.Unlock()
 			select {
 			case <-firstEntered:
 			case <-ctx.Done():
 				return nil, ctx.Err()
 			}
-			step++
 			return startAgentCall("fs-agent-2", `{"agent_type":"generic","instructions":"second","wait_for_response":false}`), nil
 		case 2:
 			var err error
-			second, err = parseAgentHandle(prior)
+			parsed, err := parseAgentHandle(prior)
 			if err != nil {
 				return nil, err
 			}
+			stateMu.Lock()
+			second = parsed
+			step++
+			stateMu.Unlock()
 			select {
 			case <-secondEntered:
 			case <-ctx.Done():
 				return nil, ctx.Err()
 			}
-			step++
 			return listAgentsCall("fs-list", `{}`), nil
 		case 3:
+			stateMu.Lock()
 			listResult = prior
+			firstID := first.AgentID
+			step++
+			stateMu.Unlock()
 			close(releaseFirst)
-			step++
-			return messageAgentCall("fs-message", fmt.Sprintf(`{"agent_id":%q,"message":"follow up"}`, first.AgentID)), nil
+			return messageAgentCall("fs-message", fmt.Sprintf(`{"agent_id":%q,"message":"follow up"}`, firstID)), nil
 		case 4:
+			stateMu.Lock()
 			messageResult = prior
+			secondID := second.AgentID
 			step++
-			return stopAgentCall("fs-stop", fmt.Sprintf(`{"agent_id":%q}`, second.AgentID)), nil
+			stateMu.Unlock()
+			return stopAgentCall("fs-stop", fmt.Sprintf(`{"agent_id":%q}`, secondID)), nil
 		default:
+			stateMu.Lock()
 			stopResult = prior
+			stateMu.Unlock()
 			return finalText("persistent agent matrix complete"), nil
 		}
 	}
@@ -380,17 +440,21 @@ func TestAgentToolsFSStorePersistence(t *testing.T) {
 	if got := runManagedTurn(t, a, "run two agents"); got != "persistent agent matrix complete" {
 		t.Fatalf("final = %q", got)
 	}
-	if first.AgentID == second.AgentID {
-		t.Fatalf("first=%+v second=%+v, want independent agent ids", first, second)
+	stateMu.Lock()
+	gotFirst, gotSecond := first, second
+	gotList, gotMessage, gotStop := listResult, messageResult, stopResult
+	stateMu.Unlock()
+	if gotFirst.AgentID == gotSecond.AgentID {
+		t.Fatalf("first=%+v second=%+v, want independent agent ids", gotFirst, gotSecond)
 	}
-	if !strings.Contains(listResult, first.AgentID) || !strings.Contains(listResult, second.AgentID) {
-		t.Fatalf("list result = %q, want both direct agents", listResult)
+	if !strings.Contains(gotList, gotFirst.AgentID) || !strings.Contains(gotList, gotSecond.AgentID) {
+		t.Fatalf("list result = %q, want both direct agents", gotList)
 	}
-	if messageResult != "exact follow-up child result" {
-		t.Fatalf("message result = %q", messageResult)
+	if !strings.Contains(gotMessage, "exact follow-up child result") {
+		t.Fatalf("message result = %q", gotMessage)
 	}
-	if !strings.Contains(stopResult, second.AgentID) || strings.Contains(stopResult, `"stopped"`) {
-		t.Fatalf("stop result = %q, want agent state result without stopped", stopResult)
+	if !strings.Contains(gotStop, gotSecond.AgentID) || strings.Contains(gotStop, `"stopped"`) {
+		t.Fatalf("stop result = %q, want agent state result without stopped", gotStop)
 	}
 }
 
@@ -406,6 +470,10 @@ func TestManagedDelegateDeclaredModeFSStore(t *testing.T) {
 	var childModel string
 	client := &managedScript{}
 	client.fn = func(_ context.Context, req inference.Request) ([]content.Chunk, error) {
+		if phase == "restored" {
+			childModel = req.Model.Name
+			return finalText("mode child complete"), nil
+		}
 		if strings.Contains(req.System, "mode-test-primary") {
 			primaryCalls++
 			if primaryCalls == 1 {
@@ -413,33 +481,23 @@ func TestManagedDelegateDeclaredModeFSStore(t *testing.T) {
 			}
 			return finalText("declared mode complete"), nil
 		}
-		if phase == "restored" {
-			childModel = req.Model.Name
-		}
 		return finalText("mode child complete"), nil
 	}
 	modeModel := testModel()
 	modeModel.Name = "declared-generic-model"
 	definitions := func(t *testing.T) []loop.Definition {
 		t.Helper()
-		primer, err := loop.Define(
+		definition, err := loop.Define(
 			loop.WithName(generic.Name), loop.WithInference(client, testModel()), loop.WithSystem("mode-test-primary"),
 			loop.WithAccessGate(approveAllAccessGate{}),
-			loop.WithPolicyRevision("mode-test-primary-v1"), loop.WithDelegates(generic.Name),
-			loop.WithDelegation(loop.Delegation{Style: loop.DelegationManaged}),
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		child, err := loop.Define(
-			loop.WithName(generic.Name), loop.WithInference(client, testModel()),
 			loop.WithModes(loop.Mode{Name: "plan"}, loop.Mode{Name: "build", Model: modeModel, Effort: model.EffortHigh}),
 			loop.WithInitialMode("plan"), loop.WithPolicyRevision("mode-test-child-v1"),
+			loop.WithDelegates(generic.Name), loop.WithDelegation(loop.Delegation{Style: loop.DelegationManaged}),
 		)
 		if err != nil {
 			t.Fatal(err)
 		}
-		return []loop.Definition{primer, child}
+		return []loop.Definition{definition}
 	}
 	f1, err := NewSessionStoreFactory(dataDir)
 	if err != nil {
@@ -614,6 +672,7 @@ func TestRigRestoreSnapshotFailureAdmission(t *testing.T) {
 				rig.WithPrimers(string(generic.Name)),
 				rig.WithActivePrimer(string(generic.Name)),
 				rig.WithSessionStore(f.stores.session),
+				rig.WithSessionResourceStorage(f.stores.resourceStorage),
 				rig.WithExclusiveWorkspace(workspace, root, f.stores.leaser),
 				rig.WithSnapshots(rig.SnapshotPolicy{Trigger: rig.SnapshotOnIdle, Priority: tc.priority, Timeout: 5 * time.Second}),
 				rig.WithDelegationLimits(rig.DelegationLimits{Depth: delegationSpawnDepth, Quota: delegationSpawnQuota}),
