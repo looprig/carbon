@@ -8,9 +8,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/looprig/coderig/internal/catalog/builder"
-	"github.com/looprig/coderig/internal/catalog/planner"
-	"github.com/looprig/coderig/internal/catalog/reviewer"
+	"github.com/looprig/coderig/internal/catalog/generic"
 	"github.com/looprig/core/content"
 	"github.com/looprig/core/uuid"
 	"github.com/looprig/foreignloops/driver"
@@ -139,7 +137,7 @@ func testACPEmptyComposition(t *testing.T) *ACPComposition {
 	}
 }
 
-func testACPDelegationRig(t *testing.T, cfg Config) (*rig.Rig, *swarmStores, *delegateProbe) {
+func testACPDelegationRig(t *testing.T, cfg Config) (*rig.Rig, *sessionStores, *delegateProbe) {
 	t.Helper()
 	client := &managedScript{fn: func(context.Context, inference.Request) ([]content.Chunk, error) {
 		return finalText("child done"), nil
@@ -169,11 +167,9 @@ func task31ProductionDefinitions(t *testing.T, client inference.Client, probe *d
 	t.Helper()
 	root := t.TempDir()
 	access, cfg := headlessTestAccess(t, cfg, root)
-	definitions, err := swarmDefinitionsWithAdditionalTools(client, testModel(), cfg, access, map[identity.AgentName][]tool.Definition{
-		builder.Name: {probe.definition()},
-	})
+	definitions, err := genericTestDefinitionsWithAdditionalTools(client, testModel(), cfg, access, []tool.Definition{probe.definition()})
 	if err != nil {
-		t.Fatalf("swarmDefinitionsWithAdditionalTools() error = %v", err)
+		t.Fatalf("genericTestDefinitionsWithAdditionalTools() error = %v", err)
 	}
 	return definitions, root, cfg
 }
@@ -181,7 +177,7 @@ func task31ProductionDefinitions(t *testing.T, client inference.Client, probe *d
 func gatewayRuntimeCatalogForTask31(t *testing.T, clients map[model.ProviderName]inference.Client) loop.RuntimeCatalog {
 	t.Helper()
 	compiled, err := CompileACPCatalog(ACPCatalogInput{
-		AgentTypes:     []identity.AgentName{planner.Name, builder.Name, reviewer.Name},
+		AgentTypes:     []identity.AgentName{generic.Name, generic.Name, generic.Name},
 		GatewayTargets: legacyTestGatewayTargets(clients),
 		ClaudeSmall:    "sonnet-5",
 	})
@@ -230,7 +226,7 @@ func task31PrimerRootIDs(t *testing.T, store *sessionstore.Store, sessionID uuid
 			rootIDs[ev.AgentName] = ev.LoopID
 		}
 	}
-	wantPrimers := []identity.AgentName{planner.Name, builder.Name, reviewer.Name}
+	wantPrimers := []identity.AgentName{generic.Name, generic.Name, generic.Name}
 	if len(rootIDs) != len(wantPrimers) {
 		t.Fatalf("durable root loops = %v, want planner, builder, and reviewer", rootIDs)
 	}
@@ -244,7 +240,7 @@ func task31PrimerRootIDs(t *testing.T, store *sessionstore.Store, sessionID uuid
 
 func assertTask31PrimersPresent(t *testing.T, rootIDs map[identity.AgentName]uuid.UUID, lookup func(uuid.UUID) (loop.Handle, bool)) {
 	t.Helper()
-	for _, name := range []identity.AgentName{planner.Name, builder.Name, reviewer.Name} {
+	for _, name := range []identity.AgentName{generic.Name, generic.Name, generic.Name} {
 		if _, ok := lookup(rootIDs[name]); !ok {
 			t.Fatalf("primer %q is missing", name)
 		}
@@ -257,9 +253,9 @@ func TestACPPostureUsesProductionRolesOnly(t *testing.T) {
 		role    string
 		posture driver.Posture
 	}{
-		{role: string(planner.Name), posture: driver.PostureReadOnly},
-		{role: string(builder.Name), posture: driver.PostureWorkspaceWrite},
-		{role: string(reviewer.Name), posture: driver.PostureReadOnly},
+		{role: string(generic.Name), posture: driver.PostureReadOnly},
+		{role: string(generic.Name), posture: driver.PostureWorkspaceWrite},
+		{role: string(generic.Name), posture: driver.PostureReadOnly},
 	}
 	for _, tt := range tests {
 		got, err := acpPostureFor(tt.role)
@@ -291,12 +287,12 @@ func TestACPCompositionRestoresCodexRuntimeThroughCurrentCatalog(t *testing.T) {
 	}
 	rootIDs := task31PrimerRootIDs(t, stores.session, live.SessionID())
 	assertTask31PrimersPresent(t, rootIDs, live.Loop)
-	rootID := rootIDs[builder.Name]
+	rootID := rootIDs[generic.Name]
 	if live.ActiveLoop().ID() != rootID {
 		t.Fatalf("active primer = %v, want builder root %v", live.ActiveLoop().ID(), rootID)
 	}
 	started, err := probe.captured().Execute(ctx, tool.DelegateRequest{
-		Operation: tool.DelegateStart, AgentType: string(reviewer.Name), Message: "review", WaitForResponse: false, Runtime: codexMaxRuntime(),
+		Operation: tool.DelegateStart, AgentType: string(generic.Name), Message: "review", WaitForResponse: false, Runtime: codexMaxRuntime(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -365,12 +361,12 @@ func TestACPCompositionMissingLunaTombstonesChildAndKeepsPrimer(t *testing.T) {
 	}
 	rootIDs := task31PrimerRootIDs(t, stores.session, live.SessionID())
 	assertTask31PrimersPresent(t, rootIDs, live.Loop)
-	rootID := rootIDs[builder.Name]
+	rootID := rootIDs[generic.Name]
 	if live.ActiveLoop().ID() != rootID {
 		t.Fatalf("active primer = %v, want builder root %v", live.ActiveLoop().ID(), rootID)
 	}
 	started, err := probe.captured().Execute(ctx, tool.DelegateRequest{
-		Operation: tool.DelegateStart, AgentType: string(reviewer.Name), Message: "review", WaitForResponse: false, Runtime: codexMaxRuntime(),
+		Operation: tool.DelegateStart, AgentType: string(generic.Name), Message: "review", WaitForResponse: false, Runtime: codexMaxRuntime(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -428,10 +424,10 @@ func TestACPCompositionWithoutProfilesUsesManagedNativeFallback(t *testing.T) {
 	var result string
 	step := 0
 	client.fn = func(_ context.Context, req inference.Request) ([]content.Chunk, error) {
-		if requestHasRole(req, reviewer.Name) {
+		if requestHasRole(req, generic.Name) {
 			return finalText("reviewer done"), nil
 		}
-		if !requestHasRole(req, builder.Name) {
+		if !requestHasRole(req, generic.Name) {
 			return nil, errors.New("unexpected role in managed native fallback request")
 		}
 		if step == 0 {

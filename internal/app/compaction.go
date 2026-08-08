@@ -76,7 +76,7 @@ type conversationContextPolicy struct {
 // gateway-backed delegate model (models.json's ACPGatewaySource catalog,
 // distinct from NativeACP): native, in-process, RuntimeClient-routed
 // StartAgent delegates are ordinary harness loop.Definition instances
-// subject to the same declared-transport restore check as the primer roles,
+// subject to the same declared-transport restore check as the Generic primer and delegates,
 // so their transports must be declared too or restoring a session with an
 // active/prior delegate on a foreign transport fails harness's
 // RestoreTransportMismatchError. model is always seeded first in the merged

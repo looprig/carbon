@@ -23,22 +23,22 @@ import (
 	"github.com/looprig/tools/writefile"
 )
 
-// toolsets.go owns CodeRig's direct sandbox assembly: it builds the per-role
-// sandbox.ExecutorSet, the combined access gate, and the standard tool
+// toolsets.go owns CodeRig's direct sandbox assembly: it builds the one
+// session sandbox.ExecutorSet, combined access gate, and standard Generic tool
 // definitions bound to that set. There is no confinement bridge — CodeRig wires
 // sandbox profiles, harness gate evaluation, and the tools package directly.
 //
 // The four sandbox capability kinds (command.execute, filesystem.read/write,
-// network) route to the role's effective *sandbox.Profile; the two product kinds
+// network) route to the session's effective *sandbox.Profile; the two product kinds
 // (tool.invoke, context.load) route to CodeRig's product access source. The bound
 // per-Loop executor is the structural gate.GrantIssuer AND the confined command
 // runner, so a minted grant validates against the exact executor that runs the
 // command.
 //
 // process_adapter.go (same package) is this file's asynchronous-process
-// counterpart to grantedExecutor: newProcessRunnerResolver captures a role's
+// counterpart to grantedExecutor: newProcessRunnerResolver captures the session's
 // *sandbox.ExecutorSet and returns a tools.AsyncProcessRunnerResolver, a
-// closure that mechanically wraps that role's per-Loop *sandbox.Executor as a
+// closure that mechanically wraps that session's per-Loop *sandbox.Executor as a
 // harness tool.AsyncProcessRunner, resolved fresh on each call from the
 // LoopID Harness Bind supplies. This file only exposes that constructor; a
 // later task threads it into bashDefinition's build closure alongside the
@@ -51,12 +51,12 @@ import (
 const maxReadBytes int64 = 5 << 20
 
 // familyPolicyRev is the durable revision of CodeRig's automatic Bash-family
-// eligibility catalog (exactly git log/status/diff/show/push). It folds into each
-// role's per-Loop policy revision so a catalog change invalidates a restore.
+// eligibility catalog (exactly git log/status/diff/show/push). It folds into the
+// Generic per-Loop policy revision so a catalog change invalidates a restore.
 const familyPolicyRev = "coderig-family:git-log-status-diff-show-push:v1"
 
-// executorScratchLimit bounds the number of memoized executor identities in one
-// role's set: every primer/delegate Loop plus every spawnable sub-loop the
+// executorScratchLimit bounds the number of memoized executor identities in the
+// session's set: every primer/delegate Loop plus every spawnable sub-loop the
 // delegation quota allows, with headroom.
 const executorScratchLimit = delegationSpawnQuota + 4
 
@@ -108,14 +108,14 @@ var (
 	_ tool.GrantedRunner = grantedExecutor{}
 )
 
-// roleGate is CodeRig's per-role combined access gate. It satisfies loop.AccessGate
-// and, per authorized call, resolves the calling loop's own executor from the
-// role's executor set (keyed by the live step's Loop ID) and runs one gate
+// accessGate is CodeRig's combined access gate. It satisfies loop.AccessGate and,
+// per authorized call, resolves the calling loop's own executor from the session
+// executor set (keyed by the live step's Loop ID) and runs one gate
 // evaluator with that executor as the structural grant issuer. Interactive
 // construction supplies the workspace rule writer and the loop's approval
 // capability; headless construction supplies neither and returns a typed
 // approval-required denial for any unmet gated requirement.
-type roleGate struct {
+type accessGate struct {
 	set         *sandbox.ExecutorSet
 	bindings    []gate.AccessBinding
 	matcher     gate.RuleMatcher
@@ -123,7 +123,7 @@ type roleGate struct {
 	interactive bool
 }
 
-func (g *roleGate) Authorize(ctx context.Context, request tool.Request) (gate.Resolution, error) {
+func (g *accessGate) Authorize(ctx context.Context, request tool.Request) (gate.Resolution, error) {
 	provenance, ok := loop.ProvenanceFrom(ctx)
 	if !ok || provenance.LoopID.IsZero() {
 		return gate.Resolution{}, errNoLoopProvenance
@@ -144,10 +144,10 @@ func (g *roleGate) Authorize(ctx context.Context, request tool.Request) (gate.Re
 	return evaluator.Authorize(ctx, request)
 }
 
-var _ loop.AccessGate = (*roleGate)(nil)
+var _ loop.AccessGate = (*accessGate)(nil)
 
-// sandboxAccessBindings routes the four sandbox capability kinds to the role's
-// effective profile (the SAME immutable pointer the role's executor set enforces)
+// sandboxAccessBindings routes the four sandbox capability kinds to the session's
+// effective profile (the SAME immutable pointer the session executor set enforces)
 // and the two product-owned kinds to CodeRig's product access source.
 func sandboxAccessBindings(profile *sandbox.Profile, product gate.AccessSource) []gate.AccessBinding {
 	return []gate.AccessBinding{
@@ -160,34 +160,33 @@ func sandboxAccessBindings(profile *sandbox.Profile, product gate.AccessSource) 
 	}
 }
 
-// rolePolicyRevision is the role's per-Loop durable policy revision: the selected
-// profile NAME, the role, and the family catalog revision. It is deliberately
+// agentPolicyRevision is Generic's per-Loop durable policy revision: the selected
+// profile name and family catalog revision. It is deliberately
 // WORKSPACE-INDEPENDENT — the workspace root and the full normalized profile
-// (with roots, HOME, isolation, and reviewer ceiling) live in the rig-level access
+// (with roots, HOME, and isolation) live in the rig-level access
 // digest (NativePermissionPolicyRev), which the rig owns alongside workspace
 // placement. Folding the root into the per-loop revision would couple the loop
 // fingerprint to a placement concern the loop never captures. A selected-profile
 // or family-catalog change still changes this revision.
-func rolePolicyRevision(profile AccessProfile, role string) string {
-	return "coderig-access:" + role + ":" + string(profile) + ":" + familyPolicyRev
+func agentPolicyRevision(profile AccessProfile) string {
+	return "coderig-access:generic:" + string(profile) + ":" + familyPolicyRev
 }
 
 // bashDefinition builds the workspace-bound, session-supervised Bash
-// definition backed by the role's per-Loop confined executor for BOTH its
+// definition backed by Generic's per-Loop confined executor for BOTH its
 // paths. The build closure retains the SAME synchronous
 // set.For(bindings.LoopID.String()) lookup this definition has always used
 // (the SAME instance the access gate resolves as grant issuer for the
 // identical Loop ID, so a grant minted during evaluation validates against
 // the runner that executes the command) for the foreground/confined-runner
 // path, and separately invokes resolver — captured from the caller, Task
-// 26B's newProcessRunnerResolver constructed over this SAME role executor
-// set — with the identical bindings.LoopID, for the background/async path.
+// 26B's newProcessRunnerResolver constructed over this SAME executor set —
+// with the identical bindings.LoopID, for the background/async path.
 // resolver supplies the concrete tool.AsyncProcessRunner Task 15's
 // supervised Bash factory (bash.NewSupervisedFactory) requires; a nil
 // resolver, a resolver error, or a nil/typed-nil returned runner all abort
 // Build before any tool is produced. Bash proposes only the product family
-// catalog for automatic reuse. Used by the builder and reviewer rosters;
-// the planner keeps legacyBashDefinition's plain, non-supervised path.
+// catalog for automatic reuse.
 func bashDefinition(set *sandbox.ExecutorSet, resolver tools.AsyncProcessRunnerResolver) tool.Definition {
 	catalog := productFamilyEligibility()
 	return tool.NewDefinition("Bash", tool.RequiresWorkspace|tool.RequiresProcessServices, func(ctx context.Context, bindings tool.Bindings) ([]tool.InvokableTool, error) {
@@ -226,41 +225,11 @@ func bashDefinition(set *sandbox.ExecutorSet, resolver tools.AsyncProcessRunnerR
 	})
 }
 
-// legacyBashDefinition builds the plain, non-supervised Bash definition:
-// bashDefinition's exact original body, preserved unchanged. It is used only
-// by the planner role. Planner's own roster doc comment scopes its Bash to
-// "read-only repository checks" and its role prompt explicitly hands off
-// implementation, build, and test work (the natural home for long-running
-// background commands) to the builder or reviewer — so planner deliberately
-// keeps the foreground-only path and never gets ProcessOutput/ProcessInput/
-// ProcessStop.
-func legacyBashDefinition(set *sandbox.ExecutorSet) tool.Definition {
-	catalog := productFamilyEligibility()
-	return tool.NewDefinition("Bash", tool.RequiresWorkspace, func(_ context.Context, bindings tool.Bindings) ([]tool.InvokableTool, error) {
-		if bindings.Workspace == nil {
-			return nil, &WorkspaceRootError{}
-		}
-		executor, err := set.For(bindings.LoopID.String())
-		if err != nil {
-			return nil, err
-		}
-		return []tool.InvokableTool{bash.NewBash(bindings.Workspace.Root,
-			bash.WithRunner(grantedExecutor{executor}),
-			bash.WithWorkspaceCoordinator(bindings.Workspace.Coordinator),
-			bash.WithObservations(bindings.Workspace.Observations),
-			bash.WithFamilyCatalog(catalog),
-		)}, nil
-	})
-}
-
-// builderToolDefinitions builds the builder's tool roster: read, mutate,
-// session-supervised Bash, the background process companions, web, and the
-// interaction utilities, plus the optional Skill tool. Bash and the process
-// companions route through the builder role's confined executor set: Bash's
-// foreground path via the same synchronous per-Loop executor lookup as
-// before, its background path and the three companions via Task 26B's
-// resolver over the SAME set.
-func builderToolDefinitions(set *sandbox.ExecutorSet, client *http.Client, skillTool tool.Definition) []tool.Definition {
+// genericToolDefinitions builds Generic's complete coding roster: read,
+// mutate, session-supervised Bash, background process companions, web, and
+// interaction utilities, plus the optional Skill tool. Every capability routes
+// through the same session executor set.
+func genericToolDefinitions(set *sandbox.ExecutorSet, client *http.Client, skillTool tool.Definition) []tool.Definition {
 	guard := coderigReadGuard{}
 	definitions := []tool.Definition{
 		tools.ReadFileDefinition(guard, readfile.WithHostReads()),
@@ -283,111 +252,34 @@ func builderToolDefinitions(set *sandbox.ExecutorSet, client *http.Client, skill
 	return definitions
 }
 
-// operatorToolDefinitions is a package-local compatibility seam for older
-// tests; production uses builderToolDefinitions.
-//
-//lint:ignore U1000 retained for package-local legacy fixtures.
-func operatorToolDefinitions(set *sandbox.ExecutorSet, client *http.Client, skillTool tool.Definition) []tool.Definition {
-	return builderToolDefinitions(set, client, skillTool)
-}
-
-// plannerToolDefinitions builds the planner's read/research roster. It carries
-// no file-mutation tools; its terminal is confined by the read-only planner
-// profile. Bash is retained for read-only repository checks ONLY — planner
-// deliberately keeps legacyBashDefinition's plain, foreground-only path and
-// gets no ProcessOutput/ProcessInput/ProcessStop: long-running background
-// command supervision belongs to the roles that actually implement, build,
-// and test (builder and reviewer), not to planner's read-only decomposition
-// role, whose own prompt hands that work off to them.
-func plannerToolDefinitions(set *sandbox.ExecutorSet, client *http.Client, skillTool tool.Definition) []tool.Definition {
-	guard := coderigReadGuard{}
-	definitions := []tool.Definition{
-		tools.ReadFileDefinition(guard, readfile.WithHostReads()),
-		tools.GlobDefinition(guard, glob.WithHostReads()),
-		tools.GrepDefinition(guard, grep.WithHostReads()),
-		legacyBashDefinition(set),
-		tools.WebSearchDefinition(websearch.NewDuckDuckGoProvider(client)),
-		tools.FetchDefinition(client),
-		tools.TaskDefinitions(),
-		tools.AskUserDefinition(),
-	}
-	if skillTool != nil {
-		definitions = append(definitions, skillTool)
-	}
-	return definitions
-}
-
-// reviewerToolDefinitions builds the reviewer face's read-only critique
-// roster: read, glob/grep, session-supervised Bash, the background process
-// companions, and interaction utilities, plus the optional Skill tool. It
-// carries no file-mutation tools. Bash and the process companions route
-// through the reviewer role's restricted executor set, exactly like builder's.
-func reviewerToolDefinitions(set *sandbox.ExecutorSet, skillTool tool.Definition) []tool.Definition {
-	guard := coderigReadGuard{}
-	definitions := []tool.Definition{
-		tools.ReadFileDefinition(guard, readfile.WithHostReads()),
-		tools.GlobDefinition(guard, glob.WithHostReads()),
-		tools.GrepDefinition(guard, grep.WithHostReads()),
-		bashDefinition(set, newProcessRunnerResolver(set)),
-		tools.ProcessOutputDefinition(),
-		tools.ProcessInputDefinition(),
-		tools.ProcessStopDefinition(),
-		tools.TaskDefinitions(),
-		tools.AskUserDefinition(),
-	}
-	if skillTool != nil {
-		definitions = append(definitions, skillTool)
-	}
-	return definitions
-}
-
 // sessionAccess is one session's resolved, session-fixed access wiring: one
-// executor set per role (owned here, closed by the runtime agent), the three
-// role gates, the durable access-config digest, and the presentation metadata (fixed
-// profile name, workspace root, and permission-load diagnostics). It is built
-// once per Open — interactive or headless — and never mutated.
+// executor set, one combined gate, one durable policy revision, and the
+// presentation metadata (fixed profile name, workspace root, and
+// permission-load diagnostics). It is built once per Open — interactive or
+// headless — and never mutated.
 type sessionAccess struct {
 	profileName string
 	workspace   string
 	configRev   string
 	diagnostics []string
-	plannerSet  *sandbox.ExecutorSet
-	builderSet  *sandbox.ExecutorSet
-	reviewerSet *sandbox.ExecutorSet
-	// Legacy aliases keep package-local tests that construct the former
-	// operator face compiling; production always uses builderSet/builderGate.
-	operatorSet       *sandbox.ExecutorSet
-	plannerGate       loop.AccessGate
-	builderGate       loop.AccessGate
-	reviewerGate      loop.AccessGate
-	operatorGate      loop.AccessGate
-	plannerPolicyRev  string
-	builderPolicyRev  string
-	reviewerPolicyRev string
-	operatorPolicyRev string
+	set         *sandbox.ExecutorSet
+	gate        loop.AccessGate
+	policyRev   string
 
 	closeOnce sync.Once
 	closeErr  error
 }
 
-// Close releases all role executor sets exactly once (idempotent), removing
-// their owned scratch HOME directories and revoking their grant keys and proxies.
+// Close releases the session executor set exactly once (idempotent), removing
+// its owned scratch HOME directory and revoking its grant key and proxy.
 func (a *sessionAccess) Close() error {
 	if a == nil {
 		return nil
 	}
 	a.closeOnce.Do(func() {
-		var errs []error
-		if a.plannerSet != nil {
-			errs = append(errs, a.plannerSet.Close())
+		if a.set != nil {
+			a.closeErr = a.set.Close()
 		}
-		if a.builderSet != nil {
-			errs = append(errs, a.builderSet.Close())
-		}
-		if a.reviewerSet != nil {
-			errs = append(errs, a.reviewerSet.Close())
-		}
-		a.closeErr = errors.Join(errs...)
 	})
 	return a.closeErr
 }
@@ -407,12 +299,11 @@ func buildHeadlessAccess(cfg Config, root string, explicitPermissionPath ...stri
 	return buildSessionAccessWithPermissionFile(cfg, root, false, permissionPath)
 }
 
-// buildSessionAccess constructs the session's fixed access wiring. It builds the
-// selected builder profile and the independent planner/reviewer restriction over the
-// workspace root, resolves the parent egress route, opens the permission store,
-// and constructs one executor set + one combined gate per role. On any partial
-// failure it closes what it already built so no scratch HOME leaks. All role
-// gates share the one workspace permission store (one workspace, one file).
+// buildSessionAccess constructs the session's fixed access wiring. It builds
+// the selected Generic profile, resolves the parent egress route, opens the
+// permission store, and constructs one executor set plus one combined gate.
+// On any partial failure it closes what it already built so no scratch HOME
+// leaks.
 func buildSessionAccess(cfg Config, root string, interactive bool) (*sessionAccess, error) {
 	return buildSessionAccessWithPermissionFile(cfg, root, interactive, "")
 }
@@ -427,11 +318,6 @@ func buildSessionAccessWithPermissionFile(cfg Config, root string, interactive b
 	if err != nil {
 		return nil, err
 	}
-	readOnly, err := restrictToReadOnly(selected, root)
-	if err != nil {
-		return nil, err
-	}
-
 	egress, err := resolveEgressRoute(os.Getenv)
 	if err != nil {
 		return nil, err
@@ -449,75 +335,29 @@ func buildSessionAccessWithPermissionFile(cfg Config, root string, interactive b
 	product := newProductAccessSource()
 	scratch := os.TempDir()
 
-	plannerSet, err := sandbox.NewExecutorSet(readOnly,
+	set, err := sandbox.NewExecutorSet(selected,
 		sandbox.WithScratchRoot(scratch),
 		sandbox.WithMaxExecutors(executorScratchLimit),
 		sandbox.WithEgressRoute(egress.Route),
 	)
 	if err != nil {
-		return nil, err
-	}
-	builderSet, err := sandbox.NewExecutorSet(selected,
-		sandbox.WithScratchRoot(scratch),
-		sandbox.WithMaxExecutors(executorScratchLimit),
-		sandbox.WithEgressRoute(egress.Route),
-	)
-	if err != nil {
-		_ = plannerSet.Close()
-		return nil, err
-	}
-	reviewerSet, err := sandbox.NewExecutorSet(readOnly,
-		sandbox.WithScratchRoot(scratch),
-		sandbox.WithMaxExecutors(executorScratchLimit),
-		sandbox.WithEgressRoute(egress.Route),
-	)
-	if err != nil {
-		_ = plannerSet.Close()
-		_ = builderSet.Close()
 		return nil, err
 	}
 
 	return &sessionAccess{
 		profileName: string(profileName),
 		workspace:   root,
-		configRev:   accessConfigDigest(profileName, selected, readOnly, readOnly, egress.Route),
 		diagnostics: diagnosticMessages(diagnostics),
-		plannerSet:  plannerSet,
-		builderSet:  builderSet,
-		reviewerSet: reviewerSet,
-		operatorSet: builderSet,
-		plannerGate: &roleGate{
-			set:         plannerSet,
-			bindings:    sandboxAccessBindings(readOnly, product),
-			matcher:     store,
-			writer:      writer,
-			interactive: interactive,
-		},
-		builderGate: &roleGate{
-			set:         builderSet,
+		configRev:   accessConfigDigest(profileName, selected, egress.Route),
+		set:         set,
+		gate: &accessGate{
+			set:         set,
 			bindings:    sandboxAccessBindings(selected, product),
 			matcher:     store,
 			writer:      writer,
 			interactive: interactive,
 		},
-		operatorGate: &roleGate{
-			set:         builderSet,
-			bindings:    sandboxAccessBindings(selected, product),
-			matcher:     store,
-			writer:      writer,
-			interactive: interactive,
-		},
-		reviewerGate: &roleGate{
-			set:         reviewerSet,
-			bindings:    sandboxAccessBindings(readOnly, product),
-			matcher:     store,
-			writer:      writer,
-			interactive: interactive,
-		},
-		plannerPolicyRev:  rolePolicyRevision(profileName, "planner"),
-		builderPolicyRev:  rolePolicyRevision(profileName, "builder"),
-		reviewerPolicyRev: rolePolicyRevision(profileName, "reviewer"),
-		operatorPolicyRev: rolePolicyRevision(profileName, "builder"),
+		policyRev: agentPolicyRevision(profileName),
 	}, nil
 }
 
@@ -528,7 +368,7 @@ func buildSessionAccessWithPermissionFile(cfg Config, root string, interactive b
 // the only place CodeRig's ACCESS wiring resolves HOME (via looprigHome), and it
 // does so only on the interactive branch — the headless branch never touches it.
 // openRuntimeAgent separately resolves HOME to load <home>/mcp.json
-// (newMCPSessionAssembly, swarm.go), unconditionally on both branches — MCP
+// (newMCPSessionAssembly, assembly.go), unconditionally on both branches — MCP
 // server discovery is not a permission-store concern, and headless composition
 // is allowed to use MCP tools even though it can never answer their elicitations.
 func buildPermissionStore(cfg Config, root string, interactive bool, explicitPermissionPath string) (*permission.Store, []permission.Diagnostic, error) {

@@ -14,9 +14,7 @@ import (
 
 	"github.com/looprig/acp/launch"
 	"github.com/looprig/acp/protocol"
-	"github.com/looprig/coderig/internal/catalog/builder"
-	"github.com/looprig/coderig/internal/catalog/planner"
-	"github.com/looprig/coderig/internal/catalog/reviewer"
+	"github.com/looprig/coderig/internal/catalog/generic"
 	"github.com/looprig/core/content"
 	"github.com/looprig/core/uuid"
 	"github.com/looprig/harness/pkg/event"
@@ -128,7 +126,7 @@ func TestACPRequestPermissionDeniesOutsidePostureWithoutNativePermissionWrites(t
 	configured := configuredProductionModelsForTest("fixture-model")
 	configured.ACP[0].Client = provider
 	compiled, err := CompileACPCatalog(ACPCatalogInput{
-		AgentTypes:     []identity.AgentName{builder.Name},
+		AgentTypes:     []identity.AgentName{generic.Name},
 		GatewayTargets: configured.ACP,
 	})
 	if err != nil {
@@ -185,9 +183,9 @@ func TestACPRequestPermissionDeniesOutsidePostureWithoutNativePermissionWrites(t
 		}
 	}}
 	access, cfg := headlessTestAccess(t, Config{ACPChildren: composition}, workspace)
-	definitions, err := swarmDefinitions(parent, testModel(), cfg, access)
+	definitions, err := genericTestDefinitions(parent, testModel(), cfg, access)
 	if err != nil {
-		t.Fatalf("swarmDefinitions: %v", err)
+		t.Fatalf("genericTestDefinitions: %v", err)
 	}
 	stores, err := openTestStores(t)
 	if err != nil {
@@ -263,7 +261,7 @@ func TestAgentRuntimeChoicesEndToEnd(t *testing.T) {
 	openAI := &task33InferenceClient{}
 	anthropic := &task33InferenceClient{}
 	compiled, err := CompileACPCatalog(ACPCatalogInput{
-		AgentTypes: []identity.AgentName{planner.Name, builder.Name, reviewer.Name},
+		AgentTypes: []identity.AgentName{generic.Name, generic.Name, generic.Name},
 		GatewayTargets: legacyTestGatewayTargets(map[model.ProviderName]inference.Client{
 			"openai":    openAI,
 			"anthropic": anthropic,
@@ -304,7 +302,7 @@ func TestAgentRuntimeChoicesEndToEnd(t *testing.T) {
 	var toolResult string
 	client := &managedScript{}
 	client.fn = func(_ context.Context, req inference.Request) ([]content.Chunk, error) {
-		if !requestHasRole(req, builder.Name) {
+		if !requestHasRole(req, generic.Name) {
 			return nil, fmt.Errorf("task33: unexpected non-parent inference request")
 		}
 		prior := lastToolText(req)
@@ -333,9 +331,9 @@ func TestAgentRuntimeChoicesEndToEnd(t *testing.T) {
 	}
 
 	access, cfg := headlessTestAccess(t, Config{ACPChildren: composition}, workspace)
-	definitions, err := swarmDefinitions(client, testModel(), cfg, access)
+	definitions, err := genericTestDefinitions(client, testModel(), cfg, access)
 	if err != nil {
-		t.Fatalf("swarmDefinitions() error = %v", err)
+		t.Fatalf("genericTestDefinitions() error = %v", err)
 	}
 	stores, err := openTestStores(t)
 	if err != nil {
@@ -386,7 +384,7 @@ var task33SensitivePayloadPattern = regexp.MustCompile(`(?i)(https?://|(?:^|[\s"
 func assertTask33DurableEvents(t *testing.T, events []event.Event, claude agentHandle) {
 	t.Helper()
 	want := map[identity.AgentName]event.AgentRuntime{
-		reviewer.Name: {
+		generic.Name: {
 			Harness: "claude-code", Profile: "acp/claude-code", CredentialMode: "gateway-backed",
 			Source: "gateway", SelectionKind: "explicit",
 			ModelAlias: "sonnet-5@high", SmallModelAlias: "sonnet-5",
@@ -419,7 +417,7 @@ func assertTask33DurableEvents(t *testing.T, events []event.Event, claude agentH
 	if len(ids) != 1 {
 		t.Fatalf("durable ACP LoopStarted identities = %v, want reviewer", ids)
 	}
-	if bound[reviewer.Name] != "task33-claude-code-session" {
+	if bound[generic.Name] != "task33-claude-code-session" {
 		t.Fatalf("durable ACP session bindings = %v", bound)
 	}
 	if claude.AgentID == "" {

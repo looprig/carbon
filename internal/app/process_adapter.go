@@ -23,13 +23,13 @@ import (
 // file only answers "what is the Sandbox equivalent of this Harness call,"
 // never "should this call be allowed" or "what should happen next."
 //
-// newProcessRunnerResolver is the exposed seam: it captures one role's
+// newProcessRunnerResolver is the exposed seam: it captures the session's
 // *sandbox.ExecutorSet and returns a tools.AsyncProcessRunnerResolver — a
 // closure/factory, not a pre-built adapter. Each call resolves the executor
 // bound to the LoopID Harness supplies at Bind time (via
 // set.For(loopID.String()), the SAME per-Loop executor bashDefinition and
-// roleGate already resolve for that Loop) and wraps it fresh. Task 27 is the
-// first and only caller that threads this resolver into a role's Bash
+// accessGate already resolves for that Loop) and wraps it fresh. Task 27 is the
+// first and only caller that threads this resolver into Generic's Bash
 // definition; this file deliberately does not touch toolsets.go's
 // roster-building functions.
 

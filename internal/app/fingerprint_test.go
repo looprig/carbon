@@ -14,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/looprig/coderig/internal/catalog/builder"
 	"github.com/looprig/coderig/internal/catalog/generic"
 	"github.com/looprig/core/uuid"
 	"github.com/looprig/harness/pkg/event"
@@ -32,9 +31,9 @@ import (
 func compactionFingerprintFor(t *testing.T, root string, client *fakeLLM, policy conversationContextPolicy, registration conversationHustleRegistration) event.ConfigFingerprint {
 	t.Helper()
 	access, cfg := headlessTestAccess(t, Config{}, root)
-	definitions, err := swarmDefinitionsWithContextPolicy(client, testModel(), cfg, policy, access)
+	definitions, err := genericTestDefinitionsWithContextPolicy(client, testModel(), cfg, policy, access)
 	if err != nil {
-		t.Fatalf("swarmDefinitionsWithContextPolicy() error = %v", err)
+		t.Fatalf("genericTestDefinitionsWithContextPolicy() error = %v", err)
 	}
 	stores := mustHeadlessTestStores(t)
 	assembly, err := buildRigWithRegistration(
@@ -53,7 +52,7 @@ func compactionFingerprintFor(t *testing.T, root string, client *fakeLLM, policy
 	return durableSessionFingerprint(t, stores, controller.SessionID())
 }
 
-func durableSessionFingerprint(t *testing.T, stores *swarmStores, sessionID uuid.UUID) event.ConfigFingerprint {
+func durableSessionFingerprint(t *testing.T, stores *sessionStores, sessionID uuid.UUID) event.ConfigFingerprint {
 	t.Helper()
 	replayer, err := stores.session.OpenEventReplayer(sessionID, sessionstore.ReplayRequest{})
 	if err != nil {
@@ -393,8 +392,8 @@ func TestSecretRedactionAcrossModelCatalogueGatewayFingerprintAndDurableEvents(t
 }
 
 // TestAgentFingerprintFields asserts the rig-level config-fingerprint fields the
-// composition root injects via rig.WithFingerprintFields: AgentKind is the swarm+active-primer
-// identity ("coderig:builder") and RuntimeSkills passes the human-set mode through verbatim. The
+// composition root injects via rig.WithFingerprintFields: AgentKind is the Generic
+// identity ("coderig:generic") and RuntimeSkills passes the human-set mode through verbatim. The
 // workspace-root field is NOT set here — the rig's exclusive-workspace placement folds the
 // canonical root into the fingerprint — so a restore still compares agent identity, skill
 // mode, AND (via the placement) the repo root.
@@ -409,18 +408,18 @@ func TestAgentFingerprintFields(t *testing.T) {
 		{
 			name: "runtime skills off",
 			cfg:  Config{RuntimeSkills: false},
-			want: rig.ConfigFingerprintFields{AgentKind: "coderig:builder", RuntimeSkills: false},
+			want: rig.ConfigFingerprintFields{AgentKind: "coderig:generic", RuntimeSkills: false},
 		},
 		{
 			name: "runtime skills on",
 			cfg:  Config{RuntimeSkills: true},
-			want: rig.ConfigFingerprintFields{AgentKind: "coderig:builder", RuntimeSkills: true},
+			want: rig.ConfigFingerprintFields{AgentKind: "coderig:generic", RuntimeSkills: true},
 		},
 		{
 			name: "access profile and digest fold in",
 			cfg:  Config{AccessProfile: AccessTrusted, AccessConfigRev: "coderig-access-v1:deadbeef"},
 			want: rig.ConfigFingerprintFields{
-				AgentKind:                 "coderig:builder",
+				AgentKind:                 "coderig:generic",
 				NativePermissionPolicyRev: "coderig-access-v1:deadbeef",
 				AppFields:                 map[string]string{"access_profile": "trusted"},
 			},
@@ -429,7 +428,7 @@ func TestAgentFingerprintFields(t *testing.T) {
 			name: "model configuration digest folds in",
 			cfg:  Config{ModelConfigRev: "coderig-models-v1:deadbeef"},
 			want: rig.ConfigFingerprintFields{
-				AgentKind:         "coderig:builder",
+				AgentKind:         "coderig:generic",
 				RuntimeCatalogRev: "coderig-models-v1:deadbeef",
 			},
 		},
@@ -547,16 +546,14 @@ func TestAccessConfigInvalidatesFingerprintFields(t *testing.T) {
 	}
 }
 
-// TestAgentKindFormat pins the AgentKind to "<swarm>:<active primer>" so a rename of
-// the builder's attribution name is reflected in the fingerprint (and a prior/other session,
-// with a different or empty AgentKind, cannot resume as CodeRig).
+// TestAgentKindFormat pins the Generic AgentKind used in the fingerprint.
 func TestAgentKindFormat(t *testing.T) {
 	t.Parallel()
-	want := "coderig:" + string(builder.Name)
+	want := "coderig:generic"
 	if agentKind != want {
 		t.Errorf("agentKind = %q, want %q", agentKind, want)
 	}
-	if agentKind != "coderig:builder" {
-		t.Errorf("agentKind = %q, want %q", agentKind, "coderig:builder")
+	if agentKind != "coderig:generic" {
+		t.Errorf("agentKind = %q, want %q", agentKind, "coderig:generic")
 	}
 }

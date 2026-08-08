@@ -12,7 +12,7 @@ import (
 // mcpManagerDigest builds a Manager from specs exactly the way
 // newMCPSessionAssembly does (mcpDefinitions -> mcpharness.NewManager) and
 // returns its ConfigDigest -- the same pre-Start digest openRuntimeAgent
-// folds into cfg.MCPConfigRev (swarm.go's configRev is read before attach's
+// folds into cfg.MCPConfigRev (assembly.go's configRev is read before attach's
 // Start call). No live session or process is needed: BindingIdentity's
 // configuration-side fields (Name, TransportKind, RedactedOrigin, Required,
 // CapabilityDigest, FilterDigest, LimitsDigest, CompatDigest, and for
@@ -38,7 +38,7 @@ func mcpManagerDigest(t *testing.T, specs []mcpServerSpec) string {
 // TestAgentFingerprintFieldsCarriesMCPConfigRev is the direct, minimal proof
 // of Task 11's one-line change: agentFingerprintFields must forward
 // cfg.MCPConfigRev into rig.ConfigFingerprintFields.ExternalCapabilityRev
-// unchanged, and a zero cfg.MCPConfigRev (no mcp.json, swarm.go's
+// unchanged, and a zero cfg.MCPConfigRev (no mcp.json, assembly.go's
 // mcpSessionAssembly.configRev's nil-manager case) must leave
 // ExternalCapabilityRev at its zero value -- the "no external capabilities"
 // default every pre-MCP session's fingerprint already had, since CodeRig
@@ -194,9 +194,9 @@ func TestMCPConfigFingerprintRestoreBehavior(t *testing.T) {
 	root := t.TempDir()
 
 	access, cfg := headlessTestAccess(t, Config{MCPConfigRev: baselineDigest}, root)
-	definitions, err := swarmDefinitions(&fakeLLM{}, testModel(), cfg, access)
+	definitions, err := genericTestDefinitions(&fakeLLM{}, testModel(), cfg, access)
 	if err != nil {
-		t.Fatalf("swarmDefinitions() error = %v", err)
+		t.Fatalf("genericTestDefinitions() error = %v", err)
 	}
 	assembly, err := buildRig(definitions, stores, root, cfg, false)
 	if err != nil {
@@ -214,9 +214,9 @@ func TestMCPConfigFingerprintRestoreBehavior(t *testing.T) {
 	restoreWith := func(t *testing.T, mcpConfigRev string, allowMismatch bool) error {
 		t.Helper()
 		racc, rcfg := headlessTestAccess(t, Config{MCPConfigRev: mcpConfigRev}, root)
-		rdefs, err := swarmDefinitions(&fakeLLM{}, testModel(), rcfg, racc)
+		rdefs, err := genericTestDefinitions(&fakeLLM{}, testModel(), rcfg, racc)
 		if err != nil {
-			t.Fatalf("swarmDefinitions() error = %v", err)
+			t.Fatalf("genericTestDefinitions() error = %v", err)
 		}
 		rasm, err := buildRig(rdefs, stores, root, rcfg, allowMismatch)
 		if err != nil {
@@ -271,9 +271,9 @@ func TestMCPAbsentConfigRestoresUnaffected(t *testing.T) {
 	if cfg.MCPConfigRev != "" {
 		t.Fatalf("cfg.MCPConfigRev = %q, want \"\" for a Config with no mcp.json", cfg.MCPConfigRev)
 	}
-	definitions, err := swarmDefinitions(&fakeLLM{}, testModel(), cfg, access)
+	definitions, err := genericTestDefinitions(&fakeLLM{}, testModel(), cfg, access)
 	if err != nil {
-		t.Fatalf("swarmDefinitions() error = %v", err)
+		t.Fatalf("genericTestDefinitions() error = %v", err)
 	}
 	assembly, err := buildRig(definitions, stores, root, cfg, false)
 	if err != nil {
@@ -289,9 +289,9 @@ func TestMCPAbsentConfigRestoresUnaffected(t *testing.T) {
 	}
 
 	racc, rcfg := headlessTestAccess(t, Config{}, root)
-	rdefs, err := swarmDefinitions(&fakeLLM{}, testModel(), rcfg, racc)
+	rdefs, err := genericTestDefinitions(&fakeLLM{}, testModel(), rcfg, racc)
 	if err != nil {
-		t.Fatalf("swarmDefinitions() error = %v", err)
+		t.Fatalf("genericTestDefinitions() error = %v", err)
 	}
 	rasm, err := buildRig(rdefs, stores, root, rcfg, false)
 	if err != nil {

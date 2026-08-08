@@ -180,62 +180,6 @@ func TestCoderigProfileRejectsUnknown(t *testing.T) {
 	}
 }
 
-// TestReadOnlyRoleRestrictionStaysReadOnly asserts the planner/reviewer's
-// effective profile is read-only and sandboxed under EVERY selected product
-// profile — the intersection never widens past the read-only role profile.
-func TestReadOnlyRoleRestrictionStaysReadOnly(t *testing.T) {
-	t.Parallel()
-	ws := canonicalTempDir(t)
-
-	reference, err := readOnlyAgentProfile(ws)
-	if err != nil {
-		t.Fatalf("readOnlyAgentProfile error = %v", err)
-	}
-	const (
-		deny  = uint8(sandbox.Deny)
-		gated = uint8(sandbox.Gated)
-		allow = uint8(sandbox.Allow)
-	)
-	for _, selected := range []AccessProfile{AccessReadOnly, AccessTrusted, AccessUnconfined} {
-		t.Run(string(selected), func(t *testing.T) {
-			t.Parallel()
-			base, err := coderigProfile(selected, ws)
-			if err != nil {
-				t.Fatalf("coderigProfile(%q) error = %v", selected, err)
-			}
-			readOnly, err := restrictToReadOnly(base, ws)
-			if err != nil {
-				t.Fatalf("restrictToReadOnly(%q) error = %v", selected, err)
-			}
-			// Read-only, no host access, no network, gated command, under every
-			// selected profile.
-			if got := accessAt(t, readOnly, "filesystem.read", ws); got != allow {
-				t.Errorf("workspace read = %d, want %d", got, allow)
-			}
-			if got := accessAt(t, readOnly, "filesystem.write", ws); got != deny {
-				t.Errorf("workspace write = %d, want Deny", got)
-			}
-			if got := accessAt(t, readOnly, "filesystem.read", "host:*"); got != deny {
-				t.Errorf("host read = %d, want Deny", got)
-			}
-			if got := accessAt(t, readOnly, "filesystem.write", "host:*"); got != deny {
-				t.Errorf("host write = %d, want Deny", got)
-			}
-			if got := accessAt(t, readOnly, "network", ""); got != deny {
-				t.Errorf("network = %d, want Deny", got)
-			}
-			if got := accessAt(t, readOnly, "command.execute", ""); got != gated {
-				t.Errorf("command = %d, want Gated", got)
-			}
-			// Full normalization (sandboxed, isolated HOME, no ack) matches the
-			// reviewer read-only profile regardless of the selected profile.
-			if readOnly.Fingerprint() != reference.Fingerprint() {
-				t.Errorf("read-only(%q) fingerprint = %s, want read-only reference %s", selected, readOnly.Fingerprint(), reference.Fingerprint())
-			}
-		})
-	}
-}
-
 // TestProductAccessSourceRouting proves the product source resolves the two
 // consumer-bound kinds as Gated with a valid scope, and fails closed for an
 // empty/untrimmed scope or an unknown kind.
@@ -249,7 +193,7 @@ func TestProductAccessSourceRouting(t *testing.T) {
 		scope string
 	}{
 		{capabilityToolInvoke, "mcp:github:search_issues"},
-		{skill.CapabilityContextLoad, skill.EmbeddedSkillIdentity("planner")},
+		{skill.CapabilityContextLoad, skill.EmbeddedSkillIdentity("generic")},
 		{skill.CapabilityContextLoad, skill.WorkspaceSkillIdentity("local")},
 	}
 	for _, tc := range gatedCases {
@@ -285,8 +229,8 @@ func TestProductAccessSourceRouting(t *testing.T) {
 	}
 }
 
-// TestAccessConfigDigestDrift proves each of the selected profile, the reviewer
-// restriction, and the egress route contributes to the durable access digest, so
+// TestAccessConfigDigestDrift proves each of the selected profile, the Generic
+// profile, and the egress route contributes to the durable access digest, so
 // any of those changes invalidates a restore; identical inputs are stable.
 func TestAccessConfigDigestDrift(t *testing.T) {
 	t.Parallel()
@@ -300,16 +244,6 @@ func TestAccessConfigDigestDrift(t *testing.T) {
 	if err != nil {
 		t.Fatalf("coderigProfile(trusted): %v", err)
 	}
-	roPlanner, err := restrictToReadOnly(readOnly, ws)
-	if err != nil {
-		t.Fatalf("restrictToReadOnly(readonly): %v", err)
-	}
-	// A DIFFERENT planner restriction (writable) to prove the read-only role
-	// field contributes independently of the builder profile.
-	writablePlanner, err := coderigProfile(AccessTrusted, ws)
-	if err != nil {
-		t.Fatalf("coderigProfile(trusted) planner: %v", err)
-	}
 	direct, err := sandbox.NewDirectEgressRoute()
 	if err != nil {
 		t.Fatalf("NewDirectEgressRoute: %v", err)
@@ -319,18 +253,15 @@ func TestAccessConfigDigestDrift(t *testing.T) {
 		t.Fatalf("NewUpstreamEgressRoute: %v", err)
 	}
 
-	base := accessConfigDigest(AccessReadOnly, readOnly, roPlanner, roPlanner, direct)
+	base := accessConfigDigest(AccessReadOnly, readOnly, direct)
 
-	if got := accessConfigDigest(AccessReadOnly, readOnly, roPlanner, roPlanner, direct); got != base {
+	if got := accessConfigDigest(AccessReadOnly, readOnly, direct); got != base {
 		t.Errorf("identical inputs produced different digests:\n%s\n%s", got, base)
 	}
-	if got := accessConfigDigest(AccessTrusted, trusted, roPlanner, roPlanner, direct); got == base {
-		t.Error("selected/builder profile change did not invalidate the digest")
+	if got := accessConfigDigest(AccessTrusted, trusted, direct); got == base {
+		t.Error("selected/Generic profile change did not invalidate the digest")
 	}
-	if got := accessConfigDigest(AccessReadOnly, readOnly, writablePlanner, roPlanner, direct); got == base {
-		t.Error("planner restriction change did not invalidate the digest")
-	}
-	if got := accessConfigDigest(AccessReadOnly, readOnly, roPlanner, roPlanner, upstream); got == base {
+	if got := accessConfigDigest(AccessReadOnly, readOnly, upstream); got == base {
 		t.Error("egress route change did not invalidate the digest")
 	}
 }

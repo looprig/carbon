@@ -43,7 +43,7 @@ type productionModels struct {
 	ConfigRev        string
 	// PermissionReviewEnabled, PermissionReviewModel, and PermissionReviewStrict
 	// mirror Config's own PermissionReviewEnabled/PermissionReviewModel/
-	// PermissionReviewStrictPolicy fields so production.go's and swarm.go's
+	// PermissionReviewStrictPolicy fields so production and assembly's
 	// copy-over reads as an obvious 1:1 mapping. They are resolved from an
 	// optional models.json permission_review section; the zero values (false,
 	// the zero model.Model, false) mean the section was absent.

@@ -9,7 +9,7 @@ import (
 	"github.com/looprig/tools/skill"
 )
 
-// skills_catalog.go is the composition-root seam that turns the swarm's per-agent
+// skills_catalog.go is the composition-root seam that turns Generic's allowed
 // allowed-skill sets into (a) the loader's allow-map, and (b) the trusted
 // <available_skills> catalog block appended to a skilled agent's system prompt.
 //
@@ -52,7 +52,7 @@ type skillScope struct {
 // (so each entry is an authorized, parsed SKILL.md). Names are sorted for a
 // deterministic prompt. An agent with no skills — or whose every skill fails to
 // describe — yields the EMPTY string (no block), so a skill-less agent's system
-// prompt is exactly catalog.Identity+Role, unchanged.
+// prompt is exactly Generic's catalog text, unchanged.
 //
 // A skill that fails to describe (missing/malformed embedded file — a catalogue
 // integrity bug, not a runtime input) is SKIPPED rather than aborting the whole

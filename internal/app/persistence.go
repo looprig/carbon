@@ -11,12 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/looprig/coderig/internal/catalog/builder"
-	"github.com/looprig/coderig/internal/catalog/planner"
-	"github.com/looprig/coderig/internal/catalog/reviewer"
 	"github.com/looprig/core/uuid"
 	"github.com/looprig/fsstore"
-	"github.com/looprig/harness/pkg/identity"
 	"github.com/looprig/harness/pkg/loop"
 	"github.com/looprig/harness/pkg/rig"
 	"github.com/looprig/harness/pkg/sessionstore"
@@ -32,7 +28,7 @@ import (
 // quiescence, and offload-blob GC — so this layer only opens the store facades, builds one
 // immutable rig per resolved Open (a fresh rig per config; /clear rebuilds with the same
 // process config), and hands NewSession/RestoreSession to the sessionAdapter adapter. The
-// headless New path (swarm.go) shares the SAME rig builder over a process-shared in-memory
+// headless New path (assembly.go) shares the SAME rig builder over a process-shared in-memory
 // store, so headless and persisted sessions are identical but for the backend.
 
 // offloadGCInterval is how often the rig runs one offload-blob GC pass; offloadGCTimeout
@@ -72,9 +68,9 @@ func DefaultDataDirIn(home string) (string, error) {
 	return filepath.Join(home, "store"), nil
 }
 
-// swarmStores bundles the session + workspace facades and the root leaser the rig needs,
+// sessionStores bundles the session + workspace facades and the root leaser the rig needs,
 // all over ONE storage.Composite backend. It is read-only after construction.
-type swarmStores struct {
+type sessionStores struct {
 	session   *sessionstore.Store
 	workspace *workspacestore.Store
 	leaser    storage.Leaser
@@ -82,24 +78,24 @@ type swarmStores struct {
 	// resourceStorage is this backend's rig.SessionResourceStorageProvider: the persisted
 	// on-disk provider for ensureStoresLocked's fsstore backend, the process-owned headless
 	// provider for headlessStores' process-shared in-memory backend, and nil for any
-	// swarmStores a narrow package test builds directly via openStores (a package test that
-	// still needs one, because it assembles the real production swarm, uses openTestStores
-	// instead). It is attached here, to swarmStores, rather than threaded as a new parameter
+	// sessionStores a narrow package test builds directly via openStores (a package test that
+	// still needs one, because it assembles the real production session, uses openTestStores
+	// instead). It is attached here, to sessionStores, rather than threaded as a new parameter
 	// through buildRig/openRuntimeAgent, matching how session/workspace/leaser already reach
 	// the rig — one more facade over the same backend, not a new call-chain parameter.
 	// buildRigWithRegistrationAndACP only installs rig.WithSessionResourceStorage when this is
 	// non-nil, so its absence changes nothing for a topology that does not declare
-	// tool.RequiresProcessServices. Since Task 27, the builder and reviewer rosters' Bash
-	// definition DOES declare it in production, so both real assembly paths above always
-	// populate this field; only a topology with a scoped, process-free tool subset (e.g. a
-	// planner-only fixture) can still legitimately leave it nil.
+	// tool.RequiresProcessServices. Generic's Bash definition declares it in
+	// production, so both real assembly paths above always populate this field;
+	// only a topology with a scoped, process-free tool subset can still
+	// legitimately leave it nil.
 	resourceStorage rig.SessionResourceStorageProvider
 }
 
 // openStores wires the session + workspace facades and the listing catalog over one backend
 // composite (fsstore for the persisted path, memstore for headless). The catalog is wired
 // with a replayer so a missing listing entry can be repaired by folding the ledger.
-func openStores(backend *storage.Composite) (*swarmStores, error) {
+func openStores(backend *storage.Composite) (*sessionStores, error) {
 	sessionStore, err := sessionstore.Open(backend)
 	if err != nil {
 		return nil, &StoreInitError{Stage: "sessionstore", Cause: err}
@@ -109,7 +105,7 @@ func openStores(backend *storage.Composite) (*swarmStores, error) {
 		return nil, &StoreInitError{Stage: "workspacestore", Cause: err}
 	}
 	catalog := sessionStore.OpenCatalog(sessionstore.WithCatalogReplayer(sessionStore))
-	return &swarmStores{
+	return &sessionStores{
 		session:   sessionStore,
 		workspace: workspaceStore,
 		leaser:    backend.Leaser,
@@ -206,12 +202,12 @@ var _ rig.SessionResourceStorageProvider = (*headlessResourceStorageProvider)(ni
 // different bases.
 var (
 	headlessOnce   sync.Once
-	headlessResult *swarmStores
+	headlessResult *sessionStores
 	headlessError  error
 )
 
 // headlessStores returns the process-shared in-memory store facades, opening them once.
-func headlessStores() (*swarmStores, error) {
+func headlessStores() (*sessionStores, error) {
 	headlessOnce.Do(func() {
 		stores, err := openStores(memstore.New())
 		if err != nil {
@@ -230,11 +226,11 @@ func headlessStores() (*swarmStores, error) {
 }
 
 // agentFingerprintFields assembles the rig-level config-fingerprint inputs that are not
-// part of a loop.Definition: the swarm+active-primer AgentKind, the human-set RuntimeSkills mode,
+// part of a loop.Definition: the Generic AgentKind, the human-set RuntimeSkills mode,
 // and the durable access configuration identity. NativePermissionPolicyRev carries the
-// secret-free access digest (access ABI version, selected profile, normalized builder, planner,
-// and reviewer profiles, and the non-secret egress route identity/guarantees) so a product-profile,
-// reviewer-restriction, or egress-boundary change invalidates a restore rather than silently
+// secret-free access digest (access ABI version, selected Generic profile, and
+// the non-secret egress route identity/guarantees) so an access-profile or
+// egress-boundary change invalidates a restore rather than silently
 // resuming with different authority. AppFields additionally surfaces the human-visible profile
 // name for the richer manifest (the 5.2 SessionPresenter consumes it). The workspace-root field
 // is owned by the rig's exclusive-workspace placement, so it is not set here. A zero Config
@@ -289,16 +285,6 @@ func combineRuntimeCatalogRevisions(modelConfigRev, runtimeCatalogRev string) st
 	return hex.EncodeToString(digest[:])
 }
 
-// operatorFingerprintFields is a legacy package-local fixture seam. New
-// production sessions use agentFingerprintFields and the builder-active kind.
-//
-//lint:ignore U1000 retained for package-local legacy fixtures.
-func operatorFingerprintFields(cfg Config) rig.ConfigFingerprintFields {
-	fields := agentFingerprintFields(cfg)
-	fields.AgentKind = operatorAgentKind
-	return fields
-}
-
 // accessAppFields returns the secret-free, human-visible access manifest fields, or nil when no
 // profile is selected (keeping the manifest additive).
 func accessAppFields(profile AccessProfile) map[string]string {
@@ -308,18 +294,18 @@ func accessAppFields(profile AccessProfile) map[string]string {
 	return map[string]string{"access_profile": string(profile)}
 }
 
-// buildRig assembles ONE immutable rig from the three loop definitions over the given store
+// buildRig assembles ONE immutable rig from the Generic definition over the given store
 // facades, placing root as the session's EXCLUSIVE workspace (edit-the-open-checkout). The
 // rig owns snapshots-on-idle, delegation limits, the config fingerprint, the per-session
 // security limit, and offload-blob GC. allowMismatch opts a resume into proceeding despite a config
 // fingerprint change (never set for a new session). It always assembles with permission review
 // DISABLED (the zero permissionReviewRegistration): the two session-opening paths that can
-// actually enable it (openSessionWithDefinitions, called from swarm.go, where the inference
+// actually enable it (openSessionWithDefinitions, called from assembly.go, where the inference
 // Client the classifier needs is available) call buildRigForDelegationCaps directly with an
 // explicit registration instead. buildRig stays the plain default-composition path most
 // existing callers (production's delegation defaults, and every test unconcerned with
 // permission review) use unchanged.
-func buildRig(definitions []loop.Definition, stores *swarmStores, root string, cfg Config, allowMismatch bool) (*rig.Rig, error) {
+func buildRig(definitions []loop.Definition, stores *sessionStores, root string, cfg Config, allowMismatch bool) (*rig.Rig, error) {
 	return buildRigForDelegationCaps(definitions, stores, root, cfg, allowMismatch, rig.DelegationLimits{Depth: delegationSpawnDepth, Quota: delegationSpawnQuota}, permissionReviewRegistration{})
 }
 
@@ -328,7 +314,7 @@ func buildRig(definitions []loop.Definition, stores *swarmStores, root string, c
 // defaults paired with the real registration built from the live inference Client
 // (openSessionWithDefinitions); focused topology tests vary only the delegation limits while
 // retaining the exact production definitions, stores, workspace, and policy wiring.
-func buildRigForDelegationCaps(definitions []loop.Definition, stores *swarmStores, root string, cfg Config, allowMismatch bool, limits rig.DelegationLimits, permissionReview permissionReviewRegistration) (*rig.Rig, error) {
+func buildRigForDelegationCaps(definitions []loop.Definition, stores *sessionStores, root string, cfg Config, allowMismatch bool, limits rig.DelegationLimits, permissionReview permissionReviewRegistration) (*rig.Rig, error) {
 	registration, err := newConversationHustleRegistration()
 	if err != nil {
 		return nil, err
@@ -341,11 +327,11 @@ func buildRigForDelegationCaps(definitions []loop.Definition, stores *swarmStore
 // registration; focused tests can vary either's public descriptor/limits to
 // prove fingerprint sensitivity. permissionReview's disabled zero value adds
 // no options, so passing it changes nothing about the assembled rig.
-func buildRigWithRegistration(definitions []loop.Definition, stores *swarmStores, root string, cfg Config, allowMismatch bool, limits rig.DelegationLimits, registration conversationHustleRegistration, permissionReview permissionReviewRegistration) (*rig.Rig, error) {
+func buildRigWithRegistration(definitions []loop.Definition, stores *sessionStores, root string, cfg Config, allowMismatch bool, limits rig.DelegationLimits, registration conversationHustleRegistration, permissionReview permissionReviewRegistration) (*rig.Rig, error) {
 	return buildRigWithRegistrationAndACP(definitions, stores, root, cfg, allowMismatch, limits, registration, permissionReview, cfg.ACPChildren)
 }
 
-func buildRigWithRegistrationAndACP(definitions []loop.Definition, stores *swarmStores, root string, cfg Config, allowMismatch bool, limits rig.DelegationLimits, registration conversationHustleRegistration, permissionReview permissionReviewRegistration, acpChildren *ACPComposition) (*rig.Rig, error) {
+func buildRigWithRegistrationAndACP(definitions []loop.Definition, stores *sessionStores, root string, cfg Config, allowMismatch bool, limits rig.DelegationLimits, registration conversationHustleRegistration, permissionReview permissionReviewRegistration, acpChildren *ACPComposition) (*rig.Rig, error) {
 	primers, activePrimer := primerConfiguration(definitions)
 	options := []rig.Option{
 		rig.WithLoops(definitions...),
@@ -389,21 +375,11 @@ func buildRigWithRegistrationAndACP(definitions []loop.Definition, stores *swarm
 	return rig.Define(options...)
 }
 
-// primerConfiguration keeps the production roster explicit while allowing
-// narrow package tests to assemble a smaller custom definition set. The real
-// CodeRig definitions always take the three-primer branch; a custom set uses
-// its managed-delegating root as its only primer.
+// primerConfiguration chooses the sole Generic primer. Narrow package tests
+// may still provide one custom managed definition as a local seam.
 func primerConfiguration(definitions []loop.Definition) ([]string, string) {
-	byName := make(map[identity.AgentName]loop.Definition, len(definitions))
-	for _, definition := range definitions {
-		byName[definition.Name()] = definition
-	}
-	if _, plannerOK := byName[planner.Name]; plannerOK {
-		if _, builderOK := byName[builder.Name]; builderOK {
-			if _, reviewerOK := byName[reviewer.Name]; reviewerOK {
-				return []string{string(planner.Name), string(builder.Name), string(reviewer.Name)}, string(activePrimerName)
-			}
-		}
+	if len(definitions) == 1 && definitions[0].Name() == activePrimerName {
+		return []string{string(activePrimerName)}, string(activePrimerName)
 	}
 	for _, definition := range definitions {
 		if len(definition.Delegates()) != 0 || definition.Delegation().Style == loop.DelegationManaged {
@@ -431,7 +407,7 @@ type SessionSelector struct {
 type SessionStoreFactory struct {
 	dataDir    string
 	fs         *fsstore.Store
-	stores     *swarmStores
+	stores     *sessionStores
 	loadModels productionModelsLoader
 	// buildClient is retained as an explicit-client compatibility seam for
 	// package tests. When set, Open bypasses models.json and production ACP
@@ -466,7 +442,7 @@ func (f *SessionStoreFactory) Close() error {
 	return fs.Close()
 }
 
-func (f *SessionStoreFactory) ensureStoresLocked() (*swarmStores, error) {
+func (f *SessionStoreFactory) ensureStoresLocked() (*sessionStores, error) {
 	if f.closed {
 		return nil, &StoreClosedError{}
 	}

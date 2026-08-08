@@ -124,7 +124,7 @@ func (e *acceptanceCompactionFixtureError) Error() string {
 
 func (e *acceptanceCompactionFixtureError) Unwrap() error { return e.Cause }
 
-func openAcceptanceAgentWithClient(t *testing.T, client inference.Client) (*RuntimeAgent, *swarmStores) {
+func openAcceptanceAgentWithClient(t *testing.T, client inference.Client) (*RuntimeAgent, *sessionStores) {
 	t.Helper()
 	stores := mustHeadlessTestStores(t)
 	agent, err := newSessionOverStores(context.Background(), client, newModelFactoryFor(testModel()), Config{}, stores, t.TempDir())
@@ -472,9 +472,9 @@ func openAcceptanceAgentWithContextPolicy(t *testing.T, client inference.Client,
 	}
 	root := t.TempDir()
 	access, cfg := headlessTestAccess(t, Config{}, root)
-	definitions, err := swarmDefinitionsWithContextPolicy(client, selectedModel, cfg, policy, access)
+	definitions, err := genericTestDefinitionsWithContextPolicy(client, selectedModel, cfg, policy, access)
 	if err != nil {
-		t.Fatalf("swarmDefinitionsWithContextPolicy() error = %v", err)
+		t.Fatalf("genericTestDefinitionsWithContextPolicy() error = %v", err)
 	}
 	stores := mustHeadlessTestStores(t)
 	assembly, err := buildRig(definitions, stores, root, cfg, false)
@@ -629,9 +629,9 @@ func TestAcceptanceCompactionFinalizationFailureFaultsSession(t *testing.T) {
 			}
 			root := t.TempDir()
 			access, cfg := headlessTestAccess(t, Config{}, root)
-			definitions, err := swarmDefinitions(client, testModel(), cfg, access)
+			definitions, err := genericTestDefinitions(client, testModel(), cfg, access)
 			if err != nil {
-				t.Fatalf("swarmDefinitions() error = %v", err)
+				t.Fatalf("genericTestDefinitions() error = %v", err)
 			}
 			assembly, err := buildRig(definitions, stores, root, cfg, false)
 			if err != nil {

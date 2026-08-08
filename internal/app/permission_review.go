@@ -12,9 +12,9 @@ import (
 // permission_review.go is CodeRig's composition-root wiring for classifier-based
 // automatic permission review (design doc 2026-07-27 §19-20). It constructs
 // exactly ONE command-safety classifier over CodeRig's shared inference client
-// and the operator-selected named model, wraps it in Harness's
+// and the selected named model, wraps it in Harness's
 // gate.PermissionClassifierSet, and selects one of two supported local
-// decision policies. It never adds classifier code to roleGate (toolsets.go)
+// decision policies. It never adds classifier code to accessGate (toolsets.go)
 // or duplicates Harness's ceiling-comparison/eligibility logic — that stays in
 // harness/pkg/gate. Permission review is off by default: a zero Config never
 // auto-approves anything.
@@ -93,7 +93,7 @@ type permissionReviewRegistration struct {
 // gate is intentionally silent (no error, no log), matching the
 // disabled-by-default case it is indistinguishable from to a caller. When
 // enabled AND trusted, it requires a non-empty cfg.PermissionReviewModel
-// (CodeRig never inherits an operator Loop's model for the classifier),
+// (CodeRig never inherits the Generic Loop's model for the classifier),
 // constructs ONE command-safety classifier over client and that named model
 // with the classifier's own default policy and standard read-only evidence
 // tools, and selects the default or strict local decision policy per

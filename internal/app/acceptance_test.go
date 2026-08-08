@@ -7,9 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/looprig/coderig/internal/catalog/builder"
-	"github.com/looprig/coderig/internal/catalog/planner"
-	"github.com/looprig/coderig/internal/catalog/reviewer"
+	"github.com/looprig/coderig/internal/catalog/generic"
 	"github.com/looprig/core/content"
 	"github.com/looprig/core/uuid"
 	"github.com/looprig/harness/pkg/event"
@@ -20,7 +18,7 @@ import (
 
 // acceptance_test.go drives the assembled CodeRig headless (over an isolated in-memory
 // store + a temp checkout, so it never contends on the real current-checkout lease with
-// sibling tests). It proves the composed rig starts with builder as the active durable
+// sibling tests). It proves the composed rig starts with Generic as the sole durable
 // primer, that a submitted turn is observable on the whole-session event stream, and that
 // the agent closes cleanly.
 //
@@ -29,7 +27,7 @@ import (
 
 // openAcceptanceAgent opens a headless CodeRig session over an isolated store + temp root and
 // returns the composition-root runtime agent (which owns the session's executor-set closers).
-func openAcceptanceAgent(t *testing.T) (*RuntimeAgent, *swarmStores) {
+func openAcceptanceAgent(t *testing.T) (*RuntimeAgent, *sessionStores) {
 	t.Helper()
 	stores := mustHeadlessTestStores(t)
 	agent, err := newSessionOverStores(context.Background(), &fakeLLM{}, newModelFactoryFor(testModel()), Config{}, stores, t.TempDir())
@@ -41,7 +39,7 @@ func openAcceptanceAgent(t *testing.T) (*RuntimeAgent, *swarmStores) {
 }
 
 // durableRootLoops folds the session's durable log and returns every zero-parent primer.
-func durableRootLoops(t *testing.T, stores *swarmStores, sessionID uuid.UUID) map[string]uuid.UUID {
+func durableRootLoops(t *testing.T, stores *sessionStores, sessionID uuid.UUID) map[string]uuid.UUID {
 	t.Helper()
 	replayer, err := stores.session.OpenEventReplayer(sessionID, sessionstore.ReplayRequest{})
 	if err != nil {
@@ -67,20 +65,18 @@ func durableRootLoops(t *testing.T, stores *swarmStores, sessionID uuid.UUID) ma
 	}
 }
 
-// TestAcceptanceActivePrimerIsBuilder proves the composed rig selects builder as
-// the active durable, zero-parent primer while the other primers also exist.
-func TestAcceptanceActivePrimerIsBuilder(t *testing.T) {
+// TestAcceptanceActivePrimerIsGeneric proves the composed rig selects Generic
+// as the sole active durable, zero-parent primer.
+func TestAcceptanceActivePrimerIsGeneric(t *testing.T) {
 	t.Parallel()
 	agent, stores := openAcceptanceAgent(t)
 
 	roots := durableRootLoops(t, stores, agent.SessionID())
-	for _, name := range []string{string(planner.Name), string(builder.Name), string(reviewer.Name)} {
-		if roots[name].IsZero() {
-			t.Errorf("durable zero-parent primer %q is missing; roots=%v", name, roots)
-		}
+	if len(roots) != 1 || roots[string(generic.Name)].IsZero() {
+		t.Errorf("durable Generic root is missing; roots=%v", roots)
 	}
-	if got, want := agent.ActiveLoopID(), roots[string(builder.Name)]; got != want {
-		t.Errorf("ActiveLoopID() = %v, want builder root %v", got, want)
+	if got, want := agent.ActiveLoopID(), roots[string(generic.Name)]; got != want {
+		t.Errorf("ActiveLoopID() = %v, want Generic root %v", got, want)
 	}
 }
 

@@ -440,7 +440,7 @@ func TestMCPGateOpenerUnboundRefuses(t *testing.T) {
 }
 
 // TestMCPGateOpenerHeadlessNeverBoundBehavesAsUnbound documents the
-// connection between "unbound" and "headless" at this layer. swarm.go's
+// connection between "unbound" and "headless" at this layer. assembly.go's
 // mcpSessionAssembly.attach composes a headless session's Manager with a
 // fresh &mcpGateOpener{} and simply never calls Bind on it -- there is no
 // separate headless code path inside mcpGateOpener to exercise, because

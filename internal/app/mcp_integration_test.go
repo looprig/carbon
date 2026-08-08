@@ -52,7 +52,7 @@ func writeBadMCPConfigFixture(t *testing.T, home, serverName string) {
 	writeModelConfigFixture(t, path, []byte(body), 0o600)
 }
 
-func mustOpenStores(t *testing.T) *swarmStores {
+func mustOpenStores(t *testing.T) *sessionStores {
 	t.Helper()
 	stores, err := openTestStores(t)
 	if err != nil {

@@ -245,9 +245,9 @@ func permissionReviewIntegrationAgentWithClassifier(t *testing.T, cfg Config, op
 	t.Cleanup(func() { _ = access.Close() })
 	cfg.AccessConfigRev = access.configRev
 
-	definitions, err := swarmDefinitions(operatorClient, testModel(), cfg, access)
+	definitions, err := genericTestDefinitions(operatorClient, testModel(), cfg, access)
 	if err != nil {
-		t.Fatalf("swarmDefinitions() error = %v", err)
+		t.Fatalf("genericTestDefinitions() error = %v", err)
 	}
 	permissionReview, err := newPermissionReviewRegistration(cfg, classifierClient)
 	if err != nil {
@@ -259,7 +259,7 @@ func permissionReviewIntegrationAgentWithClassifier(t *testing.T, cfg Config, op
 	}
 	assembly, err := buildRigForDelegationCaps(
 		definitions, stores, root, cfg, false,
-		rig.DelegationLimits{Depth: operatorSpawnDepth, Quota: operatorSpawnQuota}, permissionReview,
+		rig.DelegationLimits{Depth: delegationSpawnDepth, Quota: delegationSpawnQuota}, permissionReview,
 	)
 	if err != nil {
 		t.Fatalf("buildRigForDelegationCaps() error = %v", err)
@@ -1401,7 +1401,7 @@ func TestPermissionReviewApprovalNeverPersistsAutoAlwaysRule(t *testing.T) {
 // response reaches the EXACT SAME dispatchGateCommand -> loop ->
 // gate.Evaluator.Resolve execution path a human approval does. That test
 // establishes the two paths converge; this test proves CodeRig's OWN
-// composition (real toolsets.go roleGate, real sandbox.ExecutorSet, real `sh
+// composition (real toolsets.go accessGate, real sandbox.ExecutorSet, real `sh
 // -c` execution) reaches that shared path with no CodeRig-side shortcut or
 // bypass: the tool only runs because a real grant was minted through the
 // real gate.Evaluator, evidenced by the command's REAL stdout coming back on
@@ -1453,9 +1453,9 @@ func TestPermissionReviewDisabledConfigMatchesPreFeatureBuildRig(t *testing.T) {
 	}
 	root := t.TempDir()
 	access, cfg := headlessTestAccess(t, Config{}, root)
-	definitions, err := swarmDefinitions(&fakeLLM{}, testModel(), cfg, access)
+	definitions, err := genericTestDefinitions(&fakeLLM{}, testModel(), cfg, access)
 	if err != nil {
-		t.Fatalf("swarmDefinitions() error = %v", err)
+		t.Fatalf("genericTestDefinitions() error = %v", err)
 	}
 
 	// Open with the OLD path (buildRig — every pre-Task-23 CodeRig call site).
@@ -1485,13 +1485,13 @@ func TestPermissionReviewDisabledConfigMatchesPreFeatureBuildRig(t *testing.T) {
 	if options := disabled.options(); len(options) != 0 {
 		t.Fatalf("disabled.options() = %d options, want 0", len(options))
 	}
-	definitions2, err := swarmDefinitions(&fakeLLM{}, testModel(), cfg, access)
+	definitions2, err := genericTestDefinitions(&fakeLLM{}, testModel(), cfg, access)
 	if err != nil {
-		t.Fatalf("swarmDefinitions() error = %v", err)
+		t.Fatalf("genericTestDefinitions() error = %v", err)
 	}
 	newAssembly, err := buildRigForDelegationCaps(
 		definitions2, stores, root, cfg, false,
-		rig.DelegationLimits{Depth: operatorSpawnDepth, Quota: operatorSpawnQuota}, disabled,
+		rig.DelegationLimits{Depth: delegationSpawnDepth, Quota: delegationSpawnQuota}, disabled,
 	)
 	if err != nil {
 		t.Fatalf("buildRigForDelegationCaps() error = %v", err)

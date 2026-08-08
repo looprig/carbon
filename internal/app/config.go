@@ -33,11 +33,10 @@ type Config struct {
 	// default). It is validated at the CLI boundary before Rig construction.
 	AccessProfile AccessProfile
 	// AccessConfigRev is the secret-free durable digest of the effective access
-	// configuration (access ABI version, selected profile, normalized operator
-	// and reviewer profiles, and the non-secret egress route identity and
-	// guarantees). Assembly computes it with accessConfigDigest; the composition
-	// root folds it into the configuration fingerprint so a product-profile,
-	// reviewer-restriction, or egress-boundary change invalidates a restore. It
+	// configuration (access ABI version, selected Generic profile, and the
+	// non-secret egress route identity and guarantees). Assembly computes it with
+	// accessConfigDigest; the composition root folds it into the configuration
+	// fingerprint so an access-profile or egress-boundary change invalidates a restore. It
 	// never carries a secret.
 	AccessConfigRev string
 	// ModelConfigRev is the secret-free digest of the normalized process model
@@ -77,7 +76,7 @@ type Config struct {
 	// review (off by default — a zero Config never auto-approves anything).
 	// See internal/app/permission_review.go for the composition this enables.
 	// It can also be turned on by a models.json permission_review section
-	// (persistence.go's Open, swarm.go's newWithProductionModelsLoader): a
+	// (persistence.go's Open, assembly.go's newWithProductionModelsLoader): a
 	// file section can only ever ENABLE review, never disable it, when this
 	// field is already true — the programmatic seam always wins over the
 	// file, and this plain bool has no way to force-disable a caller's own
@@ -87,7 +86,7 @@ type Config struct {
 	PermissionReviewEnabled bool
 	// PermissionReviewModel is the named model bound to the command-safety
 	// classifier. Required when PermissionReviewEnabled is true; CodeRig never
-	// reuses an operator Loop's current-loop model for this (the design requires
+	// reuses the Generic Loop's current-loop model for this (the design requires
 	// an explicit named binding, not implicit inheritance).
 	PermissionReviewModel model.Model
 	// PermissionReviewStrictPolicy selects the stricter of the two supported

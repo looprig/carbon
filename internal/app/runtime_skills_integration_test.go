@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/looprig/coderig/internal/catalog/builder"
+	"github.com/looprig/coderig/internal/catalog/generic"
 	"github.com/looprig/core/content"
 	"github.com/looprig/core/uuid"
 	"github.com/looprig/harness/pkg/event"
@@ -53,7 +53,7 @@ func TestRuntimeSkillsWorkspaceLoadGatedEndToEnd(t *testing.T) {
 	var skillResult string
 	client := &managedScript{}
 	client.fn = func(_ context.Context, req inference.Request) ([]content.Chunk, error) {
-		if strings.Contains(req.System, `<role name="`+string(builder.Name)+`">`) && phase == "initial" && step == 0 {
+		if strings.Contains(req.System, `<role name="`+string(generic.Name)+`">`) && phase == "initial" && step == 0 {
 			step++
 			return startAgentCall("skill-delegate", `{"agent_type":"builder","instructions":"prepare for restore"}`), nil
 		}

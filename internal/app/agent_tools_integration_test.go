@@ -10,9 +10,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/looprig/coderig/internal/catalog/builder"
 	"github.com/looprig/coderig/internal/catalog/generic"
-	"github.com/looprig/coderig/internal/catalog/planner"
 	"github.com/looprig/core/content"
 	"github.com/looprig/harness/pkg/event"
 	"github.com/looprig/harness/pkg/loop"
@@ -125,7 +123,7 @@ func TestAgentToolsNoACPProductionSurfaceAndNativeSelection(t *testing.T) {
 	catalog := agentToolRuntimeCatalog(t, native)
 	var parentSteps int
 	client.fn = func(_ context.Context, req inference.Request) ([]content.Chunk, error) {
-		if !requestHasRole(req, builder.Name) {
+		if !requestHasRole(req, generic.Name) {
 			return nil, fmt.Errorf("unexpected role in no-ACP integration request")
 		}
 		if parentSteps == 0 {
@@ -191,7 +189,7 @@ func TestAgentToolsNoACPProductionSurfaceAndNativeSelection(t *testing.T) {
 	}
 	var childRuntime *event.AgentRuntime
 	for _, raw := range observed {
-		if started, ok := raw.(event.LoopStarted); ok && started.AgentName == planner.Name && started.AgentRuntime != nil {
+		if started, ok := raw.(event.LoopStarted); ok && started.AgentName == generic.Name && started.AgentRuntime != nil {
 			childRuntime = started.AgentRuntime
 		}
 	}
@@ -207,7 +205,7 @@ func TestAgentToolsRejectIncompatibleNativeModelEffort(t *testing.T) {
 	var result string
 	step := 0
 	client.fn = func(_ context.Context, req inference.Request) ([]content.Chunk, error) {
-		if !requestHasRole(req, builder.Name) {
+		if !requestHasRole(req, generic.Name) {
 			return finalText("unexpected child"), nil
 		}
 		if step == 0 {

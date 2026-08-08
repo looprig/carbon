@@ -14,9 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/looprig/coderig/internal/catalog/builder"
-	"github.com/looprig/coderig/internal/catalog/operator"
-	"github.com/looprig/coderig/internal/catalog/planner"
+	"github.com/looprig/coderig/internal/catalog/generic"
 	"github.com/looprig/core/content"
 	"github.com/looprig/core/uuid"
 	"github.com/looprig/harness/pkg/event"
@@ -98,7 +96,7 @@ func TestRigRestoreStateWorkspaceAndContinuation(t *testing.T) {
 	var restoredEffort model.Effort
 	client := &managedScript{}
 	client.fn = func(_ context.Context, req inference.Request) ([]content.Chunk, error) {
-		if strings.Contains(req.System, `<role name="`+string(builder.Name)+`">`) {
+		if strings.Contains(req.System, `<role name="`+string(generic.Name)+`">`) {
 			primaryCalls++
 			if primaryCalls == 1 {
 				return startAgentCall("restore-state-child", `{"agent_type":"planner","instructions":"work"}`), nil
@@ -218,7 +216,7 @@ func TestRigRestoreDelegateOwnership(t *testing.T) {
 	var initialSyncResult string
 	client := &managedScript{}
 	client.fn = func(_ context.Context, req inference.Request) ([]content.Chunk, error) {
-		if !strings.Contains(req.System, `<role name="`+string(builder.Name)+`">`) {
+		if !strings.Contains(req.System, `<role name="`+string(generic.Name)+`">`) {
 			if phase == "initial" {
 				return finalText("initial child"), nil
 			}
@@ -309,7 +307,7 @@ func TestAgentToolsFSStorePersistence(t *testing.T) {
 	childCalls := 0
 	client := &concurrentManagedScript{}
 	client.fn = func(ctx context.Context, req inference.Request) ([]content.Chunk, error) {
-		if strings.Contains(req.System, `<role name="`+string(planner.Name)+`">`) {
+		if strings.Contains(req.System, `<role name="`+string(generic.Name)+`">`) {
 			childCalls++ // serialized by the parent barriers below: child 1 enters before child 2 starts
 			switch childCalls {
 			case 1:
@@ -425,16 +423,16 @@ func TestManagedDelegateDeclaredModeFSStore(t *testing.T) {
 	definitions := func(t *testing.T) []loop.Definition {
 		t.Helper()
 		primer, err := loop.Define(
-			loop.WithName(operatorPrimaryName), loop.WithInference(client, testModel()), loop.WithSystem("mode-test-primary"),
+			loop.WithName(generic.Name), loop.WithInference(client, testModel()), loop.WithSystem("mode-test-primary"),
 			loop.WithAccessGate(approveAllAccessGate{}),
-			loop.WithPolicyRevision("mode-test-primary-v1"), loop.WithDelegates(operator.Name),
+			loop.WithPolicyRevision("mode-test-primary-v1"), loop.WithDelegates(generic.Name),
 			loop.WithDelegation(loop.Delegation{Style: loop.DelegationManaged}),
 		)
 		if err != nil {
 			t.Fatal(err)
 		}
 		leaf, err := loop.Define(
-			loop.WithName(operator.Name), loop.WithInference(client, testModel()),
+			loop.WithName(generic.Name), loop.WithInference(client, testModel()),
 			loop.WithModes(loop.Mode{Name: "plan"}, loop.Mode{Name: "build", Model: modeModel, Effort: model.EffortHigh}),
 			loop.WithInitialMode("plan"), loop.WithPolicyRevision("mode-test-leaf-v1"),
 		)
@@ -603,7 +601,7 @@ func TestRigRestoreSnapshotFailureAdmission(t *testing.T) {
 				return finalText("snapshot turn complete"), nil
 			}}
 			access, cfg := headlessTestAccess(t, Config{}, root)
-			definitions, err := swarmDefinitions(client, testModel(), cfg, access)
+			definitions, err := genericTestDefinitions(client, testModel(), cfg, access)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -613,13 +611,13 @@ func TestRigRestoreSnapshotFailureAdmission(t *testing.T) {
 			}
 			options := []rig.Option{
 				rig.WithLoops(definitions...),
-				rig.WithPrimers(string(operatorPrimaryName)),
-				rig.WithActivePrimer(string(operatorPrimaryName)),
+				rig.WithPrimers(string(generic.Name)),
+				rig.WithActivePrimer(string(generic.Name)),
 				rig.WithSessionStore(f.stores.session),
 				rig.WithExclusiveWorkspace(workspace, root, f.stores.leaser),
 				rig.WithSnapshots(rig.SnapshotPolicy{Trigger: rig.SnapshotOnIdle, Priority: tc.priority, Timeout: 5 * time.Second}),
-				rig.WithDelegationLimits(rig.DelegationLimits{Depth: operatorSpawnDepth, Quota: operatorSpawnQuota}),
-				rig.WithFingerprintFields(operatorFingerprintFields(cfg)),
+				rig.WithDelegationLimits(rig.DelegationLimits{Depth: delegationSpawnDepth, Quota: delegationSpawnQuota}),
+				rig.WithFingerprintFields(agentFingerprintFields(cfg)),
 			}
 			options = append(options, registration.options()...)
 			assembly, err := rig.Define(options...)
@@ -795,8 +793,8 @@ func TestRigRestoreSiblingOwnershipScopes(t *testing.T) {
 // negative proof for "no Harness ProcessBinding, Rig option, lifecycle
 // option, or provider is used to transport the adapter": newProcessRunnerResolver
 // is built directly over a role's *sandbox.ExecutorSet -- the SAME
-// sessionAccess.builderSet field toolsets.go's own bashDefinition and
-// roleGate already resolve executors from -- and driven by a LoopID
+// sessionAccess.set field toolsets.go's own bashDefinition and
+// accessGate already resolve executors from -- and driven by a LoopID
 // obtained from a GENUINELY RESTORED production session over real fsstore.
 // No rig.Option, tool.ProcessBinding, Harness lifecycle registration, or
 // provider of any kind is constructed anywhere in this test: the resolver
@@ -847,10 +845,10 @@ func TestProcessAdapterResolverIndependentOfHarnessTransport(t *testing.T) {
 		t.Fatalf("restored ActiveLoopID = %v, want the same primer LoopID %v", restoredLoopID, primerLoopID)
 	}
 
-	if a2.access == nil || a2.access.builderSet == nil {
+	if a2.access == nil || a2.access.set == nil {
 		t.Fatal("restored RuntimeAgent has no builder *sandbox.ExecutorSet to resolve against")
 	}
-	resolver := newProcessRunnerResolver(a2.access.builderSet)
+	resolver := newProcessRunnerResolver(a2.access.set)
 	runner, err := resolver(context.Background(), restoredLoopID)
 	if err != nil {
 		t.Fatalf("resolver(restored primer LoopID): %v", err)
@@ -859,11 +857,11 @@ func TestProcessAdapterResolverIndependentOfHarnessTransport(t *testing.T) {
 	if !ok {
 		t.Fatalf("resolver returned %T, want processRunnerAdapter", runner)
 	}
-	direct, err := a2.access.builderSet.For(restoredLoopID.String())
+	direct, err := a2.access.set.For(restoredLoopID.String())
 	if err != nil {
-		t.Fatalf("builderSet.For(restored primer LoopID) directly: %v", err)
+		t.Fatalf("set.For(restored primer LoopID) directly: %v", err)
 	}
 	if adapter.exec != direct {
-		t.Fatal("resolver's wrapped executor is not the SAME per-Loop executor builderSet.For resolves directly -- resolver and bashDefinition/roleGate must agree on the identical instance")
+		t.Fatal("resolver's wrapped executor is not the SAME per-Loop executor set.For resolves directly -- resolver and bashDefinition/accessGate must agree on the identical instance")
 	}
 }
