@@ -240,6 +240,89 @@ func TestAgentToolsNoACPProductionSurfaceAndNativeSelection(t *testing.T) {
 	}
 }
 
+func TestAgentToolsNativeACPSchemaUsesConfiguredModelEfforts(t *testing.T) {
+	client := &managedScript{}
+	native := &recordingAgentRuntimeClient{}
+	compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
+		NativeACP: map[string]ACPNativeProfile{
+			"codex": {
+				Harness: "codex", Enabled: true,
+				ModelOptions: []ACPNativeModelOption{{
+					Alias: "native-model", Model: "native-model",
+					Efforts: []model.Effort{model.EffortMedium, model.EffortHigh}, DefaultEffort: model.EffortHigh,
+				}},
+			},
+		},
+		PrimerTarget: runtimeCatalogPrimer(),
+	})
+	if err != nil {
+		t.Fatalf("CompileAgentRuntimeCatalog() error = %v", err)
+	}
+	client.fn = func(_ context.Context, req inference.Request) ([]content.Chunk, error) {
+		start := findInferenceTool(t, req, "StartAgent")
+		var schema any
+		if err := json.Unmarshal(start.Schema, &schema); err != nil {
+			return nil, fmt.Errorf("decode StartAgent schema: %w", err)
+		}
+		efforts, ok := findNativeModelEfforts(schema, "native-model")
+		if !ok {
+			return nil, fmt.Errorf("StartAgent schema omitted native model effort branch: %s", start.Schema)
+		}
+		if !slices.Equal(efforts, []string{"medium", "high"}) {
+			return nil, fmt.Errorf("native model efforts = %v, want [medium high]", efforts)
+		}
+		return finalText("schema verified"), nil
+	}
+
+	agent := newTestAgent(t, agentRuntimeRouter(t, client, native), Config{RuntimeCatalog: compiled.RuntimeCatalog})
+	if got := runManagedTurn(t, agent, "inspect the native runtime schema"); got != "schema verified" {
+		t.Fatalf("schema test final = %q", got)
+	}
+}
+
+func findNativeModelEfforts(value any, alias string) ([]string, bool) {
+	object, ok := value.(map[string]any)
+	if !ok {
+		if list, ok := value.([]any); ok {
+			for _, item := range list {
+				if efforts, found := findNativeModelEfforts(item, alias); found {
+					return efforts, true
+				}
+			}
+		}
+		return nil, false
+	}
+	if properties, ok := object["properties"].(map[string]any); ok {
+		modelProperty, modelOK := properties["model"].(map[string]any)
+		effortProperty, effortOK := properties["effort"].(map[string]any)
+		modelMatches := modelProperty["const"] == alias
+		if values, ok := modelProperty["enum"].([]any); ok && len(values) == 1 && values[0] == alias {
+			modelMatches = true
+		}
+		if modelOK && effortOK && modelMatches {
+			values, ok := effortProperty["enum"].([]any)
+			if !ok {
+				return nil, false
+			}
+			efforts := make([]string, 0, len(values))
+			for _, value := range values {
+				text, ok := value.(string)
+				if !ok {
+					return nil, false
+				}
+				efforts = append(efforts, text)
+			}
+			return efforts, true
+		}
+	}
+	for _, child := range object {
+		if efforts, found := findNativeModelEfforts(child, alias); found {
+			return efforts, true
+		}
+	}
+	return nil, false
+}
+
 func TestAssembledStartAgentPlainPayloadUsesLoopRigNativeDefault(t *testing.T) {
 	client := &managedScript{}
 	native := &recordingAgentRuntimeClient{}

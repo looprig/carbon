@@ -54,15 +54,9 @@ func testACPMinimalGatewayCatalog(t *testing.T) ACPCompiledCatalog {
 	return compiled
 }
 
-// TestNewACPCompositionPreflightsHarnessesConcurrently proves the Level 1
-// win described in the parallelization brief: claude-code's and codex's
-// preflights run on independent goroutines, so total wall-clock stays near
-// the slower one instead of their sum. Before the fix, NewACPComposition
-// preflighted the two fixed harnesses in a strictly sequential loop, so this
-// same shape (two different harnesses, each with a deterministic
-// acpPreflightSleep-length fake) would have taken roughly 2x
-// acpPreflightSleep; it now takes roughly 1x.
-func TestNewACPCompositionPreflightsHarnessesConcurrently(t *testing.T) {
+// TestNewACPCompositionDoesNotStartHarnessPreflights proves composition does
+// not launch either configured ACP executable merely to advertise a profile.
+func TestNewACPCompositionDoesNotStartHarnessPreflights(t *testing.T) {
 	t.Parallel()
 	executable, err := os.Executable()
 	if err != nil {
@@ -104,15 +98,12 @@ func TestNewACPCompositionPreflightsHarnessesConcurrently(t *testing.T) {
 	mu.Lock()
 	claudeCalls, codexCalls := calls["claude-code"], calls["codex"]
 	mu.Unlock()
-	if claudeCalls != 1 || codexCalls != 1 {
-		t.Fatalf("preflight call counts = claude-code:%d codex:%d, want exactly one each", claudeCalls, codexCalls)
+	if claudeCalls != 0 || codexCalls != 0 {
+		t.Fatalf("preflight call counts = claude-code:%d codex:%d, want zero during composition", claudeCalls, codexCalls)
 	}
 
 	if elapsed >= acpConcurrentPreflightBudget {
-		t.Fatalf(
-			"NewACPComposition preflighted claude-code and codex sequentially: elapsed=%v, want well under %v (2x%v sequential sum)",
-			elapsed, acpConcurrentPreflightBudget, acpPreflightSleep,
-		)
+		t.Fatalf("NewACPComposition performed unexpected startup work: elapsed=%v", elapsed)
 	}
 }
 

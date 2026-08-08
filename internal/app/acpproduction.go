@@ -30,7 +30,7 @@ var acpGatewayEnvAllowlist = []string{
 }
 
 // Native-auth children receive only the bounded login/process environment when
-// an enabled native_acp profile has passed executable preflight.
+// an enabled native_acp profile has passed static executable checks.
 var acpNativeAuthEnvAllowlist = []string{
 	"HOME", "LANG", "LC_ALL", "LOGNAME", "PATH", "TERM", "TMPDIR", "USER",
 	"XDG_CONFIG_HOME", "XDG_DATA_HOME",
@@ -45,7 +45,7 @@ type ACPNativeAuthProbe struct {
 }
 
 func withProductionACPChildren(ctx context.Context, cfg Config, configured productionModels) (Config, error) {
-	composition, err := newProductionACPCompositionWithPreflight(ctx, cfg.AccessProfile, configured, nil)
+	composition, err := newProductionACPComposition(ctx, cfg.AccessProfile, configured)
 	if err != nil {
 		return Config{}, err
 	}
@@ -55,7 +55,15 @@ func withProductionACPChildren(ctx context.Context, cfg Config, configured produ
 	return cfg, nil
 }
 
-func newProductionACPCompositionWithPreflight(ctx context.Context, accessProfile AccessProfile, configured productionModels, executablePreflight func(context.Context, ACPExecutableProbe) ACPPreflightResult) (*ACPComposition, error) {
+func newProductionACPComposition(ctx context.Context, accessProfile AccessProfile, configured productionModels) (*ACPComposition, error) {
+	return newProductionACPCompositionWithPreflight(ctx, accessProfile, configured, nil)
+}
+
+// newProductionACPCompositionWithPreflight is retained as a lower-level test
+// seam for callers that used to inject a live probe. The callback is ignored:
+// startup now performs only static checks and defers ACP availability to the
+// selected child launch.
+func newProductionACPCompositionWithPreflight(_ context.Context, accessProfile AccessProfile, configured productionModels, _ func(context.Context, ACPExecutableProbe) ACPPreflightResult) (*ACPComposition, error) {
 	effectiveProfile, err := normalizeAccessProfile(accessProfile)
 	if err != nil {
 		return nil, errACPAccessProfileUnavailable
@@ -84,14 +92,13 @@ func newProductionACPCompositionWithPreflight(ctx context.Context, accessProfile
 		Env:                 os.Environ(),
 		NativeEnvAllowlist:  acpNativeAuthEnvAllowlist,
 		GatewayEnvAllowlist: acpGatewayEnvAllowlist,
-		preflightContext:    ctx,
-		executablePreflight: executablePreflight,
 	})
 }
 
-// preflightProductionACPExecutable proves that the configured file speaks ACP
-// using the same credential path and exact configured model arguments as the
-// eventual child. Native probes use DialNative and therefore cannot carry a
+// preflightProductionACPExecutable is an explicit diagnostic/test probe. It
+// proves that a configured file speaks ACP using the same credential path and
+// exact configured model arguments as the eventual child. Production startup
+// does not call it; native probes use DialNative and therefore cannot carry a
 // gateway proxy binding.
 func preflightProductionACPExecutable(ctx context.Context, probe ACPExecutableProbe) ACPPreflightResult {
 	if !preflightACPExecutable(probe.Executable) || !cleanACPWorkspaceRoot(probe.WorkspaceRoot) {
@@ -241,9 +248,10 @@ func validACPNativeField(value string) bool {
 // resolveACPExecutable picks one harness's ACP adapter executable by explicit
 // precedence: the environment-variable override, then the configured
 // acp_launchers path, then PATH discovery of the fixed well-known adapter
-// name. It performs no existence or executability check; preflight still
-// owns that. A relative PATH match is resolved to an absolute path so the
-// clean-absolute-path invariant used by the rest of the ACP pipeline holds.
+// name. It performs no existence or executability check; NewACPComposition's
+// static checks own that. A relative PATH match is resolved to an absolute
+// path so the clean-absolute-path invariant used by the rest of the ACP
+// pipeline holds.
 func resolveACPExecutable(envValue, configuredPath, wellKnownName string) string {
 	if envValue != "" {
 		return envValue

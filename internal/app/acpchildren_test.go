@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -329,7 +328,7 @@ func TestBoundedACPChildErrorDoesNotExposeProcessDetails(t *testing.T) {
 	}
 }
 
-func TestNewACPCompositionPreflightsProfilesAndFiltersEnv(t *testing.T) {
+func TestNewACPCompositionChecksExecutablePathsAndFiltersEnv(t *testing.T) {
 	executable, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
@@ -353,20 +352,20 @@ func TestNewACPCompositionPreflightsProfilesAndFiltersEnv(t *testing.T) {
 		t.Fatalf("Claude profile missing: %v", err)
 	}
 	if _, _, err := composition.Registry.Builder("acp/codex"); err == nil {
-		t.Fatal("Codex profile registered despite failed executable preflight")
+		t.Fatal("Codex profile registered despite failed static executable check")
 	}
 	if !composition.Catalog.HasProfile("acp/claude-code") {
-		t.Fatal("Claude profile disappeared from the filtered catalog")
+		t.Fatal("Claude profile disappeared from the catalog")
 	}
 	if composition.Catalog.HasProfile("acp/codex") {
-		t.Fatalf("filtered catalog still advertises the failed Codex connector: %#v", composition.Catalog.RuntimeCatalog.EntriesFor(generic.Name))
+		t.Fatalf("catalog still advertises the invalid Codex executable: %#v", composition.Catalog.RuntimeCatalog.EntriesFor(generic.Name))
 	}
 	if got := filterACPEnv([]string{"PATH=/bin", "SECRET=x", "LANG=C"}, []string{"PATH", "LANG"}); len(got) != 2 || got[0] != "PATH=/bin" || got[1] != "LANG=C" {
 		t.Fatalf("filtered env = %#v", got)
 	}
 }
 
-func TestNewACPCompositionDiagnosticsReducedModels(t *testing.T) {
+func TestNewACPCompositionDoesNotDiagnoseTransientModelReduction(t *testing.T) {
 	executable, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
@@ -396,7 +395,7 @@ func TestNewACPCompositionDiagnosticsReducedModels(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !composition.Catalog.HasProfile("acp/claude-code") {
-		t.Fatal("claude-code profile should still be admitted with a reduced model set")
+		t.Fatal("claude-code profile should remain admitted after static checks")
 	}
 	after := 0
 	for _, entry := range composition.Catalog.entries {
@@ -404,8 +403,8 @@ func TestNewACPCompositionDiagnosticsReducedModels(t *testing.T) {
 			after += len(entry.Models)
 		}
 	}
-	if after == 0 || after >= before {
-		t.Fatalf("expected a genuine partial reduction for claude-code, before=%d after=%d", before, after)
+	if after != before {
+		t.Fatalf("transient availability changed configured claude-code rows, before=%d after=%d", before, after)
 	}
 	found := false
 	for _, line := range composition.Diagnostics {
@@ -413,8 +412,8 @@ func TestNewACPCompositionDiagnosticsReducedModels(t *testing.T) {
 			found = true
 		}
 	}
-	if !found {
-		t.Fatalf("expected a reduced-models diagnostic for claude-code, got %v", composition.Diagnostics)
+	if found {
+		t.Fatalf("unexpected transient reduced-model diagnostic: %v", composition.Diagnostics)
 	}
 }
 
@@ -511,21 +510,13 @@ func TestNewACPCompositionBuildsNativeAuthProfileWithoutGateway(t *testing.T) {
 	}
 }
 
-func TestACPChildEnvironmentAndGatewayPreflightExcludeParentSecrets(t *testing.T) {
+func TestACPChildEnvironmentIsCredentialScopedWithoutStartupPreflight(t *testing.T) {
 	t.Parallel()
 	executable, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
 	compiled := testACPGatewayCatalog(t)
-	// probes is written from more than one goroutine: claude-code and codex
-	// now preflight concurrently (each on its own goroutine), and codex's own
-	// per-alias loop runs on its goroutine while claude-code's single call
-	// runs on the other. probesMu is the only change needed to keep this
-	// fake safe for concurrent invocation; every assertion below is
-	// unchanged.
-	var probesMu sync.Mutex
-	probes := make([]ACPExecutableProbe, 0, 2)
 	composition, err := NewACPComposition(ACPChildrenConfig{
 		Catalog:       compiled,
 		Executables:   map[loop.AgentHarnessName]string{"claude-code": executable, "codex": executable},
@@ -547,37 +538,9 @@ func TestACPChildEnvironmentAndGatewayPreflightExcludeParentSecrets(t *testing.T
 		},
 		NativeEnvAllowlist:  acpNativeAuthEnvAllowlist,
 		GatewayEnvAllowlist: acpGatewayEnvAllowlist,
-		gatewayPreflightBinding: &launch.ProxyBinding{
-			BaseURL: "http://127.0.0.1:1",
-			Token:   "test-token",
-		},
-		executablePreflight: func(_ context.Context, probe ACPExecutableProbe) ACPPreflightResult {
-			probesMu.Lock()
-			probes = append(probes, probe)
-			probesMu.Unlock()
-			if probe.Credential != loop.CredentialGatewayBacked || probe.SharedProxy == nil || probe.SharedProxy.BaseURL != "http://127.0.0.1:1" || probe.SharedProxy.Token != "test-token" {
-				return ACPPreflightResult{}
-			}
-			if len(probe.Env) != 2 || probe.Env[0] != "PATH=/usr/bin" || probe.Env[1] != "LANG=C" {
-				t.Fatalf("gateway child env = %#v, want only safe process values", probe.Env)
-			}
-			if probe.Harness == "claude-code" {
-				if !containsString(probe.Models, "sonnet-5@high") || !containsString(probe.Models, "sonnet-5@max") {
-					t.Fatalf("Claude preflight models = %#v, want concrete effort aliases", probe.Models)
-				}
-				return ACPPreflightResult{Ready: true, AdvertisedModels: []string{"fable-5", "fable-5@high", "sonnet-5", "sonnet-5@high"}}
-			}
-			return ACPPreflightResult{Ready: true}
-		},
 	})
 	if err != nil {
 		t.Fatal(err)
-	}
-	probesMu.Lock()
-	sawProbes := len(probes) != 0
-	probesMu.Unlock()
-	if !sawProbes {
-		t.Fatal("gateway preflight did not run")
 	}
 	claudeEntries := composition.Catalog.RuntimeCatalog.EntriesFor(generic.Name)
 	var claude loop.RuntimeCatalogEntry
@@ -590,18 +553,26 @@ func TestACPChildEnvironmentAndGatewayPreflightExcludeParentSecrets(t *testing.T
 	if claude.AgentHarness != "claude-code" {
 		t.Fatalf("Claude gateway entry missing: %#v", claudeEntries)
 	}
-	if len(claude.Models) != 2 || claude.Models[0].Alias != "fable-5" || claude.Models[1].Alias != "sonnet-5" {
-		t.Fatalf("Claude advertised unsupported aliases: %#v", claude.Models)
+	wantClaudeModels := 0
+	for _, entry := range compiled.RuntimeCatalog.EntriesFor(generic.Name) {
+		if entry.AgentHarness == "claude-code" {
+			wantClaudeModels += len(entry.Models)
+		}
 	}
-	if len(claude.Models[1].Efforts) != 2 || claude.Models[1].Efforts[0] != model.EffortMedium || claude.Models[1].Efforts[1] != model.EffortHigh {
-		t.Fatalf("Claude advertised unsupported efforts: %#v", claude.Models[1].Efforts)
+	if len(claude.Models) != wantClaudeModels {
+		t.Fatalf("Claude configured aliases changed during composition: %#v", claude.Models)
+	}
+	for _, option := range claude.Models {
+		if option.Alias == "sonnet-5" && len(option.Efforts) != 4 {
+			t.Fatalf("Claude configured efforts changed during composition: %#v", option)
+		}
 	}
 	if _, _, err := composition.Registry.Builder("acp/claude-code"); err != nil {
 		t.Fatalf("gateway-only Claude profile was removed: %v", err)
 	}
 }
 
-func TestNewACPCompositionDoesNotSubstituteUnavailableFirstACPEntry(t *testing.T) {
+func TestNewACPCompositionRetainsTransientlyUnavailableACPEntries(t *testing.T) {
 	executable, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
@@ -629,16 +600,16 @@ func TestNewACPCompositionDoesNotSubstituteUnavailableFirstACPEntry(t *testing.T
 		t.Fatal("NewACPComposition() returned nil composition")
 	}
 	entries := composition.Catalog.RuntimeCatalog.EntriesFor(generic.Name)
-	if len(entries) != 2 {
-		t.Fatalf("NewACPComposition() entries = %#v, want Generic native default plus ready Codex", entries)
+	if len(entries) != 3 {
+		t.Fatalf("NewACPComposition() entries = %#v, want Generic native default plus both configured ACP rows", entries)
 	}
 	for _, entry := range entries {
 		if entry.AgentHarness == looprigRuntimeHarness && !entry.Default {
 			t.Fatalf("ordinary Generic row lost default after ACP filtering: %#v", entry)
 		}
-		if entry.AgentHarness == "claude-code" {
-			t.Fatalf("unavailable Claude row survived preflight: %#v", entry)
-		}
+	}
+	if !composition.Catalog.HasProfile("acp/claude-code") || !composition.Catalog.HasProfile("acp/codex") {
+		t.Fatalf("transiently unavailable ACP profile was removed: %#v", entries)
 	}
 }
 
@@ -659,30 +630,24 @@ func testGenericACPGatewayCatalog(t *testing.T) ACPCompiledCatalog {
 	return compiled
 }
 
-func TestNewACPCompositionPreflightHonorsCanceledContext(t *testing.T) {
+func TestNewACPCompositionDoesNotInvokePreflightCallback(t *testing.T) {
 	t.Parallel()
 	executable, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
 	compiled := testACPGatewayCatalog(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
 	calls := 0
 	composition, err := NewACPComposition(ACPChildrenConfig{
-		Catalog:          compiled,
-		Executables:      map[loop.AgentHarnessName]string{"claude-code": executable, "codex": executable},
-		WorkspaceRoot:    "/workspace/project",
-		preflightContext: ctx,
+		Catalog:       compiled,
+		Executables:   map[loop.AgentHarnessName]string{"claude-code": executable, "codex": executable},
+		WorkspaceRoot: "/workspace/project",
 		gatewayPreflightBinding: &launch.ProxyBinding{
 			BaseURL: "http://127.0.0.1:1",
 			Token:   "test-token",
 		},
-		executablePreflight: func(ctx context.Context, _ ACPExecutableProbe) ACPPreflightResult {
+		executablePreflight: func(_ context.Context, _ ACPExecutableProbe) ACPPreflightResult {
 			calls++
-			if ctx.Err() == nil {
-				t.Error("preflight callback received an uncanceled context")
-			}
 			return ACPPreflightResult{}
 		},
 	})
@@ -692,21 +657,12 @@ func TestNewACPCompositionPreflightHonorsCanceledContext(t *testing.T) {
 	if composition == nil {
 		t.Fatal("NewACPComposition() returned nil composition")
 	}
-	if calls > 1 {
-		t.Fatalf("canceled preflight continued across %d target probes", calls)
+	if calls != 0 {
+		t.Fatalf("preflight callback calls = %d, want zero during composition", calls)
 	}
 }
 
-func containsString(values []string, wanted string) bool {
-	for _, value := range values {
-		if value == wanted {
-			return true
-		}
-	}
-	return false
-}
-
-func TestNewACPCompositionNativePreflightKeepsNativeEnvironment(t *testing.T) {
+func TestNewACPCompositionNativeEnvironmentIsDeferredToChildLaunch(t *testing.T) {
 	t.Parallel()
 	executable, err := os.Executable()
 	if err != nil {
@@ -751,8 +707,8 @@ func TestNewACPCompositionNativePreflightKeepsNativeEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Harness != "codex" || got.Model == "" {
-		t.Fatalf("native preflight probe = %#v", got)
+	if got.Harness != "" || got.Model != "" {
+		t.Fatalf("native startup probe = %#v, want no probe", got)
 	}
 	if _, _, err := composition.Registry.Builder("acp/codex"); err != nil {
 		t.Fatalf("native profile was removed: %v", err)
@@ -898,7 +854,7 @@ func TestNewACPCompositionDiagnosticsExecutableNotRunnable(t *testing.T) {
 	}
 }
 
-func TestNewACPCompositionDiagnosticsPreflightFailed(t *testing.T) {
+func TestNewACPCompositionDoesNotDiagnoseLivePreflightFailure(t *testing.T) {
 	t.Parallel()
 	executable, err := os.Executable()
 	if err != nil {
@@ -922,12 +878,15 @@ func TestNewACPCompositionDiagnosticsPreflightFailed(t *testing.T) {
 			found = true
 		}
 	}
-	if !found {
-		t.Fatalf("expected a preflight-failed diagnostic for codex, got %v", composition.Diagnostics)
+	if found {
+		t.Fatalf("unexpected live preflight diagnostic: %v", composition.Diagnostics)
+	}
+	if !composition.Catalog.HasProfile("acp/codex") {
+		t.Fatal("configured Codex profile was removed due to transient availability")
 	}
 }
 
-func TestNewACPCompositionDiagnosticsPreflightFailedBothModes(t *testing.T) {
+func TestNewACPCompositionDoesNotDiagnoseLivePreflightFailureBothModes(t *testing.T) {
 	t.Parallel()
 	executable, err := os.Executable()
 	if err != nil {
@@ -967,8 +926,11 @@ func TestNewACPCompositionDiagnosticsPreflightFailedBothModes(t *testing.T) {
 			found = true
 		}
 	}
-	if !found {
-		t.Fatalf("expected a both-modes preflight-failed diagnostic for codex, got %v", composition.Diagnostics)
+	if found {
+		t.Fatalf("unexpected both-modes live preflight diagnostic: %v", composition.Diagnostics)
+	}
+	if !composition.Catalog.HasProfile("acp/codex") {
+		t.Fatal("configured Codex profile was removed due to transient availability")
 	}
 }
 

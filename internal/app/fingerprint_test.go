@@ -353,11 +353,11 @@ func TestSecretRedactionAcrossModelCatalogueGatewayFingerprintAndDurableEvents(t
 	if err != nil {
 		t.Fatalf("NewACPComposition(failed preflight): %v", err)
 	}
-	if !preflightCalled {
-		t.Fatal("ACP preflight callback was not called")
+	if preflightCalled {
+		t.Fatal("ACP preflight callback was called during composition")
 	}
-	capture("failed ACP preflight catalogue", failedPreflight.Catalog.RuntimeCatalog.EntriesFor(generic.Name))
-	captureErrorFormats("ACP bounded preflight failure", boundedACPChildError(errors.New("preflight failed: "+sentinel)))
+	capture("static ACP catalogue", failedPreflight.Catalog.RuntimeCatalog.EntriesFor(generic.Name))
+	captureErrorFormats("ACP bounded child failure", boundedACPChildError(errors.New("child failed: "+sentinel)))
 
 	fingerprintFields := agentFingerprintFields(Config{
 		ModelConfigRev: configured.ConfigRev,
