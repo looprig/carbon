@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/looprig/coderig/internal/catalog/builder"
+	"github.com/looprig/coderig/internal/catalog/generic"
 	"github.com/looprig/core/uuid"
 	"github.com/looprig/harness/pkg/event"
 	"github.com/looprig/harness/pkg/hustle"
@@ -31,13 +31,13 @@ import (
 func compactionFingerprintFor(t *testing.T, root string, client *fakeLLM, policy conversationContextPolicy, registration conversationHustleRegistration) event.ConfigFingerprint {
 	t.Helper()
 	access, cfg := headlessTestAccess(t, Config{}, root)
-	definitions, err := swarmDefinitionsWithContextPolicy(client, testModel(), cfg, policy, access)
+	definition, err := genericTestDefinitionWithContextPolicy(client, testModel(), cfg, policy, access)
 	if err != nil {
-		t.Fatalf("swarmDefinitionsWithContextPolicy() error = %v", err)
+		t.Fatalf("genericTestDefinitionWithContextPolicy() error = %v", err)
 	}
 	stores := mustHeadlessTestStores(t)
 	assembly, err := buildRigWithRegistration(
-		definitions, stores, root, cfg, false,
+		definition, stores, root, cfg, false,
 		rig.DelegationLimits{Depth: delegationSpawnDepth, Quota: delegationSpawnQuota}, registration,
 		permissionReviewRegistration{},
 	)
@@ -52,7 +52,7 @@ func compactionFingerprintFor(t *testing.T, root string, client *fakeLLM, policy
 	return durableSessionFingerprint(t, stores, controller.SessionID())
 }
 
-func durableSessionFingerprint(t *testing.T, stores *swarmStores, sessionID uuid.UUID) event.ConfigFingerprint {
+func durableSessionFingerprint(t *testing.T, stores *sessionStores, sessionID uuid.UUID) event.ConfigFingerprint {
 	t.Helper()
 	replayer, err := stores.session.OpenEventReplayer(sessionID, sessionstore.ReplayRequest{})
 	if err != nil {
@@ -288,30 +288,25 @@ func TestSecretRedactionAcrossModelCatalogueGatewayFingerprintAndDurableEvents(t
 	})
 	captureErrorFormats("client factory failure", factoryErr)
 
-	compiled, err := CompileACPCatalog(ACPCatalogInput{
-		AgentTypes:     []identity.AgentName{"planner", "builder", "reviewer"},
+	compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
 		GatewayTargets: configured.ACP,
-		Defaults:       configured.Defaults,
+		PrimerTarget:   configuredPrimerRuntimeTarget(configured),
 		ClaudeSmall:    configured.ClaudeSmall,
+		NativeACP:      configured.NativeACP,
 	})
 	if err != nil {
-		t.Fatalf("CompileACPCatalog: %v", err)
+		t.Fatalf("CompileAgentRuntimeCatalog: %v", err)
 	}
 	capture("runtime catalogue digest", compiled.RuntimeCatalog.Digest())
-	for _, role := range []identity.AgentName{"planner", "builder", "reviewer"} {
-		capture("runtime catalogue "+string(role), compiled.RuntimeCatalog.EntriesFor(role))
-	}
+	capture("runtime catalogue "+string(generic.Name), compiled.RuntimeCatalog.EntriesFor(generic.Name))
 	duplicateTargets := append(append([]ACPGatewaySource(nil), configured.ACP...), configured.ACP[0])
-	_, catalogueErr := CompileACPCatalog(ACPCatalogInput{
-		AgentTypes:     []identity.AgentName{"builder"},
+	_, catalogueErr := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
 		GatewayTargets: duplicateTargets,
-		Defaults: map[identity.AgentName]configuredDelegateDefault{
-			"builder": configured.Defaults["builder"],
-		},
+		PrimerTarget:   configuredPrimerRuntimeTarget(configured),
 	})
 	captureErrorFormats("catalogue compilation failure", catalogueErr)
 
-	resolved, err := compiled.RuntimeCatalog.Resolve("builder", "codex", "zeta", model.EffortHigh)
+	resolved, err := compiled.RuntimeCatalog.Resolve(generic.Name, "codex", "zeta", model.EffortHigh)
 	if err != nil {
 		t.Fatalf("resolve gateway target: %v", err)
 	}
@@ -361,7 +356,7 @@ func TestSecretRedactionAcrossModelCatalogueGatewayFingerprintAndDurableEvents(t
 	if !preflightCalled {
 		t.Fatal("ACP preflight callback was not called")
 	}
-	capture("failed ACP preflight catalogue", failedPreflight.Catalog.RuntimeCatalog.EntriesFor("builder"))
+	capture("failed ACP preflight catalogue", failedPreflight.Catalog.RuntimeCatalog.EntriesFor(generic.Name))
 	captureErrorFormats("ACP bounded preflight failure", boundedACPChildError(errors.New("preflight failed: "+sentinel)))
 
 	fingerprintFields := agentFingerprintFields(Config{
@@ -397,8 +392,8 @@ func TestSecretRedactionAcrossModelCatalogueGatewayFingerprintAndDurableEvents(t
 }
 
 // TestAgentFingerprintFields asserts the rig-level config-fingerprint fields the
-// composition root injects via rig.WithFingerprintFields: AgentKind is the swarm+active-primer
-// identity ("coderig:builder") and RuntimeSkills passes the human-set mode through verbatim. The
+// composition root injects via rig.WithFingerprintFields: AgentKind is the Generic
+// identity ("coderig:generic") and RuntimeSkills passes the human-set mode through verbatim. The
 // workspace-root field is NOT set here — the rig's exclusive-workspace placement folds the
 // canonical root into the fingerprint — so a restore still compares agent identity, skill
 // mode, AND (via the placement) the repo root.
@@ -413,18 +408,18 @@ func TestAgentFingerprintFields(t *testing.T) {
 		{
 			name: "runtime skills off",
 			cfg:  Config{RuntimeSkills: false},
-			want: rig.ConfigFingerprintFields{AgentKind: "coderig:builder", RuntimeSkills: false},
+			want: rig.ConfigFingerprintFields{AgentKind: "coderig:generic", RuntimeSkills: false},
 		},
 		{
 			name: "runtime skills on",
 			cfg:  Config{RuntimeSkills: true},
-			want: rig.ConfigFingerprintFields{AgentKind: "coderig:builder", RuntimeSkills: true},
+			want: rig.ConfigFingerprintFields{AgentKind: "coderig:generic", RuntimeSkills: true},
 		},
 		{
 			name: "access profile and digest fold in",
 			cfg:  Config{AccessProfile: AccessTrusted, AccessConfigRev: "coderig-access-v1:deadbeef"},
 			want: rig.ConfigFingerprintFields{
-				AgentKind:                 "coderig:builder",
+				AgentKind:                 "coderig:generic",
 				NativePermissionPolicyRev: "coderig-access-v1:deadbeef",
 				AppFields:                 map[string]string{"access_profile": "trusted"},
 			},
@@ -433,7 +428,7 @@ func TestAgentFingerprintFields(t *testing.T) {
 			name: "model configuration digest folds in",
 			cfg:  Config{ModelConfigRev: "coderig-models-v1:deadbeef"},
 			want: rig.ConfigFingerprintFields{
-				AgentKind:         "coderig:builder",
+				AgentKind:         "coderig:generic",
 				RuntimeCatalogRev: "coderig-models-v1:deadbeef",
 			},
 		},
@@ -466,7 +461,7 @@ func TestAgentFingerprintCombinesModelAndRuntimeCatalogRevisionsAsValidIdentifie
 	t.Parallel()
 
 	catalog, err := loop.NewRuntimeCatalog([]loop.RuntimeCatalogEntry{{
-		AgentType:     "worker",
+		AgentType:     generic.Name,
 		AgentHarness:  "codex",
 		Profile:       "acp/codex",
 		Source:        loop.RuntimeSourceNative,
@@ -492,9 +487,12 @@ func TestAgentFingerprintBoundsProductionLengthModelAndRuntimeCatalogRevisions(t
 
 	modelRevision := strings.Repeat("a", 64)
 	otherModelRevision := strings.Repeat("b", 64)
-	emptyCatalog := mustEmptyRuntimeCatalog()
+	emptyCatalog, err := loop.NewRuntimeCatalog(nil)
+	if err != nil {
+		t.Fatalf("NewRuntimeCatalog(nil) error = %v", err)
+	}
 	populatedCatalog, err := loop.NewRuntimeCatalog([]loop.RuntimeCatalogEntry{{
-		AgentType:     "worker",
+		AgentType:     generic.Name,
 		AgentHarness:  "codex",
 		Profile:       "acp/codex",
 		Credential:    loop.CredentialNativeAuth,
@@ -529,10 +527,10 @@ func TestAgentFingerprintBoundsProductionLengthModelAndRuntimeCatalogRevisions(t
 
 // TestAccessConfigInvalidatesFingerprintFields proves the durable access
 // configuration is drift-detecting at the rig-fingerprint boundary: a
-// product-profile, reviewer-restriction, or egress-boundary change (all folded
-// into AccessConfigRev), or the selected profile name, changes the rig-level
-// fingerprint fields, so a restore with different authority is a mismatch rather
-// than a silent authority change.
+// product-access or egress-boundary change (all folded into AccessConfigRev),
+// or the selected profile name, changes the rig-level fingerprint fields, so a
+// restore with different authority is a mismatch rather than a silent authority
+// change.
 func TestAccessConfigInvalidatesFingerprintFields(t *testing.T) {
 	t.Parallel()
 
@@ -541,7 +539,7 @@ func TestAccessConfigInvalidatesFingerprintFields(t *testing.T) {
 	if got := agentFingerprintFields(Config{AccessProfile: AccessReadOnly, AccessConfigRev: "rev-a"}); !reflect.DeepEqual(got, base) {
 		t.Fatalf("identical access config produced different fields:\n got=%+v\nbase=%+v", got, base)
 	}
-	// A changed access digest (profile/reviewer/egress change) must invalidate.
+	// A changed access digest (profile/effective-policy/egress change) must invalidate.
 	if got := agentFingerprintFields(Config{AccessProfile: AccessReadOnly, AccessConfigRev: "rev-b"}); reflect.DeepEqual(got, base) {
 		t.Error("changed AccessConfigRev did not change the fingerprint fields")
 	}
@@ -551,16 +549,14 @@ func TestAccessConfigInvalidatesFingerprintFields(t *testing.T) {
 	}
 }
 
-// TestAgentKindFormat pins the AgentKind to "<swarm>:<active primer>" so a rename of
-// the builder's attribution name is reflected in the fingerprint (and a prior/other session,
-// with a different or empty AgentKind, cannot resume as CodeRig).
+// TestAgentKindFormat pins the Generic AgentKind used in the fingerprint.
 func TestAgentKindFormat(t *testing.T) {
 	t.Parallel()
-	want := "coderig:" + string(builder.Name)
+	want := "coderig:generic"
 	if agentKind != want {
 		t.Errorf("agentKind = %q, want %q", agentKind, want)
 	}
-	if agentKind != "coderig:builder" {
-		t.Errorf("agentKind = %q, want %q", agentKind, "coderig:builder")
+	if agentKind != "coderig:generic" {
+		t.Errorf("agentKind = %q, want %q", agentKind, "coderig:generic")
 	}
 }

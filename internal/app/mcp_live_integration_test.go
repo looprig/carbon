@@ -15,7 +15,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/looprig/coderig/internal/catalog/reviewer"
 	"github.com/looprig/core/content"
 	"github.com/looprig/core/uuid"
 	"github.com/looprig/harness/pkg/event"
@@ -26,7 +25,7 @@ import (
 )
 
 // mcp_live_integration_test.go is Task 12's live, real-process stdio MCP
-// round-trip suite: it proves this package's mcp.go/mcpconfig.go/swarm.go
+// round-trip suite: it proves this package's mcp.go/mcpconfig.go/assembly.go
 // assembly against a REAL child process speaking REAL newline-delimited
 // JSON-RPC (internal/app/testdata/mcpfixture, a hand-rolled fixture -- see
 // that package's own doc for why it does not use the official go-sdk), not
@@ -188,7 +187,7 @@ func waitMCPBindingReady(t *testing.T, agent *RuntimeAgent, binding string, time
 }
 
 // mcpEchoScript is a deterministic fake inference.Client driving ONE
-// operator turn that calls one named tool exactly once with argsJSON, then
+// Generic turn that calls one named tool exactly once with argsJSON, then
 // answers with a final text message once it observes the tool's own result
 // text. It mirrors permission_review_integration_test.go's bashScript
 // (same file, //go:build integration, so that type is already compiled
@@ -470,7 +469,7 @@ func TestMCPLiveStdioFirstInvokeInteractiveRaisesPermissionGate(t *testing.T) {
 
 // TestMCPLiveStdioFirstInvokeHeadlessDeniesWithTypedApprovalRequired proves
 // the headless half of assertion 2: with no interactive approver wired
-// (gate.NewHeadlessEvaluator, roleGate.Authorize's headless branch,
+// (gate.NewHeadlessEvaluator, accessGate.Authorize's headless branch,
 // toolsets.go), the SAME gated tool.invoke requirement never opens an
 // askable gate at all -- it resolves straight to
 // *gate.EvaluationError{Kind: EvaluationApprovalRequired} inside
@@ -532,34 +531,19 @@ func TestMCPLiveStdioFirstInvokeHeadlessDeniesWithTypedApprovalRequired(t *testi
 }
 
 // ================================================================
-// Assertion 3: reviewer excluded when roles: ["planner","builder"].
+// Assertion 3: a Generic-only binding is hidden from legacy role names. The
+// legacy names below are intentional rejection fixtures.
 // ================================================================
 
-// TestMCPLiveStdioReviewerExcludedByRoles proves Visibility restriction
-// against a real, live-connected binding's real catalog: with roles limited
-// to ["planner","builder"], the active primer (builder) still sees
-// mcp__fixture__echo, but a query for the reviewer role's own visible tools
-// comes back empty. This uses Manager.SessionTools directly rather than
-// spinning up a real delegated reviewer Loop and driving Submit() through
-// it: a freshly spawned delegate Loop has never run and so has never
-// reached the LoopIdle boundary the Adopter reacts to (mcpharness's own
-// adoption.go doc: "a Loop that has never run has never parked... nothing
-// has signalled an idle"), and coderig's own eager Install() call
-// (swarm.go's mcpSessionAssembly.attach) only ever targets the ORIGINAL
-// active primer at session-open, never a Loop spawned later via StartAgent
-// -- so a live round trip through a fresh reviewer delegate's first turn
-// would prove "the reviewer's first turn races the Adopter", a genuine but
-// SEPARATE property, not "the reviewer's role is excluded". Manager.
-// SessionTools reads the binding's live, already-connected catalog directly
-// (no adoption step gates it -- see mcpharness/refresh.go: the initial
-// discovery populates Client.generation directly, Candidate/Adopt exist only
-// for LATER refreshes), so it is exactly this feature's own mechanism,
-// still exercised against a real, live-connected server, without needing to
-// also prove the unrelated delegate-first-turn timing property.
-func TestMCPLiveStdioReviewerExcludedByRoles(t *testing.T) {
+// TestMCPLiveStdioGenericOnlyVisibility proves Visibility restriction against
+// a real, live-connected binding: explicit Generic visibility reaches the
+// active Generic primer, while former role names remain hidden. It uses
+// Manager.SessionTools directly because the initial discovery populates the
+// live catalog before any later adoption refresh is involved.
+func TestMCPLiveStdioGenericOnlyVisibility(t *testing.T) {
 	fixture := buildMCPFixture(t)
 	home := t.TempDir()
-	writeLiveMCPConfig(t, home, "fixture", mcpLiveServerSpec{Command: fixture, Roles: []string{"planner", "builder"}})
+	writeLiveMCPConfig(t, home, "fixture", mcpLiveServerSpec{Command: fixture, Roles: []string{"generic"}})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -570,17 +554,18 @@ func TestMCPLiveStdioReviewerExcludedByRoles(t *testing.T) {
 	primerLoopID := agent.sess.ActiveLoop().ID()
 	primerDefs := agent.mgr.SessionTools(primerLoopID, string(activePrimerName))
 	if len(primerDefs) != 1 || len(primerDefs[0].ProducedToolNames()) != 1 || primerDefs[0].ProducedToolNames()[0] != "mcp__fixture__echo" {
-		t.Fatalf("SessionTools(primer) = %+v, want exactly [mcp__fixture__echo] (roles include %q)", primerDefs, activePrimerName)
+		t.Fatalf("SessionTools(primer) = %+v, want exactly [mcp__fixture__echo] (Generic visibility)", primerDefs)
 	}
 
 	// Any fresh, non-colliding loop id works here: Visibility's Named()
 	// selector matches on loop NAME alone and ignores loopID entirely (the
 	// same established pattern mcp_test.go's own
 	// TestMCPDefinitionsStdioHappyPath documents and relies on).
-	reviewerLoopID := mustUUID(t)
-	reviewerDefs := agent.mgr.SessionTools(reviewerLoopID, string(reviewer.Name))
-	if len(reviewerDefs) != 0 {
-		t.Errorf("SessionTools(reviewer) = %+v, want none (roles [planner,builder] excludes reviewer)", reviewerDefs)
+	for _, legacy := range []string{"planner", "builder", "reviewer"} {
+		legacyDefs := agent.mgr.SessionTools(mustUUID(t), legacy)
+		if len(legacyDefs) != 0 {
+			t.Errorf("SessionTools(%s) = %+v, want none for legacy role", legacy, legacyDefs)
+		}
 	}
 }
 
@@ -601,8 +586,8 @@ func TestMCPLiveStdioReviewerExcludedByRoles(t *testing.T) {
 //
 // This test manually replicates openRuntimeAgent's own composition (the
 // same private helpers it calls, in the same order -- buildSessionAccess,
-// newMCPSessionAssembly, swarmDefinitions, newPermissionReviewRegistration,
-// openSessionWithDefinitions, mcpSessionAssembly.attach) instead of calling
+// newMCPSessionAssembly, genericTestDefinition, newPermissionReviewRegistration,
+// openSessionWithDefinition, mcpSessionAssembly.attach) instead of calling
 // it directly, for one reason: it needs to Subscribe() to the session's
 // events BEFORE attach() runs Start() and the dead binding's connect
 // attempt begins. event.IntegrationStatus is Ephemeral (events.go's own
@@ -638,18 +623,18 @@ func TestMCPLiveStdioDeadServerDegradesSessionOpen(t *testing.T) {
 	cfg.MCPConfigRev = mcpAssembly.configRev()
 
 	client := &fakeLLM{}
-	definitions, err := swarmDefinitions(client, testModel(), cfg, access)
+	definition, err := genericTestDefinition(client, testModel(), cfg, access)
 	if err != nil {
-		t.Fatalf("swarmDefinitions() error = %v", err)
+		t.Fatalf("genericTestDefinition() error = %v", err)
 	}
 	permissionReview, err := newPermissionReviewRegistration(cfg, client)
 	if err != nil {
 		t.Fatalf("newPermissionReviewRegistration() error = %v", err)
 	}
 	stores := mustOpenStores(t)
-	adapter, err := openSessionWithDefinitions(ctx, definitions, cfg, stores, root, SessionSelector{}, permissionReview)
+	adapter, err := openSessionWithDefinition(ctx, definition, cfg, stores, root, SessionSelector{}, permissionReview)
 	if err != nil {
-		t.Fatalf("openSessionWithDefinitions() error = %v", err)
+		t.Fatalf("openSessionWithDefinition() error = %v", err)
 	}
 
 	sub, err := adapter.Subscribe(event.EventFilter{Enduring: event.LoopScope{All: true}})

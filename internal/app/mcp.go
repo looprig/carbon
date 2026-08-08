@@ -6,6 +6,7 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/looprig/coderig/internal/catalog/generic"
 	"github.com/looprig/harness/pkg/event"
 	"github.com/looprig/harness/pkg/gate"
 	"github.com/looprig/harness/pkg/session"
@@ -25,11 +26,6 @@ import (
 // mcpServerSpec.env (mcpEnvVarsFrom), never by inheriting this process's
 // wider environment.
 var mcpEnvPassThrough = []string{"PATH", "HOME", "TMPDIR", "LANG", "LC_ALL"}
-
-// mcpAllRoles is internal/catalog's three fixed loop identities -- the exact
-// loop names a binding's Visibility selects by (design §1.2) -- in the order
-// an omitted or empty mcpServerSpec.roles defaults to.
-var mcpAllRoles = []string{"planner", "builder", "reviewer"}
 
 // mcpDefinitions turns a validated spec list (loadMCPConfig's result) into
 // ready-to-hand-to-Manager bindings. It is pure construction: no network
@@ -75,6 +71,10 @@ func mcpBindingFor(spec mcpServerSpec) (mcpharness.Binding, error) {
 	if err != nil {
 		return mcpharness.Binding{}, mcpConfigFailure(spec.name, "transport", err)
 	}
+	roles := spec.roles
+	if len(roles) == 0 {
+		roles = []string{string(generic.Name)}
+	}
 
 	binding := mcpharness.Binding{
 		Name: spec.name,
@@ -84,7 +84,7 @@ func mcpBindingFor(spec mcpServerSpec) (mcpharness.Binding, error) {
 			Compat:    mcpCompatFor(spec.kind),
 		},
 		Scope:      mcpharness.ScopeSession,
-		Visibility: mcpharness.Named(mcpVisibilityRoles(spec.roles)...),
+		Visibility: mcpharness.Named(roles...),
 		Required:   false,
 	}
 	if err := binding.Validate(); err != nil {
@@ -201,18 +201,6 @@ func mcpHeadersFrom(headers map[string]string) []mcpauth.Header {
 		result = append(result, mcpauth.NewHeader(name, headers[name]))
 	}
 	return result
-}
-
-// mcpVisibilityRoles resolves a spec's roles to the set a Binding's
-// Visibility is built from: empty/nil (normalizeMCPServerRoles's "not yet
-// resolved" sentinel) means all three fixed loop identities, and a
-// non-empty list -- already sorted and deduplicated by Task 6 -- is used as
-// given.
-func mcpVisibilityRoles(specRoles []string) []string {
-	if len(specRoles) == 0 {
-		return mcpAllRoles
-	}
-	return specRoles
 }
 
 // mcpGateOpener routes MCP elicitation to the session's host-owned gate

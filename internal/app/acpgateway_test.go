@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/looprig/harness/pkg/identity"
+	"github.com/looprig/coderig/internal/catalog/generic"
 	"github.com/looprig/harness/pkg/loop"
 	"github.com/looprig/inference"
 	"github.com/looprig/inference/gateway"
@@ -17,7 +17,7 @@ func TestBuildACPGatewayPlanUsesStrictFixedRoutes(t *testing.T) {
 	t.Parallel()
 	compiled := testACPGatewayCatalog(t)
 
-	claude, err := compiled.RuntimeCatalog.Resolve("worker", "claude-code", "gpt-5.6-luna", model.EffortMax)
+	claude, err := compiled.RuntimeCatalog.Resolve(generic.Name, "claude-code", "gpt-5.6-luna", model.EffortMax)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +47,7 @@ func TestBuildACPGatewayPlanUsesStrictFixedRoutes(t *testing.T) {
 		t.Fatalf("unknown Claude alias error = %v, want UnknownRouteError", err)
 	}
 
-	codex, err := compiled.RuntimeCatalog.Resolve("worker", "codex", "gpt-5.6-luna", model.EffortMax)
+	codex, err := compiled.RuntimeCatalog.Resolve(generic.Name, "codex", "gpt-5.6-luna", model.EffortMax)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +78,7 @@ func TestBuildACPGatewayPlanSeparatesClaudeMainAndSmallEffortAliases(t *testing.
 		effort := effort
 		t.Run(string(effort), func(t *testing.T) {
 			t.Parallel()
-			selected, err := compiled.RuntimeCatalog.Resolve("worker", "claude-code", "sonnet-5", effort)
+			selected, err := compiled.RuntimeCatalog.Resolve(generic.Name, "claude-code", "sonnet-5", effort)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -115,20 +115,16 @@ func TestBuildACPGatewayPlanSeparatesClaudeMainAndSmallEffortAliases(t *testing.
 
 func TestNewACPGatewayNativeAuthHasNoBinding(t *testing.T) {
 	t.Parallel()
-	compiled, err := CompileACPCatalog(ACPCatalogInput{
-		AgentTypes: []identity.AgentName{"worker"},
-		Defaults: map[identity.AgentName]configuredDelegateDefault{
-			"worker": {Harness: "codex", Model: "native-model", Effort: model.EffortNone},
+	compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
+		NativeACP: map[string]ACPNativeProfile{
+			"codex": {Harness: "codex", Enabled: true, Models: []loop.ModelAlias{"native-model"}},
 		},
-		NativeAuth: []ACPNativeAuthSource{{
-			Harness: "codex", Alias: "native-model", Model: testModel(),
-			DefaultEffort: model.EffortNone, Efforts: []model.Effort{model.EffortNone},
-		}},
+		PrimerTarget: runtimeCatalogPrimer(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolved, err := compiled.RuntimeCatalog.Resolve("worker", "codex", "native-model", model.EffortNone)
+	resolved, err := compiled.RuntimeCatalog.Resolve(generic.Name, "codex", "native-model", model.EffortNone)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +139,7 @@ func TestNewACPGatewayNativeAuthHasNoBinding(t *testing.T) {
 
 func TestNewACPGatewayCloseIsIdempotent(t *testing.T) {
 	compiled := testACPGatewayCatalog(t)
-	resolved, err := compiled.RuntimeCatalog.Resolve("worker", "codex", "gpt-5.6-luna", model.EffortMax)
+	resolved, err := compiled.RuntimeCatalog.Resolve(generic.Name, "codex", "gpt-5.6-luna", model.EffortMax)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,13 +163,11 @@ func TestNewACPGatewayCloseIsIdempotent(t *testing.T) {
 
 func testACPGatewayCatalog(t *testing.T) ACPCompiledCatalog {
 	t.Helper()
-	compiled, err := CompileACPCatalog(ACPCatalogInput{
-		AgentTypes: []identity.AgentName{"worker"},
+	compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
 		GatewayTargets: legacyTestGatewayTargets(map[model.ProviderName]inference.Client{
 			"anthropic": &fakeLLM{},
 			"openai":    &fakeLLM{},
 		}),
-		Defaults:    legacyTestDefaults([]identity.AgentName{"worker"}),
 		ClaudeSmall: "sonnet-5",
 	})
 	if err != nil {
@@ -210,12 +204,4 @@ func legacyTestGatewayTargets(clients map[model.ProviderName]inference.Client) [
 		})
 	}
 	return targets
-}
-
-func legacyTestDefaults(roles []identity.AgentName) map[identity.AgentName]configuredDelegateDefault {
-	defaults := make(map[identity.AgentName]configuredDelegateDefault, len(roles))
-	for _, role := range roles {
-		defaults[role] = configuredDelegateDefault{Harness: "claude-code", Model: "sonnet-5", Effort: model.EffortMedium}
-	}
-	return defaults
 }

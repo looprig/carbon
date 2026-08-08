@@ -14,17 +14,8 @@ type secretFreeModelConfig struct {
 	Version              int                          `json:"version"`
 	PrimerDefault        string                       `json:"primer_default"`
 	ClaudeCodeSmallModel string                       `json:"claude_code_small_model"`
-	DelegateDefaults     []secretFreeDelegateDefault  `json:"delegate_defaults"`
 	Models               []secretFreeModelTarget      `json:"models"`
 	NativeACP            []secretFreeNativeACPProfile `json:"native_acp"`
-}
-
-type secretFreeDelegateDefault struct {
-	Role    string `json:"role"`
-	Harness string `json:"harness"`
-	Source  string `json:"source"`
-	Model   string `json:"model,omitempty"`
-	Effort  string `json:"effort,omitempty"`
 }
 
 type secretFreeNativeACPProfile struct {
@@ -76,19 +67,9 @@ func secretFreeModelConfigJSON(config normalizedModelConfig) ([]byte, error) {
 		Version:              modelConfigVersion,
 		PrimerDefault:        config.PrimerDefault,
 		ClaudeCodeSmallModel: config.ClaudeCodeSmallModel,
-		DelegateDefaults:     make([]secretFreeDelegateDefault, 0, len(config.DelegateDefaults)),
 		Models:               make([]secretFreeModelTarget, 0, len(config.Models)),
 		NativeACP:            make([]secretFreeNativeACPProfile, 0, len(config.NativeACP)),
 	}
-	for _, value := range config.DelegateDefaults {
-		projection.DelegateDefaults = append(projection.DelegateDefaults, secretFreeDelegateDefault{
-			Role: value.Role, Harness: value.Harness, Source: string(value.Source), Model: value.Model,
-			Effort: secretFreeDelegateEffort(value),
-		})
-	}
-	sort.Slice(projection.DelegateDefaults, func(i, j int) bool {
-		return modelConfigRoleRank(projection.DelegateDefaults[i].Role) < modelConfigRoleRank(projection.DelegateDefaults[j].Role)
-	})
 	for _, profile := range config.NativeACP {
 		models := append([]string(nil), profile.Models...)
 		sort.Strings(models)
@@ -133,27 +114,11 @@ func secretFreeModelConfigJSON(config normalizedModelConfig) ([]byte, error) {
 	return json.Marshal(projection)
 }
 
-func secretFreeDelegateEffort(value normalizedDelegateDefault) string {
-	if value.Source == "native" {
-		return ""
-	}
-	return modelConfigEffortName(value.Effort)
-}
-
 func modelConfigEffortName(effort model.Effort) string {
 	if effort == model.EffortNone {
 		return "none"
 	}
 	return string(effort)
-}
-
-func modelConfigRoleRank(role string) int {
-	for index, known := range modelConfigDelegateRoleOrder {
-		if role == known {
-			return index
-		}
-	}
-	return len(modelConfigDelegateRoleOrder)
 }
 
 func (t normalizedModelTarget) String() string {

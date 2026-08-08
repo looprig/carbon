@@ -277,8 +277,9 @@ func canonicalizeWithinRoot(canonicalRoot, candidate string) (string, error) {
 // both newPermissionReviewRegistration (production wiring) and this file's
 // tests use, so the two can never silently drift.
 func evidenceCeilingFor(profile AccessProfile) string {
-	if profile == "" {
-		profile = DefaultAccessProfile
+	normalized, err := normalizeAccessProfile(profile)
+	if err != nil {
+		return ""
 	}
-	return string(profile)
+	return string(normalized)
 }

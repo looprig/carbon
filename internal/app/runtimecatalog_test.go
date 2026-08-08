@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/looprig/coderig/internal/catalog/generic"
 	"github.com/looprig/core/content"
 	"github.com/looprig/harness/pkg/identity"
 	"github.com/looprig/harness/pkg/loop"
@@ -13,166 +14,108 @@ import (
 	"github.com/looprig/inference/stream"
 )
 
-func TestCompileAgentRuntimeCatalogWithoutACP(t *testing.T) {
-	clientA := &runtimeCatalogClient{}
-	clientB := &runtimeCatalogClient{}
-	targets := []ACPGatewaySource{
-		{
-			Alias: "alpha", Description: "Fast local coding model.", Client: clientA,
-			Model:         model.CustomModel("openai", model.APIFormatOpenAIResponses, "", "alpha-model", model.WithTools(), model.WithThinking()),
-			DefaultEffort: model.EffortMedium,
-			Efforts:       []model.Effort{model.EffortLow, model.EffortMedium},
-		},
-		{
-			Alias: "beta", Description: "Deep local coding model.", Client: clientB,
-			Model:         model.CustomModel("anthropic", model.APIFormatAnthropic, "", "beta-model", model.WithTools(), model.WithThinking()),
-			DefaultEffort: model.EffortHigh,
-			Efforts:       []model.Effort{model.EffortHigh, model.EffortMax},
-		},
-	}
-	compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
-		AgentTypes:     []identity.AgentName{"planner", "builder", "reviewer"},
-		GatewayTargets: targets,
-	})
+func TestCompileAgentRuntimeCatalogContainsOnlyGenericWithInProcessDefault(t *testing.T) {
+	targets := runtimeCatalogTargets()
+	compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{GatewayTargets: targets})
 	if err != nil {
 		t.Fatalf("CompileAgentRuntimeCatalog() error = %v", err)
 	}
 
-	for _, role := range []identity.AgentName{"planner", "builder", "reviewer"} {
-		entries := compiled.RuntimeCatalog.EntriesFor(role)
-		if len(entries) != 1 {
-			t.Fatalf("EntriesFor(%q) = %d rows, want one ordinary row: %#v", role, len(entries), entries)
-		}
-		entry := entries[0]
-		if entry.AgentHarness != looprigRuntimeHarness || entry.Profile != looprigRuntimeProfile || entry.Source != loop.RuntimeSourceNative || !entry.Default {
-			t.Fatalf("ordinary entry = %#v", entry)
-		}
-		if entry.Description != looprigRuntimeDescription {
-			t.Fatalf("ordinary description = %q", entry.Description)
-		}
-		for _, target := range targets {
-			option, ok := runtimeOptionByAlias(entry.Models, target.Alias)
-			if !ok || option.Description != target.Description {
-				t.Fatalf("model %q option = %#v, want description %q", target.Alias, option, target.Description)
-			}
-			for _, effort := range target.Efforts {
-				resolved, err := compiled.RuntimeCatalog.ResolveWithExplicitSource(role, looprigRuntimeHarness, loop.RuntimeSourceNative, target.Alias, effort, true)
-				if err != nil {
-					t.Fatalf("Resolve(%q, %q, %q) error = %v", role, target.Alias, effort, err)
-				}
-				client, selected, err := compiled.NativeTarget(resolved)
-				if err != nil {
-					t.Fatalf("NativeTarget(%q, %q) error = %v", target.Alias, effort, err)
-				}
-				wantClient := clientA
-				if target.Alias == "beta" {
-					wantClient = clientB
-				}
-				if client != wantClient || selected.Key() != target.Model.Key() || selected.Sampling.Effort != effort {
-					t.Fatalf("NativeTarget(%q, %q) = client %T model %#v", target.Alias, effort, client, selected)
-				}
+	entries := compiled.RuntimeCatalog.EntriesFor(generic.Name)
+	if len(entries) != 2 {
+		t.Fatalf("Generic entries = %d, want ordinary and codex rows: %#v", len(entries), entries)
+	}
+	defaults := 0
+	for _, entry := range entries {
+		if entry.Default {
+			defaults++
+			if entry.AgentHarness != looprigRuntimeHarness || entry.Profile != looprigRuntimeProfile || entry.Source != loop.RuntimeSourceNative {
+				t.Fatalf("default entry = %#v, want looprig/native native entry", entry)
 			}
 		}
-		for _, candidate := range entries {
-			if candidate.AgentHarness == "codex" || candidate.AgentHarness == "claude-code" {
-				t.Fatalf("ACP row unexpectedly present: %#v", candidate)
-			}
+	}
+	if defaults != 1 {
+		t.Fatalf("Generic defaults = %d, want exactly one: %#v", defaults, entries)
+	}
+	// Legacy identities are rejection fixtures: the compiled catalog is Generic-only.
+	for _, legacy := range []identity.AgentName{"planner", "builder", "reviewer"} {
+		if got := compiled.RuntimeCatalog.EntriesFor(legacy); got != nil {
+			t.Fatalf("legacy entries for %q = %#v, want nil", legacy, got)
 		}
 	}
 }
 
-func TestCompileAgentRuntimeCatalogMergesACPRowsAndDescriptions(t *testing.T) {
-	target := ACPGatewaySource{
-		Alias: "alpha", Description: "Configured coding model.", Client: &runtimeCatalogClient{},
-		Model:         model.CustomModel("openai", model.APIFormatOpenAIResponses, "", "alpha-model", model.WithTools(), model.WithThinking()),
-		DefaultEffort: model.EffortMedium,
-		Efforts:       []model.Effort{model.EffortMedium, model.EffortHigh},
-	}
-	defaults := map[identity.AgentName]configuredDelegateDefault{
-		"planner":  {Harness: "codex", Model: "alpha", Effort: model.EffortMedium},
-		"builder":  {Harness: "codex", Model: "alpha", Effort: model.EffortMedium},
-		"reviewer": {Harness: "codex", Model: "alpha", Effort: model.EffortMedium},
-	}
-	acp, err := CompileACPCatalog(ACPCatalogInput{
-		AgentTypes: []identity.AgentName{"planner", "builder", "reviewer"}, GatewayTargets: []ACPGatewaySource{target},
-		Defaults: defaults,
-	})
-	if err != nil {
-		t.Fatalf("CompileACPCatalog() error = %v", err)
-	}
+func TestCompileAgentRuntimeCatalogKeepsACPChoicesExplicitAndNonDefault(t *testing.T) {
+	targets := runtimeCatalogTargets()
 	compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
-		AgentTypes: []identity.AgentName{"planner", "builder", "reviewer"}, GatewayTargets: []ACPGatewaySource{target},
-		Defaults: defaults, ACP: acp,
+		GatewayTargets: targets,
+		ClaudeSmall:    targets[0].Alias,
 	})
 	if err != nil {
 		t.Fatalf("CompileAgentRuntimeCatalog() error = %v", err)
 	}
 
-	entries := compiled.RuntimeCatalog.EntriesFor("planner")
-	if len(entries) != 2 {
-		t.Fatalf("planner entries = %d, want looprig + codex rows: %#v", len(entries), entries)
+	entries := compiled.RuntimeCatalog.EntriesFor(generic.Name)
+	if len(entries) != 3 {
+		t.Fatalf("Generic entries = %d, want ordinary plus two ACP rows: %#v", len(entries), entries)
 	}
-	var ordinary, codex loop.RuntimeCatalogEntry
 	for _, entry := range entries {
 		switch entry.AgentHarness {
-		case looprigRuntimeHarness:
-			ordinary = entry
-		case "codex":
-			codex = entry
+		case "codex", "claude-code":
+			if entry.Default {
+				t.Fatalf("ACP entry unexpectedly default: %#v", entry)
+			}
+			if entry.SelectionKind != loop.RuntimeSelectionExplicit {
+				t.Fatalf("ACP entry selection kind = %q, want explicit", entry.SelectionKind)
+			}
+		default:
+			if !entry.Default {
+				t.Fatalf("ordinary entry unexpectedly non-default: %#v", entry)
+			}
 		}
 	}
-	if ordinary.Profile != looprigRuntimeProfile || ordinary.Default {
-		t.Fatalf("ordinary row = %#v, want non-default alongside configured ACP default", ordinary)
+
+	for _, harness := range []loop.AgentHarnessName{"codex", "claude-code"} {
+		resolved, err := compiled.RuntimeCatalog.Resolve(generic.Name, harness, targets[0].Alias, targets[0].Efforts[0])
+		if err != nil {
+			t.Fatalf("Resolve(%q) error = %v", harness, err)
+		}
+		if resolved.AgentHarness != harness || resolved.Profile != loop.RuntimeProfileName("acp/"+string(harness)) {
+			t.Fatalf("Resolve(%q) = %#v", harness, resolved)
+		}
 	}
-	if !codex.Default || codex.Description != codexRuntimeDescription {
-		t.Fatalf("codex row = %#v", codex)
+	resolved, err := compiled.RuntimeCatalog.Resolve(generic.Name, "", "", model.EffortNone)
+	if err != nil {
+		t.Fatalf("default Resolve() error = %v", err)
 	}
-	option, ok := runtimeOptionByAlias(codex.Models, "alpha")
-	if !ok || option.Description != target.Description {
-		t.Fatalf("codex model option = %#v", option)
-	}
-	resolved, err := compiled.RuntimeCatalog.Resolve("planner", "", "", model.EffortNone)
-	if err != nil || resolved.AgentHarness != "codex" {
-		t.Fatalf("default resolve = %#v, %v", resolved, err)
+	if resolved.AgentHarness != looprigRuntimeHarness || resolved.Profile != looprigRuntimeProfile {
+		t.Fatalf("default Resolve() = %#v, want looprig/native", resolved)
 	}
 }
 
-func TestFilterACPPreflightCatalogKeepsOrdinaryRowsWhenACPFails(t *testing.T) {
-	target := ACPGatewaySource{
-		Alias: "alpha", Description: "Configured coding model.", Client: &runtimeCatalogClient{},
-		Model:         model.CustomModel("openai", model.APIFormatOpenAIResponses, "", "alpha-model", model.WithTools(), model.WithThinking()),
-		DefaultEffort: model.EffortMedium, Efforts: []model.Effort{model.EffortMedium},
-	}
-	acp, err := CompileACPCatalog(ACPCatalogInput{
-		AgentTypes: []identity.AgentName{"planner"}, GatewayTargets: []ACPGatewaySource{target},
-		Defaults: map[identity.AgentName]configuredDelegateDefault{"planner": {Harness: "codex", Model: "alpha", Effort: model.EffortMedium}},
-	})
+func TestCompileAgentRuntimeCatalogUsesPrimerOnlyForInProcessFallback(t *testing.T) {
+	primer := runtimeCatalogPrimer()
+	compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{PrimerTarget: primer})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("CompileAgentRuntimeCatalog() error = %v", err)
 	}
-	compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
-		AgentTypes: []identity.AgentName{"planner"}, GatewayTargets: []ACPGatewaySource{target}, ACP: acp,
-	})
+	entries := compiled.RuntimeCatalog.EntriesFor(generic.Name)
+	if len(entries) != 1 || !entries[0].Default || entries[0].AgentHarness != looprigRuntimeHarness {
+		t.Fatalf("Generic entries = %#v, want one in-process default", entries)
+	}
+	if len(entries[0].Models) != 1 || entries[0].Models[0].Alias != primer.Alias {
+		t.Fatalf("ordinary fallback models = %#v, want primer only", entries[0].Models)
+	}
+	if got := compiled.RuntimeCatalog.EntriesFor(generic.Name); len(got) != 1 {
+		t.Fatalf("primer fallback leaked ACP rows: %#v", got)
+	}
+	resolved, err := compiled.RuntimeCatalog.Resolve(generic.Name, "", "", model.EffortNone)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("Resolve() error = %v", err)
 	}
-	filtered, err := filterACPPreflightCatalog(compiled, nil)
-	if err != nil {
-		t.Fatal(err)
+	if resolved.AgentHarness != looprigRuntimeHarness || resolved.Profile != looprigRuntimeProfile || resolved.ModelAlias != primer.Alias || resolved.Effort != primer.DefaultEffort {
+		t.Fatalf("Resolve() = %#v, want looprig/native primer target", resolved)
 	}
-	entries := filtered.RuntimeCatalog.EntriesFor("planner")
-	if len(entries) != 1 || entries[0].AgentHarness != looprigRuntimeHarness || !entries[0].Default {
-		t.Fatalf("filtered entries = %#v, want ordinary default only", entries)
-	}
-}
-
-func runtimeOptionByAlias(options []loop.RuntimeModelOption, alias loop.ModelAlias) (loop.RuntimeModelOption, bool) {
-	for _, option := range options {
-		if option.Alias == alias {
-			return option, true
-		}
-	}
-	return loop.RuntimeModelOption{}, false
 }
 
 func TestCompileAgentRuntimeCatalogEntriesAreDeterministic(t *testing.T) {
@@ -181,27 +124,99 @@ func TestCompileAgentRuntimeCatalogEntriesAreDeterministic(t *testing.T) {
 	if first.RuntimeCatalog.Digest() != second.RuntimeCatalog.Digest() {
 		t.Fatalf("catalog digest changed with input order: %s != %s", first.RuntimeCatalog.Digest(), second.RuntimeCatalog.Digest())
 	}
-	if !reflect.DeepEqual(first.RuntimeCatalog.EntriesFor("planner"), second.RuntimeCatalog.EntriesFor("planner")) {
+	if !reflect.DeepEqual(first.RuntimeCatalog.EntriesFor(generic.Name), second.RuntimeCatalog.EntriesFor(generic.Name)) {
 		t.Fatal("catalog entries changed with input order")
+	}
+}
+
+func TestCompileAgentRuntimeCatalogHasOneGenericEntryPerProfile(t *testing.T) {
+	target := runtimeCatalogTargets()[0]
+	compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
+		GatewayTargets: []ACPGatewaySource{target},
+		ClaudeSmall:    target.Alias,
+		NativeACP: map[string]ACPNativeProfile{
+			"codex": {Harness: "codex", Enabled: true, Models: []loop.ModelAlias{"native-a"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CompileAgentRuntimeCatalog() error = %v", err)
+	}
+	entries := compiled.RuntimeCatalog.EntriesFor(generic.Name)
+	seen := make(map[loop.RuntimeProfileName]struct{}, len(entries))
+	for _, entry := range entries {
+		if _, duplicate := seen[entry.Profile]; duplicate {
+			t.Fatalf("duplicate Generic runtime profile %q: %#v", entry.Profile, entries)
+		}
+		seen[entry.Profile] = struct{}{}
+	}
+	if len(entries) != 3 {
+		t.Fatalf("Generic entries = %d, want looprig/native plus one Claude and one Codex ACP entry: %#v", len(entries), entries)
+	}
+	codex, err := compiled.RuntimeCatalog.ResolveWithExplicitSource(generic.Name, "codex", loop.RuntimeSourceNative, "native-a", model.EffortNone, false)
+	if err != nil {
+		t.Fatalf("Resolve explicit native Codex model: %v", err)
+	}
+	if codex.Profile != "acp/codex" || codex.Source != loop.RuntimeSourceNative {
+		t.Fatalf("native Codex resolution = %#v", codex)
+	}
+}
+
+func TestCompileAgentRuntimeCatalogFiltersUnavailableACPWithoutRepairingDefault(t *testing.T) {
+	targets := runtimeCatalogTargets()
+	compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{GatewayTargets: targets, ClaudeSmall: targets[0].Alias})
+	if err != nil {
+		t.Fatal(err)
+	}
+	filtered, err := filterACPPreflightCatalog(compiled, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries := filtered.RuntimeCatalog.EntriesFor(generic.Name)
+	if len(entries) != 1 || entries[0].AgentHarness != looprigRuntimeHarness || !entries[0].Default {
+		t.Fatalf("filtered entries = %#v, want ordinary Generic default only", entries)
 	}
 }
 
 func testRuntimeCatalogCompilation(t *testing.T, reverse bool) ACPCompiledCatalog {
 	t.Helper()
-	targets := []ACPGatewaySource{
-		{Alias: "zeta", Description: "Zeta model.", Client: &runtimeCatalogClient{}, Model: model.CustomModel("openai", model.APIFormatOpenAIResponses, "", "zeta", model.WithTools(), model.WithThinking()), DefaultEffort: model.EffortLow, Efforts: []model.Effort{model.EffortLow}},
-		{Alias: "alpha", Description: "Alpha model.", Client: &runtimeCatalogClient{}, Model: model.CustomModel("openai", model.APIFormatOpenAIResponses, "", "alpha", model.WithTools(), model.WithThinking()), DefaultEffort: model.EffortLow, Efforts: []model.Effort{model.EffortLow}},
-	}
-	roles := []identity.AgentName{"reviewer", "planner"}
+	targets := runtimeCatalogTargets()
 	if reverse {
 		targets[0], targets[1] = targets[1], targets[0]
-		roles[0], roles[1] = roles[1], roles[0]
 	}
-	compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{AgentTypes: roles, GatewayTargets: targets})
+	compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{GatewayTargets: targets})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return compiled
+}
+
+func runtimeCatalogTargets() []ACPGatewaySource {
+	return []ACPGatewaySource{
+		{Alias: "zeta", Description: "Zeta model.", Client: &runtimeCatalogClient{}, Model: model.CustomModel("openai", model.APIFormatOpenAIResponses, "", "zeta", model.WithTools(), model.WithThinking()), DefaultEffort: model.EffortLow, Efforts: []model.Effort{model.EffortLow}},
+		{Alias: "alpha", Description: "Alpha model.", Client: &runtimeCatalogClient{}, Model: model.CustomModel("openai", model.APIFormatOpenAIResponses, "", "alpha", model.WithTools(), model.WithThinking()), DefaultEffort: model.EffortMedium, Efforts: []model.Effort{model.EffortMedium, model.EffortHigh}},
+	}
+}
+
+func runtimeCatalogPrimer() GenericRuntimeSource {
+	return GenericRuntimeSource{
+		Alias: "primer", Description: "Configured primer.", Client: &runtimeCatalogClient{},
+		Model:         model.CustomModel("openai", model.APIFormatOpenAIResponses, "", "primer", model.WithTools(), model.WithThinking()),
+		DefaultEffort: model.EffortMedium, Efforts: []model.Effort{model.EffortLow, model.EffortMedium},
+	}
+}
+
+func TestConfiguredPrimerRuntimeTargetPinsAnAdmittedEffort(t *testing.T) {
+	primerModel := model.CustomModel("openai", model.APIFormatOpenAIResponses, "", "primer", model.WithTools(), model.WithThinking())
+	configured := productionModels{
+		PrimerAlias:   "primer",
+		PrimerClient:  &runtimeCatalogClient{},
+		PrimerModel:   primerModel,
+		PrimerEfforts: []model.Effort{model.EffortHigh},
+	}
+	target := configuredPrimerRuntimeTarget(configured)
+	if target.DefaultEffort != model.EffortHigh {
+		t.Fatalf("configured primer default effort = %q, want admitted high effort", target.DefaultEffort)
+	}
 }
 
 type runtimeCatalogClient struct{}

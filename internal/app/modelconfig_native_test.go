@@ -5,9 +5,6 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-
-	"github.com/looprig/harness/pkg/loop"
-	model "github.com/looprig/inference/model"
 )
 
 func TestModelConfigNativeACPProfilesDistinguishAbsentManagedAndExplicit(t *testing.T) {
@@ -101,63 +98,6 @@ func TestDecodeModelConfigRejectsNullNativeACPModels(t *testing.T) {
 	}
 }
 
-func TestModelConfigNativeDelegateDefaults(t *testing.T) {
-	t.Run("managed allows omitted model and effort", func(t *testing.T) {
-		config := decodeModelConfigWithNativeACP(t, `{"codex":{"enabled":true}}`)
-		config = setAllCodexDefaults(config, "", "")
-		normalized, err := normalizeModelConfig(config)
-		if err != nil {
-			t.Fatalf("normalizeModelConfig() error = %v", err)
-		}
-		for _, value := range normalized.DelegateDefaults {
-			if value.Source != loop.RuntimeSourceNative || value.Model != "" || value.Effort != model.EffortNone {
-				t.Fatalf("native managed default = %#v, want native with no model/effort identity", value)
-			}
-		}
-	})
-
-	t.Run("explicit profile requires a configured model alias", func(t *testing.T) {
-		config := decodeModelConfigWithNativeACP(t, `{"codex":{"enabled":true,"models":["native-codex"]}}`)
-		config = setAllCodexDefaults(config, "native-codex", "")
-		if _, err := normalizeModelConfig(config); err != nil {
-			t.Fatalf("normalizeModelConfig() error = %v", err)
-		}
-
-		missing := setAllCodexDefaults(config, "", "")
-		if err := normalizeOnly(missing); err == nil {
-			t.Fatal("normalizeModelConfig() omitted explicit model error = nil, want validation error")
-		}
-
-		invalid := setAllCodexDefaults(config, "not-configured", "")
-		assertNativeModelConfigValidationError(t, normalizeOnly(invalid))
-	})
-
-	t.Run("native effort override is rejected", func(t *testing.T) {
-		config := decodeModelConfigWithNativeACP(t, `{"codex":{"enabled":true}}`)
-		config = setAllCodexDefaults(config, "", "high")
-		assertNativeModelConfigValidationError(t, normalizeOnly(config))
-	})
-
-	t.Run("disabled profile is unavailable", func(t *testing.T) {
-		config := decodeModelConfigWithNativeACP(t, `{"codex":{"enabled":false}}`)
-		config = setAllCodexDefaults(config, "", "")
-		assertNativeModelConfigValidationError(t, normalizeOnly(config))
-	})
-
-	t.Run("gateway defaults remain concrete", func(t *testing.T) {
-		config := decodeModelConfigWithNativeACP(t, `{"codex":{"enabled":true}}`)
-		normalized, err := normalizeModelConfig(config)
-		if err != nil {
-			t.Fatalf("normalizeModelConfig() error = %v", err)
-		}
-		for _, value := range normalized.DelegateDefaults {
-			if value.Source != loop.RuntimeSourceGateway || value.Model != "local" || value.Effort != model.EffortNone {
-				t.Fatalf("gateway default = %#v, want unchanged concrete gateway selection", value)
-			}
-		}
-	})
-}
-
 func TestModelConfigNativeACPIdentityChangesDigestWithoutSecrets(t *testing.T) {
 	baseConfig := decodeModelConfigWithNativeACP(t, `{"codex":{"enabled":true}}`)
 	base, err := normalizeModelConfig(baseConfig)
@@ -182,16 +122,6 @@ func TestModelConfigNativeACPIdentityChangesDigestWithoutSecrets(t *testing.T) {
 		t.Fatal("native profile identity change did not change digest")
 	}
 
-	sourceChanged := cloneNormalizedModelConfig(base)
-	sourceChanged.DelegateDefaults[0].Source = loop.RuntimeSourceNative
-	sourceChangedDigest, err := modelConfigDigest(sourceChanged)
-	if err != nil {
-		t.Fatalf("digest source change: %v", err)
-	}
-	if sourceChangedDigest == baseDigest {
-		t.Fatal("delegate source identity change did not change digest")
-	}
-
 	material, err := secretFreeModelConfigJSON(changed)
 	if err != nil {
 		t.Fatalf("secret-free projection: %v", err)
@@ -214,23 +144,6 @@ func decodeModelConfigWithNativeACP(t *testing.T, nativeJSON string) modelConfig
 
 func modelConfigJSONWithNativeACP(nativeJSON string) string {
 	return strings.Replace(validLMStudioModelConfig, `"version": 2,`, `"version": 2, "native_acp":`+nativeJSON+`,`, 1)
-}
-
-func setAllCodexDefaults(config modelConfigFile, modelAlias, effort string) modelConfigFile {
-	for role := range config.DelegateDefaults {
-		value := config.DelegateDefaults[role]
-		value.Harness = "codex"
-		value.Source = "native"
-		value.Model = modelAlias
-		value.Effort = effort
-		config.DelegateDefaults[role] = value
-	}
-	return config
-}
-
-func normalizeOnly(config modelConfigFile) error {
-	_, err := normalizeModelConfig(config)
-	return err
 }
 
 func assertNativeModelConfigValidationError(t *testing.T, err error) {

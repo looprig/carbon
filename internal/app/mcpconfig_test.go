@@ -28,7 +28,7 @@ const validMCPConfigJSON = `{
       "command": "npx",
       "args": ["-y", "@upstash/context7-mcp"],
       "env": { "FOO": "bar" },
-      "roles": ["planner", "builder"]
+      "roles": ["generic"]
     }
   }
 }`
@@ -74,8 +74,8 @@ func TestNormalizeMCPConfigHappyPath(t *testing.T) {
 	if context7.command != "" || context7.args != nil || context7.env != nil {
 		t.Errorf("context7 stdio fields leaked into http spec: %+v", context7)
 	}
-	if len(context7.roles) != 0 {
-		t.Errorf("context7.roles = %v, want empty (all three)", context7.roles)
+	if got := strings.Join(context7.roles, ","); got != "generic" {
+		t.Errorf("context7.roles = %v, want [generic]", context7.roles)
 	}
 
 	if docsLocal.name != "docs-local" {
@@ -96,8 +96,8 @@ func TestNormalizeMCPConfigHappyPath(t *testing.T) {
 	if docsLocal.url != "" || docsLocal.headers != nil {
 		t.Errorf("docsLocal http fields leaked into stdio spec: %+v", docsLocal)
 	}
-	if got := strings.Join(docsLocal.roles, ","); got != "builder,planner" {
-		t.Errorf("docsLocal.roles = %v, want sorted [builder planner]", docsLocal.roles)
+	if got := strings.Join(docsLocal.roles, ","); got != "generic" {
+		t.Errorf("docsLocal.roles = %v, want [generic]", docsLocal.roles)
 	}
 }
 
@@ -117,6 +117,19 @@ func TestNormalizeMCPConfigSSEExplicitType(t *testing.T) {
 	}
 	if specs[0].url != "https://mcp.example.test/sse" {
 		t.Errorf("specs[0].url = %q", specs[0].url)
+	}
+}
+
+func TestNormalizeMCPServerRejectsFormerRoleNames(t *testing.T) {
+	for _, role := range []string{"planner", "builder", "reviewer"} {
+		t.Run(role, func(t *testing.T) {
+			_, err := normalizeMCPServer("docs", mcpServerConfig{
+				Type: "stdio", Command: "/bin/sh", Roles: []string{role},
+			})
+			if err == nil {
+				t.Fatalf("normalizeMCPServer(%q) succeeded, want strict Generic-only rejection", role)
+			}
+		})
 	}
 }
 
@@ -215,10 +228,10 @@ func TestNormalizeMCPConfigRejectsInvalidServers(t *testing.T) {
 		{name: "url unsupported scheme", binding: "docs", base: validHTTPMCPServerConfig, mutate: func(c *mcpServerConfig) { c.URL = "ftp://mcp.example.test/mcp" }},
 		{name: "url has userinfo", binding: "docs", base: validHTTPMCPServerConfig, mutate: func(c *mcpServerConfig) { c.URL = "https://user:pass@mcp.example.test/mcp" }},
 
-		// roles subset of {planner, builder, reviewer}; unknown/duplicate errors.
-		{name: "unknown role", binding: "docs", mutate: func(c *mcpServerConfig) { c.Roles = []string{"planner", "operator"} }},
-		{name: "duplicate roles", binding: "docs", mutate: func(c *mcpServerConfig) { c.Roles = []string{"planner", "planner"} }},
-		{name: "padded role is unknown", binding: "docs", mutate: func(c *mcpServerConfig) { c.Roles = []string{"planner "} }},
+		// Legacy role is a rejection fixture; roles accepts only generic.
+		{name: "legacy role is unknown", binding: "docs", mutate: func(c *mcpServerConfig) { c.Roles = []string{"planner"} }},
+		{name: "duplicate roles", binding: "docs", mutate: func(c *mcpServerConfig) { c.Roles = []string{"generic", "generic"} }},
+		{name: "padded role is unknown", binding: "docs", mutate: func(c *mcpServerConfig) { c.Roles = []string{"generic "} }},
 	}
 
 	for _, tt := range tests {
@@ -540,8 +553,8 @@ func TestLoadMCPConfig(t *testing.T) {
 		if docsLocal.name != "docs-local" || docsLocal.kind != "stdio" || docsLocal.command != "npx" {
 			t.Errorf("specs[1] = %+v", docsLocal)
 		}
-		if strings.Join(docsLocal.roles, ",") != "builder,planner" {
-			t.Errorf("specs[1].roles = %v, want sorted [builder planner]", docsLocal.roles)
+		if strings.Join(docsLocal.roles, ",") != "generic" {
+			t.Errorf("specs[1].roles = %v, want [generic]", docsLocal.roles)
 		}
 	})
 

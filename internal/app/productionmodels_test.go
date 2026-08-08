@@ -1,18 +1,46 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"reflect"
 	"strings"
 	"testing"
 
-	"github.com/looprig/harness/pkg/identity"
+	"github.com/looprig/coderig/internal/catalog/generic"
 	"github.com/looprig/harness/pkg/loop"
 	"github.com/looprig/inference"
 	"github.com/looprig/inference/auth"
 	"github.com/looprig/inference/model"
 )
+
+func TestProductionModelsWithoutDelegateDefaultsCompileACPPath(t *testing.T) {
+	decoded, err := decodeModelConfig([]byte(validLMStudioModelConfig))
+	if err != nil {
+		t.Fatalf("decodeModelConfig() error = %v", err)
+	}
+	normalized, err := normalizeModelConfig(decoded)
+	if err != nil {
+		t.Fatalf("normalizeModelConfig() error = %v", err)
+	}
+	configured, err := compileProductionModels(normalized, func(model.Model, auth.APIKey) (inference.Client, error) {
+		return &fakeLLM{}, nil
+	})
+	if err != nil {
+		t.Fatalf("compileProductionModels() error = %v", err)
+	}
+
+	composition, err := newProductionACPCompositionWithPreflight(context.Background(), DefaultAccessProfile, configured, func(_ context.Context, probe ACPExecutableProbe) ACPPreflightResult {
+		return ACPPreflightResult{Ready: true, AdvertisedModels: append([]string(nil), probe.Models...)}
+	})
+	if err != nil {
+		t.Fatalf("newProductionACPCompositionWithPreflight() error = %v", err)
+	}
+	if composition == nil || len(composition.Catalog.RuntimeCatalog.EntriesFor(generic.Name)) == 0 {
+		t.Fatalf("production ACP composition = %#v, want a compiled runtime catalog", composition)
+	}
+}
 
 func TestProductionModelsConstructsCredentialBoundClients(t *testing.T) {
 	const (
@@ -25,11 +53,6 @@ func TestProductionModelsConstructsCredentialBoundClients(t *testing.T) {
 	config := normalizedModelConfig{
 		PrimerDefault:        "fixture-primer",
 		ClaudeCodeSmallModel: "fixture-local",
-		DelegateDefaults: []normalizedDelegateDefault{
-			{Role: "planner", Harness: "claude-code", Model: "fixture-delegate", Effort: model.EffortHigh},
-			{Role: "builder", Harness: "codex", Model: "fixture-local", Effort: model.EffortLow},
-			{Role: "reviewer", Harness: "codex", Model: "fixture-delegate", Effort: model.EffortMedium},
-		},
 		Models: []normalizedModelTarget{
 			{Alias: "fixture-primer", Model: primerModel, Uses: []string{"primer"}, Efforts: []model.Effort{model.EffortNone}, DefaultEffort: model.EffortNone, client: modelClientInput{APIKey: primerKey}},
 			{Alias: "fixture-delegate", Model: delegateModel, Uses: []string{"delegate"}, Efforts: []model.Effort{model.EffortLow, model.EffortMedium, model.EffortHigh}, DefaultEffort: model.EffortMedium, client: modelClientInput{APIKey: delegateKey}},
@@ -87,14 +110,6 @@ func TestProductionModelsConstructsCredentialBoundClients(t *testing.T) {
 			t.Errorf("ACP source %d did not preserve normalized target", index)
 		}
 	}
-	wantDefaults := map[identity.AgentName]configuredDelegateDefault{
-		"planner":  {Harness: "claude-code", Model: "fixture-delegate", Effort: model.EffortHigh},
-		"builder":  {Harness: "codex", Model: "fixture-local", Effort: model.EffortLow},
-		"reviewer": {Harness: "codex", Model: "fixture-delegate", Effort: model.EffortMedium},
-	}
-	if !reflect.DeepEqual(got.Defaults, wantDefaults) {
-		t.Fatalf("defaults = %#v, want %#v", got.Defaults, wantDefaults)
-	}
 	if got.ClaudeSmall != "fixture-local" {
 		t.Fatalf("ClaudeSmall = %q, want fixture-local", got.ClaudeSmall)
 	}
@@ -131,7 +146,7 @@ func TestProductionModelsConstructionFailureIsSecretFree(t *testing.T) {
 	if err == nil {
 		t.Fatal("compileProductionModels() succeeded")
 	}
-	if got.PrimerClient != nil || len(got.ACP) != 0 || len(got.Defaults) != 0 || got.ConfigRev != "" {
+	if got.PrimerClient != nil || len(got.ACP) != 0 || got.ConfigRev != "" {
 		t.Fatalf("failure returned partial production models: %#v", got)
 	}
 	for _, formatted := range []string{err.Error(), fmt.Sprintf("%v", err), fmt.Sprintf("%+v", err), fmt.Sprintf("%#v", err)} {
@@ -150,11 +165,6 @@ func TestProductionModelsCarriesNativeACPProfilesAndSources(t *testing.T) {
 		NativeACP: map[string]normalizedNativeACPProfile{
 			"claude-code": {Harness: "claude-code", Enabled: true},
 			"codex":       {Harness: "codex", Enabled: true, Models: []string{"native-a", "native-b"}},
-		},
-		DelegateDefaults: []normalizedDelegateDefault{
-			{Role: "planner", Harness: "codex", Source: loop.RuntimeSourceNative, Model: "native-a"},
-			{Role: "builder", Harness: "codex", Source: loop.RuntimeSourceNative},
-			{Role: "reviewer", Harness: "codex", Source: loop.RuntimeSourceNative},
 		},
 		Models: []normalizedModelTarget{{
 			Alias: "fixture-primer", Model: model.CustomModel("lmstudio", model.APIFormatOpenAI, "http://localhost:1234", "primer", model.WithTools()),
@@ -177,12 +187,6 @@ func TestProductionModelsCarriesNativeACPProfilesAndSources(t *testing.T) {
 			t.Fatalf("NativeACP[%q] = %#v, want %#v", harness, gotProfile, want)
 		}
 	}
-	if got.Defaults["planner"].Source != loop.RuntimeSourceNative || got.Defaults["planner"].Model != "native-a" {
-		t.Fatalf("native planner default = %#v", got.Defaults["planner"])
-	}
-	if got.Defaults["builder"].Source != loop.RuntimeSourceNative || got.Defaults["builder"].Model != "" {
-		t.Fatalf("native managed builder default = %#v", got.Defaults["builder"])
-	}
 }
 
 func TestProductionModelsCollectsAllPrimerCapableCandidates(t *testing.T) {
@@ -191,11 +195,6 @@ func TestProductionModelsCollectsAllPrimerCapableCandidates(t *testing.T) {
 	delegateOnlyModel := model.CustomModel("openai", model.APIFormatOpenAIResponses, "", "delegate-only", model.WithTools())
 	config := normalizedModelConfig{
 		PrimerDefault: "fixture-primary",
-		DelegateDefaults: []normalizedDelegateDefault{
-			{Role: "planner", Harness: "codex", Model: "fixture-delegate-only", Effort: model.EffortNone},
-			{Role: "builder", Harness: "codex", Model: "fixture-delegate-only", Effort: model.EffortNone},
-			{Role: "reviewer", Harness: "codex", Model: "fixture-delegate-only", Effort: model.EffortNone},
-		},
 		Models: []normalizedModelTarget{
 			{Alias: "fixture-primary", Description: "Primary", Model: primaryModel, Uses: []string{"primer"}, Efforts: []model.Effort{model.EffortNone}, DefaultEffort: model.EffortNone},
 			{Alias: "fixture-alt-primer", Description: "Alternate primer", Model: altModel, Uses: []string{"primer", "delegate"}, Efforts: []model.Effort{model.EffortNone, model.EffortLow, model.EffortHigh}, DefaultEffort: model.EffortLow},

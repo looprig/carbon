@@ -7,7 +7,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/looprig/coderig/internal/catalog/builder"
+	"github.com/looprig/coderig/internal/catalog/generic"
 	"github.com/looprig/core/content"
 	"github.com/looprig/core/uuid"
 	"github.com/looprig/harness/pkg/loop"
@@ -17,13 +17,8 @@ import (
 	"github.com/looprig/tools"
 )
 
-// process_tools_test.go covers Task 27: installing the session-supervised
-// Bash definition plus the three argument-free process companions
-// (ProcessOutput/ProcessInput/ProcessStop) into the builder and reviewer
-// rosters, while planner deliberately keeps the old plain, foreground-only
-// bashDefinition path. See toolsets.go's bashDefinition/legacyBashDefinition
-// doc comments for the operator-maps-to-builder naming note and the
-// planner-stays-unsupervised reasoning.
+// process_tools_test.go covers the Generic session-supervised Bash definition
+// plus its three argument-free process companions.
 
 // fakeSessionResourceRegistry is a tool.SessionResourceRegistry test double
 // mirroring the tools module's own fakeProcessRegistry (tools/
@@ -175,25 +170,18 @@ func findDefinitionByName(t *testing.T, defs []tool.Definition, name string) too
 	return nil
 }
 
-// TestProcessToolsRostersContainBashAndProcessTrioExactlyOnce proves the
-// builder and reviewer rosters ("operator" in the plan's vocabulary maps to
-// CURRENT builder -- see toolsets.go's operatorToolDefinitions compatibility
-// seam and internal/catalog/operator's Role text, which mirrors builder's
-// almost verbatim) each carry Bash, ProcessOutput, ProcessInput, and
-// ProcessStop exactly once, and that Bash declares BOTH RequiresWorkspace
-// and RequiresProcessServices.
+// TestProcessToolsGenericRosterContainsBashAndProcessTrioExactlyOnce proves
+// Generic carries Bash, ProcessOutput, ProcessInput, and ProcessStop exactly
+// once, and Bash declares both workspace and process requirements.
 func TestProcessToolsRostersContainBashAndProcessTrioExactlyOnce(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	builderSet := mustExecutorSet(t, root)
-	reviewerSet := mustExecutorSet(t, root)
-
+	set := mustExecutorSet(t, root)
 	cases := []struct {
 		name string
 		defs []tool.Definition
 	}{
-		{name: "builder", defs: builderToolDefinitions(builderSet, nil, nil)},
-		{name: "reviewer", defs: reviewerToolDefinitions(reviewerSet, nil)},
+		{name: "generic", defs: genericToolDefinitions(set, nil, nil)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -217,39 +205,13 @@ func TestProcessToolsRostersContainBashAndProcessTrioExactlyOnce(t *testing.T) {
 	}
 }
 
-// TestProcessToolsPlannerRosterKeepsLegacyBashWithoutProcessTools proves planner --
-// UNMENTIONED by the plan's "operator and reviewer rosters" text (the plan
-// predates planner's introduction) and explicitly scoped by its own doc
-// comment to "read-only repository checks" -- keeps legacyBashDefinition's
-// plain, foreground-only path (RequiresWorkspace only, no
-// RequiresProcessServices) and gets NONE of the three process companions.
-func TestProcessToolsPlannerRosterKeepsLegacyBashWithoutProcessTools(t *testing.T) {
-	t.Parallel()
-	root := t.TempDir()
-	set := mustExecutorSet(t, root)
-	defs := plannerToolDefinitions(set, nil, nil)
-
-	if got := countDefinitionsByName(defs, "Bash"); got != 1 {
-		t.Fatalf("planner roster contains %d Bash definitions, want exactly 1", got)
-	}
-	for _, name := range []string{"ProcessOutput", "ProcessInput", "ProcessStop"} {
-		if got := countDefinitionsByName(defs, name); got != 0 {
-			t.Errorf("planner roster contains %d %q definitions, want 0", got, name)
-		}
-	}
-	bashDef := findDefinitionByName(t, defs, "Bash")
-	if got := bashDef.Requirements(); got != tool.RequiresWorkspace {
-		t.Errorf("planner Bash.Requirements() = %v, want %v (legacy, non-supervised)", got, tool.RequiresWorkspace)
-	}
-}
-
 // TestProcessToolsBashDefinitionResolverReceivesExactLoopIDAndSharesExecutor proves: at
 // Build, bashDefinition's captured resolver is invoked with EXACTLY
 // bindings.LoopID, exactly once, and the *sandbox.Executor it resolves
 // (via newProcessRunnerResolver's own set.For(loopID.String()) call) is
 // pointer-identical to a DIRECT set.For(loopID.String()) call -- the same
 // memoized lookup bashDefinition's own synchronous foreground path and
-// roleGate (access_acceptance_test.go's
+// accessGate (access_acceptance_test.go's
 // TestAcceptanceProcessEnabledBashSharesExecutorAcrossGateAndBuild) both
 // make against the SAME set for the SAME LoopID. A second, distinct LoopID
 // resolves a distinct executor, proving genuine per-loop resolution.
@@ -653,7 +615,7 @@ func TestProcessToolsSiblingLoopsCannotAccessEachOthersHandles(t *testing.T) {
 // LifecycleProcessNotificationsUnsupported} by pkg/rig/lifecycle.go) rejects
 // session construction outright for a loop.Definition explicitly declared
 // on a foreign engine whose tools carry tool.RequiresProcessServices --
-// exactly what builderToolDefinitions' Bash/Process* definitions now do.
+// exactly what genericToolDefinitions' Bash/Process* definitions now do.
 // This is the SAME rejection mechanism harness's own reviewed test,
 // TestForeignLoopRejectsProcessServices (internal/sessionruntime), exercises
 // via the identical loop.WithEngine construction; this test additionally
@@ -663,9 +625,9 @@ func TestProcessToolsForeignEngineRosterRejectsProcessEnabledTools(t *testing.T)
 	set := mustExecutorSet(t, root)
 
 	definition, err := loop.Define(
-		loop.WithName(builder.Name),
+		loop.WithName(generic.Name),
 		loop.WithInference(&fakeLLM{}, testModel()),
-		loop.WithTools(builderToolDefinitions(set, nil, nil)...),
+		loop.WithTools(genericToolDefinitions(set, nil, nil)...),
 		loop.WithEngine(loop.EngineForeignClaude),
 	)
 	if err != nil {
@@ -676,7 +638,7 @@ func TestProcessToolsForeignEngineRosterRejectsProcessEnabledTools(t *testing.T)
 	if err != nil {
 		t.Fatalf("openTestStores() error = %v", err)
 	}
-	assembly, err := buildRig([]loop.Definition{definition}, stores, root, Config{}, false)
+	assembly, err := buildRig(definition, stores, root, Config{}, false)
 	if err != nil {
 		t.Fatalf("buildRig() error = %v", err)
 	}

@@ -8,37 +8,309 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/looprig/acp/launch"
+	"github.com/looprig/coderig/internal/catalog/generic"
+	"github.com/looprig/core/content"
+	"github.com/looprig/core/uuid"
+	"github.com/looprig/foreignloops/driver"
+	"github.com/looprig/harness/pkg/command"
+	"github.com/looprig/harness/pkg/event"
 	"github.com/looprig/harness/pkg/foreign"
-	"github.com/looprig/harness/pkg/identity"
 	"github.com/looprig/harness/pkg/loop"
 	"github.com/looprig/harness/pkg/tool"
 	"github.com/looprig/inference"
 	model "github.com/looprig/inference/model"
 )
 
-func TestACPPostureForRole(t *testing.T) {
+func TestACPPostureForAccessProfile(t *testing.T) {
 	t.Parallel()
-	for _, test := range []struct {
-		role string
-		want string
+	tests := []struct {
+		name    string
+		profile AccessProfile
+		posture driver.Posture
 	}{
-		{role: "planner", want: "read-only"},
-		{role: "reviewer", want: "read-only"},
-		{role: "builder", want: "workspace-write"},
-	} {
-		t.Run(test.role, func(t *testing.T) {
-			got, err := acpPostureFor(test.role)
-			if err != nil || string(got) != test.want {
-				t.Fatalf("posture = %q, %v; want %q", got, err, test.want)
+		{name: "empty defaults to readonly", profile: "", posture: driver.PostureReadOnly},
+		{name: "readonly", profile: AccessReadOnly, posture: driver.PostureReadOnly},
+		{name: "trusted", profile: AccessTrusted, posture: driver.PostureWorkspaceWrite},
+		{name: "unconfined", profile: AccessUnconfined, posture: driver.PostureWorkspaceWrite},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := acpPostureFor(tt.profile)
+			if err != nil {
+				t.Fatalf("acpPostureFor(%q): %v", tt.profile, err)
+			}
+			if got != tt.posture {
+				t.Fatalf("acpPostureFor(%q) = %q, want %q", tt.profile, got, tt.posture)
 			}
 		})
 	}
-	for _, role := range []string{"operator", "unknown"} {
-		if _, err := acpPostureFor(role); err == nil {
-			t.Fatalf("stale/unknown role posture for %q succeeded", role)
+	for _, profile := range []AccessProfile{"write", "unknown"} {
+		if _, err := acpPostureFor(profile); err == nil {
+			t.Fatalf("acpPostureFor(%q) succeeded; invalid profile must fail closed", profile)
 		}
+	}
+}
+
+func TestNewACPCompositionCapturesEffectiveACPPosture(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		selected    AccessProfile
+		effective   AccessProfile
+		wantPosture driver.Posture
+	}{
+		{name: "empty profile defaults", selected: "", effective: DefaultAccessProfile, wantPosture: driver.PostureReadOnly},
+		{name: "readonly", selected: AccessReadOnly, effective: AccessReadOnly, wantPosture: driver.PostureReadOnly},
+		{name: "trusted", selected: AccessTrusted, effective: AccessTrusted, wantPosture: driver.PostureWorkspaceWrite},
+		{name: "unconfined", selected: AccessUnconfined, effective: AccessUnconfined, wantPosture: driver.PostureWorkspaceWrite},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			composition, err := NewACPComposition(ACPChildrenConfig{AccessProfile: tt.selected})
+			if err != nil {
+				t.Fatalf("NewACPComposition(%q): %v", tt.selected, err)
+			}
+			if composition.accessProfile != tt.effective || composition.posture != tt.wantPosture {
+				t.Fatalf("composition access=%q posture=%q, want access=%q posture=%q", composition.accessProfile, composition.posture, tt.effective, tt.wantPosture)
+			}
+		})
+	}
+}
+
+// TestACPPostureMatrixThroughProductionBuilders drives the real composition
+// registry and child factory for every launch/source/profile combination. The
+// launched ACP peer asks for an edit at a path inside the configured workspace;
+// the response is therefore an observation of the permission handler created by
+// the actual acpdriver.Config, rather than a recorder or a manually built config.
+func TestACPPostureMatrixThroughProductionBuilders(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name       string
+		launchPath string
+		harness    loop.AgentHarnessName
+		credential loop.CredentialMode
+		profile    AccessProfile
+		posture    driver.Posture
+	}{
+		{name: "live/codex/gateway/readonly", launchPath: "live", harness: "codex", credential: loop.CredentialGatewayBacked, profile: AccessReadOnly, posture: driver.PostureReadOnly},
+		{name: "live/codex/gateway/trusted", launchPath: "live", harness: "codex", credential: loop.CredentialGatewayBacked, profile: AccessTrusted, posture: driver.PostureWorkspaceWrite},
+		{name: "live/codex/native/readonly", launchPath: "live", harness: "codex", credential: loop.CredentialNativeAuth, profile: AccessReadOnly, posture: driver.PostureReadOnly},
+		{name: "live/codex/native/trusted", launchPath: "live", harness: "codex", credential: loop.CredentialNativeAuth, profile: AccessTrusted, posture: driver.PostureWorkspaceWrite},
+		{name: "live/claude-code/gateway/readonly", launchPath: "live", harness: "claude-code", credential: loop.CredentialGatewayBacked, profile: AccessReadOnly, posture: driver.PostureReadOnly},
+		{name: "live/claude-code/gateway/trusted", launchPath: "live", harness: "claude-code", credential: loop.CredentialGatewayBacked, profile: AccessTrusted, posture: driver.PostureWorkspaceWrite},
+		{name: "live/claude-code/native/readonly", launchPath: "live", harness: "claude-code", credential: loop.CredentialNativeAuth, profile: AccessReadOnly, posture: driver.PostureReadOnly},
+		{name: "live/claude-code/native/trusted", launchPath: "live", harness: "claude-code", credential: loop.CredentialNativeAuth, profile: AccessTrusted, posture: driver.PostureWorkspaceWrite},
+		{name: "restored/codex/gateway/readonly", launchPath: "restored", harness: "codex", credential: loop.CredentialGatewayBacked, profile: AccessReadOnly, posture: driver.PostureReadOnly},
+		{name: "restored/codex/gateway/trusted", launchPath: "restored", harness: "codex", credential: loop.CredentialGatewayBacked, profile: AccessTrusted, posture: driver.PostureWorkspaceWrite},
+		{name: "restored/codex/native/readonly", launchPath: "restored", harness: "codex", credential: loop.CredentialNativeAuth, profile: AccessReadOnly, posture: driver.PostureReadOnly},
+		{name: "restored/codex/native/trusted", launchPath: "restored", harness: "codex", credential: loop.CredentialNativeAuth, profile: AccessTrusted, posture: driver.PostureWorkspaceWrite},
+		{name: "restored/claude-code/gateway/readonly", launchPath: "restored", harness: "claude-code", credential: loop.CredentialGatewayBacked, profile: AccessReadOnly, posture: driver.PostureReadOnly},
+		{name: "restored/claude-code/gateway/trusted", launchPath: "restored", harness: "claude-code", credential: loop.CredentialGatewayBacked, profile: AccessTrusted, posture: driver.PostureWorkspaceWrite},
+		{name: "restored/claude-code/native/readonly", launchPath: "restored", harness: "claude-code", credential: loop.CredentialNativeAuth, profile: AccessReadOnly, posture: driver.PostureReadOnly},
+		{name: "restored/claude-code/native/trusted", launchPath: "restored", harness: "claude-code", credential: loop.CredentialNativeAuth, profile: AccessTrusted, posture: driver.PostureWorkspaceWrite},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			workspace := t.TempDir()
+			compiled := acpPostureMatrixCatalog(t, tt.harness, tt.credential)
+			composition, err := NewACPComposition(ACPChildrenConfig{
+				Catalog:             compiled,
+				AccessProfile:       tt.profile,
+				Executables:         map[loop.AgentHarnessName]string{tt.harness: executable},
+				WorkspaceRoot:       workspace,
+				Env:                 []string{"PATH=" + taskACPPostureHelperPath},
+				NativeEnvAllowlist:  []string{"PATH"},
+				GatewayEnvAllowlist: []string{"PATH"},
+				gatewayPreflightBinding: &launch.ProxyBinding{
+					BaseURL: "http://127.0.0.1:1",
+					Token:   "posture-matrix-preflight",
+				},
+				executablePreflight: func(_ context.Context, probe ACPExecutableProbe) ACPPreflightResult {
+					return ACPPreflightResult{Ready: true, AdvertisedModels: append([]string(nil), probe.Models...)}
+				},
+			})
+			if err != nil {
+				t.Fatalf("NewACPComposition(): %v", err)
+			}
+
+			bound := acpPostureMatrixBound(t, composition.Catalog, tt.harness, tt.credential)
+			idGen := func() (uuid.UUID, error) { return uuid.New() }
+			fac := event.NewFactory(idGen, time.Now)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			var backend loop.Backend
+			if tt.launchPath == "live" {
+				backend, _, err = composition.Live(
+					ctx, mustUUID(t), mustUUID(t), loop.Provenance{}, acpPostureMatrixPublisher{}, bound, idGen, fac,
+				)
+			} else {
+				backend, err = composition.Restored(
+					ctx, mustUUID(t), mustUUID(t), loop.Provenance{}, acpPostureMatrixPublisher{}, bound, idGen, fac,
+					foreign.RestoredForeign{ForeignSID: "posture-matrix-foreign", AgentSessionID: "posture-matrix-agent"},
+				)
+			}
+			if err != nil {
+				t.Fatalf("%s builder(): %v", tt.launchPath, err)
+			}
+			if backend == nil {
+				t.Fatal("ACP builder returned nil backend")
+			}
+			t.Cleanup(func() {
+				cancel()
+				select {
+				case <-backend.DoneChan():
+				case <-time.After(5 * time.Second):
+					t.Errorf("ACP backend did not close after context cancellation")
+				}
+			})
+
+			select {
+			case backend.CommandSink() <- command.UserInput{
+				Header: command.Header{CommandID: mustUUID(t)},
+				Blocks: []content.Block{&content.TextBlock{Text: "request an in-workspace edit"}},
+			}:
+			case <-time.After(5 * time.Second):
+				t.Fatal("timed out submitting ACP posture probe")
+			}
+
+			got := waitACPPostureReceipt(t, filepath.Join(workspace, acpPostureReceiptName))
+			want := "reject-once"
+			if tt.posture == driver.PostureWorkspaceWrite {
+				want = "allow-once"
+			}
+			if got != want {
+				t.Fatalf("in-workspace permission outcome = %q, want %q for posture %q", got, want, tt.posture)
+			}
+			writePath := filepath.Join(workspace, acpPostureWriteName)
+			_, statErr := os.Stat(writePath)
+			if tt.posture == driver.PostureWorkspaceWrite {
+				if statErr != nil {
+					t.Fatalf("trusted ACP child did not perform in-workspace write: %v", statErr)
+				}
+			} else if !os.IsNotExist(statErr) {
+				t.Fatalf("readonly ACP child performed in-workspace write: %v", statErr)
+			}
+		})
+	}
+}
+
+func acpPostureMatrixCatalog(t *testing.T, harness loop.AgentHarnessName, credential loop.CredentialMode) ACPCompiledCatalog {
+	t.Helper()
+	alias := loop.ModelAlias("posture-matrix-codex")
+	if harness == "claude-code" {
+		alias = "sonnet-5"
+	}
+	input := AgentRuntimeCatalogInput{}
+	if credential == loop.CredentialGatewayBacked {
+		input.GatewayTargets = []ACPGatewaySource{{
+			Alias:         alias,
+			Client:        &fakeLLM{},
+			Model:         model.CustomModel("openai", model.APIFormatOpenAIResponses, "", "posture-matrix", model.WithTools(), model.WithThinking()),
+			DefaultEffort: model.EffortMedium,
+			Efforts:       []model.Effort{model.EffortMedium},
+		}}
+		if harness == "claude-code" {
+			input.ClaudeSmall = alias
+		}
+	} else {
+		input.NativeACP = map[string]ACPNativeProfile{string(harness): {
+			Harness: harness,
+			Enabled: true,
+			Models:  []loop.ModelAlias{alias},
+		}}
+		input.PrimerTarget = runtimeCatalogPrimer()
+	}
+	compiled, err := CompileAgentRuntimeCatalog(input)
+	if err != nil {
+		t.Fatalf("CompileAgentRuntimeCatalog(): %v", err)
+	}
+	return compiled
+}
+
+func acpPostureMatrixBound(t *testing.T, catalog ACPCompiledCatalog, harness loop.AgentHarnessName, credential loop.CredentialMode) loop.BoundDefinition {
+	t.Helper()
+	definition, err := loop.Define(
+		loop.WithName(generic.Name),
+		loop.WithInference(&fakeLLM{}, testModel()),
+		loop.WithSystem("acp posture matrix"),
+		loop.WithPolicyRevision("acp-posture-matrix"),
+	)
+	if err != nil {
+		t.Fatalf("loop.Define(): %v", err)
+	}
+	bound, err := definition.Bind(context.Background(), tool.Bindings{SessionID: mustUUID(t), LoopID: mustUUID(t)})
+	if err != nil {
+		t.Fatalf("definition.Bind(): %v", err)
+	}
+	alias := loop.ModelAlias("posture-matrix-codex")
+	if harness == "claude-code" {
+		alias = "sonnet-5"
+	}
+	source := loop.RuntimeSourceNative
+	effort := model.EffortNone
+	if credential == loop.CredentialGatewayBacked {
+		source = loop.RuntimeSourceGateway
+		effort = model.EffortMedium
+	}
+	resolved, err := catalog.RuntimeCatalog.ResolveWithExplicitSource(generic.Name, harness, source, alias, effort, true)
+	if err != nil {
+		t.Fatalf("ResolveWithExplicitSource(): %v", err)
+	}
+	bound, err = loop.OverrideBoundRuntimeSelectionWithIdentity(
+		bound, resolved.Profile, resolved.ModelAlias, resolved.Target, resolved.Effort, resolved.Source, resolved.SelectionKind,
+	)
+	if err != nil {
+		t.Fatalf("OverrideBoundRuntimeSelectionWithIdentity(): %v", err)
+	}
+	return bound
+}
+
+type acpPostureMatrixPublisher struct{}
+
+func (acpPostureMatrixPublisher) PublishEvent(context.Context, event.Event) error        { return nil }
+func (acpPostureMatrixPublisher) PublishEventChecked(context.Context, event.Event) error { return nil }
+
+func waitACPPostureReceipt(t *testing.T, path string) string {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		data, err := os.ReadFile(path)
+		if err == nil {
+			if len(data) > 0 {
+				return string(data)
+			}
+		} else if !os.IsNotExist(err) {
+			t.Fatalf("read ACP posture receipt: %v", err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for ACP posture receipt %q", path)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestNewACPCompositionRejectsInvalidAccessProfileBeforePreflight(t *testing.T) {
+	t.Parallel()
+	preflightCalls := 0
+	_, err := NewACPComposition(ACPChildrenConfig{
+		AccessProfile: AccessProfile("invalid"),
+		executablePreflight: func(context.Context, ACPExecutableProbe) ACPPreflightResult {
+			preflightCalls++
+			return ACPPreflightResult{Ready: true}
+		},
+	})
+	if err != errACPAccessProfileUnavailable {
+		t.Fatalf("NewACPComposition(invalid) error = %v, want bounded access-profile error", err)
+	}
+	if preflightCalls != 0 {
+		t.Fatalf("invalid access profile invoked %d preflight calls, want zero", preflightCalls)
 	}
 }
 
@@ -86,8 +358,8 @@ func TestNewACPCompositionPreflightsProfilesAndFiltersEnv(t *testing.T) {
 	if !composition.Catalog.HasProfile("acp/claude-code") {
 		t.Fatal("Claude profile disappeared from the filtered catalog")
 	}
-	if composition.Catalog.HasProfile("acp/codex") || len(composition.Catalog.RuntimeCatalog.EntriesFor("worker")) != 1 {
-		t.Fatalf("filtered catalog still advertises the failed Codex connector: %#v", composition.Catalog.RuntimeCatalog.EntriesFor("worker"))
+	if composition.Catalog.HasProfile("acp/codex") {
+		t.Fatalf("filtered catalog still advertises the failed Codex connector: %#v", composition.Catalog.RuntimeCatalog.EntriesFor(generic.Name))
 	}
 	if got := filterACPEnv([]string{"PATH=/bin", "SECRET=x", "LANG=C"}, []string{"PATH", "LANG"}); len(got) != 2 || got[0] != "PATH=/bin" || got[1] != "LANG=C" {
 		t.Fatalf("filtered env = %#v", got)
@@ -115,10 +387,9 @@ func TestNewACPCompositionDiagnosticsReducedModels(t *testing.T) {
 		WorkspaceRoot:           t.TempDir(),
 		gatewayPreflightBinding: &launch.ProxyBinding{BaseURL: "http://127.0.0.1:1", Token: "test-token"},
 		executablePreflight: func(context.Context, ACPExecutableProbe) ACPPreflightResult {
-			// sonnet-5 remains the default alias for claude-code (per
-			// legacyTestDefaults), so omitting only fable-5 keeps claude-code
-			// admitted while genuinely reducing its surviving model count.
-			return ACPPreflightResult{Ready: true, AdvertisedModels: []string{"sonnet-5", "opus-5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"}}
+			// fable-5 is the deterministic first configured alias. Omitting
+			// opus-5 keeps claude-code admitted while reducing its model set.
+			return ACPPreflightResult{Ready: true, AdvertisedModels: []string{"fable-5", "fable-5@high", "sonnet-5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"}}
 		},
 	})
 	if err != nil {
@@ -208,20 +479,16 @@ func TestNewACPCompositionBuildsNativeAuthProfileWithoutGateway(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	compiled, err := CompileACPCatalog(ACPCatalogInput{
-		AgentTypes: []identity.AgentName{"worker"},
-		Defaults: map[identity.AgentName]configuredDelegateDefault{
-			"worker": {Harness: "codex", Model: "native-model", Effort: model.EffortNone},
+	compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
+		NativeACP: map[string]ACPNativeProfile{
+			"codex": {Harness: "codex", Enabled: true, Models: []loop.ModelAlias{"native-model"}},
 		},
-		NativeAuth: []ACPNativeAuthSource{{
-			Harness: "codex", Alias: "native-model", Model: testModel(),
-			DefaultEffort: model.EffortNone, Efforts: []model.Effort{model.EffortNone},
-		}},
+		PrimerTarget: runtimeCatalogPrimer(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolved, err := compiled.RuntimeCatalog.Resolve("worker", "codex", "native-model", model.EffortNone)
+	resolved, err := compiled.RuntimeCatalog.Resolve(generic.Name, "codex", "native-model", model.EffortNone)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -298,7 +565,7 @@ func TestACPChildEnvironmentAndGatewayPreflightExcludeParentSecrets(t *testing.T
 				if !containsString(probe.Models, "sonnet-5@high") || !containsString(probe.Models, "sonnet-5@max") {
 					t.Fatalf("Claude preflight models = %#v, want concrete effort aliases", probe.Models)
 				}
-				return ACPPreflightResult{Ready: true, AdvertisedModels: []string{"sonnet-5", "sonnet-5@high", "fable-5@high"}}
+				return ACPPreflightResult{Ready: true, AdvertisedModels: []string{"fable-5", "fable-5@high", "sonnet-5", "sonnet-5@high"}}
 			}
 			return ACPPreflightResult{Ready: true}
 		},
@@ -312,7 +579,7 @@ func TestACPChildEnvironmentAndGatewayPreflightExcludeParentSecrets(t *testing.T
 	if !sawProbes {
 		t.Fatal("gateway preflight did not run")
 	}
-	claudeEntries := composition.Catalog.RuntimeCatalog.EntriesFor("worker")
+	claudeEntries := composition.Catalog.RuntimeCatalog.EntriesFor(generic.Name)
 	var claude loop.RuntimeCatalogEntry
 	for _, entry := range claudeEntries {
 		if entry.AgentHarness == "claude-code" {
@@ -323,23 +590,23 @@ func TestACPChildEnvironmentAndGatewayPreflightExcludeParentSecrets(t *testing.T
 	if claude.AgentHarness != "claude-code" {
 		t.Fatalf("Claude gateway entry missing: %#v", claudeEntries)
 	}
-	if len(claude.Models) != 1 || claude.Models[0].Alias != "sonnet-5" {
+	if len(claude.Models) != 2 || claude.Models[0].Alias != "fable-5" || claude.Models[1].Alias != "sonnet-5" {
 		t.Fatalf("Claude advertised unsupported aliases: %#v", claude.Models)
 	}
-	if len(claude.Models[0].Efforts) != 2 || claude.Models[0].Efforts[0] != model.EffortMedium || claude.Models[0].Efforts[1] != model.EffortHigh {
-		t.Fatalf("Claude advertised unsupported efforts: %#v", claude.Models[0].Efforts)
+	if len(claude.Models[1].Efforts) != 2 || claude.Models[1].Efforts[0] != model.EffortMedium || claude.Models[1].Efforts[1] != model.EffortHigh {
+		t.Fatalf("Claude advertised unsupported efforts: %#v", claude.Models[1].Efforts)
 	}
 	if _, _, err := composition.Registry.Builder("acp/claude-code"); err != nil {
 		t.Fatalf("gateway-only Claude profile was removed: %v", err)
 	}
 }
 
-func TestNewACPCompositionRejectsUnavailableConfiguredDefaultHarness(t *testing.T) {
+func TestNewACPCompositionDoesNotSubstituteUnavailableFirstACPEntry(t *testing.T) {
 	executable, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
-	compiled := testACPGatewayCatalog(t)
+	compiled := testGenericACPGatewayCatalog(t)
 	composition, err := NewACPComposition(ACPChildrenConfig{
 		Catalog:       compiled,
 		Executables:   map[loop.AgentHarnessName]string{"claude-code": executable, "codex": executable},
@@ -356,14 +623,40 @@ func TestNewACPCompositionRejectsUnavailableConfiguredDefaultHarness(t *testing.
 		},
 	})
 	if err != nil {
-		t.Fatalf("NewACPComposition() failed when configured default harness was unavailable: %v", err)
+		t.Fatalf("NewACPComposition() failed when first ACP entry was unavailable: %v", err)
 	}
 	if composition == nil {
 		t.Fatal("NewACPComposition() returned nil composition")
 	}
-	if entries := composition.Catalog.RuntimeCatalog.EntriesFor("worker"); len(entries) != 0 {
-		t.Fatalf("NewACPComposition() substituted another harness: %#v", entries)
+	entries := composition.Catalog.RuntimeCatalog.EntriesFor(generic.Name)
+	if len(entries) != 2 {
+		t.Fatalf("NewACPComposition() entries = %#v, want Generic native default plus ready Codex", entries)
 	}
+	for _, entry := range entries {
+		if entry.AgentHarness == looprigRuntimeHarness && !entry.Default {
+			t.Fatalf("ordinary Generic row lost default after ACP filtering: %#v", entry)
+		}
+		if entry.AgentHarness == "claude-code" {
+			t.Fatalf("unavailable Claude row survived preflight: %#v", entry)
+		}
+	}
+}
+
+func testGenericACPGatewayCatalog(t *testing.T) ACPCompiledCatalog {
+	t.Helper()
+	targets := legacyTestGatewayTargets(map[model.ProviderName]inference.Client{
+		"anthropic": &fakeLLM{},
+		"openai":    &fakeLLM{},
+	})
+	compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
+		GatewayTargets: targets,
+		PrimerTarget:   runtimeCatalogPrimer(),
+		ClaudeSmall:    "sonnet-5",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return compiled
 }
 
 func TestNewACPCompositionPreflightHonorsCanceledContext(t *testing.T) {
@@ -419,15 +712,11 @@ func TestNewACPCompositionNativePreflightKeepsNativeEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	compiled, err := CompileACPCatalog(ACPCatalogInput{
-		AgentTypes: []identity.AgentName{"worker"},
-		Defaults: map[identity.AgentName]configuredDelegateDefault{
-			"worker": {Harness: "codex", Model: "native-model", Effort: model.EffortNone},
+	compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
+		NativeACP: map[string]ACPNativeProfile{
+			"codex": {Harness: "codex", Enabled: true, Models: []loop.ModelAlias{"native-model"}},
 		},
-		NativeAuth: []ACPNativeAuthSource{{
-			Harness: "codex", Alias: "native-model", Model: testModel(),
-			DefaultEffort: model.EffortNone, Efforts: []model.Effort{model.EffortNone},
-		}},
+		PrimerTarget: runtimeCatalogPrimer(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -473,11 +762,11 @@ func TestNewACPCompositionNativePreflightKeepsNativeEnvironment(t *testing.T) {
 func TestACPChildModelAliasesUseConcreteGatewayTargetsAndNativeModels(t *testing.T) {
 	t.Parallel()
 	compiled := testACPGatewayCatalog(t)
-	claude, err := compiled.RuntimeCatalog.Resolve("worker", "claude-code", "sonnet-5", model.EffortHigh)
+	claude, err := compiled.RuntimeCatalog.Resolve(generic.Name, "claude-code", "sonnet-5", model.EffortHigh)
 	if err != nil {
 		t.Fatal(err)
 	}
-	mainAlias, smallAlias, err := acpChildModelAliases(compiled, "worker", "claude-code", claude)
+	mainAlias, smallAlias, err := acpChildModelAliases(compiled, generic.Name, "claude-code", claude)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -485,11 +774,11 @@ func TestACPChildModelAliasesUseConcreteGatewayTargetsAndNativeModels(t *testing
 		t.Fatalf("Claude child aliases = %q/%q, want sonnet-5@high/sonnet-5", mainAlias, smallAlias)
 	}
 
-	codex, err := compiled.RuntimeCatalog.Resolve("worker", "codex", "gpt-5.6-luna", model.EffortMax)
+	codex, err := compiled.RuntimeCatalog.Resolve(generic.Name, "codex", "gpt-5.6-luna", model.EffortMax)
 	if err != nil {
 		t.Fatal(err)
 	}
-	mainAlias, smallAlias, err = acpChildModelAliases(compiled, "worker", "codex", codex)
+	mainAlias, smallAlias, err = acpChildModelAliases(compiled, generic.Name, "codex", codex)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -497,24 +786,20 @@ func TestACPChildModelAliasesUseConcreteGatewayTargetsAndNativeModels(t *testing
 		t.Fatalf("Codex child aliases = %q/%q, want gpt-5.6-luna@max/empty", mainAlias, smallAlias)
 	}
 
-	nativeCatalog, err := CompileACPCatalog(ACPCatalogInput{
-		AgentTypes: []identity.AgentName{"worker"},
-		Defaults: map[identity.AgentName]configuredDelegateDefault{
-			"worker": {Harness: "codex", Model: "native-model", Effort: model.EffortNone},
+	nativeCatalog, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
+		NativeACP: map[string]ACPNativeProfile{
+			"codex": {Harness: "codex", Enabled: true, Models: []loop.ModelAlias{"native-model"}},
 		},
-		NativeAuth: []ACPNativeAuthSource{{
-			Harness: "codex", Alias: "native-model", Model: testModel(),
-			DefaultEffort: model.EffortNone, Efforts: []model.Effort{model.EffortNone},
-		}},
+		PrimerTarget: runtimeCatalogPrimer(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	native, err := nativeCatalog.RuntimeCatalog.Resolve("worker", "codex", "native-model", model.EffortNone)
+	native, err := nativeCatalog.RuntimeCatalog.Resolve(generic.Name, "codex", "native-model", model.EffortNone)
 	if err != nil {
 		t.Fatal(err)
 	}
-	mainAlias, smallAlias, err = acpChildModelAliases(nativeCatalog, "worker", "codex", native)
+	mainAlias, smallAlias, err = acpChildModelAliases(nativeCatalog, generic.Name, "codex", native)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -525,19 +810,17 @@ func TestACPChildModelAliasesUseConcreteGatewayTargetsAndNativeModels(t *testing
 
 func TestACPBoundRuntimeResolutionUsesPinnedSelectors(t *testing.T) {
 	t.Parallel()
-	compiled, err := CompileACPCatalog(ACPCatalogInput{
-		AgentTypes: []identity.AgentName{"builder"},
+	compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
 		GatewayTargets: legacyTestGatewayTargets(map[model.ProviderName]inference.Client{
 			"anthropic": &fakeLLM{}, "openai": &fakeLLM{},
 		}),
-		Defaults:    legacyTestDefaults([]identity.AgentName{"builder"}),
 		ClaudeSmall: "sonnet-5",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	definition, err := loop.Define(
-		loop.WithName(identity.AgentName("builder")),
+		loop.WithName(generic.Name),
 		loop.WithInference(&fakeLLM{}, testModel()),
 		loop.WithPolicyRevision("acp-child-test"),
 	)
@@ -548,7 +831,7 @@ func TestACPBoundRuntimeResolutionUsesPinnedSelectors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolved, err := compiled.RuntimeCatalog.Resolve("builder", "codex", "gpt-5.6-luna", model.EffortMax)
+	resolved, err := compiled.RuntimeCatalog.Resolve(generic.Name, "codex", "gpt-5.6-luna", model.EffortMax)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -653,18 +936,16 @@ func TestNewACPCompositionDiagnosticsPreflightFailedBothModes(t *testing.T) {
 	// Codex gets both a gateway row (from GatewayTargets' openai entries) and a
 	// native-auth row (from NativeAuth), so a universally failing preflight
 	// exercises the "gateway or native" both-attempted branch.
-	compiled, err := CompileACPCatalog(ACPCatalogInput{
-		AgentTypes: []identity.AgentName{"worker"},
+	compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
 		GatewayTargets: legacyTestGatewayTargets(map[model.ProviderName]inference.Client{
 			"anthropic": &fakeLLM{},
 			"openai":    &fakeLLM{},
 		}),
-		Defaults:    legacyTestDefaults([]identity.AgentName{"worker"}),
 		ClaudeSmall: "sonnet-5",
-		NativeAuth: []ACPNativeAuthSource{{
-			Harness: "codex", Alias: "native-model", Model: testModel(),
-			DefaultEffort: model.EffortNone, Efforts: []model.Effort{model.EffortNone},
-		}},
+		NativeACP: map[string]ACPNativeProfile{
+			"codex": {Harness: "codex", Enabled: true, Models: []loop.ModelAlias{"native-model"}},
+		},
+		PrimerTarget: runtimeCatalogPrimer(),
 	})
 	if err != nil {
 		t.Fatal(err)

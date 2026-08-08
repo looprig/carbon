@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/looprig/coderig/internal/catalog/builder"
+	"github.com/looprig/coderig/internal/catalog/generic"
 	"github.com/looprig/core/content"
 	"github.com/looprig/core/uuid"
 	"github.com/looprig/harness/pkg/event"
@@ -20,8 +20,8 @@ import (
 )
 
 // runtime_skills_integration_test.go is the P2b Phase 3c END-TO-END acceptance: with
-// RuntimeSkills ON and a real on-disk <root>/.skills/<name>/SKILL.md, the builder
-// delegates to a builder child, the child calls Skill{name:"<workspace-skill>"}, the
+// RuntimeSkills ON and a real on-disk <root>/.skills/<name>/SKILL.md, the Generic
+// agent delegates to a Generic child, the child calls Skill{name:"<workspace-skill>"}, the
 // workspace load surfaces a HUMAN-GATED SkillLoadRequest (ScopeOnce) attributed to the
 // delegate loop, and after Approve the snapshot body is returned as the tool result.
 //
@@ -53,9 +53,9 @@ func TestRuntimeSkillsWorkspaceLoadGatedEndToEnd(t *testing.T) {
 	var skillResult string
 	client := &managedScript{}
 	client.fn = func(_ context.Context, req inference.Request) ([]content.Chunk, error) {
-		if strings.Contains(req.System, `<role name="`+string(builder.Name)+`">`) && phase == "initial" && step == 0 {
+		if requestHasRole(req, generic.Name) && phase == "initial" && step == 0 {
 			step++
-			return startAgentCall("skill-delegate", `{"agent_type":"builder","instructions":"prepare for restore"}`), nil
+			return startAgentCall("skill-delegate", `{"agent_type":"generic","instructions":"prepare for restore"}`), nil
 		}
 		if phase == "initial" {
 			return finalText("runtime skill child prepared"), nil

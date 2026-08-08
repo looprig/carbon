@@ -64,12 +64,6 @@ func TestDecodeModelConfigBoundsUnknownFieldWithoutAPIKeyValue(t *testing.T) {
 const validLMStudioModelConfig = `{
   "version": 2,
   "primer_default": "local",
-  "claude_code_small_model": "",
-  "delegate_defaults": {
-    "planner": {"harness":"codex","model":"local","effort":"none"},
-    "builder": {"harness":"codex","model":"local","effort":"none"},
-    "reviewer": {"harness":"codex","model":"local","effort":"none"}
-  },
   "models": [{
     "alias": "local",
     "description": "Local in-process coding model.",
@@ -91,6 +85,42 @@ const validLMStudioModelConfig = `{
     "default_effort": "none"
   }]
 }`
+
+func TestModelConfigWithoutDelegateDefaultsIsValid(t *testing.T) {
+	decoded, err := decodeModelConfig([]byte(validLMStudioModelConfig))
+	if err != nil {
+		t.Fatalf("decodeModelConfig() error = %v", err)
+	}
+	if _, err := normalizeModelConfig(decoded); err != nil {
+		t.Fatalf("normalizeModelConfig() error = %v", err)
+	}
+}
+
+func TestDecodeModelConfigRejectsRemovedDelegateDefaults(t *testing.T) {
+	// This wire value is a strict-rejection fixture for the removed field; it
+	// must not be accepted or migrated.
+	input := strings.Replace(
+		validLMStudioModelConfig,
+		`"models":`,
+		`"delegate_defaults":{"planner":{"harness":"codex","model":"local","effort":"none"}}, "models":`,
+		1,
+	)
+
+	_, err := decodeModelConfig([]byte(input))
+	if err == nil {
+		t.Fatal("decodeModelConfig(delegate_defaults) error = nil, want strict unknown-field rejection")
+	}
+	var configErr *ModelConfigError
+	if !errors.As(err, &configErr) {
+		t.Fatalf("decodeModelConfig(delegate_defaults) error = %T, want *ModelConfigError", err)
+	}
+	if configErr.operation != "decode" {
+		t.Fatalf("decodeModelConfig(delegate_defaults) operation = %q, want decode", configErr.operation)
+	}
+	if len(err.Error()) > maxModelConfigErrorBytes {
+		t.Fatalf("decodeModelConfig(delegate_defaults) error length = %d, want bounded", len(err.Error()))
+	}
+}
 
 func TestDecodeModelConfig(t *testing.T) {
 	t.Run("valid no-auth LM Studio file", func(t *testing.T) {
@@ -129,7 +159,6 @@ func TestDecodeModelConfig(t *testing.T) {
 		{name: "two top-level values", input: []byte(validLMStudioModelConfig + ` {}`)},
 		{name: "unknown top-level field", input: replaceOnce(t, validLMStudioModelConfig, `"version": 2`, `"version": 2, "future": true`)},
 		{name: "unknown model row field", input: replaceOnce(t, validLMStudioModelConfig, `"alias": "local"`, `"alias": "local", "future": true`)},
-		{name: "unknown default field", input: replaceOnce(t, validLMStudioModelConfig, `"harness":"codex"`, `"harness":"codex","future":true`)},
 		{name: "unknown capability field", input: replaceOnce(t, validLMStudioModelConfig, `"tools": true`, `"tools": true, "audio": true`)},
 		{name: "missing version", input: replaceOnce(t, validLMStudioModelConfig, `"version": 2,`, ``), want: "version"},
 		{name: "zero version", input: replaceOnce(t, validLMStudioModelConfig, `"version": 2`, `"version": 0`), want: "version"},
@@ -145,13 +174,6 @@ func TestDecodeModelConfig(t *testing.T) {
 	}
 }
 
-func TestDecodeModelConfigRejectsNullDelegateDefaultSource(t *testing.T) {
-	input := replaceOnce(t, validLMStudioModelConfig, `"harness":"codex"`, `"harness":"codex","source":null`)
-
-	_, err := decodeModelConfig(input)
-	assertModelConfigDecodeError(t, err, "")
-}
-
 func TestDecodeModelConfigRejectsDuplicateKeysAtEveryDepth(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -159,8 +181,6 @@ func TestDecodeModelConfigRejectsDuplicateKeysAtEveryDepth(t *testing.T) {
 		key   string
 	}{
 		{name: "top level", input: `{"version":2,"version":2}`, key: "version"},
-		{name: "delegate defaults object", input: `{"version":2,"delegate_defaults":{"planner":{},"planner":{}}}`, key: "planner"},
-		{name: "delegate default row", input: `{"version":2,"delegate_defaults":{"planner":{"harness":"codex","harness":"codex"}}}`, key: "harness"},
 		{name: "model row in array", input: `{"version":2,"models":[{"alias":"a","alias":"b"}]}`, key: "alias"},
 		{name: "capabilities", input: `{"version":2,"models":[{"capabilities":{"tools":true,"tools":false}}]}`, key: "tools"},
 		{name: "nested object in array", input: `{"version":2,"models":[{"uses":[{"deep":1,"deep":2}]}]}`, key: "deep"},
@@ -185,20 +205,17 @@ func TestDecodeModelConfigACPLaunchers(t *testing.T) {
 		{
 			name: "valid launchers block",
 			json: `{"version":2,"primer_default":"p","claude_code_small_model":"p",
-				"delegate_defaults":{"planner":{"harness":"looprig"},"builder":{"harness":"looprig"},"reviewer":{"harness":"looprig"}},
 				"models":[{"alias":"p","provider":"anthropic","api_format":"anthropic","model":"m","uses":["primer"],"efforts":["high"],"default_effort":"high"}],
 				"acp_launchers":{"claude-code":{"executable":"/usr/local/bin/claude-code-acp"},"codex":{"executable":"/usr/local/bin/codex-acp"}}}`,
 		},
 		{
 			name: "omitted launchers block is valid",
 			json: `{"version":2,"primer_default":"p","claude_code_small_model":"p",
-				"delegate_defaults":{"planner":{"harness":"looprig"},"builder":{"harness":"looprig"},"reviewer":{"harness":"looprig"}},
 				"models":[{"alias":"p","provider":"anthropic","api_format":"anthropic","model":"m","uses":["primer"],"efforts":["high"],"default_effort":"high"}]}`,
 		},
 		{
 			name: "unknown field inside a launcher entry is rejected",
 			json: `{"version":2,"primer_default":"p","claude_code_small_model":"p",
-				"delegate_defaults":{"planner":{"harness":"looprig"},"builder":{"harness":"looprig"},"reviewer":{"harness":"looprig"}},
 				"models":[{"alias":"p","provider":"anthropic","api_format":"anthropic","model":"m","uses":["primer"],"efforts":["high"],"default_effort":"high"}],
 				"acp_launchers":{"claude-code":{"executable":"/usr/local/bin/claude-code-acp","args":["x"]}}}`,
 			wantErr: true,

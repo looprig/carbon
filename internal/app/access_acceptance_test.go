@@ -27,7 +27,7 @@ import (
 // list for Task 5.4. It complements the assembly tests (access_assembly_test.go)
 // and the exact-value/unit tests (access_test.go, egress_test.go,
 // permissions_test.go) by driving behavior THROUGH the assembled session access
-// wiring: the per-role gates opened under each profile, the interactive workspace
+// wiring: the session gate opened under each profile, the interactive workspace
 // store's family/exact approval flow, the headless permission-file load, the
 // egress fail-closed surfaced at assembly, new/restore authority parity, and the
 // agent-level executor-set shutdown. OS-level enforcement proofs (real-HOME and
@@ -35,7 +35,7 @@ import (
 // the sandbox and tests modules; see the file-level notes at each scenario.
 
 // mustLoopProvenance returns a background context carrying a non-zero loop
-// provenance so the assembled roleGate can resolve the calling loop's executor.
+// provenance so the assembled accessGate can resolve the calling loop's executor.
 func mustLoopProvenance(t *testing.T) context.Context {
 	t.Helper()
 	id, err := uuid.New()
@@ -48,7 +48,7 @@ func mustLoopProvenance(t *testing.T) context.Context {
 // grantFreeRequest builds a single-requirement prepared request that needs no
 // executor grant (no GrantClass/GrantTarget), so Authorize observes only the
 // profile's structural access decision (Allow/Deny/Gated) without minting a
-// token. Kind/Scope route to the role's sandbox profile.
+// token. Kind/Scope route to the session's Generic sandbox profile.
 func grantFreeRequest(kind, scope, match string) tool.Request {
 	return tool.Request{
 		ToolName: "Probe",
@@ -89,7 +89,7 @@ func observeGate(t *testing.T, ctx context.Context, g loop.AccessGate, req tool.
 }
 
 // TestAcceptanceProfileGateBehavior opens a session's access wiring under EACH of
-// the three product profiles and observes the ASSEMBLED operator gate's decision
+// the three product profiles and observes Generic's assembled gate decision
 // for host read, host write, workspace write, and network — the effective
 // authority each profile grants end-to-end (not just the profile struct). It also
 // proves host access is DENIED under ReadOnly (the OS-enforcement counterpart —
@@ -132,38 +132,19 @@ func TestAcceptanceProfileGateBehavior(t *testing.T) {
 			t.Cleanup(func() { _ = access.Close() })
 			ctx := mustLoopProvenance(t)
 
-			if got := observeGate(t, ctx, access.builderGate, hostRead); got != tc.hostRead {
-				t.Errorf("builder host read = %d, want %d", got, tc.hostRead)
+			if got := observeGate(t, ctx, access.gate, hostRead); got != tc.hostRead {
+				t.Errorf("Generic host read = %d, want %d", got, tc.hostRead)
 			}
-			if got := observeGate(t, ctx, access.builderGate, hostWrite); got != tc.hostWrite {
-				t.Errorf("builder host write = %d, want %d", got, tc.hostWrite)
+			if got := observeGate(t, ctx, access.gate, hostWrite); got != tc.hostWrite {
+				t.Errorf("Generic host write = %d, want %d", got, tc.hostWrite)
 			}
-			if got := observeGate(t, ctx, access.builderGate, workspaceWrite); got != tc.workspaceWrite {
-				t.Errorf("builder workspace write = %d, want %d", got, tc.workspaceWrite)
+			if got := observeGate(t, ctx, access.gate, workspaceWrite); got != tc.workspaceWrite {
+				t.Errorf("Generic workspace write = %d, want %d", got, tc.workspaceWrite)
 			}
-			if got := observeGate(t, ctx, access.builderGate, network); got != tc.network {
-				t.Errorf("builder network = %d, want %d", got, tc.network)
+			if got := observeGate(t, ctx, access.gate, network); got != tc.network {
+				t.Errorf("Generic network = %d, want %d", got, tc.network)
 			}
 
-			// Planner and reviewer restrictions: sandboxed and read-only under
-			// EVERY selected profile.
-			for _, role := range []struct {
-				name string
-				gate loop.AccessGate
-			}{
-				{name: "planner", gate: access.plannerGate},
-				{name: "reviewer", gate: access.reviewerGate},
-			} {
-				if got := observeGate(t, ctx, role.gate, hostRead); got != outcomeDenied {
-					t.Errorf("%s host read under %q = %d, want denied", role.name, tc.profile, got)
-				}
-				if got := observeGate(t, ctx, role.gate, workspaceWrite); got != outcomeDenied {
-					t.Errorf("%s workspace write under %q = %d, want denied", role.name, tc.profile, got)
-				}
-				if got := observeGate(t, ctx, role.gate, network); got != outcomeDenied {
-					t.Errorf("%s network under %q = %d, want denied", role.name, tc.profile, got)
-				}
-			}
 		})
 	}
 }
@@ -206,7 +187,7 @@ func commandRequest(t *testing.T, root, command string) tool.Request {
 }
 
 // TestAcceptanceFamilyAndExactApprovalFlow drives the INTERACTIVE assembled
-// operator gate + workspace permission store end-to-end: a `git log` invocation is
+// Generic gate + workspace permission store end-to-end: a `git log` invocation is
 // approved-always, persisting CodeRig's product family rule (git log/status/diff/
 // show/push), so a DIFFERENT `git log` invocation is reused with no second prompt,
 // while a non-catalog `git commit` gets only an exact candidate and still prompts.
@@ -237,7 +218,7 @@ func TestAcceptanceFamilyAndExactApprovalFlow(t *testing.T) {
 
 	// 1. First `git log` invocation prompts once and offers the git-log FAMILY
 	//    candidate (product catalog), which "Approve always" persists.
-	res, err := access.builderGate.Authorize(ctx, commandRequest(t, root, "git log --oneline"))
+	res, err := access.gate.Authorize(ctx, commandRequest(t, root, "git log --oneline"))
 	if err != nil {
 		t.Fatalf("Authorize(git log --oneline): %v", err)
 	}
@@ -257,7 +238,7 @@ func TestAcceptanceFamilyAndExactApprovalFlow(t *testing.T) {
 
 	// 2. A DIFFERENT git-log invocation reuses the persisted family rule: approved
 	//    with NO second prompt.
-	res, err = access.builderGate.Authorize(ctx, commandRequest(t, root, "git log -n 5 --stat"))
+	res, err = access.gate.Authorize(ctx, commandRequest(t, root, "git log -n 5 --stat"))
 	if err != nil {
 		t.Fatalf("Authorize(git log -n 5): %v", err)
 	}
@@ -270,7 +251,7 @@ func TestAcceptanceFamilyAndExactApprovalFlow(t *testing.T) {
 
 	// 3. A non-catalog `git commit` is NOT covered by the git-log family: it
 	//    prompts again and offers only the EXACT command as a candidate (no family).
-	res, err = access.builderGate.Authorize(ctx, commandRequest(t, root, "git commit -m wip"))
+	res, err = access.gate.Authorize(ctx, commandRequest(t, root, "git commit -m wip"))
 	if err != nil {
 		t.Fatalf("Authorize(git commit): %v", err)
 	}
@@ -285,7 +266,7 @@ func TestAcceptanceFamilyAndExactApprovalFlow(t *testing.T) {
 	}
 }
 
-func TestAcceptanceBuilderPermissionApprovalReachesStoreAndExecutorGrantPath(t *testing.T) {
+func TestAcceptanceGenericPermissionApprovalReachesStoreAndExecutorGrantPath(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("HTTPS_PROXY", "")
@@ -316,16 +297,16 @@ func TestAcceptanceBuilderPermissionApprovalReachesStoreAndExecutorGrantPath(t *
 		return gate.ApprovalApproveAlwaysWorkspace, nil
 	})
 	request := commandRequest(t, root, command)
-	resolution, err := access.builderGate.Authorize(ctx, request)
+	resolution, err := access.gate.Authorize(ctx, request)
 	if err != nil {
 		t.Fatalf("Authorize(first command): %v", err)
 	}
 	if !resolution.Approved || len(resolution.Grants) == 0 || prompts != 1 {
 		t.Fatalf("first resolution approved=%v grants=%d prompts=%d, want true/nonzero/1", resolution.Approved, len(resolution.Grants), prompts)
 	}
-	executor, err := access.builderSet.For(provenance.LoopID.String())
+	executor, err := access.set.For(provenance.LoopID.String())
 	if err != nil {
-		t.Fatalf("builderSet.For: %v", err)
+		t.Fatalf("set.For: %v", err)
 	}
 	stdout, exitCode, err := executor.RunCommandWithGrants(context.Background(), request.ExecutionID, root, command, resolution.Grants)
 	if err != nil || exitCode != 0 || !strings.Contains(string(stdout), "task6-grant-path") {
@@ -349,23 +330,23 @@ func TestAcceptanceBuilderPermissionApprovalReachesStoreAndExecutorGrantPath(t *
 		t.Fatal("persisted workspace approval unexpectedly prompted")
 		return "", errors.New("unexpected prompt")
 	})
-	resolution, err = reopened.builderGate.Authorize(reopenedContext, commandRequest(t, root, command))
+	resolution, err = reopened.gate.Authorize(reopenedContext, commandRequest(t, root, command))
 	if err != nil || !resolution.Approved || len(resolution.Grants) == 0 {
 		t.Fatalf("reopened resolution approved=%v grants=%d error=%v", resolution.Approved, len(resolution.Grants), err)
 	}
 }
 
 // TestAcceptanceProcessEnabledBashSharesExecutorAcrossGateAndBuild extends
-// TestAcceptanceBuilderPermissionApprovalReachesStoreAndExecutorGrantPath's
+// TestAcceptanceGenericPermissionApprovalReachesStoreAndExecutorGrantPath's
 // grant-redemption proof through the REAL, session-supervised Bash
-// definition Task 27 wires into the builder roster: a grant minted by
-// access.builderGate.Authorize for one Loop ID validates when redeemed
+// definition Task 27 wires into the Generic roster: a grant minted by
+// access.gate.Authorize for one Loop ID validates when redeemed
 // through bashDefinition's OWN Build, invoked for that SAME Loop ID. Since a
 // minted grant only verifies against the EXACT *sandbox.Executor it was
 // authorized against, this end-to-end success proves bashDefinition's
 // retained synchronous set.For(bindings.LoopID.String()) lookup resolves
-// the IDENTICAL executor roleGate resolved for the identical Loop ID (both
-// call set.For on the SAME access.builderSet with the SAME LoopID string;
+// the IDENTICAL executor accessGate resolved for the identical Loop ID (both
+// call set.For on the SAME access.set with the SAME LoopID string;
 // sandbox.ExecutorSet.For's own memoization, proven by the sandbox module,
 // is what makes a single lookup answer for both call sites) -- not a
 // different or stale one.
@@ -393,7 +374,7 @@ func TestAcceptanceProcessEnabledBashSharesExecutorAcrossGateAndBuild(t *testing
 		return gate.ApprovalApproveAlwaysWorkspace, nil
 	})
 	request := commandRequest(t, root, command)
-	resolution, err := access.builderGate.Authorize(ctx, request)
+	resolution, err := access.gate.Authorize(ctx, request)
 	if err != nil {
 		t.Fatalf("Authorize(command): %v", err)
 	}
@@ -409,7 +390,7 @@ func TestAcceptanceProcessEnabledBashSharesExecutorAcrossGateAndBuild(t *testing
 	if err != nil {
 		t.Fatalf("uuid.New() (session): %v", err)
 	}
-	definition := bashDefinition(access.builderSet, newProcessRunnerResolver(access.builderSet))
+	definition := bashDefinition(access.set, newProcessRunnerResolver(access.set))
 	built, err := definition.Build(context.Background(), tool.Bindings{
 		SessionID: sessionID,
 		LoopID:    provenance.LoopID,
@@ -511,12 +492,12 @@ func TestAcceptanceModelAndInteractivePermissionFilesRemainSeparated(t *testing.
 	ctx := loop.WithApprovalRequester(mustLoopProvenance(t), func(context.Context, gate.ApprovalPrompt) (gate.ApprovalAction, error) {
 		return gate.ApprovalApproveAlwaysWorkspace, nil
 	})
-	resolution, err := access.builderGate.Authorize(ctx, commandRequest(t, root, "git status --short"))
+	resolution, err := access.gate.Authorize(ctx, commandRequest(t, root, "git status --short"))
 	if err != nil {
 		t.Fatalf("Authorize(git status): %v", err)
 	}
 	if !resolution.Approved {
-		t.Fatal("interactive approval did not approve the builder command")
+		t.Fatal("interactive approval did not approve the Generic command")
 	}
 	if _, err := os.Stat(permissionPath); err != nil {
 		t.Fatalf("interactive approval did not persist hashed workspace permissions: %v", err)
@@ -598,8 +579,8 @@ func TestAcceptanceHeadlessPermissionFileLoads(t *testing.T) {
 		t.Fatalf("buildHeadlessAccess(explicit permission file): %v", err)
 	}
 	t.Cleanup(func() { _ = access.Close() })
-	if got := observeGate(t, mustLoopProvenance(t), access.builderGate, commandRequest(t, root, "git log -n 2")); got != outcomeAllowed {
-		t.Fatalf("assembled headless builder outcome = %d, want persisted allow", got)
+	if got := observeGate(t, mustLoopProvenance(t), access.gate, commandRequest(t, root, "git log -n 2")); got != outcomeAllowed {
+		t.Fatalf("assembled headless Generic outcome = %d, want persisted allow", got)
 	}
 	interactivePath, err := defaultPermissionsPath(filepath.Join(elsewhere, ".looprig"), root)
 	if err != nil {
@@ -667,7 +648,7 @@ func TestAcceptanceEgressFailureSurfacedAtAssembly(t *testing.T) {
 
 // TestAcceptanceNewRestoreAuthorityParity proves the single assembly path produces
 // the SAME effective authority for two independent opens of the same profile over
-// the same workspace: identical access-config digest and identical per-role policy
+// the same workspace: identical access-config digest and identical Generic policy
 // revisions. New and restore share this path (openRuntimeAgent), so a restore under
 // the same configuration reconstructs identical authority; the drift rejection is
 // covered by TestRestoreRejectsAccessProfileDrift.
@@ -688,11 +669,8 @@ func TestAcceptanceNewRestoreAuthorityParity(t *testing.T) {
 	if first.configRev != second.configRev {
 		t.Errorf("access-config digest differs across identical opens:\n%s\n%s", first.configRev, second.configRev)
 	}
-	if first.builderPolicyRev != second.builderPolicyRev {
-		t.Errorf("builder policy revision differs: %q vs %q", first.builderPolicyRev, second.builderPolicyRev)
-	}
-	if first.reviewerPolicyRev != second.reviewerPolicyRev {
-		t.Errorf("reviewer policy revision differs: %q vs %q", first.reviewerPolicyRev, second.reviewerPolicyRev)
+	if first.policyRev != second.policyRev {
+		t.Errorf("Generic policy revision differs: %q vs %q", first.policyRev, second.policyRev)
 	}
 	if first.profileName != second.profileName {
 		t.Errorf("profile name differs: %q vs %q", first.profileName, second.profileName)
@@ -744,8 +722,8 @@ func TestAcceptanceAgentShutdownClosesExecutors(t *testing.T) {
 		t.Fatalf("newSessionOverStores: %v", err)
 	}
 	access := agent.access
-	if _, err := access.builderSet.For("live-loop"); err != nil {
-		t.Fatalf("builderSet.For before shutdown: %v", err)
+	if _, err := access.set.For("live-loop"); err != nil {
+		t.Fatalf("set.For before shutdown: %v", err)
 	}
 
 	if err := agent.Close(context.Background()); err != nil {
@@ -753,14 +731,8 @@ func TestAcceptanceAgentShutdownClosesExecutors(t *testing.T) {
 	}
 
 	// Shutdown closed the executor sets: resolving now fails closed.
-	if _, err := access.builderSet.For("live-loop"); !errors.Is(err, sandbox.ErrExecutorSetClosed) {
-		t.Errorf("builderSet.For after shutdown = %v, want ErrExecutorSetClosed", err)
-	}
-	if _, err := access.plannerSet.For("live-loop"); !errors.Is(err, sandbox.ErrExecutorSetClosed) {
-		t.Errorf("plannerSet.For after shutdown = %v, want ErrExecutorSetClosed", err)
-	}
-	if _, err := access.reviewerSet.For("live-loop"); !errors.Is(err, sandbox.ErrExecutorSetClosed) {
-		t.Errorf("reviewerSet.For after shutdown = %v, want ErrExecutorSetClosed", err)
+	if _, err := access.set.For("live-loop"); !errors.Is(err, sandbox.ErrExecutorSetClosed) {
+		t.Errorf("set.For after shutdown = %v, want ErrExecutorSetClosed", err)
 	}
 	// The sets were closed exactly once; a direct Close is now a no-op.
 	if err := access.Close(); err != nil {

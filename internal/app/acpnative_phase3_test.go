@@ -5,70 +5,61 @@ import (
 	"os"
 	"testing"
 
-	"github.com/looprig/harness/pkg/identity"
+	"github.com/looprig/coderig/internal/catalog/generic"
+	"github.com/looprig/foreignloops/driver"
 	"github.com/looprig/harness/pkg/loop"
 	"github.com/looprig/harness/pkg/tool"
 	model "github.com/looprig/inference/model"
 )
 
-func TestCompileACPCatalogCompilesNativeProfilesAlongsideGateway(t *testing.T) {
+func TestCompileAgentRuntimeCatalogCompilesNativeProfilesAlongsideGateway(t *testing.T) {
 	gateway := fixtureGatewaySource("gateway-model", &fakeLLM{})
-	compiled, err := CompileACPCatalog(ACPCatalogInput{
-		AgentTypes:     []identity.AgentName{"planner", "builder", "reviewer"},
+	compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
 		GatewayTargets: []ACPGatewaySource{gateway},
-		NativeProfiles: []ACPNativeProfile{
-			{Harness: "codex", Enabled: true, Models: []loop.ModelAlias{"native-z", "native-a"}},
-			{Harness: "claude-code", Enabled: false, Models: []loop.ModelAlias{"disabled-only"}},
-		},
-		Defaults: map[identity.AgentName]configuredDelegateDefault{
-			"planner":  {Harness: "codex", Source: loop.RuntimeSourceNative, Model: "native-a"},
-			"builder":  {Harness: "codex", Source: loop.RuntimeSourceGateway, Model: "gateway-model", Effort: model.EffortMedium},
-			"reviewer": {Harness: "codex", Source: loop.RuntimeSourceGateway, Model: "gateway-model", Effort: model.EffortMedium},
+		NativeACP: map[string]ACPNativeProfile{
+			"codex":       {Harness: "codex", Enabled: true, Models: []loop.ModelAlias{"native-z", "native-a"}},
+			"claude-code": {Harness: "claude-code", Enabled: false, Models: []loop.ModelAlias{"disabled-only"}},
 		},
 		ClaudeSmall: "gateway-model",
 	})
 	if err != nil {
-		t.Fatalf("CompileACPCatalog() error = %v", err)
+		t.Fatalf("CompileAgentRuntimeCatalog() error = %v", err)
 	}
 
-	plannerNative, err := compiled.RuntimeCatalog.ResolveWithExplicitSource("planner", "codex", loop.RuntimeSourceNative, "native-a", model.EffortNone, false)
+	genericNative, err := compiled.RuntimeCatalog.ResolveWithExplicitSource(generic.Name, "codex", loop.RuntimeSourceNative, "native-a", model.EffortNone, false)
 	if err != nil {
 		t.Fatalf("resolve explicit native source: %v", err)
 	}
-	if plannerNative.Source != loop.RuntimeSourceNative || plannerNative.SelectionKind != loop.RuntimeSelectionExplicit || plannerNative.ModelAlias != "native-a" || plannerNative.Credential != loop.CredentialNativeAuth {
-		t.Fatalf("explicit native resolution = %#v", plannerNative)
+	if genericNative.Source != loop.RuntimeSourceNative || genericNative.SelectionKind != loop.RuntimeSelectionExplicit || genericNative.ModelAlias != "native-a" || genericNative.Credential != loop.CredentialNativeAuth {
+		t.Fatalf("explicit native resolution = %#v", genericNative)
 	}
-	if plannerNative.Target.Name == "" || plannerNative.Target.Name == string(plannerNative.ModelAlias) {
-		t.Fatalf("explicit native target = %#v, want opaque non-alias identity", plannerNative.Target)
+	if genericNative.Target.Name == "" || genericNative.Target.Name == string(genericNative.ModelAlias) {
+		t.Fatalf("explicit native target = %#v, want opaque non-alias identity", genericNative.Target)
 	}
 
-	builderDefault, err := compiled.RuntimeCatalog.Resolve("builder", "", "", model.EffortNone)
+	genericDefault, err := compiled.RuntimeCatalog.Resolve(generic.Name, "", "", model.EffortNone)
 	if err != nil {
 		t.Fatalf("resolve omitted-source gateway default: %v", err)
 	}
-	if builderDefault.Source != loop.RuntimeSourceGateway || builderDefault.ModelAlias != "gateway-model" || builderDefault.Credential != loop.CredentialGatewayBacked {
-		t.Fatalf("omitted-source resolution = %#v, want gateway", builderDefault)
+	if genericDefault.AgentHarness != looprigRuntimeHarness || genericDefault.Source != loop.RuntimeSourceNative || genericDefault.Credential != loop.CredentialNativeAuth {
+		t.Fatalf("deterministic resolution = %#v, want looprig/native default", genericDefault)
 	}
 
-	for _, entry := range compiled.RuntimeCatalog.EntriesFor("reviewer") {
+	for _, entry := range compiled.RuntimeCatalog.EntriesFor(generic.Name) {
 		if entry.AgentHarness == "claude-code" && entry.Source == loop.RuntimeSourceNative {
 			t.Fatalf("disabled Claude profile created native entry: %#v", entry)
 		}
 	}
 }
 
-func TestCompileACPCatalogRejectsNativeAliasCollisionWithGateway(t *testing.T) {
-	_, err := CompileACPCatalog(ACPCatalogInput{
-		AgentTypes:     []identity.AgentName{"worker"},
+func TestCompileAgentRuntimeCatalogRejectsNativeAliasCollisionWithGateway(t *testing.T) {
+	_, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
 		GatewayTargets: []ACPGatewaySource{fixtureGatewaySource("shared", &fakeLLM{})},
-		NativeProfiles: []ACPNativeProfile{{Harness: "codex", Enabled: true, Models: []loop.ModelAlias{"shared"}}},
-		Defaults: map[identity.AgentName]configuredDelegateDefault{
-			"worker": {Harness: "codex", Source: loop.RuntimeSourceGateway, Model: "shared", Effort: model.EffortMedium},
-		},
-		ClaudeSmall: "shared",
+		NativeACP:      map[string]ACPNativeProfile{"codex": {Harness: "codex", Enabled: true, Models: []loop.ModelAlias{"shared"}}},
+		ClaudeSmall:    "shared",
 	})
 	if err == nil {
-		t.Fatal("CompileACPCatalog() succeeded with native/gateway alias collision")
+		t.Fatal("CompileAgentRuntimeCatalog() succeeded with native/gateway alias collision")
 	}
 }
 
@@ -77,17 +68,14 @@ func TestNewACPCompositionPreflightsManagedNativeWithoutProxyOrModel(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	compiled, err := CompileACPCatalog(ACPCatalogInput{
-		AgentTypes: []identity.AgentName{"worker"},
+	compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
 		NativeACP: map[string]ACPNativeProfile{
 			"codex": {Harness: "codex", Enabled: true},
 		},
-		Defaults: map[identity.AgentName]configuredDelegateDefault{
-			"worker": {Harness: "codex", Source: loop.RuntimeSourceNative},
-		},
+		PrimerTarget: runtimeCatalogPrimer(),
 	})
 	if err != nil {
-		t.Fatalf("CompileACPCatalog() error = %v", err)
+		t.Fatalf("CompileAgentRuntimeCatalog() error = %v", err)
 	}
 	var probes []ACPExecutableProbe
 	composition, err := NewACPComposition(ACPChildrenConfig{
@@ -113,9 +101,15 @@ func TestNewACPCompositionPreflightsManagedNativeWithoutProxyOrModel(t *testing.
 	if !composition.Catalog.HasProfile("acp/codex") {
 		t.Fatal("managed native profile was removed after successful preflight")
 	}
-	entry := composition.Catalog.RuntimeCatalog.EntriesFor("worker")
-	if len(entry) != 1 || entry[0].SelectionKind != loop.RuntimeSelectionHarnessManaged || len(entry[0].Models) != 0 {
-		t.Fatalf("managed native filtered entries = %#v", entry)
+	entries := composition.Catalog.RuntimeCatalog.EntriesFor(generic.Name)
+	var managed *loop.RuntimeCatalogEntry
+	for i := range entries {
+		if entries[i].AgentHarness == "codex" && entries[i].SelectionKind == loop.RuntimeSelectionHarnessManaged {
+			managed = &entries[i]
+		}
+	}
+	if managed == nil || len(managed.Models) != 0 {
+		t.Fatalf("managed native filtered entries = %#v", entries)
 	}
 }
 
@@ -124,17 +118,14 @@ func TestNewACPCompositionPreflightsExplicitNativeAliasesWithoutGateway(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	compiled, err := CompileACPCatalog(ACPCatalogInput{
-		AgentTypes: []identity.AgentName{"worker"},
+	compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
 		NativeACP: map[string]ACPNativeProfile{
 			"codex": {Harness: "codex", Enabled: true, Models: []loop.ModelAlias{"native-z", "native-a"}},
 		},
-		Defaults: map[identity.AgentName]configuredDelegateDefault{
-			"worker": {Harness: "codex", Source: loop.RuntimeSourceNative, Model: "native-a"},
-		},
+		PrimerTarget: runtimeCatalogPrimer(),
 	})
 	if err != nil {
-		t.Fatalf("CompileACPCatalog() error = %v", err)
+		t.Fatalf("CompileAgentRuntimeCatalog() error = %v", err)
 	}
 	var probes []ACPExecutableProbe
 	composition, err := NewACPComposition(ACPChildrenConfig{
@@ -155,9 +146,15 @@ func TestNewACPCompositionPreflightsExplicitNativeAliasesWithoutGateway(t *testi
 	if len(probes) != 2 || probes[0].Model != "native-a" || probes[1].Model != "native-z" {
 		t.Fatalf("explicit native probes = %#v, want sorted aliases", probes)
 	}
-	entry := composition.Catalog.RuntimeCatalog.EntriesFor("worker")
-	if len(entry) != 1 || len(entry[0].Models) != 2 || entry[0].Source != loop.RuntimeSourceNative {
-		t.Fatalf("explicit native filtered entries = %#v", entry)
+	entries := composition.Catalog.RuntimeCatalog.EntriesFor(generic.Name)
+	var entry *loop.RuntimeCatalogEntry
+	for i := range entries {
+		if entries[i].AgentHarness == "codex" {
+			entry = &entries[i]
+		}
+	}
+	if entry == nil || len(entry.Models) != 2 || entry.Source != loop.RuntimeSourceNative {
+		t.Fatalf("explicit native filtered entries = %#v", entries)
 	}
 }
 
@@ -166,17 +163,14 @@ func TestNewACPCompositionPreflightsClaudeNativeAliasesIndependently(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	compiled, err := CompileACPCatalog(ACPCatalogInput{
-		AgentTypes: []identity.AgentName{"worker"},
+	compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
 		NativeACP: map[string]ACPNativeProfile{
 			"claude-code": {Harness: "claude-code", Enabled: true, Models: []loop.ModelAlias{"seed-fails", "later-ready"}},
 		},
-		Defaults: map[identity.AgentName]configuredDelegateDefault{
-			"worker": {Harness: "claude-code", Source: loop.RuntimeSourceNative, Model: "seed-fails"},
-		},
+		PrimerTarget: runtimeCatalogPrimer(),
 	})
 	if err != nil {
-		t.Fatalf("CompileACPCatalog() error = %v", err)
+		t.Fatalf("CompileAgentRuntimeCatalog() error = %v", err)
 	}
 	var probes []ACPExecutableProbe
 	composition, err := NewACPComposition(ACPChildrenConfig{
@@ -197,31 +191,34 @@ func TestNewACPCompositionPreflightsClaudeNativeAliasesIndependently(t *testing.
 	if len(probes) != 2 || probes[0].Model != "later-ready" || probes[1].Model != "seed-fails" {
 		t.Fatalf("Claude native probes = %#v, want sorted independent aliases", probes)
 	}
-	entries := composition.Catalog.RuntimeCatalog.EntriesFor("worker")
-	if len(entries) != 0 {
-		t.Fatalf("Claude native filtered entries = %#v, want configured default source dropped", entries)
+	entries := composition.Catalog.RuntimeCatalog.EntriesFor(generic.Name)
+	var claude *loop.RuntimeCatalogEntry
+	for i := range entries {
+		if entries[i].AgentHarness == "claude-code" {
+			claude = &entries[i]
+		}
 	}
-	if composition.Catalog.HasProfile("acp/claude-code") {
-		t.Fatal("Claude native profile survived after its configured default was removed")
+	if claude == nil || len(claude.Models) != 1 || claude.Models[0].Alias != "later-ready" {
+		t.Fatalf("Claude native filtered entries = %#v, want only the ready alias", entries)
+	}
+	if !composition.Catalog.HasProfile("acp/claude-code") {
+		t.Fatal("Claude native profile was removed despite a ready alias")
 	}
 }
 
 func TestACPChildModelAliasesUseNativeSelectionKind(t *testing.T) {
-	managedCatalog, err := CompileACPCatalog(ACPCatalogInput{
-		AgentTypes: []identity.AgentName{"worker"},
-		NativeACP:  map[string]ACPNativeProfile{"codex": {Harness: "codex", Enabled: true}},
-		Defaults: map[identity.AgentName]configuredDelegateDefault{
-			"worker": {Harness: "codex", Source: loop.RuntimeSourceNative},
-		},
+	managedCatalog, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
+		NativeACP:    map[string]ACPNativeProfile{"codex": {Harness: "codex", Enabled: true}},
+		PrimerTarget: runtimeCatalogPrimer(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	managed, err := managedCatalog.RuntimeCatalog.ResolveWithExplicitSource("worker", "codex", loop.RuntimeSourceNative, "", model.EffortNone, false)
+	managed, err := managedCatalog.RuntimeCatalog.ResolveWithExplicitSource(generic.Name, "codex", loop.RuntimeSourceNative, "", model.EffortNone, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	mainAlias, smallAlias, err := acpChildModelAliases(managedCatalog, "worker", "codex", managed)
+	mainAlias, smallAlias, err := acpChildModelAliases(managedCatalog, generic.Name, "codex", managed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,21 +226,18 @@ func TestACPChildModelAliasesUseNativeSelectionKind(t *testing.T) {
 		t.Fatalf("managed native child aliases = %q/%q, want empty selectors", mainAlias, smallAlias)
 	}
 
-	explicitCatalog, err := CompileACPCatalog(ACPCatalogInput{
-		AgentTypes: []identity.AgentName{"worker"},
-		NativeACP:  map[string]ACPNativeProfile{"codex": {Harness: "codex", Enabled: true, Models: []loop.ModelAlias{"native-a"}}},
-		Defaults: map[identity.AgentName]configuredDelegateDefault{
-			"worker": {Harness: "codex", Source: loop.RuntimeSourceNative, Model: "native-a"},
-		},
+	explicitCatalog, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
+		NativeACP:    map[string]ACPNativeProfile{"codex": {Harness: "codex", Enabled: true, Models: []loop.ModelAlias{"native-a"}}},
+		PrimerTarget: runtimeCatalogPrimer(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	explicit, err := explicitCatalog.RuntimeCatalog.ResolveWithExplicitSource("worker", "codex", loop.RuntimeSourceNative, "native-a", model.EffortNone, false)
+	explicit, err := explicitCatalog.RuntimeCatalog.ResolveWithExplicitSource(generic.Name, "codex", loop.RuntimeSourceNative, "native-a", model.EffortNone, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	mainAlias, smallAlias, err = acpChildModelAliases(explicitCatalog, "worker", "codex", explicit)
+	mainAlias, smallAlias, err = acpChildModelAliases(explicitCatalog, generic.Name, "codex", explicit)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,18 +247,15 @@ func TestACPChildModelAliasesUseNativeSelectionKind(t *testing.T) {
 }
 
 func TestACPChildConfigResolvesManagedNativeWithoutGateway(t *testing.T) {
-	catalog, err := CompileACPCatalog(ACPCatalogInput{
-		AgentTypes: []identity.AgentName{"builder"},
-		NativeACP:  map[string]ACPNativeProfile{"codex": {Harness: "codex", Enabled: true}},
-		Defaults: map[identity.AgentName]configuredDelegateDefault{
-			"builder": {Harness: "codex", Source: loop.RuntimeSourceNative},
-		},
+	catalog, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
+		NativeACP:    map[string]ACPNativeProfile{"codex": {Harness: "codex", Enabled: true}},
+		PrimerTarget: runtimeCatalogPrimer(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	definition, err := loop.Define(
-		loop.WithName(identity.AgentName("builder")),
+		loop.WithName(generic.Name),
 		loop.WithInference(&fakeLLM{}, testModel()),
 		loop.WithPolicyRevision("native-phase3"),
 	)
@@ -281,6 +272,8 @@ func TestACPChildConfigResolvesManagedNativeWithoutGateway(t *testing.T) {
 	}
 	factory := &acpChildFactory{config: ACPChildrenConfig{
 		Catalog:            catalog,
+		AccessProfile:      AccessReadOnly,
+		posture:            driver.PostureReadOnly,
 		Executables:        map[loop.AgentHarnessName]string{"codex": "/bin/codex"},
 		NativeEnvAllowlist: []string{"HOME"},
 	}}
@@ -291,7 +284,7 @@ func TestACPChildConfigResolvesManagedNativeWithoutGateway(t *testing.T) {
 	if ownedGateway != nil {
 		t.Fatal("managed native child constructed a gateway")
 	}
-	if resolved.Source != loop.RuntimeSourceNative || resolved.SelectionKind != loop.RuntimeSelectionHarnessManaged || childConfig.Credential != loop.CredentialNativeAuth || childConfig.ModelAlias != "" || childConfig.SmallModelAlias != "" || childConfig.Binding.BaseURL != "" || childConfig.Binding.Token != "" || childConfig.AgentSessionID != "existing-session" {
+	if resolved.Source != loop.RuntimeSourceNative || resolved.SelectionKind != loop.RuntimeSelectionHarnessManaged || childConfig.Credential != loop.CredentialNativeAuth || childConfig.ModelAlias != "" || childConfig.SmallModelAlias != "" || childConfig.Binding.BaseURL != "" || childConfig.Binding.Token != "" || childConfig.AgentSessionID != "existing-session" || childConfig.Posture != driver.PostureReadOnly {
 		t.Fatalf("managed native child config = %#v resolved=%#v", childConfig, resolved)
 	}
 }

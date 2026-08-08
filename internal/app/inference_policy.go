@@ -152,7 +152,7 @@ func contextTransportsForModels(models []model.Model) ([]loop.ContextTransport, 
 // equality is automatic since both are derived by calling
 // inferenceCapabilityForModel on the same model value. Native delegate
 // loops are ordinary harness Loop instances subject to the same
-// declared-transport restore check as the primer roles, so omitting their
+// declared-transport restore check as the Generic primer and delegates, so omitting their
 // transport here would make restoring a session with an active/prior
 // delegate on a foreign transport fail harness's RestoreTransportMismatchError.
 func declaredContextTransports(base model.Model, primerCandidates []PrimerCandidate, delegateModels []model.Model) ([]loop.ContextTransport, error) {

@@ -10,12 +10,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/looprig/coderig/internal/catalog/builder"
-	"github.com/looprig/coderig/internal/catalog/planner"
-	"github.com/looprig/coderig/internal/catalog/reviewer"
+	"github.com/looprig/coderig/internal/catalog/generic"
 	"github.com/looprig/core/content"
 	"github.com/looprig/harness/pkg/event"
-	"github.com/looprig/harness/pkg/identity"
 	"github.com/looprig/harness/pkg/loop"
 	"github.com/looprig/inference"
 	model "github.com/looprig/inference/model"
@@ -31,7 +28,6 @@ func agentRuntimeModel(provider model.ProviderName, format model.APIFormat, name
 func agentToolRuntimeCatalog(t *testing.T, client inference.Client) loop.RuntimeCatalog {
 	t.Helper()
 	compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
-		AgentTypes: []identity.AgentName{planner.Name, builder.Name, reviewer.Name},
 		GatewayTargets: []ACPGatewaySource{
 			{
 				Alias: "alpha", Description: "Fast implementation model.", Client: client,
@@ -46,12 +42,55 @@ func agentToolRuntimeCatalog(t *testing.T, client inference.Client) loop.Runtime
 				Efforts:       []model.Effort{model.EffortHigh, model.EffortMax},
 			},
 		},
+		PrimerTarget: runtimeCatalogPrimer(),
 	})
 	if err != nil {
 		t.Fatalf("CompileAgentRuntimeCatalog() error = %v", err)
 	}
-	if _, err := compiled.RuntimeCatalog.ResolveWithExplicitSource(planner.Name, looprigRuntimeHarness, loop.RuntimeSourceNative, "alpha", model.EffortLow, true); err != nil {
+	if _, err := compiled.RuntimeCatalog.ResolveWithExplicitSource(generic.Name, looprigRuntimeHarness, loop.RuntimeSourceNative, "alpha", model.EffortLow, true); err != nil {
 		t.Fatalf("compiled native alpha/low selection: %v", err)
+	}
+	return compiled.RuntimeCatalog
+}
+
+func fullAgentToolRuntimeCatalog(t *testing.T, client inference.Client) loop.RuntimeCatalog {
+	t.Helper()
+	compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
+		GatewayTargets: []ACPGatewaySource{
+			{
+				Alias: "alpha", Description: "Codex-capable implementation model.", Client: client,
+				Model:         agentRuntimeModel("openai", model.APIFormatOpenAIResponses, "alpha-model"),
+				DefaultEffort: model.EffortLow,
+				Efforts:       []model.Effort{model.EffortLow, model.EffortMedium},
+			},
+			{
+				Alias: "beta", Description: "Claude-capable analysis model.", Client: client,
+				Model:         agentRuntimeModel("anthropic", model.APIFormatAnthropic, "beta-model"),
+				DefaultEffort: model.EffortHigh,
+				Efforts:       []model.Effort{model.EffortHigh, model.EffortMax},
+			},
+		},
+		ClaudeSmall:  "alpha",
+		PrimerTarget: runtimeCatalogPrimer(),
+	})
+	if err != nil {
+		t.Fatalf("CompileAgentRuntimeCatalog() full catalog error = %v", err)
+	}
+	entries := compiled.RuntimeCatalog.EntriesFor(generic.Name)
+	if len(entries) != 3 {
+		t.Fatalf("full Generic runtime catalog entries = %d, want native default plus Codex and Claude ACP alternatives: %#v", len(entries), entries)
+	}
+	seen := map[loop.AgentHarnessName]bool{}
+	for _, entry := range entries {
+		seen[entry.AgentHarness] = true
+		if entry.AgentHarness != looprigRuntimeHarness && entry.Default {
+			t.Fatalf("ACP runtime entry unexpectedly default: %#v", entry)
+		}
+	}
+	for _, harness := range []loop.AgentHarnessName{looprigRuntimeHarness, "codex", "claude-code"} {
+		if !seen[harness] {
+			t.Fatalf("full Generic runtime catalog omitted %q: %#v", harness, entries)
+		}
 	}
 	return compiled.RuntimeCatalog
 }
@@ -126,7 +165,7 @@ func TestAgentToolsNoACPProductionSurfaceAndNativeSelection(t *testing.T) {
 	catalog := agentToolRuntimeCatalog(t, native)
 	var parentSteps int
 	client.fn = func(_ context.Context, req inference.Request) ([]content.Chunk, error) {
-		if !requestHasRole(req, builder.Name) {
+		if !requestHasRole(req, generic.Name) {
 			return nil, fmt.Errorf("unexpected role in no-ACP integration request")
 		}
 		if parentSteps == 0 {
@@ -162,7 +201,7 @@ func TestAgentToolsNoACPProductionSurfaceAndNativeSelection(t *testing.T) {
 			if strings.Contains(req.System, "Fast implementation model.") || strings.Contains(req.System, "Deep analysis model.") {
 				return nil, fmt.Errorf("system prompt leaked runtime model descriptions: %q", req.System)
 			}
-			return startAgentCall("native-start", `{"agent_type":"planner","instructions":"implement","model":"alpha","effort":"low"}`), nil
+			return startAgentCall("native-start", `{"agent_type":"generic","instructions":"implement","model":"alpha","effort":"low"}`), nil
 		}
 		var result struct {
 			Response string `json:"response"`
@@ -192,12 +231,65 @@ func TestAgentToolsNoACPProductionSurfaceAndNativeSelection(t *testing.T) {
 	}
 	var childRuntime *event.AgentRuntime
 	for _, raw := range observed {
-		if started, ok := raw.(event.LoopStarted); ok && started.AgentName == planner.Name && started.AgentRuntime != nil {
+		if started, ok := raw.(event.LoopStarted); ok && started.AgentName == generic.Name && started.AgentRuntime != nil {
 			childRuntime = started.AgentRuntime
 		}
 	}
 	if childRuntime == nil || childRuntime.Harness != "looprig" || childRuntime.Source != string(loop.RuntimeSourceNative) || childRuntime.ModelAlias != "alpha" {
 		t.Fatalf("native child runtime = %+v, want looprig/native alpha", childRuntime)
+	}
+}
+
+func TestAssembledStartAgentPlainPayloadUsesLoopRigNativeDefault(t *testing.T) {
+	client := &managedScript{}
+	native := &recordingAgentRuntimeClient{}
+	catalog := fullAgentToolRuntimeCatalog(t, native)
+	step := 0
+	client.fn = func(_ context.Context, req inference.Request) ([]content.Chunk, error) {
+		if !requestHasRole(req, generic.Name) {
+			return nil, fmt.Errorf("unexpected role in plain StartAgent integration request")
+		}
+		if step == 0 {
+			step++
+			const plainPayload = `{"agent_type":"generic","instructions":"implement"}`
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal([]byte(plainPayload), &fields); err != nil {
+				return nil, fmt.Errorf("plain StartAgent payload is invalid JSON: %w", err)
+			}
+			if len(fields) != 2 {
+				return nil, fmt.Errorf("plain StartAgent payload fields = %v, want exactly ordinary required fields", fields)
+			}
+			return startAgentCall("plain-default-start", plainPayload), nil
+		}
+		var result struct {
+			Response string `json:"response"`
+		}
+		if err := json.Unmarshal([]byte(lastToolText(req)), &result); err != nil {
+			return nil, fmt.Errorf("plain StartAgent result %q: %w", lastToolText(req), err)
+		}
+		if result.Response != "native child complete" {
+			return nil, fmt.Errorf("plain StartAgent response = %q", result.Response)
+		}
+		return finalText("plain default complete"), nil
+	}
+
+	agent := newTestAgent(t, agentRuntimeRouter(t, client, native), Config{RuntimeCatalog: catalog})
+	got, observed := runManagedTurnObserved(t, agent, "use the ordinary default runtime")
+	if got != "plain default complete" {
+		t.Fatalf("plain default final = %q", got)
+	}
+	requests := recordingAgentRuntimeRequests(native)
+	if len(requests) != 1 || requests[0].Model.Name != "alpha-model" {
+		t.Fatalf("plain default child requests = %#v, want looprig/native alpha-model", requests)
+	}
+	var childRuntime *event.AgentRuntime
+	for _, raw := range observed {
+		if started, ok := raw.(event.LoopStarted); ok && started.AgentName == generic.Name && started.AgentRuntime != nil {
+			childRuntime = started.AgentRuntime
+		}
+	}
+	if childRuntime == nil || childRuntime.Harness != "looprig" || childRuntime.Source != string(loop.RuntimeSourceNative) || childRuntime.Profile != string(looprigRuntimeProfile) || childRuntime.SelectionKind != string(loop.RuntimeSelectionExplicit) || childRuntime.ModelAlias != "alpha" {
+		t.Fatalf("plain default child runtime = %+v, want looprig/native explicit alpha", childRuntime)
 	}
 }
 
@@ -208,12 +300,12 @@ func TestAgentToolsRejectIncompatibleNativeModelEffort(t *testing.T) {
 	var result string
 	step := 0
 	client.fn = func(_ context.Context, req inference.Request) ([]content.Chunk, error) {
-		if !requestHasRole(req, builder.Name) {
+		if !requestHasRole(req, generic.Name) {
 			return finalText("unexpected child"), nil
 		}
 		if step == 0 {
 			step++
-			return startAgentCall("invalid-native", `{"agent_type":"planner","instructions":"reject","model":"beta","effort":"low"}`), nil
+			return startAgentCall("invalid-native", `{"agent_type":"generic","instructions":"reject","model":"beta","effort":"low"}`), nil
 		}
 		result = lastToolText(req)
 		return finalText("invalid selection handled"), nil

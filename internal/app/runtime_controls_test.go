@@ -63,7 +63,7 @@ func multiPrimerCandidates() []PrimerCandidate {
 // injected ModelFactory), independent of where selected sits in candidates.
 // This lets tests distinguish "keyed off the current model" from "keyed off
 // roster position 0" — see TestRuntimeCatalogEffortsReflectCurrentModelNotRosterOrder.
-func openAcceptanceAgentSelectingPrimerCandidate(t *testing.T, candidates []PrimerCandidate, selected model.Model) (*RuntimeAgent, *swarmStores) {
+func openAcceptanceAgentSelectingPrimerCandidate(t *testing.T, candidates []PrimerCandidate, selected model.Model) (*RuntimeAgent, *sessionStores) {
 	t.Helper()
 	stores := mustHeadlessTestStores(t)
 	cfg := Config{PrimerCandidates: candidates}
@@ -75,7 +75,7 @@ func openAcceptanceAgentSelectingPrimerCandidate(t *testing.T, candidates []Prim
 	return agent, stores
 }
 
-func openAcceptanceAgentWithPrimerCandidates(t *testing.T) (*RuntimeAgent, *swarmStores) {
+func openAcceptanceAgentWithPrimerCandidates(t *testing.T) (*RuntimeAgent, *sessionStores) {
 	t.Helper()
 	candidates := multiPrimerCandidates()
 	return openAcceptanceAgentSelectingPrimerCandidate(t, candidates, candidates[0].Model)

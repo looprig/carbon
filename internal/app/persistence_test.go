@@ -12,13 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/looprig/coderig/internal/catalog/builder"
-	"github.com/looprig/coderig/internal/catalog/planner"
-	"github.com/looprig/coderig/internal/catalog/reviewer"
+	"github.com/looprig/coderig/internal/catalog/generic"
 	"github.com/looprig/core/content"
 	"github.com/looprig/core/uuid"
 	"github.com/looprig/harness/pkg/event"
-	"github.com/looprig/harness/pkg/identity"
 	"github.com/looprig/harness/pkg/loop"
 	"github.com/looprig/harness/pkg/rig"
 	"github.com/looprig/harness/pkg/session"
@@ -34,7 +31,7 @@ import (
 // singleton) so a session-opening unit test never contends on the real current-checkout root
 // lease with sibling tests. Each caller gets its own leaser, so its exclusive-root lease is
 // private to the test.
-func mustHeadlessTestStores(t *testing.T) *swarmStores {
+func mustHeadlessTestStores(t *testing.T) *sessionStores {
 	t.Helper()
 	stores, err := openTestStores(t)
 	if err != nil {
@@ -90,7 +87,7 @@ func TestPersistedOpenRoutesNativeAgentThroughRuntimeClientAcrossRestore(t *test
 	var childID string
 	parentStep := 0
 	primer.fn = func(_ context.Context, req inference.Request) ([]content.Chunk, error) {
-		if !requestHasRole(req, builder.Name) {
+		if !requestHasRole(req, generic.Name) {
 			return nil, fmt.Errorf("primer client received non-parent request")
 		}
 		switch phase {
@@ -98,7 +95,7 @@ func TestPersistedOpenRoutesNativeAgentThroughRuntimeClientAcrossRestore(t *test
 			switch parentStep {
 			case 0:
 				parentStep++
-				return startAgentCall("persisted-native-start", `{"agent_type":"planner","instructions":"initial","model":"persisted-delegate","effort":"low"}`), nil
+				return startAgentCall("persisted-native-start", `{"agent_type":"generic","instructions":"initial","model":"persisted-delegate","effort":"low"}`), nil
 			case 1:
 				parentStep++
 				return finalText("initial parent complete"), nil
@@ -134,11 +131,6 @@ func TestPersistedOpenRoutesNativeAgentThroughRuntimeClientAcrossRestore(t *test
 			Model: delegateModel, DefaultEffort: model.EffortLow,
 			Efforts: []model.Effort{model.EffortLow, model.EffortMedium},
 		}},
-		Defaults: map[identity.AgentName]configuredDelegateDefault{
-			planner.Name:  {Harness: "codex", Source: loop.RuntimeSourceGateway, Model: "persisted-delegate", Effort: model.EffortLow},
-			builder.Name:  {Harness: "codex", Source: loop.RuntimeSourceGateway, Model: "persisted-delegate", Effort: model.EffortLow},
-			reviewer.Name: {Harness: "codex", Source: loop.RuntimeSourceGateway, Model: "persisted-delegate", Effort: model.EffortLow},
-		},
 		ConfigRev: "persisted-runtime-client-rev",
 	}
 	factory := &SessionStoreFactory{
@@ -157,12 +149,12 @@ func TestPersistedOpenRoutesNativeAgentThroughRuntimeClientAcrossRestore(t *test
 		t.Fatalf("initial Close() error = %v", err)
 	}
 	for _, raw := range observed {
-		if started, ok := raw.(event.LoopStarted); ok && started.AgentName == planner.Name {
+		if started, ok := raw.(event.LoopStarted); ok && started.AgentName == generic.Name {
 			childID = started.LoopID.String()
 		}
 	}
 	if childID == "" {
-		t.Fatal("initial native start emitted no planner child")
+		t.Fatal("initial native start emitted no Generic child")
 	}
 
 	phase = "restored"
@@ -228,7 +220,7 @@ func TestSetModelCrossProviderSwitchSurvivesRestore(t *testing.T) {
 		t.Fatalf("Close() error = %v", err)
 	}
 
-	// openRuntimeAgent (swarm.go) is the shared construction seam newSessionOverStores
+	// openRuntimeAgent (assembly.go) is the shared construction seam newSessionOverStores
 	// itself wraps with a hardcoded SessionSelector{}; there is no separate "restoring"
 	// helper, so the restore leg calls it directly with a Resume selector, matching the
 	// production restore path (SessionStoreFactory.openWithClient).
@@ -294,11 +286,11 @@ func TestRestoreRejectsModelConfigRevisionDrift(t *testing.T) {
 	ctx := context.Background()
 
 	openAccess, openCfg := headlessTestAccess(t, Config{ModelConfigRev: "model-rev-a"}, root)
-	definitions, err := swarmDefinitions(&fakeLLM{}, testModel(), openCfg, openAccess)
+	definition, err := genericTestDefinition(&fakeLLM{}, testModel(), openCfg, openAccess)
 	if err != nil {
 		t.Fatal(err)
 	}
-	assembly, err := buildRig(definitions, stores, root, openCfg, false)
+	assembly, err := buildRig(definition, stores, root, openCfg, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -313,11 +305,11 @@ func TestRestoreRejectsModelConfigRevisionDrift(t *testing.T) {
 
 	restore := func(revision string) error {
 		restoreAccess, restoreCfg := headlessTestAccess(t, Config{ModelConfigRev: revision}, root)
-		restoreDefinitions, err := swarmDefinitions(&fakeLLM{}, testModel(), restoreCfg, restoreAccess)
+		restoreDefinition, err := genericTestDefinition(&fakeLLM{}, testModel(), restoreCfg, restoreAccess)
 		if err != nil {
 			return err
 		}
-		restoreAssembly, err := buildRig(restoreDefinitions, stores, root, restoreCfg, false)
+		restoreAssembly, err := buildRig(restoreDefinition, stores, root, restoreCfg, false)
 		if err != nil {
 			return err
 		}
@@ -349,9 +341,9 @@ func TestBuildRigRegistersConversationCompaction(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			definitions := swarmDefs(t, tt.cfg)
+			definition := genericDef(t, tt.cfg)
 			stores := mustHeadlessTestStores(t)
-			if _, err := buildRig(definitions, stores, t.TempDir(), tt.cfg, false); err != nil {
+			if _, err := buildRig(definition, stores, t.TempDir(), tt.cfg, false); err != nil {
 				t.Fatalf("buildRig() error = %v", err)
 			}
 		})
@@ -363,12 +355,12 @@ func TestInvalidCompactionCompositionDoesNotOpenSession(t *testing.T) {
 
 	tests := []struct {
 		name     string
-		attempt  func(*testing.T, *swarmStores) error
+		attempt  func(*testing.T, *sessionStores) error
 		wantType func(error) bool
 	}{
 		{
 			name: "unsupported inference policy",
-			attempt: func(t *testing.T, stores *swarmStores) error {
+			attempt: func(t *testing.T, stores *sessionStores) error {
 				unsupported := testModel()
 				unsupported.Provider = "unsupported"
 				_, err := newSessionOverStores(context.Background(), &fakeLLM{}, newModelFactoryFor(unsupported), Config{}, stores, t.TempDir())
@@ -381,14 +373,14 @@ func TestInvalidCompactionCompositionDoesNotOpenSession(t *testing.T) {
 		},
 		{
 			name: "invalid loop compaction policy",
-			attempt: func(t *testing.T, _ *swarmStores) error {
+			attempt: func(t *testing.T, _ *sessionStores) error {
 				policy, err := newConversationContextPolicy(testModel(), nil, nil)
 				if err != nil {
 					t.Fatalf("newConversationContextPolicy() error = %v", err)
 				}
 				policy.compaction.CounterPolicy = loop.CounterPolicyUnknown
 				access, cfg := headlessTestAccess(t, Config{}, t.TempDir())
-				_, err = swarmDefinitionsWithContextPolicy(&fakeLLM{}, testModel(), cfg, policy, access)
+				_, err = genericTestDefinitionWithContextPolicy(&fakeLLM{}, testModel(), cfg, policy, access)
 				return err
 			},
 			wantType: func(err error) bool {
@@ -398,11 +390,11 @@ func TestInvalidCompactionCompositionDoesNotOpenSession(t *testing.T) {
 		},
 		{
 			name: "invalid hustle registration",
-			attempt: func(t *testing.T, stores *swarmStores) error {
-				definitions := swarmDefs(t, Config{})
+			attempt: func(t *testing.T, stores *sessionStores) error {
+				definition := genericDef(t, Config{})
 				_, err := buildRigWithRegistration(
-					definitions, stores, t.TempDir(), Config{}, false,
-					rig.DelegationLimits{Depth: operatorSpawnDepth, Quota: operatorSpawnQuota},
+					definition, stores, t.TempDir(), Config{}, false,
+					rig.DelegationLimits{Depth: delegationSpawnDepth, Quota: delegationSpawnQuota},
 					conversationHustleRegistration{limits: conversationHustleLimits()},
 					permissionReviewRegistration{},
 				)
@@ -452,7 +444,7 @@ func TestHeadlessCompactionValidationPrecedesStoreOpen(t *testing.T) {
 			storeOpened := false
 			_, err := newWithClientUsingStores(
 				context.Background(), &fakeLLM{}, newModelFactoryFor(tt.model), Config{},
-				func() (*swarmStores, error) {
+				func() (*sessionStores, error) {
 					storeOpened = true
 					return mustHeadlessTestStores(t), nil
 				},
@@ -496,12 +488,12 @@ func TestCompactionWiringSurvivesHeadlessNewRestoreAndClear(t *testing.T) {
 				t.Fatalf("headless Close() error = %v", err)
 			}
 
-			definitions := swarmDefs(t, tt.cfg)
+			definition := genericDef(t, tt.cfg)
 			// Restore folds the SAME workspace-derived access digest as the original open
 			// (new and restore over the same checkout produce the same digest), so the
 			// rig-level fingerprint matches.
 			_, restoreCfg := headlessTestAccess(t, tt.cfg, root)
-			assembly, err := buildRig(definitions, stores, root, restoreCfg, false)
+			assembly, err := buildRig(definition, stores, root, restoreCfg, false)
 			if err != nil {
 				t.Fatalf("restore buildRig() error = %v", err)
 			}
@@ -577,7 +569,7 @@ func TestExclusiveCheckoutContentionAndHandoff(t *testing.T) {
 
 // TestHeadlessNewAndRestoreRoundTrip proves a session opened over an isolated store can be
 // Shutdown and RESTORED by id over the SAME store (the rig owns new + restore), and that the
-// restored session's active loop id matches the original — parity for the headless rig builder.
+// restored session's active loop id matches the original — parity for the headless rig generic.
 func TestHeadlessNewAndRestoreRoundTrip(t *testing.T) {
 	t.Parallel()
 
@@ -599,11 +591,11 @@ func TestHeadlessNewAndRestoreRoundTrip(t *testing.T) {
 	}
 
 	access, restoreCfg := headlessTestAccess(t, Config{}, root)
-	definitions, err := swarmDefinitions(&fakeLLM{}, newModelFactory()(), restoreCfg, access)
+	definition, err := genericTestDefinition(&fakeLLM{}, newModelFactory()(), restoreCfg, access)
 	if err != nil {
-		t.Fatalf("swarmDefinitions error = %v", err)
+		t.Fatalf("genericTestDefinition error = %v", err)
 	}
-	assembly, err := buildRig(definitions, stores, root, restoreCfg, false)
+	assembly, err := buildRig(definition, stores, root, restoreCfg, false)
 	if err != nil {
 		t.Fatalf("buildRig error = %v", err)
 	}
@@ -886,14 +878,14 @@ func TestSessionStoreFactoryCloseAndListAreSerialized(t *testing.T) {
 }
 
 // ModelFactory is a plain func type; this compile-time assertion documents its shape: it
-// yields the swarm's shared, secret-free model.Model identity (no system, no secret).
+// yields the Generic session's shared, secret-free model.Model identity (no system, no secret).
 var _ ModelFactory = func() model.Model {
 	return model.Model{}
 }
 
 // --- Session resource-storage composition (persisted + headless providers) ---
 //
-// No CodeRig role declares tool.RequiresProcessServices today (that lands with the
+// No CodeRig Loop definition declares tool.RequiresProcessServices today (that lands with the
 // process-supervision tools themselves, a later task), so these tests exercise the two
 // providers directly and, where the actual harness restore/identity-anchor behavior is what
 // is under test, over a minimal standalone rig assembled with a probe loop.Definition that
@@ -934,7 +926,7 @@ func processResourceStorageDefinition(t *testing.T) loop.Definition {
 	return definition
 }
 
-// processResourceStorageRig assembles a standalone rig (independent of the production swarm
+// processResourceStorageRig assembles a standalone rig (independent of the production Generic
 // topology) over store with provider installed as its session resource-storage provider.
 func processResourceStorageRig(t *testing.T, store *sessionstore.Store, provider rig.SessionResourceStorageProvider) *rig.Rig {
 	t.Helper()

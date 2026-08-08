@@ -63,13 +63,15 @@ func TestMCPDefinitionsStdioHappyPath(t *testing.T) {
 	}
 
 	loopID := mcpTestLoopID(t)
-	for _, role := range []string{"planner", "builder", "reviewer"} {
-		if !binding.Visibility.Permits(loopID, role) {
-			t.Errorf("binding.Visibility.Permits(_, %q) = false, want true (roles empty -> all three)", role)
-		}
+	if !binding.Visibility.Permits(loopID, "generic") {
+		t.Errorf("binding.Visibility.Permits(_, generic) = false, want true (roles empty -> generic)")
 	}
-	if binding.Visibility.Permits(loopID, "not-a-role") {
-		t.Errorf("binding.Visibility.Permits(_, %q) = true, want false", "not-a-role")
+	// Removed names and an unknown name are rejection fixtures; only Generic
+	// visibility is accepted.
+	for _, role := range []string{"planner", "builder", "reviewer", "not-a-role"} {
+		if binding.Visibility.Permits(loopID, role) {
+			t.Errorf("binding.Visibility.Permits(_, %q) = true, want false", role)
+		}
 	}
 }
 
@@ -92,7 +94,7 @@ func TestMCPDefinitionsStdioMissingCommandFailsClosed(t *testing.T) {
 	}
 }
 
-func TestMCPDefinitionsVisibilityDefaultsToAllRolesWhenEmpty(t *testing.T) {
+func TestMCPDefinitionsVisibilityDefaultsToGenericWhenEmpty(t *testing.T) {
 	spec := mcpServerSpec{name: "sh", kind: "stdio", command: "/bin/sh"} // roles nil
 
 	bindings, err := mcpDefinitions([]mcpServerSpec{spec})
@@ -101,19 +103,23 @@ func TestMCPDefinitionsVisibilityDefaultsToAllRolesWhenEmpty(t *testing.T) {
 	}
 	binding := bindings[0]
 	loopID := mcpTestLoopID(t)
+	if !binding.Visibility.Permits(loopID, "generic") {
+		t.Errorf("empty roles: Permits(_, generic) = false, want true")
+	}
+	// Legacy role names remain explicit hidden-visibility fixtures.
 	for _, role := range []string{"planner", "builder", "reviewer"} {
-		if !binding.Visibility.Permits(loopID, role) {
-			t.Errorf("empty roles: Permits(_, %q) = false, want true", role)
+		if binding.Visibility.Permits(loopID, role) {
+			t.Errorf("empty roles: Permits(_, %q) = true, want false", role)
 		}
 	}
 }
 
-func TestMCPDefinitionsVisibilityHonorsExplicitPartialRoles(t *testing.T) {
+func TestMCPDefinitionsVisibilityHonorsExplicitGenericRole(t *testing.T) {
 	spec := mcpServerSpec{
 		name:    "sh",
 		kind:    "stdio",
 		command: "/bin/sh",
-		roles:   []string{"builder", "planner"},
+		roles:   []string{"generic"},
 	}
 
 	bindings, err := mcpDefinitions([]mcpServerSpec{spec})
@@ -122,13 +128,14 @@ func TestMCPDefinitionsVisibilityHonorsExplicitPartialRoles(t *testing.T) {
 	}
 	binding := bindings[0]
 	loopID := mcpTestLoopID(t)
-	for _, role := range []string{"planner", "builder"} {
-		if !binding.Visibility.Permits(loopID, role) {
-			t.Errorf("explicit roles: Permits(_, %q) = false, want true", role)
-		}
+	if !binding.Visibility.Permits(loopID, "generic") {
+		t.Errorf("explicit roles: Permits(_, generic) = false, want true")
 	}
-	if binding.Visibility.Permits(loopID, "reviewer") {
-		t.Errorf("explicit roles [planner,builder]: Permits(_, reviewer) = true, want false")
+	// Legacy role names remain explicit hidden-visibility fixtures.
+	for _, role := range []string{"planner", "builder", "reviewer"} {
+		if binding.Visibility.Permits(loopID, role) {
+			t.Errorf("explicit roles [generic]: Permits(_, %q) = true, want false", role)
+		}
 	}
 }
 
@@ -330,18 +337,6 @@ func TestMCPHeadersFromEmptyIsNil(t *testing.T) {
 	}
 }
 
-func TestMCPVisibilityRoles(t *testing.T) {
-	if got := mcpVisibilityRoles(nil); strings.Join(got, ",") != "planner,builder,reviewer" {
-		t.Errorf("mcpVisibilityRoles(nil) = %v, want all three", got)
-	}
-	if got := mcpVisibilityRoles([]string{}); strings.Join(got, ",") != "planner,builder,reviewer" {
-		t.Errorf("mcpVisibilityRoles([]) = %v, want all three", got)
-	}
-	if got := mcpVisibilityRoles([]string{"builder"}); strings.Join(got, ",") != "builder" {
-		t.Errorf("mcpVisibilityRoles([builder]) = %v, want [builder]", got)
-	}
-}
-
 func TestMCPDefinitionsEmptySpecsReturnsEmpty(t *testing.T) {
 	bindings, err := mcpDefinitions(nil)
 	if err != nil {
@@ -440,7 +435,7 @@ func TestMCPGateOpenerUnboundRefuses(t *testing.T) {
 }
 
 // TestMCPGateOpenerHeadlessNeverBoundBehavesAsUnbound documents the
-// connection between "unbound" and "headless" at this layer. swarm.go's
+// connection between "unbound" and "headless" at this layer. assembly.go's
 // mcpSessionAssembly.attach composes a headless session's Manager with a
 // fresh &mcpGateOpener{} and simply never calls Bind on it -- there is no
 // separate headless code path inside mcpGateOpener to exercise, because

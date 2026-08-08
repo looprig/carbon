@@ -155,7 +155,7 @@ func (*orderingAgent) RespondGate(context.Context, gate.ID, string, map[string]j
 var _ tui.Agent = (*orderingAgent)(nil)
 
 // TestRunPreservesPublicIdentity pins the process-facing name independently from the rig's
-// internal operator-primary topology key.
+// internal Generic identity.
 func TestRunPreservesPublicIdentity(t *testing.T) {
 	if bannerName != "CodeRig" {
 		t.Errorf("bannerName = %q, want %q", bannerName, "CodeRig")
@@ -199,8 +199,8 @@ func TestRunHasNoServeAdapter(t *testing.T) {
 
 // TestParseFlags covers the CodeRig CLI flag parser: --list, --resume <uuid>, --runtime-skills,
 // --data-dir, and the boundary validation (an invalid/empty resume id fails at the
-// boundary, not deep in the wiring; --list and --resume are mutually exclusive). The swarm has
-// no positional agent name (it is a single swarm), so an unexpected positional arg is rejected.
+// boundary, not deep in the wiring; --list and --resume are mutually exclusive). CodeRig has no
+// positional agent name (it is one fixed Generic session), so an unexpected positional arg is rejected.
 func TestParseFlags(t *testing.T) {
 	t.Parallel()
 

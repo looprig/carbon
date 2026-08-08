@@ -3,7 +3,6 @@ package app
 import (
 	"fmt"
 
-	"github.com/looprig/harness/pkg/identity"
 	"github.com/looprig/harness/pkg/loop"
 	"github.com/looprig/inference"
 	"github.com/looprig/inference/auth"
@@ -11,13 +10,6 @@ import (
 )
 
 type configuredClientFactory func(model.Model, auth.APIKey) (inference.Client, error)
-
-type configuredDelegateDefault struct {
-	Harness loop.AgentHarnessName
-	Source  loop.RuntimeSourceName
-	Model   loop.ModelAlias
-	Effort  model.Effort
-}
 
 type configuredClientCacheKey struct {
 	Target runtimeModelKey
@@ -47,12 +39,11 @@ type productionModels struct {
 	ACP              []ACPGatewaySource
 	NativeACP        map[string]ACPNativeProfile
 	ACPLaunchers     map[string]string // harness -> configured executable path
-	Defaults         map[identity.AgentName]configuredDelegateDefault
 	ClaudeSmall      loop.ModelAlias
 	ConfigRev        string
 	// PermissionReviewEnabled, PermissionReviewModel, and PermissionReviewStrict
 	// mirror Config's own PermissionReviewEnabled/PermissionReviewModel/
-	// PermissionReviewStrictPolicy fields so production.go's and swarm.go's
+	// PermissionReviewStrictPolicy fields so production and assembly's
 	// copy-over reads as an obvious 1:1 mapping. They are resolved from an
 	// optional models.json permission_review section; the zero values (false,
 	// the zero model.Model, false) mean the section was absent.
@@ -119,15 +110,6 @@ func compileProductionModels(config normalizedModelConfig, factory configuredCli
 		return productionModels{}, err
 	}
 
-	defaults := make(map[identity.AgentName]configuredDelegateDefault, len(config.DelegateDefaults))
-	for _, value := range config.DelegateDefaults {
-		defaults[identity.AgentName(value.Role)] = configuredDelegateDefault{
-			Harness: loop.AgentHarnessName(value.Harness),
-			Source:  value.Source,
-			Model:   loop.ModelAlias(value.Model),
-			Effort:  value.Effort,
-		}
-	}
 	var nativeACP map[string]ACPNativeProfile
 	if config.NativeACP != nil {
 		nativeACP = make(map[string]ACPNativeProfile, len(config.NativeACP))
@@ -172,7 +154,6 @@ func compileProductionModels(config normalizedModelConfig, factory configuredCli
 		ACP:                     delegateSources,
 		NativeACP:               nativeACP,
 		ACPLaunchers:            acpLaunchers,
-		Defaults:                defaults,
 		ClaudeSmall:             loop.ModelAlias(config.ClaudeCodeSmallModel),
 		ConfigRev:               configRev,
 		PermissionReviewEnabled: permissionReviewEnabled,
@@ -190,7 +171,7 @@ func configuredModelBindings(config normalizedModelConfig, clients map[string]in
 }
 
 func (p productionModels) String() string {
-	return fmt.Sprintf("production models primer_alias=%q delegates=%d defaults=%d config_rev=%q", p.PrimerAlias, len(p.ACP), len(p.Defaults), p.ConfigRev)
+	return fmt.Sprintf("production models primer_alias=%q delegates=%d config_rev=%q", p.PrimerAlias, len(p.ACP), p.ConfigRev)
 }
 
 func (p productionModels) GoString() string { return p.String() }

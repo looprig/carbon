@@ -28,7 +28,6 @@ type modelConfigFile struct {
 	Version              int                               `json:"version"`
 	PrimerDefault        string                            `json:"primer_default"`
 	ClaudeCodeSmallModel string                            `json:"claude_code_small_model"`
-	DelegateDefaults     map[string]delegateDefaultConfig  `json:"delegate_defaults"`
 	Models               []modelTargetConfig               `json:"models"`
 	NativeACP            map[string]nativeACPProfileConfig `json:"native_acp"`
 	PermissionReview     *permissionReviewConfig           `json:"permission_review,omitempty"`
@@ -40,46 +39,6 @@ type modelConfigFile struct {
 // credential: it never enters the model-configuration digest.
 type acpLauncherConfig struct {
 	Executable string `json:"executable"`
-}
-
-type delegateDefaultConfig struct {
-	Harness string `json:"harness"`
-	Source  string `json:"source"`
-	Model   string `json:"model"`
-	Effort  string `json:"effort"`
-}
-
-// UnmarshalJSON keeps the optional source field distinct from an explicit
-// null, which must not be treated as the gateway default.
-func (c *delegateDefaultConfig) UnmarshalJSON(data []byte) error {
-	var wire struct {
-		Harness string          `json:"harness"`
-		Source  json.RawMessage `json:"source"`
-		Model   string          `json:"model"`
-		Effort  string          `json:"effort"`
-	}
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&wire); err != nil {
-		return err
-	}
-
-	source := ""
-	if len(wire.Source) != 0 {
-		if bytes.Equal(bytes.TrimSpace(wire.Source), []byte("null")) {
-			return errors.New("delegate default source must be a string")
-		}
-		if err := json.Unmarshal(wire.Source, &source); err != nil {
-			return err
-		}
-	}
-	*c = delegateDefaultConfig{
-		Harness: wire.Harness,
-		Source:  source,
-		Model:   wire.Model,
-		Effort:  wire.Effort,
-	}
-	return nil
 }
 
 type nativeACPProfileConfig struct {

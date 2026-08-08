@@ -18,15 +18,15 @@ import (
 
 // testResourceStorageProvider is a throwaway rig.SessionResourceStorageProvider
 // backed by one t.TempDir() base, auto-cleaned by the testing package. It exists
-// because Task 27 gave the builder and reviewer rosters' Bash definition
+// because Generic's Bash definition
 // tool.RequiresProcessServices, so ANY test that assembles the real production
-// swarm (swarmDefinitions) and feeds it through buildRig/rig.Define now needs
+// session (genericTestDefinition) and feeds it through buildRig/rig.Define now needs
 // SOME session-resource-storage provider wired — exactly like production's
 // persistedResourceStorageProvider (persisted sessions) and
 // headlessResourceStorageProvider (headless sessions) already are. A test that
 // is unconcerned with process-service tools is unaffected by its presence: it
 // changes nothing for a topology that does not declare RequiresProcessServices,
-// matching swarmStores.resourceStorage's own doc comment.
+// matching sessionStores.resourceStorage's own doc comment.
 type testResourceStorageProvider struct{ base string }
 
 func (p testResourceStorageProvider) StorageForSession(_ context.Context, id uuid.UUID) (rig.SessionResourceStorage, error) {
@@ -42,7 +42,7 @@ var _ rig.SessionResourceStorageProvider = testResourceStorageProvider{}
 // so package tests that build the real production roster can assemble a rig
 // without hand-wiring persisted/headless resource storage themselves. See
 // testResourceStorageProvider's doc comment for why this became necessary.
-func openTestStores(t *testing.T) (*swarmStores, error) {
+func openTestStores(t *testing.T) (*sessionStores, error) {
 	t.Helper()
 	stores, err := openStores(memstore.New())
 	if err != nil {
@@ -239,15 +239,15 @@ func newTestAgent(t *testing.T, client inference.Client, cfg Config) *sessionAda
 	t.Helper()
 	root := t.TempDir()
 	access, cfg := headlessTestAccess(t, cfg, root)
-	definitions, err := swarmDefinitions(client, testModel(), cfg, access)
+	definition, err := genericTestDefinition(client, testModel(), cfg, access)
 	if err != nil {
-		t.Fatalf("swarmDefinitions() error = %v", err)
+		t.Fatalf("genericTestDefinition() error = %v", err)
 	}
 	stores, err := openTestStores(t)
 	if err != nil {
 		t.Fatalf("openTestStores() error = %v", err)
 	}
-	assembly, err := buildRig(definitions, stores, root, cfg, false)
+	assembly, err := buildRig(definition, stores, root, cfg, false)
 	if err != nil {
 		t.Fatalf("buildRig() error = %v", err)
 	}

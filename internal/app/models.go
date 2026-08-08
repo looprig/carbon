@@ -42,7 +42,7 @@ func mustValidModel(m model.Model) model.Model {
 }
 
 // chutesKimiK26 is the Moonshot Kimi K2.6 model served through Chutes' TEE-attested,
-// OpenAI-compatible tunnel — the swarm's default model (see model.go). It is the newest
+// OpenAI-compatible tunnel — CodeRig's default model (see model.go). It is the newest
 // Kimi Chutes serves (confirmed against llm.chutes.ai /v1/models); the id carries the
 // -TEE suffix every Chutes confidential chute uses. Chutes resolves the model name to a
 // chute at request time, so Name is the value sent on every request; the base is the

@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/looprig/harness/pkg/identity"
 	"github.com/looprig/harness/pkg/loop"
 	model "github.com/looprig/inference/model"
 )
@@ -36,8 +35,7 @@ const acpConcurrentPreflightBudget = 90 * time.Millisecond
 // on how many aliases a broader fixture happens to configure.
 func testACPMinimalGatewayCatalog(t *testing.T) ACPCompiledCatalog {
 	t.Helper()
-	compiled, err := CompileACPCatalog(ACPCatalogInput{
-		AgentTypes: []identity.AgentName{"worker"},
+	compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
 		GatewayTargets: []ACPGatewaySource{{
 			Alias:  "shared-model",
 			Client: &fakeLLM{},
@@ -48,9 +46,6 @@ func testACPMinimalGatewayCatalog(t *testing.T) ACPCompiledCatalog {
 			DefaultEffort: model.EffortMedium,
 			Efforts:       []model.Effort{model.EffortMedium},
 		}},
-		Defaults: map[identity.AgentName]configuredDelegateDefault{
-			"worker": {Harness: "claude-code", Model: "shared-model", Effort: model.EffortMedium},
-		},
 		ClaudeSmall: "shared-model",
 	})
 	if err != nil {
@@ -129,8 +124,7 @@ func TestNewACPCompositionPreflightsHarnessesConcurrently(t *testing.T) {
 // strictly sequentially.
 func TestPreflightACPProfileRunsGatewayAndNativeManagedConcurrently(t *testing.T) {
 	t.Parallel()
-	compiled, err := CompileACPCatalog(ACPCatalogInput{
-		AgentTypes: []identity.AgentName{"worker"},
+	compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
 		GatewayTargets: []ACPGatewaySource{{
 			Alias:  "shared-model",
 			Client: &fakeLLM{},
@@ -141,9 +135,6 @@ func TestPreflightACPProfileRunsGatewayAndNativeManagedConcurrently(t *testing.T
 			DefaultEffort: model.EffortMedium,
 			Efforts:       []model.Effort{model.EffortMedium},
 		}},
-		Defaults: map[identity.AgentName]configuredDelegateDefault{
-			"worker": {Harness: "claude-code", Model: "shared-model", Effort: model.EffortMedium},
-		},
 		ClaudeSmall: "shared-model",
 		NativeACP:   map[string]ACPNativeProfile{"claude-code": {Enabled: true}},
 	})

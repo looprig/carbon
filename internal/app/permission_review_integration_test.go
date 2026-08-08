@@ -72,9 +72,9 @@ import (
 // "the strict policy rejects a medium-risk assessment" is a pure policy
 // question, not a review-context question).
 
-// ---- fixtures: fake operator inference client (drives a real Bash call) --
+// ---- fixtures: fake Generic inference client (drives a real Bash call) --
 
-// bashScript is a deterministic fake inference.Client driving ONE operator
+// bashScript is a deterministic fake inference.Client driving ONE Generic
 // turn that calls Bash exactly once with command, then answers with a final
 // text message once it observes the tool's own result text containing
 // marker. It never branches on delegation (these scenarios never delegate),
@@ -211,7 +211,7 @@ func newScriptedClassifierClient() *scriptedClassifierClient {
 // isolated in-memory store + throwaway workspace, exactly newTestAgent's
 // isolation contract) over the production assembly path
 // (buildRigForDelegationCaps), with permissionReview installed exactly as
-// production's openSessionWithDefinitions does. interactive selects a real,
+// production's openSessionWithDefinition does. interactive selects a real,
 // writable, HOME-derived permission store and gate.NewInteractiveEvaluator
 // (headless's evaluator never opens an awaitable gate — a Gated capability
 // is denied outright, never left open for a human) — every scenario that
@@ -225,17 +225,17 @@ func permissionReviewIntegrationAgent(t *testing.T, cfg Config, client inference
 }
 
 // permissionReviewIntegrationAgentWithClassifier is permissionReviewIntegrationAgent
-// generalized to accept a SEPARATE classifier inference client from the
-// operator's own inference client. permissionReviewIntegrationAgent (above)
-// reuses the SAME client for both roles — fine for every scenario that never
+// generalized to accept a SEPARATE classifier inference client from Generic's
+// own inference client. permissionReviewIntegrationAgent (above) reuses the
+// SAME client for both paths — fine for every scenario that never
 // drives the classifier to a genuine terminal outcome (its Hustle either
 // never runs at all under the old construction-only scope, or errors out
 // harmlessly and leaves the gate for a human) — but a LIVE scenario that
 // asserts a real classifier verdict needs the classifier's OWN scripted
 // wire-contract client (scriptedClassifierClient or a purpose-built
-// variant), distinct from the operator's Bash-driving script, since the two
+// variant), distinct from the Generic Bash-driving script, since the two
 // see structurally different request/response shapes.
-func permissionReviewIntegrationAgentWithClassifier(t *testing.T, cfg Config, operatorClient, classifierClient inference.Client, interactive bool) *RuntimeAgent {
+func permissionReviewIntegrationAgentWithClassifier(t *testing.T, cfg Config, agentClient, classifierClient inference.Client, interactive bool) *RuntimeAgent {
 	t.Helper()
 	root := t.TempDir()
 	access, err := buildSessionAccess(cfg, root, interactive)
@@ -245,9 +245,9 @@ func permissionReviewIntegrationAgentWithClassifier(t *testing.T, cfg Config, op
 	t.Cleanup(func() { _ = access.Close() })
 	cfg.AccessConfigRev = access.configRev
 
-	definitions, err := swarmDefinitions(operatorClient, testModel(), cfg, access)
+	definition, err := genericTestDefinition(agentClient, testModel(), cfg, access)
 	if err != nil {
-		t.Fatalf("swarmDefinitions() error = %v", err)
+		t.Fatalf("genericTestDefinition() error = %v", err)
 	}
 	permissionReview, err := newPermissionReviewRegistration(cfg, classifierClient)
 	if err != nil {
@@ -258,8 +258,8 @@ func permissionReviewIntegrationAgentWithClassifier(t *testing.T, cfg Config, op
 		t.Fatalf("openTestStores() error = %v", err)
 	}
 	assembly, err := buildRigForDelegationCaps(
-		definitions, stores, root, cfg, false,
-		rig.DelegationLimits{Depth: operatorSpawnDepth, Quota: operatorSpawnQuota}, permissionReview,
+		definition, stores, root, cfg, false,
+		rig.DelegationLimits{Depth: delegationSpawnDepth, Quota: delegationSpawnQuota}, permissionReview,
 	)
 	if err != nil {
 		t.Fatalf("buildRigForDelegationCaps() error = %v", err)
@@ -406,7 +406,7 @@ func mustTurnDone(t *testing.T, terminal event.Event) {
 }
 
 // mustExecutedExactlyOnce proves the Bash command genuinely, successfully
-// executed exactly once: exactly 2 operator inference round trips (the
+// executed exactly once: exactly 2 Generic inference round trips (the
 // initial Bash tool_use call, then the one post-execution follow-up), AND
 // the tool result CodeRig's real confined executor returned actually
 // contains the command's own unique marker text — not merely that some
@@ -422,7 +422,7 @@ func mustExecutedExactlyOnce(t *testing.T, client *bashScript) {
 	marker := client.marker
 	client.mu.Unlock()
 	if calls != 2 {
-		t.Fatalf("operator inference calls = %d, want exactly 2 (one Bash call, one post-execution follow-up)", calls)
+		t.Fatalf("Generic inference calls = %d, want exactly 2 (one Bash call, one post-execution follow-up)", calls)
 	}
 	if !strings.Contains(observed, marker) {
 		t.Fatalf("observed tool result text = %q, want it to contain the real command's own marker %q (a denial or error would still produce 2 calls, but not this text)", observed, marker)
@@ -529,10 +529,10 @@ func TestPermissionReviewSafeCommandExecutesExactlyOnceOnApproval(t *testing.T) 
 func TestPermissionReviewSafeCommandAutoApprovedEndToEnd(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	const marker = "auto-approved-marker-7f3c1a"
-	operatorClient := &bashScript{command: "echo " + marker, marker: marker}
+	agentClient := &bashScript{command: "echo " + marker, marker: marker}
 	classifierClient := newScriptedClassifierClient()
 	cfg := readOnlyReviewConfig(true, false)
-	agent := permissionReviewIntegrationAgentWithClassifier(t, cfg, operatorClient, classifierClient, true)
+	agent := permissionReviewIntegrationAgentWithClassifier(t, cfg, agentClient, classifierClient, true)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -552,22 +552,22 @@ func TestPermissionReviewSafeCommandAutoApprovedEndToEnd(t *testing.T) {
 			t.Fatalf("gate did not auto-resolve through the classifier: %v", err)
 		}
 		mustTurnDone(t, drainToTurnTerminal(t, ctx, sub))
-		mustExecutedExactlyOnce(t, operatorClient)
+		mustExecutedExactlyOnce(t, agentClient)
 	}
 
 	runAutoApprovedTurn(t, "run the safe command")
 
 	// Bug #1 regression check: a session that faulted while durably
 	// publishing the first review's audit trail would never reach a second,
-	// ordinary auto-approved turn. Reset the operator script's observation
+	// ordinary auto-approved turn. Reset the Generic script's observation
 	// state (mustExecutedExactlyOnce compares against THIS turn's own call
 	// count/observed text, mirroring TestPermissionReviewApprovalNeverPersistsAutoAlwaysRule's
 	// reset-between-submits pattern) and drive a second turn on the SAME
 	// session to prove it.
-	operatorClient.mu.Lock()
-	operatorClient.calls = 0
-	operatorClient.observedToolText = ""
-	operatorClient.mu.Unlock()
+	agentClient.mu.Lock()
+	agentClient.calls = 0
+	agentClient.observedToolText = ""
+	agentClient.mu.Unlock()
 	runAutoApprovedTurn(t, "run the safe command again")
 }
 
@@ -582,7 +582,7 @@ func TestPermissionReviewSafeCommandAutoApprovedEndToEnd(t *testing.T) {
 // exact call that failed closed unconditionally before the Phase 6 Finding 2
 // SecurityCeiling fix); round 2 observes the tool's REAL result text
 // (captured via lastToolText, the same helper managed_delegation_test.go's
-// bashScript-driven scenarios use for the operator's own tool results) and
+// bashScript-driven scenarios use for Generic's own tool results) and
 // echoes the classifier's basis back into a low-risk allow verdict, reusing
 // echoingClassifierAllowResponse unchanged.
 type evidenceLookupClassifierClient struct {
@@ -665,10 +665,10 @@ func TestPermissionReviewEvidenceLookupLiveClassifierCallSucceeds(t *testing.T) 
 	const relPath = "config/legacy.yaml"
 	const fileBody = "old: true"
 
-	operatorClient := &bashScript{command: "echo evidence-lookup-exec-marker", marker: "evidence-lookup-exec-marker"}
+	agentClient := &bashScript{command: "echo evidence-lookup-exec-marker", marker: "evidence-lookup-exec-marker"}
 	classifierClient := &evidenceLookupClassifierClient{statPath: relPath}
 	cfg := readOnlyReviewConfig(true, false)
-	agent := permissionReviewIntegrationAgentWithClassifier(t, cfg, operatorClient, classifierClient, true)
+	agent := permissionReviewIntegrationAgentWithClassifier(t, cfg, agentClient, classifierClient, true)
 	writeEvidenceFile(t, agent.root, relPath, fileBody)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -687,7 +687,7 @@ func TestPermissionReviewEvidenceLookupLiveClassifierCallSucceeds(t *testing.T) 
 		t.Fatalf("gate did not auto-resolve through the classifier: %v", err)
 	}
 	mustTurnDone(t, drainToTurnTerminal(t, ctx, sub))
-	mustExecutedExactlyOnce(t, operatorClient)
+	mustExecutedExactlyOnce(t, agentClient)
 
 	classifierClient.mu.Lock()
 	calls := classifierClient.calls
@@ -836,10 +836,10 @@ func TestPermissionReviewObservationSymlinkSwapBlocksAutoApprovalEndToEnd(t *tes
 	const relPath = "config/legacy.yaml"
 	const fileBody = "old: true"
 
-	operatorClient := &bashScript{command: "echo toctou-swap-marker", marker: "toctou-swap-marker"}
+	agentClient := &bashScript{command: "echo toctou-swap-marker", marker: "toctou-swap-marker"}
 	classifierClient := &symlinkSwapClassifierClient{statPath: relPath}
 	cfg := readOnlyReviewConfig(true, false)
-	agent := permissionReviewIntegrationAgentWithClassifier(t, cfg, operatorClient, classifierClient, true)
+	agent := permissionReviewIntegrationAgentWithClassifier(t, cfg, agentClient, classifierClient, true)
 	classifierClient.root = agent.root
 	writeEvidenceFile(t, agent.root, relPath, fileBody)
 
@@ -883,7 +883,7 @@ func TestPermissionReviewObservationSymlinkSwapBlocksAutoApprovalEndToEnd(t *tes
 		t.Fatalf("RespondGate() after the blocked classifier auto-approval error = %v, want a normal human resolution", err)
 	}
 	mustTurnDone(t, drainToTurnTerminal(t, ctx, sub))
-	mustExecutedExactlyOnce(t, operatorClient)
+	mustExecutedExactlyOnce(t, agentClient)
 }
 
 // permissionReviewSubjectFixtureForCommand is permissionReviewSubjectFixture
@@ -1401,7 +1401,7 @@ func TestPermissionReviewApprovalNeverPersistsAutoAlwaysRule(t *testing.T) {
 // response reaches the EXACT SAME dispatchGateCommand -> loop ->
 // gate.Evaluator.Resolve execution path a human approval does. That test
 // establishes the two paths converge; this test proves CodeRig's OWN
-// composition (real toolsets.go roleGate, real sandbox.ExecutorSet, real `sh
+// composition (real toolsets.go accessGate, real sandbox.ExecutorSet, real `sh
 // -c` execution) reaches that shared path with no CodeRig-side shortcut or
 // bypass: the tool only runs because a real grant was minted through the
 // real gate.Evaluator, evidenced by the command's REAL stdout coming back on
@@ -1453,13 +1453,13 @@ func TestPermissionReviewDisabledConfigMatchesPreFeatureBuildRig(t *testing.T) {
 	}
 	root := t.TempDir()
 	access, cfg := headlessTestAccess(t, Config{}, root)
-	definitions, err := swarmDefinitions(&fakeLLM{}, testModel(), cfg, access)
+	definition, err := genericTestDefinition(&fakeLLM{}, testModel(), cfg, access)
 	if err != nil {
-		t.Fatalf("swarmDefinitions() error = %v", err)
+		t.Fatalf("genericTestDefinition() error = %v", err)
 	}
 
 	// Open with the OLD path (buildRig — every pre-Task-23 CodeRig call site).
-	oldAssembly, err := buildRig(definitions, stores, root, cfg, false)
+	oldAssembly, err := buildRig(definition, stores, root, cfg, false)
 	if err != nil {
 		t.Fatalf("buildRig() error = %v", err)
 	}
@@ -1485,13 +1485,13 @@ func TestPermissionReviewDisabledConfigMatchesPreFeatureBuildRig(t *testing.T) {
 	if options := disabled.options(); len(options) != 0 {
 		t.Fatalf("disabled.options() = %d options, want 0", len(options))
 	}
-	definitions2, err := swarmDefinitions(&fakeLLM{}, testModel(), cfg, access)
+	definition2, err := genericTestDefinition(&fakeLLM{}, testModel(), cfg, access)
 	if err != nil {
-		t.Fatalf("swarmDefinitions() error = %v", err)
+		t.Fatalf("genericTestDefinition() error = %v", err)
 	}
 	newAssembly, err := buildRigForDelegationCaps(
-		definitions2, stores, root, cfg, false,
-		rig.DelegationLimits{Depth: operatorSpawnDepth, Quota: operatorSpawnQuota}, disabled,
+		definition2, stores, root, cfg, false,
+		rig.DelegationLimits{Depth: delegationSpawnDepth, Quota: delegationSpawnQuota}, disabled,
 	)
 	if err != nil {
 		t.Fatalf("buildRigForDelegationCaps() error = %v", err)

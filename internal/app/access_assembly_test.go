@@ -6,51 +6,55 @@ import (
 	"testing"
 )
 
-// TestSessionAccessPerRoleExecutorSeparation proves the session access wiring gives each role
-// its OWN executor set and each Loop ID its OWN executor within a set. Builder uses the selected
-// writable profile; planner and reviewer each use separate read-only sets. A repeated Loop ID
-// is memoized to the same executor.
-func TestSessionAccessPerRoleExecutorSeparation(t *testing.T) {
-	access, _ := headlessTestAccess(t, Config{}, t.TempDir())
-
-	if access.plannerSet == access.builderSet || access.builderSet == access.reviewerSet || access.plannerSet == access.reviewerSet {
-		t.Fatal("roles share an executor set, want separate sets per role authority")
-	}
-
-	planner, err := access.plannerSet.For("planner-loop")
+// TestSessionAccessUsesOneGenericExecutorSet proves one session has one access
+// authority. Executor identities remain loop-scoped within that set, while
+// repeated lookups for one Generic loop are memoized.
+func TestSessionAccessUsesOneGenericExecutorSet(t *testing.T) {
+	access, err := buildHeadlessAccess(Config{}, t.TempDir())
 	if err != nil {
-		t.Fatalf("plannerSet.For: %v", err)
+		t.Fatalf("buildHeadlessAccess: %v", err)
 	}
-	builder, err := access.builderSet.For("builder-loop")
-	if err != nil {
-		t.Fatalf("builderSet.For: %v", err)
+	t.Cleanup(func() { _ = access.Close() })
+
+	if access.set == nil {
+		t.Fatal("session access set is nil")
 	}
-	if planner == builder {
-		t.Fatal("planner and builder resolved the SAME executor")
+	if access.gate == nil {
+		t.Fatal("session access gate is nil")
 	}
-	if again, _ := access.plannerSet.For("planner-loop"); again != planner {
-		t.Fatal("repeated planner Loop ID did not memoize to the same executor")
+	if access.policyRev == "" {
+		t.Fatal("session access policy revision is empty")
 	}
 
-	reviewer, err := access.reviewerSet.For("reviewer-loop")
+	first, err := access.set.For("generic-loop")
 	if err != nil {
-		t.Fatalf("reviewerSet.For: %v", err)
+		t.Fatalf("set.For(generic-loop): %v", err)
 	}
-	if reviewer == builder {
-		t.Fatal("reviewer executor equals builder executor; the restricted role must use a separate set")
+	second, err := access.set.For("generic-loop")
+	if err != nil {
+		t.Fatalf("set.For(generic-loop) repeat: %v", err)
+	}
+	if second != first {
+		t.Fatal("repeated Generic loop ID did not memoize to the same executor")
+	}
+	other, err := access.set.For("generic-child-loop")
+	if err != nil {
+		t.Fatalf("set.For(generic-child-loop): %v", err)
+	}
+	if other == first {
+		t.Fatal("different Generic loop IDs resolved to the same executor")
 	}
 }
 
-// TestSessionAccessCloseIsIdempotent proves the runtime agent can close the session's executor
-// sets exactly once: a second Close is a no-op returning the same result, and materialized
-// executors are released.
+// TestSessionAccessCloseIsIdempotent proves the one executor set is released
+// exactly once and repeated shutdown remains harmless.
 func TestSessionAccessCloseIsIdempotent(t *testing.T) {
 	access, err := buildHeadlessAccess(Config{}, t.TempDir())
 	if err != nil {
 		t.Fatalf("buildHeadlessAccess: %v", err)
 	}
-	if _, err := access.builderSet.For("live-loop"); err != nil {
-		t.Fatalf("For: %v", err)
+	if _, err := access.set.For("live-loop"); err != nil {
+		t.Fatalf("set.For: %v", err)
 	}
 	if err := access.Close(); err != nil {
 		t.Fatalf("first Close: %v", err)
@@ -60,10 +64,8 @@ func TestSessionAccessCloseIsIdempotent(t *testing.T) {
 	}
 }
 
-// TestRestoreRejectsAccessProfileDrift proves the fixed-profile rule at the durable boundary:
-// a session opened under one selected profile cannot be restored under a different one, because
-// the changed profile changes the access-config digest folded into the rig fingerprint. The
-// same profile restores cleanly (new/restore parity over one assembly path).
+// TestRestoreRejectsAccessProfileDrift proves the fixed-profile rule at the
+// durable boundary. A profile change changes the single access digest.
 func TestRestoreRejectsAccessProfileDrift(t *testing.T) {
 	stores, err := openTestStores(t)
 	if err != nil {
@@ -71,13 +73,12 @@ func TestRestoreRejectsAccessProfileDrift(t *testing.T) {
 	}
 	root := t.TempDir()
 
-	// Open a new session under the ReadOnly profile and shut it down.
 	access, cfg := headlessTestAccess(t, Config{AccessProfile: AccessReadOnly}, root)
-	definitions, err := swarmDefinitions(&fakeLLM{}, testModel(), cfg, access)
+	definition, err := genericTestDefinition(&fakeLLM{}, testModel(), cfg, access)
 	if err != nil {
-		t.Fatalf("swarmDefinitions: %v", err)
+		t.Fatalf("genericTestDefinition: %v", err)
 	}
-	assembly, err := buildRig(definitions, stores, root, cfg, false)
+	assembly, err := buildRig(definition, stores, root, cfg, false)
 	if err != nil {
 		t.Fatalf("buildRig: %v", err)
 	}
@@ -93,11 +94,11 @@ func TestRestoreRejectsAccessProfileDrift(t *testing.T) {
 	restore := func(t *testing.T, profile AccessProfile) error {
 		t.Helper()
 		racc, rcfg := headlessTestAccess(t, Config{AccessProfile: profile}, root)
-		rdefs, err := swarmDefinitions(&fakeLLM{}, testModel(), rcfg, racc)
+		rdef, err := genericTestDefinition(&fakeLLM{}, testModel(), rcfg, racc)
 		if err != nil {
-			t.Fatalf("swarmDefinitions: %v", err)
+			t.Fatalf("genericTestDefinition: %v", err)
 		}
-		rasm, err := buildRig(rdefs, stores, root, rcfg, false)
+		rasm, err := buildRig(rdef, stores, root, rcfg, false)
 		if err != nil {
 			t.Fatalf("buildRig: %v", err)
 		}
@@ -109,17 +110,15 @@ func TestRestoreRejectsAccessProfileDrift(t *testing.T) {
 	}
 
 	if err := restore(t, AccessTrusted); err == nil {
-		t.Fatal("restore under a DIFFERENT access profile succeeded, want a configuration mismatch rejection")
+		t.Fatal("restore under a different access profile succeeded")
 	}
 	if err := restore(t, AccessReadOnly); err != nil {
-		t.Fatalf("restore under the SAME access profile failed: %v", err)
+		t.Fatalf("restore under the same access profile failed: %v", err)
 	}
 }
 
-// TestSessionPresenterProjectsDiagnostics proves the runtime agent's SessionPresenter reports
-// the session's fixed profile, workspace root, and the permission-load diagnostics captured in
-// the access wiring (the manual out-of-catalog family notices the TUI shows before the first
-// gate).
+// TestSessionPresenterProjectsDiagnostics proves the runtime agent's session
+// presentation still exposes the fixed profile and permission diagnostics.
 func TestSessionPresenterProjectsDiagnostics(t *testing.T) {
 	access := &sessionAccess{
 		profileName: string(AccessTrusted),
@@ -140,9 +139,8 @@ func TestSessionPresenterProjectsDiagnostics(t *testing.T) {
 	}
 }
 
-// TestSessionAccessDigestOmitsProxyCredentials proves an organization proxy's upstream
-// credentials never reach the durable access-config digest: only the route's redacted
-// fingerprint and guarantee bits contribute.
+// TestSessionAccessDigestOmitsProxyCredentials proves upstream proxy
+// credentials never enter the durable access-config digest.
 func TestSessionAccessDigestOmitsProxyCredentials(t *testing.T) {
 	t.Setenv("HTTPS_PROXY", "http://alice:sup3rsecret@proxy.example:8080")
 	t.Setenv("NO_PROXY", "")

@@ -161,14 +161,14 @@ func TestPermissionReviewExplicitEnable(t *testing.T) {
 
 	root := t.TempDir()
 	access, sessionCfg := headlessTestAccess(t, cfg, root)
-	definitions, err := swarmDefinitions(&fakeLLM{}, testModel(), sessionCfg, access)
+	definition, err := genericTestDefinition(&fakeLLM{}, testModel(), sessionCfg, access)
 	if err != nil {
-		t.Fatalf("swarmDefinitions() error = %v", err)
+		t.Fatalf("genericTestDefinition() error = %v", err)
 	}
 	stores := mustHeadlessTestStores(t)
 	if _, err := buildRigForDelegationCaps(
-		definitions, stores, root, sessionCfg, false,
-		rig.DelegationLimits{Depth: operatorSpawnDepth, Quota: operatorSpawnQuota}, registration,
+		definition, stores, root, sessionCfg, false,
+		rig.DelegationLimits{Depth: delegationSpawnDepth, Quota: delegationSpawnQuota}, registration,
 	); err != nil {
 		t.Fatalf("buildRigForDelegationCaps() error = %v", err)
 	}
@@ -208,14 +208,14 @@ func TestPermissionReviewSecurityCeilingOptionInstalled(t *testing.T) {
 		PermissionReviewModel:   permissionReviewTestModel(),
 		AccessProfile:           AccessTrusted,
 	}, root)
-	definitions, err := swarmDefinitions(&fakeLLM{}, testModel(), sessionCfg, access)
+	definition, err := genericTestDefinition(&fakeLLM{}, testModel(), sessionCfg, access)
 	if err != nil {
-		t.Fatalf("swarmDefinitions() error = %v", err)
+		t.Fatalf("genericTestDefinition() error = %v", err)
 	}
 	stores := mustHeadlessTestStores(t)
 	if _, err := buildRigForDelegationCaps(
-		definitions, stores, root, sessionCfg, false,
-		rig.DelegationLimits{Depth: operatorSpawnDepth, Quota: operatorSpawnQuota}, registration,
+		definition, stores, root, sessionCfg, false,
+		rig.DelegationLimits{Depth: delegationSpawnDepth, Quota: delegationSpawnQuota}, registration,
 	); err != nil {
 		t.Fatalf("buildRigForDelegationCaps() error = %v, want success now that WithPermissionReviewSecurityCeiling is wired", err)
 	}
@@ -335,7 +335,7 @@ func TestPermissionReviewTrustedProfileGate(t *testing.T) {
 // TestPermissionReviewNamedModelRequired proves requirement 3: enabling
 // permission review without a named PermissionReviewModel fails closed with a
 // typed *PermissionReviewConfigError, rather than silently reusing an
-// operator Loop's model.
+// Generic Loop's model.
 func TestPermissionReviewNamedModelRequired(t *testing.T) {
 	t.Parallel()
 
@@ -479,8 +479,8 @@ func TestPermissionReviewRigOptionDoubleRegistrationRejected(t *testing.T) {
 // TestPermissionReviewDoesNotWidenAccessCeiling proves requirement 6: for
 // every named access profile, enabling permission review (any model, either
 // policy) leaves the durable access-config digest — which folds the
-// selected profile and the complete normalized planner/builder/reviewer sandbox
-// profiles (accessConfigDigest, access.go) — byte-for-byte IDENTICAL to the
+// selected profile and the complete normalized Generic sandbox profile
+// (accessConfigDigest, access.go) — byte-for-byte IDENTICAL to the
 // same profile with permission review disabled. CodeRig exposes no
 // independent "security ceiling" knob for the classifier: whatever ceiling a
 // request's own access-gate binding already grants under the selected
@@ -513,7 +513,7 @@ func TestPermissionReviewDoesNotWidenAccessCeiling(t *testing.T) {
 
 // TestPermissionReviewHeadlessComposesSafely proves requirement 7: enabling
 // permission review in a headless (unattended) session changes nothing about
-// headless mode's existing fail-closed gate wiring — all role gates stay
+// headless mode's existing fail-closed gate wiring — all access gates stay
 // non-interactive with no rule writer (gate.NewHeadlessEvaluator, exactly as
 // buildHeadlessAccess already selects for every headless session) — and the
 // resulting composition still passes rig.Define, so permission review composes
@@ -527,22 +527,14 @@ func TestPermissionReviewHeadlessComposesSafely(t *testing.T) {
 	cfg := Config{PermissionReviewEnabled: true, PermissionReviewModel: permissionReviewTestModel(), AccessProfile: AccessTrusted}
 	access, sessionCfg := headlessTestAccess(t, cfg, root)
 
-	plannerGate, ok := access.plannerGate.(*roleGate)
-	if !ok || plannerGate.interactive || plannerGate.writer != nil {
-		t.Fatalf("planner gate = %+v, want a non-interactive headless gate with no rule writer", access.plannerGate)
-	}
-	builderGate, ok := access.builderGate.(*roleGate)
-	if !ok || builderGate.interactive || builderGate.writer != nil {
-		t.Fatalf("builder gate = %+v, want a non-interactive headless gate with no rule writer", access.builderGate)
-	}
-	reviewerGate, ok := access.reviewerGate.(*roleGate)
-	if !ok || reviewerGate.interactive || reviewerGate.writer != nil {
-		t.Fatalf("reviewer gate = %+v, want a non-interactive headless gate with no rule writer", access.reviewerGate)
+	gateImpl, ok := access.gate.(*accessGate)
+	if !ok || gateImpl.interactive || gateImpl.writer != nil {
+		t.Fatalf("Generic gate = %+v, want a non-interactive headless gate with no rule writer", access.gate)
 	}
 
-	definitions, err := swarmDefinitions(&fakeLLM{}, testModel(), sessionCfg, access)
+	definition, err := genericTestDefinition(&fakeLLM{}, testModel(), sessionCfg, access)
 	if err != nil {
-		t.Fatalf("swarmDefinitions() error = %v", err)
+		t.Fatalf("genericTestDefinition() error = %v", err)
 	}
 	permissionReview, err := newPermissionReviewRegistration(sessionCfg, &fakeLLM{})
 	if err != nil {
@@ -553,8 +545,8 @@ func TestPermissionReviewHeadlessComposesSafely(t *testing.T) {
 	// session (assembly.NewSession) is blocked by the same known, out-of-scope
 	// evidence-collaborator gap documented there.
 	if _, err := buildRigForDelegationCaps(
-		definitions, stores, root, sessionCfg, false,
-		rig.DelegationLimits{Depth: operatorSpawnDepth, Quota: operatorSpawnQuota}, permissionReview,
+		definition, stores, root, sessionCfg, false,
+		rig.DelegationLimits{Depth: delegationSpawnDepth, Quota: delegationSpawnQuota}, permissionReview,
 	); err != nil {
 		t.Fatalf("buildRigForDelegationCaps() error = %v", err)
 	}
@@ -679,7 +671,7 @@ func TestPermissionReviewModelsJSONSilentlyDisabledOutsideTrustedProfileThroughF
 // set cfg.PermissionReviewEnabled/PermissionReviewModel before Open/
 // newWithProductionModelsLoader runs, a models.json permission_review section
 // naming a DIFFERENT model must never override it. It exercises BOTH Layer 3
-// call sites — persistence.go's SessionStoreFactory.Open and swarm.go's
+// call sites — persistence.go's SessionStoreFactory.Open and assembly.go's
 // newWithProductionModelsLoader — since the task requires both to compose
 // identically. Each subtest pairs the real assertion with a negative control
 // (nothing programmatic set) proving the harness genuinely distinguishes
@@ -707,12 +699,12 @@ func TestPermissionReviewProgrammaticModelWinsOverModelsJSONThroughFullCompositi
 		}
 	})
 
-	t.Run("swarm.go path (newWithProductionModelsLoader)", func(t *testing.T) {
+	t.Run("assembly.go path (newWithProductionModelsLoader)", func(t *testing.T) {
 		programmaticCfg := Config{
 			AccessProfile:           AccessTrusted,
 			PermissionReviewEnabled: true, PermissionReviewModel: permissionReviewTestModel(),
 		}
-		agent, err := newWithProductionModelsLoader(ctx, programmaticCfg, fileHasBadModel, func() (*swarmStores, error) {
+		agent, err := newWithProductionModelsLoader(ctx, programmaticCfg, fileHasBadModel, func() (*sessionStores, error) {
 			return openTestStores(t)
 		})
 		if err != nil {
@@ -721,7 +713,7 @@ func TestPermissionReviewProgrammaticModelWinsOverModelsJSONThroughFullCompositi
 		_ = agent.Close(ctx)
 
 		nothingProgrammaticCfg := Config{AccessProfile: AccessTrusted}
-		if _, err := newWithProductionModelsLoader(ctx, nothingProgrammaticCfg, fileHasBadModel, func() (*swarmStores, error) {
+		if _, err := newWithProductionModelsLoader(ctx, nothingProgrammaticCfg, fileHasBadModel, func() (*sessionStores, error) {
 			return openTestStores(t)
 		}); err == nil {
 			t.Fatal("negative control: newWithProductionModelsLoader() error = nil, want failure (the file's classifier-incapable model should have been adopted and rejected by commandsafety.New)")
@@ -746,8 +738,8 @@ func TestPermissionReviewProgrammaticModelWinsOverModelsJSONThroughFullCompositi
 // event.DefaultPolicyDecider). Harness's pkg/event/drift.go now carries a
 // dedicated ConfigManifest.PermissionReviewConfigured signal, compared
 // DIRECTIONALLY: disabled -> enabled is event.DriftWarn ("design §21: never
-// silently resumes with a different reviewer" — exactly the bug this fix
-// closes), enabled -> disabled stays event.DriftInfo (strictly narrower, more
+// silently resumes with a different permission-review configuration" — exactly
+// the bug this fix closes), enabled -> disabled stays event.DriftInfo (strictly narrower, more
 // human control). event.DefaultPolicyDecider (pkg/session/decider.go, the
 // Harness default CodeRig never overrides with a custom RestoreDecider)
 // rejects on ANY Warn change, so RestoreSession now returns a typed
@@ -759,7 +751,7 @@ func TestPermissionReviewProgrammaticModelWinsOverModelsJSONThroughFullCompositi
 // already establishes CodeRig's existing convention for every other kind of
 // rejected restore drift (access-profile change) — surface the plain
 // rejection error to the caller and require the SAME explicit,
-// caller-supplied SessionSelector.AllowConfigMismatch an operator would use
+// caller-supplied SessionSelector.AllowConfigMismatch a caller would use
 // for any other deliberate config change, rather than inventing a
 // permission-review-specific auto-accept path. This test proves both halves:
 // the default (no override) rejects, and the existing override still works
@@ -774,7 +766,7 @@ func TestPermissionReviewConfigFingerprintChanges(t *testing.T) {
 	// session across an accepted-override scenario and a later reject-by-default
 	// scenario would silently change what the second scenario is actually
 	// comparing against.
-	newDisabledBaseline := func(t *testing.T) (stores *swarmStores, root string, sid uuid.UUID) {
+	newDisabledBaseline := func(t *testing.T) (stores *sessionStores, root string, sid uuid.UUID) {
 		t.Helper()
 		stores, err := openTestStores(t)
 		if err != nil {
@@ -782,11 +774,11 @@ func TestPermissionReviewConfigFingerprintChanges(t *testing.T) {
 		}
 		root = t.TempDir()
 		access, cfg := headlessTestAccess(t, Config{}, root)
-		definitions, err := swarmDefinitions(&fakeLLM{}, testModel(), cfg, access)
+		definition, err := genericTestDefinition(&fakeLLM{}, testModel(), cfg, access)
 		if err != nil {
-			t.Fatalf("swarmDefinitions() error = %v", err)
+			t.Fatalf("genericTestDefinition() error = %v", err)
 		}
-		assembly, err := buildRig(definitions, stores, root, cfg, false)
+		assembly, err := buildRig(definition, stores, root, cfg, false)
 		if err != nil {
 			t.Fatalf("buildRig() error = %v", err)
 		}
@@ -801,16 +793,16 @@ func TestPermissionReviewConfigFingerprintChanges(t *testing.T) {
 		return stores, root, sid
 	}
 
-	restoreWith := func(t *testing.T, stores *swarmStores, root string, sid uuid.UUID, permissionReview permissionReviewRegistration, allowMismatch bool) error {
+	restoreWith := func(t *testing.T, stores *sessionStores, root string, sid uuid.UUID, permissionReview permissionReviewRegistration, allowMismatch bool) error {
 		t.Helper()
 		racc, rcfg := headlessTestAccess(t, Config{}, root)
-		rdefs, err := swarmDefinitions(&fakeLLM{}, testModel(), rcfg, racc)
+		rdef, err := genericTestDefinition(&fakeLLM{}, testModel(), rcfg, racc)
 		if err != nil {
-			t.Fatalf("swarmDefinitions() error = %v", err)
+			t.Fatalf("genericTestDefinition() error = %v", err)
 		}
 		rasm, err := buildRigForDelegationCaps(
-			rdefs, stores, root, rcfg, allowMismatch,
-			rig.DelegationLimits{Depth: operatorSpawnDepth, Quota: operatorSpawnQuota}, permissionReview,
+			rdef, stores, root, rcfg, allowMismatch,
+			rig.DelegationLimits{Depth: delegationSpawnDepth, Quota: delegationSpawnQuota}, permissionReview,
 		)
 		if err != nil {
 			t.Fatalf("buildRigForDelegationCaps() error = %v", err)

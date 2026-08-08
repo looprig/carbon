@@ -76,7 +76,7 @@ type conversationContextPolicy struct {
 // gateway-backed delegate model (models.json's ACPGatewaySource catalog,
 // distinct from NativeACP): native, in-process, RuntimeClient-routed
 // StartAgent delegates are ordinary harness loop.Definition instances
-// subject to the same declared-transport restore check as the primer roles,
+// subject to the same declared-transport restore check as the Generic primer and delegates,
 // so their transports must be declared too or restoring a session with an
 // active/prior delegate on a foreign transport fails harness's
 // RestoreTransportMismatchError. model is always seeded first in the merged
@@ -158,9 +158,9 @@ func conversationCompactionPolicy() loop.CompactionPolicy {
 }
 
 // conversationHustleLimits reserves one blocking execution slot and enough
-// queue capacity for one coalesced attempt from each of CodeRig's three native
-// loops. CodeRig registers no background hustle, but harness requires the unused
-// lane to remain explicitly bounded.
+// queue capacity for one coalesced attempt from each native Loop instance in
+// the session. CodeRig registers no background hustle, but harness requires
+// the unused lane to remain explicitly bounded.
 func conversationHustleLimits() rig.HustleLimits {
 	return rig.HustleLimits{
 		BlockingConcurrent:   1,
