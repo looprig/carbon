@@ -8,10 +8,15 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/looprig/acp/launch"
 	"github.com/looprig/coderig/internal/catalog/generic"
+	"github.com/looprig/core/content"
+	"github.com/looprig/core/uuid"
 	"github.com/looprig/foreignloops/driver"
+	"github.com/looprig/harness/pkg/command"
+	"github.com/looprig/harness/pkg/event"
 	"github.com/looprig/harness/pkg/foreign"
 	"github.com/looprig/harness/pkg/loop"
 	"github.com/looprig/harness/pkg/tool"
@@ -72,6 +77,222 @@ func TestNewACPCompositionCapturesEffectiveACPPosture(t *testing.T) {
 				t.Fatalf("composition access=%q posture=%q, want access=%q posture=%q", composition.accessProfile, composition.posture, tt.effective, tt.wantPosture)
 			}
 		})
+	}
+}
+
+// TestACPPostureMatrixThroughProductionBuilders drives the real composition
+// registry and child factory for every launch/source/profile combination. The
+// launched ACP peer asks for an edit at a path inside the configured workspace;
+// the response is therefore an observation of the permission handler created by
+// the actual acpdriver.Config, rather than a recorder or a manually built config.
+func TestACPPostureMatrixThroughProductionBuilders(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name       string
+		launchPath string
+		harness    loop.AgentHarnessName
+		credential loop.CredentialMode
+		profile    AccessProfile
+		posture    driver.Posture
+	}{
+		{name: "live/codex/gateway/readonly", launchPath: "live", harness: "codex", credential: loop.CredentialGatewayBacked, profile: AccessReadOnly, posture: driver.PostureReadOnly},
+		{name: "live/codex/gateway/trusted", launchPath: "live", harness: "codex", credential: loop.CredentialGatewayBacked, profile: AccessTrusted, posture: driver.PostureWorkspaceWrite},
+		{name: "live/codex/native/readonly", launchPath: "live", harness: "codex", credential: loop.CredentialNativeAuth, profile: AccessReadOnly, posture: driver.PostureReadOnly},
+		{name: "live/codex/native/trusted", launchPath: "live", harness: "codex", credential: loop.CredentialNativeAuth, profile: AccessTrusted, posture: driver.PostureWorkspaceWrite},
+		{name: "live/claude-code/gateway/readonly", launchPath: "live", harness: "claude-code", credential: loop.CredentialGatewayBacked, profile: AccessReadOnly, posture: driver.PostureReadOnly},
+		{name: "live/claude-code/gateway/trusted", launchPath: "live", harness: "claude-code", credential: loop.CredentialGatewayBacked, profile: AccessTrusted, posture: driver.PostureWorkspaceWrite},
+		{name: "live/claude-code/native/readonly", launchPath: "live", harness: "claude-code", credential: loop.CredentialNativeAuth, profile: AccessReadOnly, posture: driver.PostureReadOnly},
+		{name: "live/claude-code/native/trusted", launchPath: "live", harness: "claude-code", credential: loop.CredentialNativeAuth, profile: AccessTrusted, posture: driver.PostureWorkspaceWrite},
+		{name: "restored/codex/gateway/readonly", launchPath: "restored", harness: "codex", credential: loop.CredentialGatewayBacked, profile: AccessReadOnly, posture: driver.PostureReadOnly},
+		{name: "restored/codex/gateway/trusted", launchPath: "restored", harness: "codex", credential: loop.CredentialGatewayBacked, profile: AccessTrusted, posture: driver.PostureWorkspaceWrite},
+		{name: "restored/codex/native/readonly", launchPath: "restored", harness: "codex", credential: loop.CredentialNativeAuth, profile: AccessReadOnly, posture: driver.PostureReadOnly},
+		{name: "restored/codex/native/trusted", launchPath: "restored", harness: "codex", credential: loop.CredentialNativeAuth, profile: AccessTrusted, posture: driver.PostureWorkspaceWrite},
+		{name: "restored/claude-code/gateway/readonly", launchPath: "restored", harness: "claude-code", credential: loop.CredentialGatewayBacked, profile: AccessReadOnly, posture: driver.PostureReadOnly},
+		{name: "restored/claude-code/gateway/trusted", launchPath: "restored", harness: "claude-code", credential: loop.CredentialGatewayBacked, profile: AccessTrusted, posture: driver.PostureWorkspaceWrite},
+		{name: "restored/claude-code/native/readonly", launchPath: "restored", harness: "claude-code", credential: loop.CredentialNativeAuth, profile: AccessReadOnly, posture: driver.PostureReadOnly},
+		{name: "restored/claude-code/native/trusted", launchPath: "restored", harness: "claude-code", credential: loop.CredentialNativeAuth, profile: AccessTrusted, posture: driver.PostureWorkspaceWrite},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			workspace := t.TempDir()
+			compiled := acpPostureMatrixCatalog(t, tt.harness, tt.credential)
+			composition, err := NewACPComposition(ACPChildrenConfig{
+				Catalog:             compiled,
+				AccessProfile:       tt.profile,
+				Executables:         map[loop.AgentHarnessName]string{tt.harness: executable},
+				WorkspaceRoot:       workspace,
+				Env:                 []string{"PATH=" + taskACPPostureHelperPath},
+				NativeEnvAllowlist:  []string{"PATH"},
+				GatewayEnvAllowlist: []string{"PATH"},
+				gatewayPreflightBinding: &launch.ProxyBinding{
+					BaseURL: "http://127.0.0.1:1",
+					Token:   "posture-matrix-preflight",
+				},
+				executablePreflight: func(_ context.Context, probe ACPExecutableProbe) ACPPreflightResult {
+					return ACPPreflightResult{Ready: true, AdvertisedModels: append([]string(nil), probe.Models...)}
+				},
+			})
+			if err != nil {
+				t.Fatalf("NewACPComposition(): %v", err)
+			}
+
+			bound := acpPostureMatrixBound(t, composition.Catalog, tt.harness, tt.credential)
+			idGen := func() (uuid.UUID, error) { return uuid.New() }
+			fac := event.NewFactory(idGen, time.Now)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			var backend loop.Backend
+			if tt.launchPath == "live" {
+				backend, _, err = composition.Live(
+					ctx, mustUUID(t), mustUUID(t), loop.Provenance{}, acpPostureMatrixPublisher{}, bound, idGen, fac,
+				)
+			} else {
+				backend, err = composition.Restored(
+					ctx, mustUUID(t), mustUUID(t), loop.Provenance{}, acpPostureMatrixPublisher{}, bound, idGen, fac,
+					foreign.RestoredForeign{ForeignSID: "posture-matrix-foreign", AgentSessionID: "posture-matrix-agent"},
+				)
+			}
+			if err != nil {
+				t.Fatalf("%s builder(): %v", tt.launchPath, err)
+			}
+			if backend == nil {
+				t.Fatal("ACP builder returned nil backend")
+			}
+			t.Cleanup(func() {
+				cancel()
+				select {
+				case <-backend.DoneChan():
+				case <-time.After(5 * time.Second):
+					t.Errorf("ACP backend did not close after context cancellation")
+				}
+			})
+
+			select {
+			case backend.CommandSink() <- command.UserInput{
+				Header: command.Header{CommandID: mustUUID(t)},
+				Blocks: []content.Block{&content.TextBlock{Text: "request an in-workspace edit"}},
+			}:
+			case <-time.After(5 * time.Second):
+				t.Fatal("timed out submitting ACP posture probe")
+			}
+
+			got := waitACPPostureReceipt(t, filepath.Join(workspace, acpPostureReceiptName))
+			want := "reject-once"
+			if tt.posture == driver.PostureWorkspaceWrite {
+				want = "allow-once"
+			}
+			if got != want {
+				t.Fatalf("in-workspace permission outcome = %q, want %q for posture %q", got, want, tt.posture)
+			}
+			writePath := filepath.Join(workspace, acpPostureWriteName)
+			_, statErr := os.Stat(writePath)
+			if tt.posture == driver.PostureWorkspaceWrite {
+				if statErr != nil {
+					t.Fatalf("trusted ACP child did not perform in-workspace write: %v", statErr)
+				}
+			} else if !os.IsNotExist(statErr) {
+				t.Fatalf("readonly ACP child performed in-workspace write: %v", statErr)
+			}
+		})
+	}
+}
+
+func acpPostureMatrixCatalog(t *testing.T, harness loop.AgentHarnessName, credential loop.CredentialMode) ACPCompiledCatalog {
+	t.Helper()
+	alias := loop.ModelAlias("posture-matrix-codex")
+	if harness == "claude-code" {
+		alias = "sonnet-5"
+	}
+	input := AgentRuntimeCatalogInput{}
+	if credential == loop.CredentialGatewayBacked {
+		input.GatewayTargets = []ACPGatewaySource{{
+			Alias:         alias,
+			Client:        &fakeLLM{},
+			Model:         model.CustomModel("openai", model.APIFormatOpenAIResponses, "", "posture-matrix", model.WithTools(), model.WithThinking()),
+			DefaultEffort: model.EffortMedium,
+			Efforts:       []model.Effort{model.EffortMedium},
+		}}
+		if harness == "claude-code" {
+			input.ClaudeSmall = alias
+		}
+	} else {
+		input.NativeACP = map[string]ACPNativeProfile{string(harness): {
+			Harness: harness,
+			Enabled: true,
+			Models:  []loop.ModelAlias{alias},
+		}}
+		input.PrimerTarget = runtimeCatalogPrimer()
+	}
+	compiled, err := CompileAgentRuntimeCatalog(input)
+	if err != nil {
+		t.Fatalf("CompileAgentRuntimeCatalog(): %v", err)
+	}
+	return compiled
+}
+
+func acpPostureMatrixBound(t *testing.T, catalog ACPCompiledCatalog, harness loop.AgentHarnessName, credential loop.CredentialMode) loop.BoundDefinition {
+	t.Helper()
+	definition, err := loop.Define(
+		loop.WithName(generic.Name),
+		loop.WithInference(&fakeLLM{}, testModel()),
+		loop.WithSystem("acp posture matrix"),
+		loop.WithPolicyRevision("acp-posture-matrix"),
+	)
+	if err != nil {
+		t.Fatalf("loop.Define(): %v", err)
+	}
+	bound, err := definition.Bind(context.Background(), tool.Bindings{SessionID: mustUUID(t), LoopID: mustUUID(t)})
+	if err != nil {
+		t.Fatalf("definition.Bind(): %v", err)
+	}
+	alias := loop.ModelAlias("posture-matrix-codex")
+	if harness == "claude-code" {
+		alias = "sonnet-5"
+	}
+	source := loop.RuntimeSourceNative
+	effort := model.EffortNone
+	if credential == loop.CredentialGatewayBacked {
+		source = loop.RuntimeSourceGateway
+		effort = model.EffortMedium
+	}
+	resolved, err := catalog.RuntimeCatalog.ResolveWithExplicitSource(generic.Name, harness, source, alias, effort, true)
+	if err != nil {
+		t.Fatalf("ResolveWithExplicitSource(): %v", err)
+	}
+	bound, err = loop.OverrideBoundRuntimeSelectionWithIdentity(
+		bound, resolved.Profile, resolved.ModelAlias, resolved.Target, resolved.Effort, resolved.Source, resolved.SelectionKind,
+	)
+	if err != nil {
+		t.Fatalf("OverrideBoundRuntimeSelectionWithIdentity(): %v", err)
+	}
+	return bound
+}
+
+type acpPostureMatrixPublisher struct{}
+
+func (acpPostureMatrixPublisher) PublishEvent(context.Context, event.Event) error        { return nil }
+func (acpPostureMatrixPublisher) PublishEventChecked(context.Context, event.Event) error { return nil }
+
+func waitACPPostureReceipt(t *testing.T, path string) string {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		data, err := os.ReadFile(path)
+		if err == nil {
+			if len(data) > 0 {
+				return string(data)
+			}
+		} else if !os.IsNotExist(err) {
+			t.Fatalf("read ACP posture receipt: %v", err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for ACP posture receipt %q", path)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

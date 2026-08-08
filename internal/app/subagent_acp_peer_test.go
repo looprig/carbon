@@ -20,6 +20,9 @@ const (
 	task33ACPHelperPath             = "task33-acp-helper"
 	task33NativeClaudeACPHelperPath = "task33-native-claude-acp-helper"
 	task33NativeCodexACPHelperPath  = "task33-native-codex-acp-helper"
+	taskACPPostureHelperPath        = "task-acp-posture-helper"
+	acpPostureReceiptName           = "acp-posture.receipt"
+	acpPostureWriteName             = "acp-posture-write.txt"
 )
 
 // testIsolatedHome is the process-wide temporary directory TestMain

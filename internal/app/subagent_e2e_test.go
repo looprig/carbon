@@ -29,18 +29,31 @@ import (
 const task6ACPPermissionHelperPath = "task6-acp-permission-helper"
 
 func init() {
-	if os.Getenv("PATH") == task6ACPPermissionHelperPath {
-		os.Exit(runTask6ACPPermissionHelper())
+	switch os.Getenv("PATH") {
+	case task6ACPPermissionHelperPath:
+		os.Exit(runTask6ACPPermissionHelper(false))
+	case taskACPPostureHelperPath:
+		os.Exit(runTask6ACPPermissionHelper(true))
 	}
 }
 
-func runTask6ACPPermissionHelper() int {
+func runTask6ACPPermissionHelper(postureMatrix bool) int {
 	conn := protocol.NewConn(os.Stdin, os.Stdout, protocol.ConnOptions{})
 	peer := protocol.NewClientConn(conn)
 	defer conn.Close()
 	ready := make(chan struct{})
 	var workspace string
-	const sessionID protocol.SessionID = "task6-permission-session"
+	var stateMu sync.Mutex
+	setWorkspace := func(root string) {
+		stateMu.Lock()
+		workspace = root
+		stateMu.Unlock()
+	}
+	getWorkspace := func() string {
+		stateMu.Lock()
+		defer stateMu.Unlock()
+		return workspace
+	}
 
 	conn.Handle(string(protocol.MethodInitialize), func(context.Context, string, json.RawMessage) (any, error) {
 		<-ready
@@ -51,14 +64,45 @@ func runTask6ACPPermissionHelper() int {
 		if err := json.Unmarshal(params, &request); err != nil {
 			return nil, protocol.InvalidParams("task6 session/new", nil)
 		}
-		workspace = request.Cwd
-		return protocol.NewSessionResponse{SessionID: sessionID}, nil
+		id := protocol.SessionID("task6-permission-session")
+		if postureMatrix {
+			id = "acp-posture-session"
+		}
+		setWorkspace(request.Cwd)
+		return posturePermissionNewSessionResponse(id), nil
 	})
-	conn.Handle(string(protocol.MethodSessionPrompt), func(ctx context.Context, _ string, _ json.RawMessage) (any, error) {
+	conn.Handle(string(protocol.MethodSessionLoad), func(_ context.Context, _ string, params json.RawMessage) (any, error) {
+		var request protocol.LoadSessionRequest
+		if err := json.Unmarshal(params, &request); err != nil {
+			return nil, protocol.InvalidParams("task6 session/load", nil)
+		}
+		setWorkspace(request.Cwd)
+		response := posturePermissionNewSessionResponse(request.SessionID)
+		return protocol.LoadSessionResponse{ConfigOptions: response.ConfigOptions, Modes: response.Modes}, nil
+	})
+	conn.Handle(string(protocol.MethodSessionSetConfigOption), func(_ context.Context, _ string, _ json.RawMessage) (any, error) {
+		return posturePermissionSetConfigResponse(), nil
+	})
+	conn.Handle(string(protocol.MethodSessionSetMode), func(context.Context, string, json.RawMessage) (any, error) {
+		return protocol.SetSessionModeResponse{}, nil
+	})
+	conn.Handle(string(protocol.MethodSessionPrompt), func(ctx context.Context, _ string, params json.RawMessage) (any, error) {
+		var request protocol.PromptRequest
+		if err := json.Unmarshal(params, &request); err != nil {
+			return nil, protocol.InvalidParams("task6 session/prompt", nil)
+		}
 		kind := protocol.ToolKindEdit
 		title := "task6 outside-posture mutation"
+		workspace := getWorkspace()
+		targetPath := filepath.Join(filepath.Dir(workspace), "task6-outside.txt")
+		receiptName := "task6-permission.receipt"
+		if postureMatrix {
+			title = "ACP posture in-workspace edit"
+			targetPath = filepath.Join(workspace, "inside.txt")
+			receiptName = acpPostureReceiptName
+		}
 		response, err := peer.RequestPermission(ctx, protocol.RequestPermissionRequest{
-			SessionID: sessionID,
+			SessionID: request.SessionID,
 			Options: []protocol.PermissionOption{
 				{Name: "Allow once", Kind: protocol.PermissionOptionKindAllowOnce, OptionID: "allow-once"},
 				{Name: "Reject once", Kind: protocol.PermissionOptionKindRejectOnce, OptionID: "reject-once"},
@@ -67,7 +111,7 @@ func runTask6ACPPermissionHelper() int {
 				Kind:  &kind,
 				Title: &title,
 				Content: []protocol.ToolCallContent{{Diff: &protocol.Diff{
-					Path: filepath.Join(filepath.Dir(workspace), "task6-outside.txt"),
+					Path: targetPath,
 				}}},
 			},
 		})
@@ -78,13 +122,22 @@ func runTask6ACPPermissionHelper() int {
 		if response != nil && response.Outcome.Selected != nil {
 			selected = string(response.Outcome.Selected.OptionID)
 		}
-		if err := os.WriteFile(filepath.Join(workspace, "task6-permission.receipt"), []byte(selected), 0o600); err != nil {
+		if postureMatrix && selected == "allow-once" {
+			if err := os.WriteFile(filepath.Join(workspace, acpPostureWriteName), []byte("workspace-write"), 0o600); err != nil {
+				return nil, err
+			}
+		}
+		receiptPath := filepath.Join(workspace, receiptName)
+		if err := os.WriteFile(receiptPath+".tmp", []byte(selected), 0o600); err != nil {
+			return nil, err
+		}
+		if err := os.Rename(receiptPath+".tmp", receiptPath); err != nil {
 			return nil, err
 		}
 		if err := peer.SessionUpdate(ctx, protocol.SessionNotification{
-			SessionID: sessionID,
+			SessionID: request.SessionID,
 			Update: protocol.SessionUpdate{AgentMessageChunk: &protocol.ContentChunk{
-				Content: protocol.ContentBlock{Text: &protocol.TextContent{Text: "task6 permission denied"}},
+				Content: protocol.ContentBlock{Text: &protocol.TextContent{Text: posturePermissionUpdateText(postureMatrix)}},
 			}},
 		}); err != nil {
 			return nil, err
@@ -94,6 +147,53 @@ func runTask6ACPPermissionHelper() int {
 	close(ready)
 	<-conn.Done()
 	return 0
+}
+
+func posturePermissionNewSessionResponse(sessionID protocol.SessionID) protocol.NewSessionResponse {
+	category := protocol.SessionConfigOptionCategoryModel
+	return protocol.NewSessionResponse{
+		SessionID: sessionID,
+		ConfigOptions: []protocol.SessionConfigOption{{
+			Category: &category,
+			ID:       "model",
+			Name:     "Model",
+			Select: &protocol.SessionConfigSelect{
+				CurrentValue: "sonnet-5",
+				Options: protocol.SessionConfigSelectOptions{Ungrouped: []protocol.SessionConfigSelectOption{
+					{Name: "Sonnet", Value: "sonnet-5"},
+				}},
+			},
+		}},
+		Modes: &protocol.SessionModeState{
+			CurrentModeID: "default",
+			AvailableModes: []protocol.SessionMode{
+				{ID: "default", Name: "Default"},
+				{ID: "acceptEdits", Name: "Accept edits"},
+			},
+		},
+	}
+}
+
+func posturePermissionSetConfigResponse() protocol.SetSessionConfigOptionResponse {
+	category := protocol.SessionConfigOptionCategoryModel
+	return protocol.SetSessionConfigOptionResponse{ConfigOptions: []protocol.SessionConfigOption{{
+		Category: &category,
+		ID:       "model",
+		Name:     "Model",
+		Select: &protocol.SessionConfigSelect{
+			CurrentValue: "sonnet-5",
+			Options: protocol.SessionConfigSelectOptions{Ungrouped: []protocol.SessionConfigSelectOption{
+				{Name: "Sonnet", Value: "sonnet-5"},
+			}},
+		},
+	}}}
+}
+
+func posturePermissionUpdateText(postureMatrix bool) string {
+	if postureMatrix {
+		return "ACP posture probe complete"
+	}
+	return "task6 permission denied"
 }
 
 func TestACPRequestPermissionDeniesOutsidePostureWithoutNativePermissionWrites(t *testing.T) {
