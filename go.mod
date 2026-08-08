@@ -21,7 +21,7 @@ require (
 	github.com/looprig/sandbox v0.7.0
 	github.com/looprig/storage v0.3.0
 	github.com/looprig/tools v0.8.0
-	github.com/looprig/tui v0.12.1
+	github.com/looprig/tui v0.13.0
 	golang.org/x/sys v0.47.0
 )
 
