@@ -264,7 +264,7 @@ func TestSetModelCrossProviderSwitchSurvivesRestore(t *testing.T) {
 func TestProductionOpenRejectsInvalidModelsBeforeOpeningPersistence(t *testing.T) {
 	home := t.TempDir()
 	setProcessHome(t, home)
-	modelsPath := filepath.Join(home, ".looprig", "models.json")
+	modelsPath := filepath.Join(home, ".looprig", "coderig", "models.json")
 	if err := os.MkdirAll(filepath.Dir(modelsPath), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -638,7 +638,7 @@ func TestDefaultDataDir(t *testing.T) {
 	if err != nil {
 		t.Skipf("no home directory available: %v", err)
 	}
-	if want := filepath.Join(home, ".looprig", "store"); got != want {
+	if want := filepath.Join(home, ".looprig", "coderig", "store"); got != want {
 		t.Errorf("DefaultDataDir() = %q, want %q", got, want)
 	}
 }
@@ -667,7 +667,7 @@ func TestDefaultDataDirIn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DefaultDataDir: %v", err)
 	}
-	fromIn, err := DefaultDataDirIn(filepath.Join(home, ".looprig"))
+	fromIn, err := DefaultDataDirIn(filepath.Join(home, ".looprig", "coderig"))
 	if err != nil {
 		t.Fatalf("DefaultDataDirIn: %v", err)
 	}
@@ -694,6 +694,139 @@ func TestNewSessionStoreFactoryLifecycle(t *testing.T) {
 	}
 	if err := f.Close(); err != nil {
 		t.Errorf("Close error = %v", err)
+	}
+}
+
+// TestSessionStoreFactoryListOrdersMostRecentlyActiveFirst proves List honors its own
+// documented contract ("most-recently-active-first"). The underlying catalog sorts
+// ascending by session ID (harness's Catalog.ListSessions), which is random with respect
+// to time, so three sessions opened in sequence would come back in an order unrelated to
+// creation order unless List itself re-sorts by activity.
+func TestSessionStoreFactoryListOrdersMostRecentlyActiveFirst(t *testing.T) {
+	factory, err := NewSessionStoreFactory(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = factory.Close() })
+	factory.buildClient = func() (inference.Client, ModelFactory, error) {
+		return &fakeLLM{}, newModelFactoryFor(testModel()), nil
+	}
+	cfg := Config{}
+
+	var ids []uuid.UUID
+	for i := 0; i < 3; i++ {
+		agent, err := factory.Open(context.Background(), SessionSelector{}, cfg)
+		if err != nil {
+			t.Fatalf("Open() [%d] error = %v", i, err)
+		}
+		ids = append(ids, agent.SessionID())
+		if err := agent.Close(context.Background()); err != nil {
+			t.Fatalf("Close() [%d] error = %v", i, err)
+		}
+	}
+
+	metas, err := factory.List(context.Background())
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if len(metas) != len(ids) {
+		t.Fatalf("List() = %d sessions, want %d", len(metas), len(ids))
+	}
+	for i, meta := range metas {
+		want := ids[len(ids)-1-i]
+		if meta.SessionID != want {
+			t.Errorf("List()[%d].SessionID = %s, want %s (most-recently-created first)", i, meta.SessionID, want)
+		}
+	}
+}
+
+// TestSortSessionsByRecencyFallsBackToCreatedAt proves a session that never had a turn
+// (LastActiveAt stays the zero value — only TurnStarted/StepDone/RestoreDone stamp it) still
+// sorts by when it was opened, rather than dropping to the bottom of the list behind every
+// session that has ever run a turn.
+func TestSortSessionsByRecencyFallsBackToCreatedAt(t *testing.T) {
+	older := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	newer := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	metas := []sessionstore.SessionMeta{
+		{SessionID: uuid.UUID{1}, CreatedAt: older},                      // never active
+		{SessionID: uuid.UUID{2}, CreatedAt: older, LastActiveAt: newer}, // active after [0]
+		{SessionID: uuid.UUID{3}, CreatedAt: newer},                      // never active, created after [0]
+	}
+	sortSessionsByRecency(metas)
+	want := []uuid.UUID{{2}, {3}, {1}}
+	for i, meta := range metas {
+		if meta.SessionID != want[i] {
+			t.Errorf("sortSessionsByRecency()[%d].SessionID = %s, want %s", i, meta.SessionID, want[i])
+		}
+	}
+}
+
+// TestSessionStoreFactoryListOnlyShowsCurrentWorkspaceSessions proves List scopes the
+// catalog to the CURRENT working directory's session, matching how Claude Code itself
+// scopes its own session history to the current project rather than showing every session
+// ever opened anywhere. Two sessions opened from two different workspace roots must not
+// cross-contaminate each other's listing.
+func TestSessionStoreFactoryListOnlyShowsCurrentWorkspaceSessions(t *testing.T) {
+	factory, err := NewSessionStoreFactory(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = factory.Close() })
+	factory.buildClient = func() (inference.Client, ModelFactory, error) {
+		return &fakeLLM{}, newModelFactoryFor(testModel()), nil
+	}
+	cfg := Config{}
+
+	t.Chdir(t.TempDir())
+	inA, err := factory.Open(context.Background(), SessionSelector{}, cfg)
+	if err != nil {
+		t.Fatalf("Open() in workspace A error = %v", err)
+	}
+	idA := inA.SessionID()
+	if err := inA.Close(context.Background()); err != nil {
+		t.Fatalf("Close() in workspace A error = %v", err)
+	}
+
+	t.Chdir(t.TempDir())
+	inB, err := factory.Open(context.Background(), SessionSelector{}, cfg)
+	if err != nil {
+		t.Fatalf("Open() in workspace B error = %v", err)
+	}
+	idB := inB.SessionID()
+	if err := inB.Close(context.Background()); err != nil {
+		t.Fatalf("Close() in workspace B error = %v", err)
+	}
+
+	// Still chdir'd into workspace B: List must show ONLY idB.
+	metas, err := factory.List(context.Background())
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if len(metas) != 1 || metas[0].SessionID != idB {
+		t.Fatalf("List() = %#v, want only workspace B's session %s (never %s)", metas, idB, idA)
+	}
+}
+
+// TestFilterSameWorkspaceKeepsMatchingAndEmptyRoots is the fast, deterministic unit test
+// for the pure filtering logic List uses: a session fingerprinted to root is kept, a
+// session fingerprinted to a DIFFERENT root is dropped, and a session with no recorded
+// workspace at all (empty WorkspaceRoot) is kept rather than treated as belonging to
+// someone else's project.
+func TestFilterSameWorkspaceKeepsMatchingAndEmptyRoots(t *testing.T) {
+	metas := []sessionstore.SessionMeta{
+		{SessionID: uuid.UUID{1}, ConfigFingerprint: event.ConfigFingerprint{WorkspaceRoot: "exclusive:/repo/a"}},
+		{SessionID: uuid.UUID{2}, ConfigFingerprint: event.ConfigFingerprint{WorkspaceRoot: "exclusive:/repo/b"}},
+		{SessionID: uuid.UUID{3}, ConfigFingerprint: event.ConfigFingerprint{}}, // no workspace recorded
+	}
+	got := filterSameWorkspace(metas, "/repo/a")
+	want := []uuid.UUID{{1}, {3}}
+	if len(got) != len(want) {
+		t.Fatalf("filterSameWorkspace() = %#v, want %d entries", got, len(want))
+	}
+	for i, meta := range got {
+		if meta.SessionID != want[i] {
+			t.Errorf("filterSameWorkspace()[%d].SessionID = %s, want %s", i, meta.SessionID, want[i])
+		}
 	}
 }
 

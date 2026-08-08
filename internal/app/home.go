@@ -6,8 +6,14 @@ import (
 	"path/filepath"
 )
 
-// looprigHome resolves the looprig base directory: Config.HomeDir when set
-// (must be absolute; fail closed otherwise), else ~/.looprig.
+// looprigHome resolves CodeRig's base directory: Config.HomeDir when set (must be
+// absolute, used exactly as given; fail closed otherwise), else ~/.looprig/coderig.
+// This directory is CodeRig-specific, not shared with any other looprig-platform agent
+// product: harness's sessionstore/workspacestore have no notion of "which product" is
+// calling them, so namespacing by product is entirely this resolver's job. It remains ONE
+// file/store per machine per product (not per project or invocation) — models.json's inline
+// API keys and the session store both still live once here, just scoped to CodeRig rather
+// than shared across every possible looprig-based agent.
 func looprigHome(cfg Config) (string, error) {
 	if cfg.HomeDir != "" {
 		if !filepath.IsAbs(cfg.HomeDir) {
@@ -19,7 +25,7 @@ func looprigHome(cfg Config) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("coderig: resolve home directory: %w", err)
 	}
-	return filepath.Join(home, ".looprig"), nil
+	return filepath.Join(home, ".looprig", "coderig"), nil
 }
 
 // LooprigHome is looprigHome's exported form. It exists solely for cmd/coderig

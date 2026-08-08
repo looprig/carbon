@@ -332,7 +332,7 @@ func TestAcceptanceBuilderPermissionApprovalReachesStoreAndExecutorGrantPath(t *
 		t.Fatalf("granted execution = stdout %q exit %d error %v", stdout, exitCode, err)
 	}
 
-	permissionPath, err := defaultPermissionsPath(filepath.Join(home, ".looprig"), root)
+	permissionPath, err := defaultPermissionsPath(filepath.Join(home, ".looprig", "coderig"), root)
 	if err != nil {
 		t.Fatalf("defaultPermissionsPath: %v", err)
 	}
@@ -456,7 +456,7 @@ func TestAcceptanceModelAndInteractivePermissionFilesRemainSeparated(t *testing.
 	t.Setenv("NO_PROXY", "")
 	root := canonicalTempDir(t)
 
-	looprigRoot := filepath.Join(home, ".looprig")
+	looprigRoot := filepath.Join(home, ".looprig", "coderig")
 	modelPath, err := defaultModelConfigPath(looprigRoot)
 	if err != nil {
 		t.Fatalf("defaultModelConfigPath: %v", err)
@@ -465,7 +465,7 @@ func TestAcceptanceModelAndInteractivePermissionFilesRemainSeparated(t *testing.
 	if err != nil {
 		t.Fatalf("defaultPermissionsPath: %v", err)
 	}
-	wantModelPath := filepath.Join(home, ".looprig", "models.json")
+	wantModelPath := filepath.Join(home, ".looprig", "coderig", "models.json")
 	if modelPath != wantModelPath {
 		t.Fatalf("model path = %q, want %q", modelPath, wantModelPath)
 	}
@@ -473,7 +473,7 @@ func TestAcceptanceModelAndInteractivePermissionFilesRemainSeparated(t *testing.
 		t.Fatalf("model and permission paths are identical: %q", modelPath)
 	}
 	digest := sha256.Sum256([]byte(root))
-	wantPermissionPath := filepath.Join(home, ".looprig", "workspaces", hex.EncodeToString(digest[:]), permissionFileName)
+	wantPermissionPath := filepath.Join(home, ".looprig", "coderig", "workspaces", hex.EncodeToString(digest[:]), permissionFileName)
 	if permissionPath != wantPermissionPath {
 		t.Fatalf("permission path = %q, want %q", permissionPath, wantPermissionPath)
 	}

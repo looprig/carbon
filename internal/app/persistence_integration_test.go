@@ -202,38 +202,6 @@ func drainTurn(t *testing.T, a tui.Agent, text string) {
 	}
 }
 
-// drainUntilCheckpoint submits a turn and drains a fresh subscription until the workspace
-// checkpoint at quiescence lands (event.WorkspaceCheckpointed, published by CheckpointWorkspace
-// after the Active→Idle edge). The subscription is created before the submit so the checkpoint is
-// never missed.
-func drainUntilCheckpoint(t *testing.T, a tui.Agent, text string) {
-	t.Helper()
-	sub, err := a.Subscribe(event.EventFilter{Enduring: event.LoopScope{All: true}})
-	if err != nil {
-		t.Fatalf("Subscribe: %v", err)
-	}
-	defer func() { _ = sub.Close() }()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if _, err := a.Submit(ctx, []content.Block{&content.TextBlock{Text: text}}); err != nil {
-		t.Fatalf("Submit: %v", err)
-	}
-	timeout := time.After(30 * time.Second)
-	for {
-		select {
-		case d, ok := <-sub.Events():
-			if !ok {
-				t.Fatal("subscription closed before a workspace checkpoint")
-			}
-			if _, ok := d.Event.(event.WorkspaceCheckpointed); ok {
-				return
-			}
-		case <-timeout:
-			t.Fatal("no workspace checkpoint within deadline")
-		}
-	}
-}
-
 // TestNewSessionStoreFactoryOpensAndCloses proves the exported constructor opens a store over an
 // explicit data dir, lists an empty store as zero rows, and closes cleanly.
 func TestNewSessionStoreFactoryOpensAndCloses(t *testing.T) {
@@ -385,20 +353,31 @@ func TestSessionStoreRoundTrip(t *testing.T) {
 	drainTurn(t, a2, "continue")
 }
 
-// TestSessionStoreWorkspaceRoundTrip is the acceptance test the whole extraction exists for: a
-// session's workspace is checkpointed at quiescence (SessionIdle), and a later restore
-// materializes it — so both the conversation state AND the workspace files come back. The
-// workspace is a temp dir the session snapshots via os.Getwd(); t.Chdir points the process there
-// (and forbids t.Parallel for this test).
-func TestSessionStoreWorkspaceRoundTrip(t *testing.T) {
+// TestSessionStoreWorkspaceNeverAutoSnapshots proves CodeRig's production wiring takes NO
+// automatic workspace snapshot (rig.SnapshotManual, not SnapshotOnIdle — persistence.go's
+// buildRigWithRegistrationAndACP): a session that runs a turn to quiescence, closes, and is
+// later resumed does NOT materialize a deleted workspace file back, because no checkpoint
+// was ever taken to materialize FROM. This replaces the old
+// TestSessionStoreWorkspaceRoundTrip, which pinned the opposite (SnapshotOnIdle) behavior —
+// an automatic, unbounded, full-tree (no .git/vendor exclusion) archive on every idle turn,
+// purely so a later restore could verify-and-materialize against it. For CodeRig's actual
+// deployment (the user's own persistent local checkout, not ephemeral compute that needs a
+// snapshot to survive being torn down), that cost real, growing disk with no consumer ever
+// exercising the recovery path, AND that same verification hard-failed the whole restore the
+// moment the checkout diverged at all from the last checkpoint (see
+// TestRestoreRejectsModelConfigRevisionDrift's sibling investigation — any edit to the
+// workspace by the user or another tool between sessions, or even the session's own
+// best-effort snapshot lagging its own last write, blocked every future resume). The
+// workspace is a temp dir the session would have snapshotted via os.Getwd(); t.Chdir points
+// the process there (and forbids t.Parallel for this test).
+func TestSessionStoreWorkspaceNeverAutoSnapshots(t *testing.T) {
 	f := newIntegrationFactory(t)
 
 	workspace := t.TempDir()
 	t.Chdir(workspace)
 
 	const name = "notes.txt"
-	const body = "workspace survived a restore"
-	// Written BEFORE the session opens, so it is present in every checkpoint the session takes.
+	const body = "still here after resume"
 	if err := os.WriteFile(filepath.Join(workspace, name), []byte(body), 0o600); err != nil {
 		t.Fatalf("seed workspace file: %v", err)
 	}
@@ -409,29 +388,26 @@ func TestSessionStoreWorkspaceRoundTrip(t *testing.T) {
 		t.Fatalf("openWithClient (new): %v", err)
 	}
 	sessionID := a.SessionID()
-	drainUntilCheckpoint(t, a, "make a note")
+	drainTurn(t, a, "make a note")
 	if err := a.Close(context.Background()); err != nil {
 		t.Fatalf("Close (original): %v", err)
 	}
 
-	// Destroy the workspace file; a restore must materialize the checkpointed copy back.
 	if err := os.Remove(filepath.Join(workspace, name)); err != nil {
 		t.Fatalf("remove workspace file: %v", err)
 	}
 
+	// With no checkpoint pointer ever recorded, resume must skip the materialize-
+	// verification gate entirely and succeed cleanly — never RestoreMaterializeFailed.
 	a2, err := f.openWithClient(context.Background(),
 		&fakeLLM{chunks: []content.Chunk{textChunk("after restore")}}, newModelFactory(), SessionSelector{Resume: sessionID}, Config{})
 	if err != nil {
-		t.Fatalf("openWithClient (resume): %v", err)
+		t.Fatalf("openWithClient (resume) error = %v, want a clean resume (no checkpoint to verify against)", err)
 	}
 	t.Cleanup(func() { _ = a2.Close(context.Background()) })
 
-	got, err := os.ReadFile(filepath.Join(workspace, name))
-	if err != nil {
-		t.Fatalf("workspace file not materialized on restore: %v", err)
-	}
-	if string(got) != body {
-		t.Errorf("materialized workspace file = %q, want %q", string(got), body)
+	if _, err := os.ReadFile(filepath.Join(workspace, name)); !os.IsNotExist(err) {
+		t.Fatalf("workspace file present after resume (err=%v), want it to stay deleted: no automatic snapshot exists to materialize from", err)
 	}
 }
 

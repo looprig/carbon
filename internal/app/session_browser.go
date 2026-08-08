@@ -38,8 +38,6 @@ func (b *sessionBrowser) ListSessions(ctx context.Context) ([]tui.SessionSummary
 			ID:           meta.SessionID,
 			Title:        meta.Title,
 			State:        state,
-			AgentKind:    meta.AgentKind,
-			LoopCount:    meta.LoopCount,
 			CreatedAt:    meta.CreatedAt,
 			LastActiveAt: meta.LastActiveAt,
 		})

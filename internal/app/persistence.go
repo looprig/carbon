@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -38,7 +40,9 @@ import (
 const (
 	offloadGCInterval = 5 * time.Minute
 	offloadGCTimeout  = 60 * time.Second
-	// snapshotTimeout bounds one best-effort workspace snapshot at quiescence.
+	// snapshotTimeout bounds one manually-triggered workspace snapshot. CodeRig never
+	// triggers one today (see WithSnapshots below), so this is inert in practice — it
+	// exists only because rig.SnapshotPolicy requires a non-negative value.
 	snapshotTimeout = 60 * time.Second
 	// maxRuntimeManifestIdentifierBytes matches Harness's current-schema runtime
 	// manifest identifier cap. Production model and catalog revisions are each
@@ -48,21 +52,22 @@ const (
 
 const runtimeCatalogRevisionDigestDomain = "looprig/coderig/runtime-catalog-revision/v1"
 
-// DefaultDataDir is the default root for the on-disk session store: ~/.looprig/store. It
-// fails loud with a typed *StoreInitError if the home directory cannot be resolved. It
-// preserves this exact behavior/signature for compatibility; DefaultDataDirIn is the
-// home-relative form callers holding a resolved Config should prefer.
+// DefaultDataDir is the default root for the on-disk session store:
+// ~/.looprig/coderig/store. It fails loud with a typed *StoreInitError if the home
+// directory cannot be resolved. It preserves this exact behavior/signature for
+// compatibility; DefaultDataDirIn is the home-relative form callers holding a resolved
+// Config should prefer.
 func DefaultDataDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", &StoreInitError{Stage: "data-dir", Cause: err}
 	}
-	return DefaultDataDirIn(filepath.Join(home, ".looprig"))
+	return DefaultDataDirIn(filepath.Join(home, ".looprig", "coderig"))
 }
 
 // DefaultDataDirIn is the on-disk session store root under an already-resolved
 // looprig base directory: <home>/store. home is looprigHome's result (e.g.
-// ~/.looprig or Config.HomeDir) — this function does not resolve HOME itself.
+// ~/.looprig/coderig or Config.HomeDir) — this function does not resolve HOME itself.
 func DefaultDataDirIn(home string) (string, error) {
 	return filepath.Join(home, "store"), nil
 }
@@ -348,7 +353,19 @@ func buildRigWithRegistrationAndACP(definitions []loop.Definition, stores *swarm
 		rig.WithActivePrimer(activePrimer),
 		rig.WithSessionStore(stores.session),
 		rig.WithExclusiveWorkspace(stores.workspace, root, stores.leaser),
-		rig.WithSnapshots(rig.SnapshotPolicy{Trigger: rig.SnapshotOnIdle, Priority: rig.SnapshotBestEffort, Timeout: snapshotTimeout}),
+		// Manual, never OnIdle: CodeRig's exclusive workspace is the user's own persistent
+		// local checkout (edit-the-open-checkout), not ephemeral compute that needs a
+		// durable snapshot to survive being torn down — workspacestore's actual design
+		// target (see its package doc). An OnIdle policy archived the ENTIRE tree (no
+		// .git/vendor/build-artifact exclusion) on every idle turn, at ~100s of MB each,
+		// unboundedly, purely so a later restore could verify-and-materialize against it —
+		// and that verification then hard-failed the restore outright the moment the
+		// checkout diverged even slightly from the checkpoint (any edit by the user or
+		// another tool, or even the session's own best-effort snapshot lagging its own
+		// last write). Manual disables automatic snapshotting entirely: no archive is ever
+		// written, and a session with no recorded checkpoint pointer skips the
+		// materialize-verification gate on restore altogether.
+		rig.WithSnapshots(rig.SnapshotPolicy{Trigger: rig.SnapshotManual, Priority: rig.SnapshotBestEffort, Timeout: snapshotTimeout}),
 		rig.WithDelegationLimits(limits),
 		rig.WithFingerprintFields(agentFingerprintFields(cfg)),
 		rig.WithOffloadGC(rig.OffloadGCPolicy{Interval: offloadGCInterval, Timeout: offloadGCTimeout}),
@@ -471,8 +488,16 @@ func (f *SessionStoreFactory) ensureStoresLocked() (*swarmStores, error) {
 	return stores, nil
 }
 
-// List returns the session catalog (most-recently-active-first), the source the CLI --list
-// path prints. It reads the listing index only — no lease, no replay — so it stays cheap.
+// List returns the session catalog (most-recently-active-first), scoped to sessions
+// opened from the CURRENT working directory's workspace — the source the CLI --list path
+// prints. It reads the listing index only — no lease, no replay — so it stays cheap. The
+// catalog itself (harness's Catalog.ListSessions) returns entries in ascending session-ID
+// order, an arbitrary-but-deterministic order that carries no time meaning (session IDs are
+// random UUIDs), so the recency ordering this method promises is applied here. The store is
+// shared across every workspace CodeRig has ever been run from (it lives under the looprig
+// home directory, not the workspace), so without this scoping every project's session
+// history would bleed into every other project's picker — unlike Claude Code, which scopes
+// its own session history to the current project.
 func (f *SessionStoreFactory) List(ctx context.Context) ([]sessionstore.SessionMeta, error) {
 	f.storeMu.Lock()
 	defer f.storeMu.Unlock()
@@ -480,7 +505,75 @@ func (f *SessionStoreFactory) List(ctx context.Context) ([]sessionstore.SessionM
 	if err != nil {
 		return nil, err
 	}
-	return stores.catalog.ListSessions(ctx)
+	metas, err := stores.catalog.ListSessions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if root, err := currentWorkspaceFingerprint(); err == nil {
+		metas = filterSameWorkspace(metas, root)
+	}
+	sortSessionsByRecency(metas)
+	return metas, nil
+}
+
+// currentWorkspaceFingerprint canonicalizes the current working directory the same way
+// harness's rig.WithExclusiveWorkspace placement does (pkg/rig/workspace.go's
+// canonicalPath: Abs -> Clean -> best-effort EvalSymlinks), so it can be compared against
+// SessionMeta.ConfigFingerprint.WorkspaceRoot (which harness folds as "<placement
+// mode>:<canonical root>"). Returns an error only on an os.Getwd failure, in which case
+// List leaves the catalog unfiltered rather than failing a session listing outright over
+// an unrelated OS hiccup.
+func currentWorkspaceFingerprint() (string, error) {
+	root, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return "", err
+	}
+	abs = filepath.Clean(abs)
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		return resolved, nil
+	}
+	return abs, nil
+}
+
+// filterSameWorkspace keeps only sessions whose recorded workspace root matches root, or
+// that recorded no workspace at all (empty WorkspaceRoot never belongs to a DIFFERENT
+// project, so it stays visible rather than being hidden as cross-workspace noise). It
+// matches by suffix rather than reconstructing the exact "<mode>:<root>" fingerprint
+// string, so it stays correct even if harness's placement-mode naming changes — CodeRig
+// only ever opens sessions with fixed exclusive placement, so any fingerprint ending in
+// this exact canonical root is this workspace's session. Filters in place (metas is not
+// reused by the caller afterward).
+func filterSameWorkspace(metas []sessionstore.SessionMeta, root string) []sessionstore.SessionMeta {
+	kept := metas[:0]
+	for _, meta := range metas {
+		fp := meta.ConfigFingerprint.WorkspaceRoot
+		if fp == "" || strings.HasSuffix(fp, ":"+root) {
+			kept = append(kept, meta)
+		}
+	}
+	return kept
+}
+
+// sortSessionsByRecency orders metas most-recently-active first, in place.
+func sortSessionsByRecency(metas []sessionstore.SessionMeta) {
+	sort.SliceStable(metas, func(i, j int) bool {
+		return lastActivity(metas[i]).After(lastActivity(metas[j]))
+	})
+}
+
+// lastActivity is a session's most recent activity instant for recency ordering.
+// LastActiveAt stays the zero value until a turn actually runs (TurnStarted, StepDone, or
+// RestoreDone stamps it — SessionStarted does not), so a never-active session falls back to
+// CreatedAt rather than sorting behind every session that has ever run a turn.
+func lastActivity(meta sessionstore.SessionMeta) time.Time {
+	if meta.LastActiveAt.IsZero() {
+		return meta.CreatedAt
+	}
+	return meta.LastActiveAt
 }
 
 // Open builds a fully-persisted CodeRig session from one models.json load.

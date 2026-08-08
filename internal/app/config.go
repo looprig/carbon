@@ -10,7 +10,7 @@ import (
 // CLI fills before the Rig is constructed; the access profile cannot change for
 // the lifetime of the session.
 type Config struct {
-	// HomeDir overrides the looprig base directory (default ~/.looprig).
+	// HomeDir overrides CodeRig's base directory (default ~/.looprig/coderig).
 	// It relocates everything CodeRig itself reads or writes under that root:
 	// models.json, mcp.json, workspaces/<hash>/permissions.json, and the
 	// default session-store root (store/).

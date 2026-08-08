@@ -54,7 +54,7 @@ func productFamilyEligibility() permission.FamilyEligibility {
 // The file lives outside the repository and is the sole destination for
 // "Approve always for this workspace". This function is used ONLY in interactive
 // CodeRig assembly. home is the already-resolved looprig base directory
-// (looprigHome's result, e.g. ~/.looprig or Config.HomeDir); this function no
+// (looprigHome's result, e.g. ~/.looprig/coderig or Config.HomeDir); this function no
 // longer resolves HOME itself. canonicalWorkspace must be the absolute,
 // canonical workspace root (the same value the profile is built on); a
 // relative or empty value fails closed.

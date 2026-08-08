@@ -19,11 +19,11 @@ Do not add an open-ended agent registry. The primer loop may expose a bounded pi
 
 ## Model catalogue and credentials
 
-- All fixed `~/.looprig/...` paths in this file (`models.json`, `mcp.json`, `workspaces/<hash>/permissions.json`, the default session-store root) are relative to the resolved looprig home: `Config.HomeDir` when set (must be absolute; validated once at construction, fail closed otherwise), else `~/.looprig`. One resolver (`internal/app/home.go`'s `looprigHome`) is the single place this is computed; there is no CLI flag or environment variable for it.
-- The `planner`, `builder`, and `reviewer` roster and its role policy remain fixed in code. Production model data is external configuration, loaded once at the composition boundary from `~/.looprig/models.json`. The file may also carry an optional top-level `permission_review` section that can enable classifier-based automatic permission review; see "Permission review" below for what it does and does not override.
+- All fixed `~/.looprig/coderig/...` paths in this file (`models.json`, `mcp.json`, `workspaces/<hash>/permissions.json`, the default session-store root) are relative to the resolved CodeRig home: `Config.HomeDir` when set (must be absolute, used exactly as given; validated once at construction, fail closed otherwise), else `~/.looprig/coderig`. One resolver (`internal/app/home.go`'s `looprigHome`) is the single place this is computed; there is no CLI flag or environment variable for it. This directory is CodeRig-specific — harness's sessionstore/workspacestore have no notion of "which product" is calling them, so a different looprig-platform agent product gets its own home, never this one (a prior product, `swe`, shared the bare `~/.looprig` directory before being retired; CodeRig does not repeat that).
+- The `planner`, `builder`, and `reviewer` roster and its role policy remain fixed in code. Production model data is external configuration, loaded once at the composition boundary from `~/.looprig/coderig/models.json`. The file may also carry an optional top-level `permission_review` section that can enable classifier-based automatic permission review; see "Permission review" below for what it does and does not override.
 - The model catalogue is operator-managed and read-only to CodeRig: the loader never creates, rewrites, or changes the mode of the file. On Unix, the file must be owner-only (`0600`), must be a regular file, and must not be a symlink.
-- Inline API keys are permitted only in this machine-wide file because it is outside repositories and owner-only. Never put provider keys in `.env`, provider-key environment variables, command-line arguments, logs, fingerprints, permission files, or child environments.
-- Native permission persistence is separate and remains per workspace at `~/.looprig/workspaces/<sha256(canonical-workspace)>/permissions.json`. The global model catalogue is not a permission store.
+- Inline API keys are permitted only in this machine-wide-per-product file because it is outside repositories and owner-only. Never put provider keys in `.env`, provider-key environment variables, command-line arguments, logs, fingerprints, permission files, or child environments.
+- Native permission persistence is separate and remains per workspace at `~/.looprig/coderig/workspaces/<sha256(canonical-workspace)>/permissions.json`. The global model catalogue is not a permission store.
 - ACP children may be gateway-backed or native-auth and receive posture metadata only. Gateway children use the loopback proxy; native children use the selected harness's existing login state. Neither receives provider API keys or a native `permissions.json`; CodeRig owns sandbox and permission enforcement.
 - `native_acp` is optional. An absent or disabled profile contributes no native runtime. An enabled profile with omitted `models` is harness-managed and passes no model or effort selector; an explicit non-empty `models` list requires each native delegate default to name one configured alias.
 - Defaults are source-aware: omitted `source` remains gateway-backed, while native defaults must set `source: "native"`. Native login environment variables are isolated by the native allowlist and must not be replaced with provider-key or model-selection environment variables.
@@ -46,7 +46,7 @@ duplicates ceiling-comparison/eligibility logic locally.
   a zero `Config` never auto-approves anything). There is no CLI flag for it
   today, but there are two seams: a caller embedding `coderig.Config` can set
   the field directly, and an operator can add a `permission_review` section
-  to `~/.looprig/models.json` (`{"model": "<alias>", "strict": <bool>}`) —
+  to `~/.looprig/coderig/models.json` (`{"model": "<alias>", "strict": <bool>}`) —
   presence alone enables it, and `model` must name a configured alias with
   both `tools` and `structured_output_with_tools` capabilities or the
   catalogue fails closed with a typed `*ModelConfigError`. The programmatic
@@ -200,7 +200,7 @@ own.
   env values may carry credentials and must never be logged, placed in an
   error message, or allowed to reach the fingerprint. The file is
   operator-managed and read-only to CodeRig — same posture, same file
-  hygiene, same secret-bearing-file treatment as `~/.looprig/models.json`
+  hygiene, same secret-bearing-file treatment as `~/.looprig/coderig/models.json`
   (see "Security" below).
 - **Known gap** — the exported library construction path (`New()`/
   `newWithClient`) does not compose MCP; only `SessionStoreFactory.Open` →
@@ -223,7 +223,7 @@ Prefer direct assembly over local wrappers that only rename another module's API
 - Treat `Bash` as intentionally shell-based. Permission checks and OS confinement are its boundaries.
 - Validate CLI input before constructing the Rig.
 - Never log secrets or place them in audit summaries. Upstream proxy credentials live only inside the sandbox egress route and never enter the fingerprint, permission file, logs, or child environment.
-- Treat `~/.looprig/models.json` as a secret-bearing owner-only file. Never copy its inline API keys into a repository, `.env`, shell command, fingerprint, permission file, log, or ACP child environment.
+- Treat `~/.looprig/coderig/models.json` as a secret-bearing owner-only file. Never copy its inline API keys into a repository, `.env`, shell command, fingerprint, permission file, log, or ACP child environment.
 - Fail closed when access, permission, identity, or durable policy state is uncertain.
 
 ## Code and tests

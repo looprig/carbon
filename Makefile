@@ -1,13 +1,27 @@
-.PHONY: build run test test-integration fmt fmt-check lint vuln secure fuzz
+.PHONY: build install run test test-integration fmt fmt-check lint vuln secure fuzz
 
 # This module's own package dirs (go list stops at module boundaries, skips deps).
 GO_DIRS := $(shell go list -f '{{.Dir}}' ./...)
 GO_FILES := $(shell go list -f '{{range .GoFiles}}{{$$.Dir}}/{{.}} {{end}}{{range .TestGoFiles}}{{$$.Dir}}/{{.}} {{end}}{{range .XTestGoFiles}}{{$$.Dir}}/{{.}} {{end}}' ./...)
 
-# Build the CodeRig binary.
+# Build the CodeRig binary into this repo's own (gitignored) bin/ dir. This is a
+# local dev-iteration artifact, deliberately NOT on PATH -- use `make install` to
+# put a runnable coderig on PATH.
 build:
+	mkdir -p bin
+	CGO_ENABLED=0 go build -trimpath -o bin/coderig ./cmd/coderig
+
+# Build and install the CodeRig binary onto PATH at ~/.looprig/bin/coderig. Copies to a
+# temp file then renames into place rather than overwriting the destination's bytes
+# in-place: macOS's kernel caches code-signature validation per inode, and overwriting a
+# previously-executed binary in place leaves that cache stale, so the NEW content gets
+# killed at launch with "load code signature error 2" until the file is deleted and
+# recreated. rename(2) on the same filesystem gives the destination path a fresh inode,
+# which avoids the stale cache entirely.
+install: build
 	mkdir -p $(HOME)/.looprig/bin
-	CGO_ENABLED=0 go build -trimpath -o $(HOME)/.looprig/bin/coderig ./cmd/coderig
+	cp bin/coderig $(HOME)/.looprig/bin/coderig.new
+	mv -f $(HOME)/.looprig/bin/coderig.new $(HOME)/.looprig/bin/coderig
 
 # Run the TUI directly. Optional .env values are launcher settings (for example,
 # ACP executable path overrides), never provider credentials; models and inline

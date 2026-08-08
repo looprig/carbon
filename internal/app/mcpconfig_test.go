@@ -561,7 +561,7 @@ func TestLoadMCPConfig(t *testing.T) {
 			t.Fatalf("loadMCPConfig(HomeDir override) specs = %d, want 2", len(specs))
 		}
 
-		// The process HOME default (~/.looprig/mcp.json) was never written, so
+		// The process HOME default (~/.looprig/coderig/mcp.json) was never written, so
 		// if loadMCPConfig had ignored HomeDir and fallen back to it instead of
 		// honoring the override, this would also return (nil, nil) -- proving
 		// the first call above really did read from the override.
