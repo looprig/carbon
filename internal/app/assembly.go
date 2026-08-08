@@ -230,16 +230,6 @@ func newWithProductionModelsLoader(ctx context.Context, cfg Config, loader produ
 	return newWithClientUsingStores(ctx, runtimeClient, newModelFactoryFor(configured.PrimerModel), cfg, storesProvider)
 }
 
-// newWithClient is the headless construction seam shared by New and tests: tests inject a
-// fake inference.Client + key-bound ModelFactory here, avoiding real env reads and network
-// calls. It resolves the workspace root (fail-fast on os.Getwd error), builds the Generic loop
-// definition and one rig over the process-shared in-memory store with the current checkout
-// as the exclusive workspace, opens a NEW session, and wraps it as a tui.Agent. ctx bounds
-// construction.
-func newWithClient(ctx context.Context, client inference.Client, factory ModelFactory, cfg Config) (*RuntimeAgent, error) {
-	return newWithClientUsingStores(ctx, client, factory, cfg, headlessStores)
-}
-
 type sessionStoresProvider func() (*sessionStores, error)
 
 // newWithClientUsingStores validates the full model/context composition before

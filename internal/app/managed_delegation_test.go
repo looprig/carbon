@@ -16,12 +16,7 @@ import (
 	"github.com/looprig/core/content"
 	"github.com/looprig/core/uuid"
 	"github.com/looprig/harness/pkg/event"
-	"github.com/looprig/harness/pkg/gate"
 	"github.com/looprig/harness/pkg/identity"
-	"github.com/looprig/harness/pkg/journal"
-	"github.com/looprig/harness/pkg/loop"
-	"github.com/looprig/harness/pkg/rig"
-	"github.com/looprig/harness/pkg/sessionstore"
 	"github.com/looprig/harness/pkg/tool"
 	"github.com/looprig/inference"
 	stream "github.com/looprig/inference/stream"
@@ -61,8 +56,6 @@ func startAgentCall(id, input string) []content.Chunk { return namedToolCall(id,
 func messageAgentCall(id, input string) []content.Chunk {
 	return namedToolCall(id, "MessageAgent", input)
 }
-func listAgentsCall(id, input string) []content.Chunk { return namedToolCall(id, "ListAgents", input) }
-func stopAgentCall(id, input string) []content.Chunk  { return namedToolCall(id, "StopAgent", input) }
 
 func namedToolCall(id, name, input string) []content.Chunk {
 	return []content.Chunk{&content.ToolUseChunk{Index: 0, ID: id, Name: name, InputJSON: input}}
@@ -89,17 +82,6 @@ type agentHandle struct {
 	AgentID string `json:"agent_id"`
 	Name    string `json:"name"`
 	State   string `json:"state"`
-}
-
-func parseAgentHandle(text string) (agentHandle, error) {
-	var got agentHandle
-	if err := json.Unmarshal([]byte(text), &got); err != nil {
-		return agentHandle{}, fmt.Errorf("agent result %q: %w", text, err)
-	}
-	if got.AgentID == "" {
-		return agentHandle{}, fmt.Errorf("agent result missing id: %q", text)
-	}
-	return got, nil
 }
 
 func runManagedTurn(t *testing.T, agent tui.Agent, prompt string) string {
@@ -164,37 +146,8 @@ func toolNamesFromRequest(req inference.Request) []string {
 	return names
 }
 
-func assertTaskToolsAdvertised(t *testing.T, req inference.Request) {
-	t.Helper()
-	assertTaskToolRoster(t, toolNamesFromRequest(req))
-}
-
-func assertTaskToolRoster(t *testing.T, names []string) {
-	t.Helper()
-	want := []string{"TaskCreate", "TaskGet", "TaskList", "TaskUpdate"}
-	var got []string
-	for _, name := range names {
-		if strings.HasPrefix(name, "Task") {
-			got = append(got, name)
-		}
-		if name == "Todo" {
-			t.Errorf("tool roster advertises removed Todo tool: %v", names)
-		}
-	}
-	sort.Strings(got)
-	if fmt.Sprint(got) != fmt.Sprint(want) {
-		t.Errorf("task tool roster = %v, want %v", got, want)
-	}
-}
-
 func requestHasRole(req inference.Request, name identity.AgentName) bool {
 	return name == generic.Name && strings.Contains(req.System, "You are Generic")
-}
-
-type approveAllAccessGate struct{}
-
-func (approveAllAccessGate) Authorize(context.Context, tool.Request) (gate.Resolution, error) {
-	return gate.Resolution{Approved: true}, nil
 }
 
 // TestManagedAgentSelfDelegates proves Generic is both the primer and the only
@@ -255,69 +208,4 @@ func (probeTool) Info(context.Context) (*tool.ToolInfo, error) {
 
 func (probeTool) InvokableRun(context.Context, string) (*tool.ToolResult, error) {
 	return tool.TextResult("ok"), nil
-}
-
-func newTypedDelegateTestRig(t *testing.T, limits rig.DelegationLimits) (*sessionAdapter, *sessionStores, tool.DelegateController) {
-	t.Helper()
-	client := &managedScript{fn: func(context.Context, inference.Request) ([]content.Chunk, error) { return finalText("child done"), nil }}
-	probe := &delegateProbe{}
-	definition, err := loop.Define(
-		loop.WithName(generic.Name),
-		loop.WithInference(client, testModel()),
-		loop.WithTools(probe.definition()),
-		loop.WithAccessGate(approveAllAccessGate{}),
-		loop.WithPolicyRevision("typed-delegate-test"),
-		loop.WithDelegates(generic.Name),
-		loop.WithDelegation(loop.Delegation{Style: loop.DelegationManaged}),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stores, err := openTestStores(t)
-	if err != nil {
-		t.Fatal(err)
-	}
-	assembly, err := buildRigForDelegationCaps(definition, stores, t.TempDir(), Config{}, false, limits, permissionReviewRegistration{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	controller, err := assembly.NewSession(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	agent, err := newSessionAdapter(context.Background(), controller, stores.session, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = agent.Close(context.Background()) })
-	if probe.captured() == nil {
-		t.Fatal("rig supplied no scoped delegate controller to Generic binding")
-	}
-	return agent, stores, probe.captured()
-}
-
-func storedLoopStartedCount(t *testing.T, store *sessionstore.Store, sessionID uuid.UUID) int {
-	t.Helper()
-	replayer, err := store.OpenEventReplayer(sessionID, sessionstore.ReplayRequest{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	cursor, err := replayer.Open(context.Background(), journal.ReplayRequest{From: journal.Beginning()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = cursor.Close() }()
-	count := 0
-	for {
-		ev, _, err := cursor.Next(context.Background())
-		if errors.Is(err, io.EOF) {
-			return count
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, ok := ev.(event.LoopStarted); ok {
-			count++
-		}
-	}
 }

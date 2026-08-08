@@ -223,15 +223,6 @@ func TestConfiguredPrimerRuntimeTargetPinsAnAdmittedEffort(t *testing.T) {
 	}
 }
 
-func runtimeOptionByAlias(options []loop.RuntimeModelOption, alias loop.ModelAlias) (loop.RuntimeModelOption, bool) {
-	for _, option := range options {
-		if option.Alias == alias {
-			return option, true
-		}
-	}
-	return loop.RuntimeModelOption{}, false
-}
-
 type runtimeCatalogClient struct{}
 
 func (*runtimeCatalogClient) Invoke(context.Context, inference.Request) (*inference.Response, error) {
