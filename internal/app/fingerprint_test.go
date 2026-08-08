@@ -288,15 +288,9 @@ func TestSecretRedactionAcrossModelCatalogueGatewayFingerprintAndDurableEvents(t
 	})
 	captureErrorFormats("client factory failure", factoryErr)
 
-	defaults := map[identity.AgentName]configuredDelegateDefault{
-		"planner":  {Harness: "codex", Model: "zeta", Effort: model.EffortHigh},
-		"builder":  {Harness: "codex", Model: "zeta", Effort: model.EffortHigh},
-		"reviewer": {Harness: "codex", Model: "zeta", Effort: model.EffortHigh},
-	}
 	compiled, err := CompileACPCatalog(ACPCatalogInput{
 		AgentTypes:     []identity.AgentName{"planner", "builder", "reviewer"},
 		GatewayTargets: configured.ACP,
-		Defaults:       defaults,
 		ClaudeSmall:    configured.ClaudeSmall,
 	})
 	if err != nil {
@@ -310,9 +304,6 @@ func TestSecretRedactionAcrossModelCatalogueGatewayFingerprintAndDurableEvents(t
 	_, catalogueErr := CompileACPCatalog(ACPCatalogInput{
 		AgentTypes:     []identity.AgentName{"builder"},
 		GatewayTargets: duplicateTargets,
-		Defaults: map[identity.AgentName]configuredDelegateDefault{
-			"builder": defaults["builder"],
-		},
 	})
 	captureErrorFormats("catalogue compilation failure", catalogueErr)
 

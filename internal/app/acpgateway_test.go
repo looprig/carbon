@@ -117,9 +117,6 @@ func TestNewACPGatewayNativeAuthHasNoBinding(t *testing.T) {
 	t.Parallel()
 	compiled, err := CompileACPCatalog(ACPCatalogInput{
 		AgentTypes: []identity.AgentName{"worker"},
-		Defaults: map[identity.AgentName]configuredDelegateDefault{
-			"worker": {Harness: "codex", Model: "native-model", Effort: model.EffortNone},
-		},
 		NativeAuth: []ACPNativeAuthSource{{
 			Harness: "codex", Alias: "native-model", Model: testModel(),
 			DefaultEffort: model.EffortNone, Efforts: []model.Effort{model.EffortNone},
@@ -173,7 +170,6 @@ func testACPGatewayCatalog(t *testing.T) ACPCompiledCatalog {
 			"anthropic": &fakeLLM{},
 			"openai":    &fakeLLM{},
 		}),
-		Defaults:    legacyTestDefaults([]identity.AgentName{"worker"}),
 		ClaudeSmall: "sonnet-5",
 	})
 	if err != nil {
@@ -210,12 +206,4 @@ func legacyTestGatewayTargets(clients map[model.ProviderName]inference.Client) [
 		})
 	}
 	return targets
-}
-
-func legacyTestDefaults(roles []identity.AgentName) map[identity.AgentName]configuredDelegateDefault {
-	defaults := make(map[identity.AgentName]configuredDelegateDefault, len(roles))
-	for _, role := range roles {
-		defaults[role] = configuredDelegateDefault{Harness: "claude-code", Model: "sonnet-5", Effort: model.EffortMedium}
-	}
-	return defaults
 }

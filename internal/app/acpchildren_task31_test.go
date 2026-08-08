@@ -183,7 +183,6 @@ func gatewayRuntimeCatalogForTask31(t *testing.T, clients map[model.ProviderName
 	compiled, err := CompileACPCatalog(ACPCatalogInput{
 		AgentTypes:     []identity.AgentName{planner.Name, builder.Name, reviewer.Name},
 		GatewayTargets: legacyTestGatewayTargets(clients),
-		Defaults:       legacyTestDefaults([]identity.AgentName{planner.Name, builder.Name, reviewer.Name}),
 		ClaudeSmall:    "sonnet-5",
 	})
 	if err != nil {

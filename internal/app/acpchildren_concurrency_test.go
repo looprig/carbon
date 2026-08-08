@@ -48,9 +48,6 @@ func testACPMinimalGatewayCatalog(t *testing.T) ACPCompiledCatalog {
 			DefaultEffort: model.EffortMedium,
 			Efforts:       []model.Effort{model.EffortMedium},
 		}},
-		Defaults: map[identity.AgentName]configuredDelegateDefault{
-			"worker": {Harness: "claude-code", Model: "shared-model", Effort: model.EffortMedium},
-		},
 		ClaudeSmall: "shared-model",
 	})
 	if err != nil {
@@ -141,9 +138,6 @@ func TestPreflightACPProfileRunsGatewayAndNativeManagedConcurrently(t *testing.T
 			DefaultEffort: model.EffortMedium,
 			Efforts:       []model.Effort{model.EffortMedium},
 		}},
-		Defaults: map[identity.AgentName]configuredDelegateDefault{
-			"worker": {Harness: "claude-code", Model: "shared-model", Effort: model.EffortMedium},
-		},
 		ClaudeSmall: "shared-model",
 		NativeACP:   map[string]ACPNativeProfile{"claude-code": {Enabled: true}},
 	})

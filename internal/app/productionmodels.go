@@ -3,7 +3,6 @@ package app
 import (
 	"fmt"
 
-	"github.com/looprig/harness/pkg/identity"
 	"github.com/looprig/harness/pkg/loop"
 	"github.com/looprig/inference"
 	"github.com/looprig/inference/auth"
@@ -40,12 +39,8 @@ type productionModels struct {
 	ACP              []ACPGatewaySource
 	NativeACP        map[string]ACPNativeProfile
 	ACPLaunchers     map[string]string // harness -> configured executable path
-	// Defaults is retained as a temporary runtime-catalog compatibility seam.
-	// It is no longer populated from models.json; Task 3 removes this input
-	// when the catalogue is fixed to the Generic agent.
-	Defaults    map[identity.AgentName]configuredDelegateDefault
-	ClaudeSmall loop.ModelAlias
-	ConfigRev   string
+	ClaudeSmall      loop.ModelAlias
+	ConfigRev        string
 	// PermissionReviewEnabled, PermissionReviewModel, and PermissionReviewStrict
 	// mirror Config's own PermissionReviewEnabled/PermissionReviewModel/
 	// PermissionReviewStrictPolicy fields so production.go's and swarm.go's

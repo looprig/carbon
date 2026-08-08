@@ -29,7 +29,7 @@ func TestProductionModelsLoaderReturnsEmptyWhenConfigIsAbsent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadProductionModelsFrom() error = %v", err)
 	}
-	if got.PrimerClient != nil || got.PrimerModel.Name != "" || len(got.ACP) != 0 || len(got.Defaults) != 0 || got.ClaudeSmall != "" || got.ConfigRev != "" {
+	if got.PrimerClient != nil || got.PrimerModel.Name != "" || len(got.ACP) != 0 || got.ClaudeSmall != "" || got.ConfigRev != "" {
 		t.Fatalf("absent configuration returned partial productionModels: %#v", got)
 	}
 }

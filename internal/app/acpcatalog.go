@@ -53,7 +53,6 @@ type ACPNativeProfile struct {
 type ACPCatalogInput struct {
 	AgentTypes     []identity.AgentName
 	GatewayTargets []ACPGatewaySource
-	Defaults       map[identity.AgentName]configuredDelegateDefault
 	ClaudeSmall    loop.ModelAlias
 	NativeACP      map[string]ACPNativeProfile
 	NativeProfiles []ACPNativeProfile
@@ -109,10 +108,7 @@ func CompileACPCatalog(input ACPCatalogInput) (ACPCompiledCatalog, error) {
 		}
 	}
 	// NativeAuth is retained as a compatibility seam for lower-level callers
-	// that predate native_acp configuration. Its implicit default behavior is
-	// intentionally isolated from the production profile path: an omitted
-	// source is gateway for configured native_acp profiles.
-	legacyNativeAliases := make(map[loop.ModelAlias]struct{})
+	// that predate native_acp configuration.
 	for _, source := range input.NativeAuth {
 		if err := validateACPNativeSource(source); err != nil {
 			return ACPCompiledCatalog{}, err
@@ -125,7 +121,6 @@ func CompileACPCatalog(input ACPCatalogInput) (ACPCompiledCatalog, error) {
 		}
 		nativeByHarness[source.Harness] = append(nativeByHarness[source.Harness], runtimeOptionFromNative(source))
 		nativeAliases[source.Alias] = struct{}{}
-		legacyNativeAliases[source.Alias] = struct{}{}
 	}
 
 	hasEnabledNativeProfile := false
@@ -136,13 +131,7 @@ func CompileACPCatalog(input ACPCatalogInput) (ACPCompiledCatalog, error) {
 		}
 	}
 	if len(rows) == 0 && len(nativeByHarness) == 0 && !hasEnabledNativeProfile {
-		if len(input.Defaults) != 0 {
-			return ACPCompiledCatalog{}, fmt.Errorf("coderig: ACP defaults configured without targets")
-		}
 		return ACPCompiledCatalog{RuntimeCatalog: mustEmptyRuntimeCatalog()}, nil
-	}
-	if len(input.Defaults) != len(roles) {
-		return ACPCompiledCatalog{}, fmt.Errorf("coderig: ACP defaults must match configured roles")
 	}
 	if input.ClaudeSmall != "" && !hasRuntimeAlias(rows, input.ClaudeSmall) {
 		return ACPCompiledCatalog{}, fmt.Errorf("coderig: ACP Claude small model unavailable")
@@ -150,40 +139,12 @@ func CompileACPCatalog(input ACPCatalogInput) (ACPCompiledCatalog, error) {
 
 	entries := make([]loop.RuntimeCatalogEntry, 0, len(roles)*4)
 	for _, role := range roles {
-		configuredDefault, ok := input.Defaults[role]
-		if !ok || (configuredDefault.Harness != "claude-code" && configuredDefault.Harness != "codex") {
-			return ACPCompiledCatalog{}, fmt.Errorf("coderig: invalid ACP configured default")
-		}
-		defaultSource := configuredDefault.Source
-		if defaultSource == "" {
-			defaultSource = loop.RuntimeSourceGateway
-			if len(rows) == 0 {
-				if _, legacyNative := legacyNativeAliases[configuredDefault.Model]; legacyNative {
-					defaultSource = loop.RuntimeSourceNative
-				}
-			}
-		}
-		if defaultSource != loop.RuntimeSourceGateway && defaultSource != loop.RuntimeSourceNative {
-			return ACPCompiledCatalog{}, fmt.Errorf("coderig: invalid ACP configured default source")
-		}
-		if defaultSource == loop.RuntimeSourceNative && configuredDefault.Effort != model.EffortNone {
-			return ACPCompiledCatalog{}, fmt.Errorf("coderig: native ACP defaults do not support effort overrides")
-		}
 		defaultFound := false
 		for _, harness := range []loop.AgentHarnessName{"claude-code", "codex"} {
 			if len(rows) > 0 && (harness != "claude-code" || input.ClaudeSmall != "") {
 				models := cloneRuntimeOptions(rows)
 				defaultModel := firstRuntimeAlias(models)
-				if hasRuntimeAlias(models, configuredDefault.Model) {
-					defaultModel = configuredDefault.Model
-				}
-				isDefault := harness == configuredDefault.Harness && defaultSource == loop.RuntimeSourceGateway
-				if isDefault {
-					if !hasRuntimeAlias(models, configuredDefault.Model) || !setACPDefaultEffort(models, configuredDefault.Model, configuredDefault.Effort) {
-						return ACPCompiledCatalog{}, fmt.Errorf("coderig: invalid ACP configured gateway default")
-					}
-					defaultModel = configuredDefault.Model
-				}
+				isDefault := !defaultFound
 				sort.Slice(models, func(i, j int) bool { return models[i].Alias < models[j].Alias })
 				entry := loop.RuntimeCatalogEntry{
 					AgentType: role, AgentHarness: harness, Profile: loop.RuntimeProfileName("acp/" + string(harness)),
@@ -208,11 +169,8 @@ func CompileACPCatalog(input ACPCatalogInput) (ACPCompiledCatalog, error) {
 			if !enabled && !hasProfile {
 				continue
 			}
-			isDefault := harness == configuredDefault.Harness && defaultSource == loop.RuntimeSourceNative
+			isDefault := !defaultFound
 			if hasProfile && profile.Models == nil {
-				if isDefault && configuredDefault.Model != "" {
-					return ACPCompiledCatalog{}, fmt.Errorf("coderig: invalid ACP configured native default")
-				}
 				entry := loop.RuntimeCatalogEntry{
 					AgentType: role, AgentHarness: harness, Profile: loop.RuntimeProfileName("acp/" + string(harness)),
 					Description: runtimeHarnessDescription(harness),
@@ -229,12 +187,6 @@ func CompileACPCatalog(input ACPCatalogInput) (ACPCompiledCatalog, error) {
 			options = cloneRuntimeOptions(options)
 			sort.Slice(options, func(i, j int) bool { return options[i].Alias < options[j].Alias })
 			defaultModel := options[0].Alias
-			if isDefault {
-				if configuredDefault.Model == "" || !hasRuntimeAlias(options, configuredDefault.Model) {
-					return ACPCompiledCatalog{}, fmt.Errorf("coderig: invalid ACP configured native default")
-				}
-				defaultModel = configuredDefault.Model
-			}
 			entries = append(entries, loop.RuntimeCatalogEntry{
 				AgentType: role, AgentHarness: harness, Profile: loop.RuntimeProfileName("acp/" + string(harness)),
 				Description: runtimeHarnessDescription(harness),
@@ -243,9 +195,6 @@ func CompileACPCatalog(input ACPCatalogInput) (ACPCompiledCatalog, error) {
 				DefaultModel: defaultModel, Models: options,
 			})
 			defaultFound = defaultFound || isDefault
-		}
-		if !defaultFound {
-			return ACPCompiledCatalog{}, fmt.Errorf("coderig: ACP configured default source unavailable")
 		}
 	}
 	if len(entries) == 0 {
@@ -414,17 +363,6 @@ func cloneRuntimeOptions(input []loop.RuntimeModelOption) []loop.RuntimeModelOpt
 	return result
 }
 
-func setACPDefaultEffort(options []loop.RuntimeModelOption, alias loop.ModelAlias, effort model.Effort) bool {
-	for index := range options {
-		if options[index].Alias != alias || !containsACPEffort(options[index].Efforts, effort) {
-			continue
-		}
-		options[index].DefaultEffort = effort
-		return true
-	}
-	return false
-}
-
 func runtimeOptionFromNative(source ACPNativeAuthSource) loop.RuntimeModelOption {
 	return loop.RuntimeModelOption{
 		Alias:            source.Alias,
@@ -517,8 +455,9 @@ func (c ACPCompiledCatalog) HasProfile(profile loop.RuntimeProfileName) bool {
 
 // filterProfiles removes entries whose connector did not pass composition
 // preflight. The returned catalog is rebuilt so Harness cannot advertise a
-// profile whose BuilderRegistry entry was omitted. Defaults are repaired after
-// filtering because the original default harness may be the unavailable one.
+// profile whose BuilderRegistry entry was omitted. Runtime defaults are
+// repaired after filtering because the original default harness may be
+// unavailable.
 //
 //lint:ignore U1000 retained as a package-local catalog filtering seam for legacy fixtures.
 func (c ACPCompiledCatalog) filterProfiles(allowed map[loop.RuntimeProfileName]struct{}) (ACPCompiledCatalog, error) {

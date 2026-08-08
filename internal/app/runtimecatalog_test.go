@@ -88,21 +88,15 @@ func TestCompileAgentRuntimeCatalogMergesACPRowsAndDescriptions(t *testing.T) {
 		DefaultEffort: model.EffortMedium,
 		Efforts:       []model.Effort{model.EffortMedium, model.EffortHigh},
 	}
-	defaults := map[identity.AgentName]configuredDelegateDefault{
-		"planner":  {Harness: "codex", Model: "alpha", Effort: model.EffortMedium},
-		"builder":  {Harness: "codex", Model: "alpha", Effort: model.EffortMedium},
-		"reviewer": {Harness: "codex", Model: "alpha", Effort: model.EffortMedium},
-	}
 	acp, err := CompileACPCatalog(ACPCatalogInput{
 		AgentTypes: []identity.AgentName{"planner", "builder", "reviewer"}, GatewayTargets: []ACPGatewaySource{target},
-		Defaults: defaults,
 	})
 	if err != nil {
 		t.Fatalf("CompileACPCatalog() error = %v", err)
 	}
 	compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
 		AgentTypes: []identity.AgentName{"planner", "builder", "reviewer"}, GatewayTargets: []ACPGatewaySource{target},
-		Defaults: defaults, ACP: acp,
+		ACP: acp,
 	})
 	if err != nil {
 		t.Fatalf("CompileAgentRuntimeCatalog() error = %v", err)
@@ -145,7 +139,6 @@ func TestFilterACPPreflightCatalogKeepsOrdinaryRowsWhenACPFails(t *testing.T) {
 	}
 	acp, err := CompileACPCatalog(ACPCatalogInput{
 		AgentTypes: []identity.AgentName{"planner"}, GatewayTargets: []ACPGatewaySource{target},
-		Defaults: map[identity.AgentName]configuredDelegateDefault{"planner": {Harness: "codex", Model: "alpha", Effort: model.EffortMedium}},
 	})
 	if err != nil {
 		t.Fatal(err)

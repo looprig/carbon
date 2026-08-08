@@ -17,17 +17,6 @@ const (
 	claudeRuntimeDescription                          = "Claude Code ACP harness when its profile is usable."
 )
 
-// configuredDelegateDefault is retained temporarily for the pre-generic ACP
-// catalogue API. Model configuration no longer supplies this runtime input;
-// Task 3 removes the compatibility API when the catalogue is fixed to the
-// Generic agent.
-type configuredDelegateDefault struct {
-	Harness loop.AgentHarnessName
-	Source  loop.RuntimeSourceName
-	Model   loop.ModelAlias
-	Effort  model.Effort
-}
-
 // AgentRuntimeCatalogInput is the composition-root input for the complete
 // parent-scoped runtime catalogue. ACP is optional: ordinary in-process rows
 // are compiled from the configured delegate targets even when ACP has no
@@ -35,7 +24,6 @@ type configuredDelegateDefault struct {
 type AgentRuntimeCatalogInput struct {
 	AgentTypes     []identity.AgentName
 	GatewayTargets []ACPGatewaySource
-	Defaults       map[identity.AgentName]configuredDelegateDefault
 	ACP            ACPCompiledCatalog
 }
 
@@ -63,9 +51,6 @@ func CompileAgentRuntimeCatalog(input AgentRuntimeCatalogInput) (ACPCompiledCata
 			models[index].Source = loop.RuntimeSourceNative
 			models[index].Credential = loop.CredentialNativeAuth
 		}
-		if configured, ok := input.Defaults[role]; ok && (configured.Source == "" || configured.Source == loop.RuntimeSourceGateway) {
-			setOrdinaryDefaultEffort(models, configured.Model, configured.Effort)
-		}
 		entries = append(entries, loop.RuntimeCatalogEntry{
 			AgentType:     role,
 			AgentHarness:  looprigRuntimeHarness,
@@ -75,7 +60,7 @@ func CompileAgentRuntimeCatalog(input AgentRuntimeCatalogInput) (ACPCompiledCata
 			Credential:    loop.CredentialNativeAuth,
 			SelectionKind: loop.RuntimeSelectionExplicit,
 			Default:       true,
-			DefaultModel:  ordinaryDefaultModel(role, models, input.Defaults),
+			DefaultModel:  firstRuntimeAlias(models),
 			Models:        models,
 		})
 	}
@@ -111,21 +96,6 @@ func cloneGatewayTargets(input map[loop.ModelAlias]ACPGatewaySource) map[loop.Mo
 		result[alias] = source
 	}
 	return result
-}
-
-func ordinaryDefaultModel(role identity.AgentName, models []loop.RuntimeModelOption, defaults map[identity.AgentName]configuredDelegateDefault) loop.ModelAlias {
-	if configured, ok := defaults[role]; ok && hasRuntimeAlias(models, configured.Model) {
-		return configured.Model
-	}
-	return firstRuntimeAlias(models)
-}
-
-func setOrdinaryDefaultEffort(models []loop.RuntimeModelOption, alias loop.ModelAlias, effort model.Effort) {
-	for index := range models {
-		if models[index].Alias == alias && containsACPEffort(models[index].Efforts, effort) {
-			models[index].DefaultEffort = effort
-		}
-	}
 }
 
 // selectRuntimeDefaults gives a usable ACP default precedence over the

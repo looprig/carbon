@@ -130,9 +130,6 @@ func TestACPRequestPermissionDeniesOutsidePostureWithoutNativePermissionWrites(t
 	compiled, err := CompileACPCatalog(ACPCatalogInput{
 		AgentTypes:     []identity.AgentName{builder.Name},
 		GatewayTargets: configured.ACP,
-		Defaults: map[identity.AgentName]configuredDelegateDefault{
-			builder.Name: {Harness: "codex", Model: "fixture-model", Effort: model.EffortNone},
-		},
 	})
 	if err != nil {
 		t.Fatalf("CompileACPCatalog: %v", err)
@@ -271,7 +268,6 @@ func TestAgentRuntimeChoicesEndToEnd(t *testing.T) {
 			"openai":    openAI,
 			"anthropic": anthropic,
 		}),
-		Defaults:    legacyTestDefaults([]identity.AgentName{planner.Name, builder.Name, reviewer.Name}),
 		ClaudeSmall: "sonnet-5",
 	})
 	if err != nil {

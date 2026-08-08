@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"reflect"
@@ -12,6 +13,33 @@ import (
 	"github.com/looprig/inference/auth"
 	"github.com/looprig/inference/model"
 )
+
+func TestProductionModelsWithoutDelegateDefaultsCompileACPPath(t *testing.T) {
+	decoded, err := decodeModelConfig([]byte(validLMStudioModelConfig))
+	if err != nil {
+		t.Fatalf("decodeModelConfig() error = %v", err)
+	}
+	normalized, err := normalizeModelConfig(decoded)
+	if err != nil {
+		t.Fatalf("normalizeModelConfig() error = %v", err)
+	}
+	configured, err := compileProductionModels(normalized, func(model.Model, auth.APIKey) (inference.Client, error) {
+		return &fakeLLM{}, nil
+	})
+	if err != nil {
+		t.Fatalf("compileProductionModels() error = %v", err)
+	}
+
+	composition, err := newProductionACPCompositionWithPreflight(context.Background(), configured, func(_ context.Context, probe ACPExecutableProbe) ACPPreflightResult {
+		return ACPPreflightResult{Ready: true, AdvertisedModels: append([]string(nil), probe.Models...)}
+	})
+	if err != nil {
+		t.Fatalf("newProductionACPCompositionWithPreflight() error = %v", err)
+	}
+	if composition == nil || len(composition.Catalog.RuntimeCatalog.EntriesFor("planner")) == 0 {
+		t.Fatalf("production ACP composition = %#v, want a compiled runtime catalog", composition)
+	}
+}
 
 func TestProductionModelsConstructsCredentialBoundClients(t *testing.T) {
 	const (

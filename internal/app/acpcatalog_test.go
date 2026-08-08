@@ -10,7 +10,7 @@ import (
 	"github.com/looprig/inference/model"
 )
 
-func TestCompileACPCatalogUsesConfiguredTargetsAndDefaults(t *testing.T) {
+func TestCompileACPCatalogUsesConfiguredTargetsAndDeterministicDefault(t *testing.T) {
 	clientA := &fakeLLM{}
 	clientB := &fakeLLM{}
 	targets := []ACPGatewaySource{
@@ -27,15 +27,8 @@ func TestCompileACPCatalogUsesConfiguredTargetsAndDefaults(t *testing.T) {
 			Efforts:       []model.Effort{model.EffortLow, model.EffortMax},
 		},
 	}
-	defaults := map[identity.AgentName]configuredDelegateDefault{
-		"planner":  {Harness: "claude-code", Model: "fixture-b", Effort: model.EffortMax},
-		"builder":  {Harness: "codex", Model: "fixture-a", Effort: model.EffortHigh},
-		"reviewer": {Harness: "codex", Model: "fixture-a", Effort: model.EffortLow},
-	}
-
 	compiled, err := CompileACPCatalog(ACPCatalogInput{
 		GatewayTargets: targets,
-		Defaults:       defaults,
 		ClaudeSmall:    "fixture-b",
 	})
 	if err != nil {
@@ -60,9 +53,8 @@ func TestCompileACPCatalogUsesConfiguredTargetsAndDefaults(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Resolve(%s default) error = %v", role, err)
 		}
-		want := defaults[role]
-		if resolved.AgentHarness != want.Harness || resolved.ModelAlias != want.Model || resolved.Effort != want.Effort {
-			t.Errorf("Resolve(%s default) = %s/%s@%s, want %s/%s@%s", role, resolved.AgentHarness, resolved.ModelAlias, resolved.Effort, want.Harness, want.Model, want.Effort)
+		if resolved.AgentHarness != "claude-code" || resolved.ModelAlias != "fixture-a" || resolved.Effort != model.EffortMedium {
+			t.Errorf("Resolve(%s default) = %s/%s@%s, want claude-code/fixture-a@medium", role, resolved.AgentHarness, resolved.ModelAlias, resolved.Effort)
 		}
 	}
 
@@ -98,7 +90,7 @@ func TestCompileACPCatalogDerivesDistinctEffortTargets(t *testing.T) {
 	}
 }
 
-func TestCompileACPCatalogRejectsDuplicateAliasesAndInvalidDefaults(t *testing.T) {
+func TestCompileACPCatalogRejectsDuplicateAliases(t *testing.T) {
 	target := fixtureGatewaySource("fixture-a", &fakeLLM{})
 	tests := []struct {
 		name  string
@@ -109,35 +101,7 @@ func TestCompileACPCatalogRejectsDuplicateAliasesAndInvalidDefaults(t *testing.T
 			input: ACPCatalogInput{
 				AgentTypes:     []identity.AgentName{"worker"},
 				GatewayTargets: []ACPGatewaySource{target, target},
-				Defaults: map[identity.AgentName]configuredDelegateDefault{
-					"worker": {Harness: "codex", Model: "fixture-a", Effort: model.EffortMedium},
-				},
-				ClaudeSmall: "fixture-a",
-			},
-		},
-		{
-			name: "missing default",
-			input: ACPCatalogInput{
-				AgentTypes: []identity.AgentName{"worker"}, GatewayTargets: []ACPGatewaySource{target}, ClaudeSmall: "fixture-a",
-			},
-		},
-		{
-			name: "extra default",
-			input: ACPCatalogInput{
-				AgentTypes: []identity.AgentName{"worker"}, GatewayTargets: []ACPGatewaySource{target}, ClaudeSmall: "fixture-a",
-				Defaults: map[identity.AgentName]configuredDelegateDefault{
-					"worker": {Harness: "codex", Model: "fixture-a", Effort: model.EffortMedium},
-					"other":  {Harness: "codex", Model: "fixture-a", Effort: model.EffortMedium},
-				},
-			},
-		},
-		{
-			name: "unavailable default harness",
-			input: ACPCatalogInput{
-				AgentTypes: []identity.AgentName{"worker"}, GatewayTargets: []ACPGatewaySource{target},
-				Defaults: map[identity.AgentName]configuredDelegateDefault{
-					"worker": {Harness: "claude-code", Model: "fixture-a", Effort: model.EffortMedium},
-				},
+				ClaudeSmall:    "fixture-a",
 			},
 		},
 	}
@@ -159,9 +123,6 @@ func TestACPGatewayTargetReturnsExactClientAndAuthoritativeEffort(t *testing.T) 
 			Alias: "fixture-a", Client: client, Model: targetModel,
 			DefaultEffort: model.EffortMedium, Efforts: []model.Effort{model.EffortLow, model.EffortMedium, model.EffortHigh},
 		}},
-		Defaults: map[identity.AgentName]configuredDelegateDefault{
-			"worker": {Harness: "codex", Model: "fixture-a", Effort: model.EffortMedium},
-		},
 		ClaudeSmall: "fixture-a",
 	})
 	if err != nil {
@@ -192,10 +153,7 @@ func TestCompileACPCatalogErrorDoesNotEchoAliases(t *testing.T) {
 	_, err := CompileACPCatalog(ACPCatalogInput{
 		AgentTypes:     []identity.AgentName{"worker"},
 		GatewayTargets: []ACPGatewaySource{target, target},
-		Defaults: map[identity.AgentName]configuredDelegateDefault{
-			"worker": {Harness: "codex", Model: loop.ModelAlias(sentinel), Effort: model.EffortMedium},
-		},
-		ClaudeSmall: loop.ModelAlias(sentinel),
+		ClaudeSmall:    loop.ModelAlias(sentinel),
 	})
 	if err == nil {
 		t.Fatal("CompileACPCatalog() succeeded")
@@ -210,10 +168,7 @@ func compileFixtureACPCatalog(t *testing.T) ACPCompiledCatalog {
 	compiled, err := CompileACPCatalog(ACPCatalogInput{
 		AgentTypes:     []identity.AgentName{"worker"},
 		GatewayTargets: []ACPGatewaySource{fixtureGatewaySource("fixture-a", &fakeLLM{})},
-		Defaults: map[identity.AgentName]configuredDelegateDefault{
-			"worker": {Harness: "codex", Model: "fixture-a", Effort: model.EffortMedium},
-		},
-		ClaudeSmall: "fixture-a",
+		ClaudeSmall:    "fixture-a",
 	})
 	if err != nil {
 		t.Fatal(err)

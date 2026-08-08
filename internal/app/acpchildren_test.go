@@ -115,10 +115,9 @@ func TestNewACPCompositionDiagnosticsReducedModels(t *testing.T) {
 		WorkspaceRoot:           t.TempDir(),
 		gatewayPreflightBinding: &launch.ProxyBinding{BaseURL: "http://127.0.0.1:1", Token: "test-token"},
 		executablePreflight: func(context.Context, ACPExecutableProbe) ACPPreflightResult {
-			// sonnet-5 remains the default alias for claude-code (per
-			// legacyTestDefaults), so omitting only fable-5 keeps claude-code
-			// admitted while genuinely reducing its surviving model count.
-			return ACPPreflightResult{Ready: true, AdvertisedModels: []string{"sonnet-5", "opus-5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"}}
+			// fable-5 is the deterministic first configured alias. Omitting
+			// opus-5 keeps claude-code admitted while reducing its model set.
+			return ACPPreflightResult{Ready: true, AdvertisedModels: []string{"fable-5", "fable-5@high", "sonnet-5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"}}
 		},
 	})
 	if err != nil {
@@ -210,9 +209,6 @@ func TestNewACPCompositionBuildsNativeAuthProfileWithoutGateway(t *testing.T) {
 	}
 	compiled, err := CompileACPCatalog(ACPCatalogInput{
 		AgentTypes: []identity.AgentName{"worker"},
-		Defaults: map[identity.AgentName]configuredDelegateDefault{
-			"worker": {Harness: "codex", Model: "native-model", Effort: model.EffortNone},
-		},
 		NativeAuth: []ACPNativeAuthSource{{
 			Harness: "codex", Alias: "native-model", Model: testModel(),
 			DefaultEffort: model.EffortNone, Efforts: []model.Effort{model.EffortNone},
@@ -298,7 +294,7 @@ func TestACPChildEnvironmentAndGatewayPreflightExcludeParentSecrets(t *testing.T
 				if !containsString(probe.Models, "sonnet-5@high") || !containsString(probe.Models, "sonnet-5@max") {
 					t.Fatalf("Claude preflight models = %#v, want concrete effort aliases", probe.Models)
 				}
-				return ACPPreflightResult{Ready: true, AdvertisedModels: []string{"sonnet-5", "sonnet-5@high", "fable-5@high"}}
+				return ACPPreflightResult{Ready: true, AdvertisedModels: []string{"fable-5", "fable-5@high", "sonnet-5", "sonnet-5@high"}}
 			}
 			return ACPPreflightResult{Ready: true}
 		},
@@ -323,18 +319,18 @@ func TestACPChildEnvironmentAndGatewayPreflightExcludeParentSecrets(t *testing.T
 	if claude.AgentHarness != "claude-code" {
 		t.Fatalf("Claude gateway entry missing: %#v", claudeEntries)
 	}
-	if len(claude.Models) != 1 || claude.Models[0].Alias != "sonnet-5" {
+	if len(claude.Models) != 2 || claude.Models[0].Alias != "fable-5" || claude.Models[1].Alias != "sonnet-5" {
 		t.Fatalf("Claude advertised unsupported aliases: %#v", claude.Models)
 	}
-	if len(claude.Models[0].Efforts) != 2 || claude.Models[0].Efforts[0] != model.EffortMedium || claude.Models[0].Efforts[1] != model.EffortHigh {
-		t.Fatalf("Claude advertised unsupported efforts: %#v", claude.Models[0].Efforts)
+	if len(claude.Models[1].Efforts) != 2 || claude.Models[1].Efforts[0] != model.EffortMedium || claude.Models[1].Efforts[1] != model.EffortHigh {
+		t.Fatalf("Claude advertised unsupported efforts: %#v", claude.Models[1].Efforts)
 	}
 	if _, _, err := composition.Registry.Builder("acp/claude-code"); err != nil {
 		t.Fatalf("gateway-only Claude profile was removed: %v", err)
 	}
 }
 
-func TestNewACPCompositionRejectsUnavailableConfiguredDefaultHarness(t *testing.T) {
+func TestNewACPCompositionDoesNotSubstituteUnavailableFirstACPEntry(t *testing.T) {
 	executable, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
@@ -356,7 +352,7 @@ func TestNewACPCompositionRejectsUnavailableConfiguredDefaultHarness(t *testing.
 		},
 	})
 	if err != nil {
-		t.Fatalf("NewACPComposition() failed when configured default harness was unavailable: %v", err)
+		t.Fatalf("NewACPComposition() failed when first ACP entry was unavailable: %v", err)
 	}
 	if composition == nil {
 		t.Fatal("NewACPComposition() returned nil composition")
@@ -421,9 +417,6 @@ func TestNewACPCompositionNativePreflightKeepsNativeEnvironment(t *testing.T) {
 	}
 	compiled, err := CompileACPCatalog(ACPCatalogInput{
 		AgentTypes: []identity.AgentName{"worker"},
-		Defaults: map[identity.AgentName]configuredDelegateDefault{
-			"worker": {Harness: "codex", Model: "native-model", Effort: model.EffortNone},
-		},
 		NativeAuth: []ACPNativeAuthSource{{
 			Harness: "codex", Alias: "native-model", Model: testModel(),
 			DefaultEffort: model.EffortNone, Efforts: []model.Effort{model.EffortNone},
@@ -499,9 +492,6 @@ func TestACPChildModelAliasesUseConcreteGatewayTargetsAndNativeModels(t *testing
 
 	nativeCatalog, err := CompileACPCatalog(ACPCatalogInput{
 		AgentTypes: []identity.AgentName{"worker"},
-		Defaults: map[identity.AgentName]configuredDelegateDefault{
-			"worker": {Harness: "codex", Model: "native-model", Effort: model.EffortNone},
-		},
 		NativeAuth: []ACPNativeAuthSource{{
 			Harness: "codex", Alias: "native-model", Model: testModel(),
 			DefaultEffort: model.EffortNone, Efforts: []model.Effort{model.EffortNone},
@@ -530,7 +520,6 @@ func TestACPBoundRuntimeResolutionUsesPinnedSelectors(t *testing.T) {
 		GatewayTargets: legacyTestGatewayTargets(map[model.ProviderName]inference.Client{
 			"anthropic": &fakeLLM{}, "openai": &fakeLLM{},
 		}),
-		Defaults:    legacyTestDefaults([]identity.AgentName{"builder"}),
 		ClaudeSmall: "sonnet-5",
 	})
 	if err != nil {
@@ -659,7 +648,6 @@ func TestNewACPCompositionDiagnosticsPreflightFailedBothModes(t *testing.T) {
 			"anthropic": &fakeLLM{},
 			"openai":    &fakeLLM{},
 		}),
-		Defaults:    legacyTestDefaults([]identity.AgentName{"worker"}),
 		ClaudeSmall: "sonnet-5",
 		NativeAuth: []ACPNativeAuthSource{{
 			Harness: "codex", Alias: "native-model", Model: testModel(),

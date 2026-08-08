@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/looprig/acp/launch"
-	"github.com/looprig/harness/pkg/identity"
 	"github.com/looprig/harness/pkg/loop"
 	"github.com/looprig/inference/model"
 )
@@ -114,7 +113,7 @@ func TestPreflightProductionACPExecutableEnforcesAdapterSpecificSelectors(t *tes
 	}
 }
 
-func TestProductionACPCompositionKeepsConfiguredGatewayRowsAlongsideNativeRows(t *testing.T) {
+func TestProductionACPCompositionKeepsConfiguredGatewayRowsAlongsideOrdinaryRows(t *testing.T) {
 	executable, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
@@ -132,7 +131,7 @@ func TestProductionACPCompositionKeepsConfiguredGatewayRowsAlongsideNativeRows(t
 			t.Fatalf("production preflight credential = %q, want gateway-backed", probe.Credential)
 		}
 		if probe.Model != "configured-only" {
-			t.Fatalf("production preflight model = %q, want exact configured default", probe.Model)
+			t.Fatalf("production preflight model = %q, want configured model", probe.Model)
 		}
 		if probe.Harness == "claude-code" && probe.SmallModel != "configured-only" {
 			t.Fatalf("Claude small model = %q, want exact configured alias", probe.SmallModel)
@@ -151,19 +150,19 @@ func TestProductionACPCompositionKeepsConfiguredGatewayRowsAlongsideNativeRows(t
 	}
 	entries := composition.Catalog.RuntimeCatalog.EntriesFor("builder")
 	if len(entries) != 3 {
-		t.Fatalf("builder entries = %#v, want native plus configured Claude and Codex entries", entries)
+		t.Fatalf("builder entries = %#v, want ordinary plus configured Claude and Codex entries", entries)
 	}
 	var gatewayRows, nativeRows int
 	for _, entry := range entries {
 		if entry.Source == loop.RuntimeSourceNative {
 			nativeRows++
 			if entry.AgentHarness != "looprig" || entry.Profile != "looprig/native" || entry.DefaultModel != "configured-only" {
-				t.Fatalf("native production entry = %#v, want configured-only ordinary row", entry)
+				t.Fatalf("ordinary production entry = %#v, want configured model row", entry)
 			}
 		} else {
 			gatewayRows++
 			if entry.Credential != loop.CredentialGatewayBacked || entry.DefaultModel != "configured-only" {
-				t.Fatalf("production gateway entry = %#v, want configured gateway default", entry)
+				t.Fatalf("production gateway entry = %#v, want configured model row", entry)
 			}
 		}
 		if len(entry.Models) != 1 || entry.Models[0].Alias != "configured-only" {
@@ -171,79 +170,7 @@ func TestProductionACPCompositionKeepsConfiguredGatewayRowsAlongsideNativeRows(t
 		}
 	}
 	if gatewayRows != 2 || nativeRows != 1 {
-		t.Fatalf("gateway rows=%d native rows=%d, want 2 and 1", gatewayRows, nativeRows)
-	}
-}
-
-func TestProductionACPCompositionWiresConfiguredManagedNativeProfile(t *testing.T) {
-	executable, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv(acpClaudeExecutableEnv, executable)
-	t.Setenv(acpCodexExecutableEnv, executable)
-
-	configured := configuredProductionModelsForTest("configured-only")
-	configured.NativeACP = map[string]ACPNativeProfile{
-		"codex": {Harness: "codex", Enabled: true},
-	}
-	for role := range configured.Defaults {
-		configured.Defaults[role] = configuredDelegateDefault{Harness: "codex", Source: loop.RuntimeSourceNative}
-	}
-	var nativeProbes int
-	composition, err := newProductionACPCompositionWithPreflight(context.Background(), configured, func(_ context.Context, probe ACPExecutableProbe) ACPPreflightResult {
-		if probe.Credential == loop.CredentialNativeAuth {
-			nativeProbes++
-			if probe.SharedProxy != nil || probe.Model != "" || probe.SmallModel != "" || len(probe.Models) != 0 {
-				t.Fatalf("managed native production probe = %#v", probe)
-			}
-			return ACPPreflightResult{Ready: true}
-		}
-		return ACPPreflightResult{Ready: true, AdvertisedModels: append([]string(nil), probe.Models...)}
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if nativeProbes != 1 {
-		t.Fatalf("managed native production probes = %d, want 1", nativeProbes)
-	}
-	entries := composition.Catalog.RuntimeCatalog.EntriesFor("builder")
-	var managed loop.RuntimeCatalogEntry
-	for _, entry := range entries {
-		if entry.Source == loop.RuntimeSourceNative {
-			managed = entry
-			break
-		}
-	}
-	if managed.SelectionKind != loop.RuntimeSelectionHarnessManaged || len(managed.Models) != 0 || managed.DefaultModel != "" || managed.SmallModel != "" {
-		t.Fatalf("production managed native entry = %#v", managed)
-	}
-}
-
-func TestProductionACPCompositionDoesNotFallbackWhenConfiguredDefaultHarnessIsUnavailable(t *testing.T) {
-	t.Setenv(acpCodexExecutableEnv, "")
-	t.Setenv(acpClaudeExecutableEnv, "")
-	// Isolate PATH so a real claude-code-acp/codex-acp installed on the host
-	// (as happens on developer machines) cannot be discovered by the new
-	// env->config->PATH resolution and make this harness look available.
-	t.Setenv("PATH", t.TempDir())
-
-	configured := configuredProductionModelsForTest("configured-only")
-	for role := range configured.Defaults {
-		configured.Defaults[role] = configuredDelegateDefault{Harness: "codex", Model: "configured-only", Effort: model.EffortNone}
-	}
-	composition, err := newProductionACPCompositionWithPreflight(context.Background(), configured, func(_ context.Context, probe ACPExecutableProbe) ACPPreflightResult {
-		return ACPPreflightResult{Ready: true, AdvertisedModels: append([]string(nil), probe.Models...)}
-	})
-	if err != nil {
-		t.Fatalf("unavailable configured default blocked native startup: %v", err)
-	}
-	if composition == nil {
-		t.Fatal("unavailable configured default returned nil composition")
-	}
-	entries := composition.Catalog.RuntimeCatalog.EntriesFor("builder")
-	if len(entries) != 1 || entries[0].AgentHarness != "looprig" || !entries[0].Default {
-		t.Fatalf("unavailable configured default did not retain the ordinary row: %#v", entries)
+		t.Fatalf("gateway rows=%d ordinary rows=%d, want 2 and 1", gatewayRows, nativeRows)
 	}
 }
 
@@ -288,10 +215,6 @@ func writeFakeACPExecutable(t *testing.T, path string) {
 
 func configuredProductionModelsForTest(alias loop.ModelAlias) productionModels {
 	selected := model.CustomModel("lmstudio", model.APIFormatOpenAI, "http://localhost:1234/v1", "configured-provider-model", model.WithTools())
-	defaults := make(map[identity.AgentName]configuredDelegateDefault, 3)
-	for _, role := range []identity.AgentName{"planner", "builder", "reviewer"} {
-		defaults[role] = configuredDelegateDefault{Harness: "codex", Model: alias, Effort: model.EffortNone}
-	}
 	return productionModels{
 		PrimerClient: &fakeLLM{},
 		PrimerModel:  selected,
@@ -299,7 +222,6 @@ func configuredProductionModelsForTest(alias loop.ModelAlias) productionModels {
 			Alias: alias, Client: &fakeLLM{}, Model: selected,
 			DefaultEffort: model.EffortNone, Efforts: []model.Effort{model.EffortNone},
 		}},
-		Defaults:    defaults,
 		ClaudeSmall: alias,
 		ConfigRev:   "configured-revision",
 	}

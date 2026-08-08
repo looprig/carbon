@@ -67,7 +67,6 @@ func newProductionACPCompositionWithPreflight(ctx context.Context, configured pr
 	acpCatalog, err := CompileACPCatalog(ACPCatalogInput{
 		AgentTypes:     []identity.AgentName{planner.Name, builder.Name, reviewer.Name},
 		GatewayTargets: configured.ACP,
-		Defaults:       configured.Defaults,
 		ClaudeSmall:    configured.ClaudeSmall,
 		NativeACP:      configured.NativeACP,
 	})
@@ -77,7 +76,6 @@ func newProductionACPCompositionWithPreflight(ctx context.Context, configured pr
 	catalog, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
 		AgentTypes:     []identity.AgentName{planner.Name, builder.Name, reviewer.Name},
 		GatewayTargets: configured.ACP,
-		Defaults:       configured.Defaults,
 		ACP:            acpCatalog,
 	})
 	if err != nil {

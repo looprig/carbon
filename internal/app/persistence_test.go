@@ -14,11 +14,9 @@ import (
 
 	"github.com/looprig/coderig/internal/catalog/builder"
 	"github.com/looprig/coderig/internal/catalog/planner"
-	"github.com/looprig/coderig/internal/catalog/reviewer"
 	"github.com/looprig/core/content"
 	"github.com/looprig/core/uuid"
 	"github.com/looprig/harness/pkg/event"
-	"github.com/looprig/harness/pkg/identity"
 	"github.com/looprig/harness/pkg/loop"
 	"github.com/looprig/harness/pkg/rig"
 	"github.com/looprig/harness/pkg/session"
@@ -134,11 +132,6 @@ func TestPersistedOpenRoutesNativeAgentThroughRuntimeClientAcrossRestore(t *test
 			Model: delegateModel, DefaultEffort: model.EffortLow,
 			Efforts: []model.Effort{model.EffortLow, model.EffortMedium},
 		}},
-		Defaults: map[identity.AgentName]configuredDelegateDefault{
-			planner.Name:  {Harness: "codex", Source: loop.RuntimeSourceGateway, Model: "persisted-delegate", Effort: model.EffortLow},
-			builder.Name:  {Harness: "codex", Source: loop.RuntimeSourceGateway, Model: "persisted-delegate", Effort: model.EffortLow},
-			reviewer.Name: {Harness: "codex", Source: loop.RuntimeSourceGateway, Model: "persisted-delegate", Effort: model.EffortLow},
-		},
 		ConfigRev: "persisted-runtime-client-rev",
 	}
 	factory := &SessionStoreFactory{
