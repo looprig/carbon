@@ -92,9 +92,14 @@ func TestGenericDefinitionIsSoleManagedLoop(t *testing.T) {
 	if got := strings.Count(initial.EffectiveSystem, "<available_skills>"); got != 1 {
 		t.Fatalf("skill catalog count = %d, want exactly 1", got)
 	}
-	for _, name := range []string{"ReadFile", "WriteFile", "EditFile", "Glob", "Grep", "Bash", "ProcessOutput", "ProcessInput", "ProcessStop", "WebSearch", "Fetch", "TaskCreate", "TaskGet", "TaskList", "TaskUpdate", "AskUser", "Skill"} {
+	for _, name := range []string{"ReadFile", "WriteFile", "EditFile", "Bash", "ProcessOutput", "ProcessInput", "ProcessStop", "WebSearch", "Fetch", "TaskCreate", "TaskGet", "TaskList", "TaskUpdate", "AskUser", "Skill"} {
 		if !slices.Contains(initial.ToolNames, name) {
 			t.Errorf("Generic tool roster missing %q: %v", name, initial.ToolNames)
+		}
+	}
+	for _, name := range []string{"Glob", "Grep"} {
+		if slices.Contains(initial.ToolNames, name) {
+			t.Errorf("Generic tool roster unexpectedly includes %q: %v", name, initial.ToolNames)
 		}
 	}
 }

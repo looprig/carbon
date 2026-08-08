@@ -14,8 +14,6 @@ import (
 	"github.com/looprig/tools"
 	"github.com/looprig/tools/bash"
 	"github.com/looprig/tools/editfile"
-	"github.com/looprig/tools/glob"
-	"github.com/looprig/tools/grep"
 	"github.com/looprig/tools/permission"
 	"github.com/looprig/tools/readfile"
 	"github.com/looprig/tools/skill"
@@ -45,7 +43,7 @@ import (
 // existing synchronous grantedExecutor lookup.
 
 // maxReadBytes is CodeRig's per-file in-process read cap applied by the direct
-// read tools (ReadFile/Grep). Sandbox profile access still governs read
+// ReadFile tool. Sandbox profile access still governs read
 // authority through the gate; this bound only limits how much a single approved
 // read returns. It is product policy.
 const maxReadBytes int64 = 5 << 20
@@ -69,8 +67,8 @@ var errNoLoopProvenance = errors.New("coderig: access gate consulted without loo
 // It denies no path lexically — sandbox profile access is the read-authority
 // source of truth, enforced by the gate on filesystem.read requirements and by
 // the OS for confined commands — and applies the fixed per-file byte cap. This
-// is only true end-to-end because ReadFile/Grep/Glob are constructed with
-// tools' WithHostReads() below: without it, a host (out-of-workspace) path
+// is only true end-to-end because ReadFile is constructed with tools'
+// WithHostReads() below: without it, a host (out-of-workspace) path
 // never reaches the gate at all, since the tools package's own workspace
 // containment check rejects it first. With it, an out-of-workspace path still
 // reaches the SAME filesystem.read requirement/gate/profile as a spawned Bash
@@ -235,8 +233,6 @@ func genericToolDefinitions(set *sandbox.ExecutorSet, client *http.Client, skill
 		tools.ReadFileDefinition(guard, readfile.WithHostReads()),
 		tools.WriteFileDefinition(writefile.WithHostWrites()),
 		tools.EditFileDefinition(editfile.WithHostWrites()),
-		tools.GlobDefinition(guard, glob.WithHostReads()),
-		tools.GrepDefinition(guard, grep.WithHostReads()),
 		bashDefinition(set, newProcessRunnerResolver(set)),
 		tools.ProcessOutputDefinition(),
 		tools.ProcessInputDefinition(),

@@ -13,8 +13,8 @@ import (
 // mustExecutorSet builds a minimal, real ExecutorSet under a trusted profile
 // for tests that only need SOME executor set to build Generic's tool
 // definitions -- the actual access decision is proven separately by
-// TestAcceptanceProfileGateBehavior; this only proves the built ReadFile/
-// Glob/Grep tools carry WithHostReads().
+// TestAcceptanceProfileGateBehavior; this only proves the built ReadFile tool
+// carries WithHostReads().
 func mustExecutorSet(t *testing.T, root string) *sandbox.ExecutorSet {
 	t.Helper()
 	profile, err := coderigProfile(AccessTrusted, root)
@@ -71,8 +71,8 @@ func definitionDescByName(t *testing.T, root string, defs []tool.Definition, nam
 }
 
 // TestGenericToolDefinitionsEnableHostReads proves genericToolDefinitions
-// wires WithHostReads() into ReadFile/Glob/Grep: their advertised
-// descriptions no longer claim workspace-only confinement, matching
+// wires WithHostReads() into ReadFile: its advertised description no longer
+// claims workspace-only confinement, matching
 // coderigReadGuard's doc comment ("sandbox profile access is the
 // read-authority source of truth").
 func TestGenericToolDefinitionsEnableHostReads(t *testing.T) {
@@ -86,8 +86,6 @@ func TestGenericToolDefinitionsEnableHostReads(t *testing.T) {
 		confinedPhrase string
 	}{
 		{"ReadFile", "Reads are confined to the workspace"},
-		{"Glob", "Results are confined to the workspace"},
-		{"Grep", "Confined to the workspace"},
 	} {
 		desc := definitionDescByName(t, root, defs, tc.name)
 		if strings.Contains(desc, tc.confinedPhrase) {
@@ -102,7 +100,7 @@ func TestGenericToolDefinitionsEnableHostReads(t *testing.T) {
 func TestGenericToolDefinitionsExposeCompleteCodingRoster(t *testing.T) {
 	t.Parallel()
 	defs := genericToolDefinitions(mustExecutorSet(t, t.TempDir()), nil, tool.NewDefinition("Skill", 0, func(context.Context, tool.Bindings) ([]tool.InvokableTool, error) { return nil, nil }))
-	want := []string{"ReadFile", "WriteFile", "EditFile", "Glob", "Grep", "Bash", "ProcessOutput", "ProcessInput", "ProcessStop", "WebSearch", "Fetch", "TaskCreate", "TaskGet", "TaskList", "TaskUpdate", "AskUser", "Skill"}
+	want := []string{"ReadFile", "WriteFile", "EditFile", "Bash", "ProcessOutput", "ProcessInput", "ProcessStop", "WebSearch", "Fetch", "TaskCreate", "TaskGet", "TaskList", "TaskUpdate", "AskUser", "Skill"}
 	got := make(map[string]bool)
 	for _, def := range defs {
 		for _, name := range def.ProducedToolNames() {
@@ -114,11 +112,16 @@ func TestGenericToolDefinitionsExposeCompleteCodingRoster(t *testing.T) {
 			t.Errorf("Generic roster missing %q; got %v", name, got)
 		}
 	}
+	for _, name := range []string{"Glob", "Grep"} {
+		if got[name] {
+			t.Errorf("Generic roster unexpectedly includes %q; got %v", name, got)
+		}
+	}
 }
 
 // noopCoordinator is a minimal tool.WorkspaceCoordinator fixture: definition
 // Build only needs SOME non-nil coordinator to satisfy WriteFile/EditFile's
-// binding; ReadFile/Glob/Grep never call it.
+// binding; ReadFile never calls it.
 type noopCoordinator struct{}
 
 func (noopCoordinator) Acquire(context.Context, tool.WorkspaceOperation, string) (tool.WorkspacePermit, error) {
