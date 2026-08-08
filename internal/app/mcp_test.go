@@ -337,18 +337,6 @@ func TestMCPHeadersFromEmptyIsNil(t *testing.T) {
 	}
 }
 
-func TestMCPVisibilityRoles(t *testing.T) {
-	if got := mcpVisibilityRoles(nil); strings.Join(got, ",") != "generic" {
-		t.Errorf("mcpVisibilityRoles(nil) = %v, want generic", got)
-	}
-	if got := mcpVisibilityRoles([]string{}); strings.Join(got, ",") != "generic" {
-		t.Errorf("mcpVisibilityRoles([]) = %v, want generic", got)
-	}
-	if got := mcpVisibilityRoles([]string{"generic"}); strings.Join(got, ",") != "generic" {
-		t.Errorf("mcpVisibilityRoles([generic]) = %v, want [generic]", got)
-	}
-}
-
 func TestMCPDefinitionsEmptySpecsReturnsEmpty(t *testing.T) {
 	bindings, err := mcpDefinitions(nil)
 	if err != nil {

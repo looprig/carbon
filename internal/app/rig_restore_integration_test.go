@@ -485,7 +485,7 @@ func TestManagedDelegateDeclaredModeFSStore(t *testing.T) {
 	}
 	modeModel := testModel()
 	modeModel.Name = "declared-generic-model"
-	definitions := func(t *testing.T) []loop.Definition {
+	definition := func(t *testing.T) loop.Definition {
 		t.Helper()
 		definition, err := loop.Define(
 			loop.WithName(generic.Name), loop.WithInference(client, testModel()), loop.WithSystem("mode-test-primary"),
@@ -497,7 +497,7 @@ func TestManagedDelegateDeclaredModeFSStore(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		return []loop.Definition{definition}
+		return definition
 	}
 	f1, err := NewSessionStoreFactory(dataDir)
 	if err != nil {
@@ -506,7 +506,7 @@ func TestManagedDelegateDeclaredModeFSStore(t *testing.T) {
 	if _, err := f1.List(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	assembly1, err := buildRig(definitions(t), f1.stores, root, Config{}, false)
+	assembly1, err := buildRig(definition(t), f1.stores, root, Config{}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -558,7 +558,7 @@ func TestManagedDelegateDeclaredModeFSStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = f2.Close() })
-	assembly2, err := buildRig(definitions(t), f2.stores, root, Config{}, false)
+	assembly2, err := buildRig(definition(t), f2.stores, root, Config{}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -659,7 +659,7 @@ func TestRigRestoreSnapshotFailureAdmission(t *testing.T) {
 				return finalText("snapshot turn complete"), nil
 			}}
 			access, cfg := headlessTestAccess(t, Config{}, root)
-			definitions, err := genericTestDefinitions(client, testModel(), cfg, access)
+			definition, err := genericTestDefinition(client, testModel(), cfg, access)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -668,7 +668,7 @@ func TestRigRestoreSnapshotFailureAdmission(t *testing.T) {
 				t.Fatal(err)
 			}
 			options := []rig.Option{
-				rig.WithLoops(definitions...),
+				rig.WithLoops(definition),
 				rig.WithPrimers(string(generic.Name)),
 				rig.WithActivePrimer(string(generic.Name)),
 				rig.WithSessionStore(f.stores.session),
@@ -725,126 +725,6 @@ func TestRigRestoreSnapshotFailureAdmission(t *testing.T) {
 				t.Fatalf("best-effort retry WaitIdle = %v", err)
 			}
 		})
-	}
-}
-
-// TestRigRestoreSiblingOwnershipScopes builds two managed primer parents over the same
-// real fsstore session. Each owns one worker. After a fresh-factory restore, parent A can
-// still address A's worker but cannot send, wait, or interrupt parent B's real worker.
-func TestRigRestoreSiblingOwnershipScopes(t *testing.T) {
-	dataDir, root := t.TempDir(), t.TempDir()
-	t.Chdir(root)
-	client := &managedScript{fn: func(context.Context, inference.Request) ([]content.Chunk, error) {
-		return finalText("scoped worker complete"), nil
-	}}
-	var probeA, probeB *delegateProbe
-	definitions := func(t *testing.T) []loop.Definition {
-		t.Helper()
-		parent := func(name string, capture **delegateProbe) loop.Definition {
-			probe := &delegateProbe{}
-			*capture = probe
-			def, err := loop.Define(
-				loop.WithName(identity.AgentName(name)),
-				loop.WithInference(client, testModel()),
-				loop.WithTools(probe.definition()),
-				loop.WithAccessGate(approveAllAccessGate{}),
-				loop.WithPolicyRevision(name+"-v1"),
-				loop.WithDelegates("scoped-worker"),
-				loop.WithDelegation(loop.Delegation{Style: loop.DelegationManaged}),
-			)
-			if err != nil {
-				t.Fatal(err)
-			}
-			return def
-		}
-		worker, err := loop.Define(loop.WithName("scoped-worker"), loop.WithInference(client, testModel()), loop.WithPolicyRevision("scoped-worker-v1"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		return []loop.Definition{parent("parent-a", &probeA), parent("parent-b", &probeB), worker}
-	}
-	build := func(t *testing.T, f *SessionStoreFactory) *rig.Rig {
-		t.Helper()
-		assembly, err := rig.Define(
-			rig.WithLoops(definitions(t)...),
-			rig.WithPrimers("parent-a", "parent-b"),
-			rig.WithActivePrimer("parent-a"),
-			rig.WithSessionStore(f.stores.session),
-			rig.WithExclusiveWorkspace(f.stores.workspace, root, f.stores.leaser),
-			rig.WithSnapshots(rig.SnapshotPolicy{Trigger: rig.SnapshotOnIdle, Priority: rig.SnapshotBestEffort}),
-			rig.WithDelegationLimits(rig.DelegationLimits{Depth: 2, Quota: 8}),
-			rig.WithFingerprintFields(rig.ConfigFingerprintFields{AgentKind: "coderig:scoped-ownership-test"}),
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return assembly
-	}
-
-	f1, err := NewSessionStoreFactory(dataDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f1.List(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	s1, err := build(t, f1).NewSession(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	sid := s1.SessionID()
-	parentA, parentB := probeA.captured(), probeB.captured()
-	if parentA == nil || parentB == nil {
-		t.Fatal("initial bind did not capture both scoped controllers")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	aChild, err := parentA.Execute(ctx, tool.DelegateRequest{Operation: tool.DelegateStart, AgentType: "scoped-worker", Message: "a", WaitForResponse: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	bChild, err := parentB.Execute(ctx, tool.DelegateRequest{Operation: tool.DelegateStart, AgentType: "scoped-worker", Message: "b", WaitForResponse: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if aChild.AgentID == bChild.AgentID {
-		t.Fatal("distinct parents received the same child")
-	}
-	if err := s1.Shutdown(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if err := f1.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	probeA, probeB = nil, nil
-	f2, err := NewSessionStoreFactory(dataDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f2.List(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = f2.Close() })
-	s2, err := build(t, f2).RestoreSession(ctx, sid)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = s2.Shutdown(context.Background()) })
-	parentA, parentB = probeA.captured(), probeB.captured()
-	if parentA == nil || parentB == nil {
-		t.Fatal("restore did not rebind both scoped controllers")
-	}
-	if got, err := parentA.Execute(ctx, tool.DelegateRequest{Operation: tool.DelegateSend, AgentID: aChild.AgentID, Message: "owned", WaitForResponse: true}); err != nil || got.Response != "scoped worker complete" {
-		t.Fatalf("restored own child send = %+v, %v", got, err)
-	}
-	for _, request := range []tool.DelegateRequest{
-		{Operation: tool.DelegateSend, AgentID: bChild.AgentID, Message: "cross-owner", WaitForResponse: true},
-		{Operation: tool.DelegateInterrupt, AgentID: bChild.AgentID},
-	} {
-		if _, err := parentA.Execute(ctx, request); err == nil || !strings.Contains(err.Error(), "not owned") {
-			t.Fatalf("parent A cross-owner %v error = %v, want ownership rejection", request.Operation, err)
-		}
 	}
 }
 

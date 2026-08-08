@@ -638,7 +638,7 @@ func TestProcessToolsForeignEngineRosterRejectsProcessEnabledTools(t *testing.T)
 	if err != nil {
 		t.Fatalf("openTestStores() error = %v", err)
 	}
-	assembly, err := buildRig([]loop.Definition{definition}, stores, root, Config{}, false)
+	assembly, err := buildRig(definition, stores, root, Config{}, false)
 	if err != nil {
 		t.Fatalf("buildRig() error = %v", err)
 	}

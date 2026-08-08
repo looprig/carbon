@@ -286,11 +286,11 @@ func TestRestoreRejectsModelConfigRevisionDrift(t *testing.T) {
 	ctx := context.Background()
 
 	openAccess, openCfg := headlessTestAccess(t, Config{ModelConfigRev: "model-rev-a"}, root)
-	definitions, err := genericTestDefinitions(&fakeLLM{}, testModel(), openCfg, openAccess)
+	definition, err := genericTestDefinition(&fakeLLM{}, testModel(), openCfg, openAccess)
 	if err != nil {
 		t.Fatal(err)
 	}
-	assembly, err := buildRig(definitions, stores, root, openCfg, false)
+	assembly, err := buildRig(definition, stores, root, openCfg, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,11 +305,11 @@ func TestRestoreRejectsModelConfigRevisionDrift(t *testing.T) {
 
 	restore := func(revision string) error {
 		restoreAccess, restoreCfg := headlessTestAccess(t, Config{ModelConfigRev: revision}, root)
-		restoreDefinitions, err := genericTestDefinitions(&fakeLLM{}, testModel(), restoreCfg, restoreAccess)
+		restoreDefinition, err := genericTestDefinition(&fakeLLM{}, testModel(), restoreCfg, restoreAccess)
 		if err != nil {
 			return err
 		}
-		restoreAssembly, err := buildRig(restoreDefinitions, stores, root, restoreCfg, false)
+		restoreAssembly, err := buildRig(restoreDefinition, stores, root, restoreCfg, false)
 		if err != nil {
 			return err
 		}
@@ -341,9 +341,9 @@ func TestBuildRigRegistersConversationCompaction(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			definitions := genericDefs(t, tt.cfg)
+			definition := genericDef(t, tt.cfg)
 			stores := mustHeadlessTestStores(t)
-			if _, err := buildRig(definitions, stores, t.TempDir(), tt.cfg, false); err != nil {
+			if _, err := buildRig(definition, stores, t.TempDir(), tt.cfg, false); err != nil {
 				t.Fatalf("buildRig() error = %v", err)
 			}
 		})
@@ -380,7 +380,7 @@ func TestInvalidCompactionCompositionDoesNotOpenSession(t *testing.T) {
 				}
 				policy.compaction.CounterPolicy = loop.CounterPolicyUnknown
 				access, cfg := headlessTestAccess(t, Config{}, t.TempDir())
-				_, err = genericTestDefinitionsWithContextPolicy(&fakeLLM{}, testModel(), cfg, policy, access)
+				_, err = genericTestDefinitionWithContextPolicy(&fakeLLM{}, testModel(), cfg, policy, access)
 				return err
 			},
 			wantType: func(err error) bool {
@@ -391,9 +391,9 @@ func TestInvalidCompactionCompositionDoesNotOpenSession(t *testing.T) {
 		{
 			name: "invalid hustle registration",
 			attempt: func(t *testing.T, stores *sessionStores) error {
-				definitions := genericDefs(t, Config{})
+				definition := genericDef(t, Config{})
 				_, err := buildRigWithRegistration(
-					definitions, stores, t.TempDir(), Config{}, false,
+					definition, stores, t.TempDir(), Config{}, false,
 					rig.DelegationLimits{Depth: delegationSpawnDepth, Quota: delegationSpawnQuota},
 					conversationHustleRegistration{limits: conversationHustleLimits()},
 					permissionReviewRegistration{},
@@ -488,12 +488,12 @@ func TestCompactionWiringSurvivesHeadlessNewRestoreAndClear(t *testing.T) {
 				t.Fatalf("headless Close() error = %v", err)
 			}
 
-			definitions := genericDefs(t, tt.cfg)
+			definition := genericDef(t, tt.cfg)
 			// Restore folds the SAME workspace-derived access digest as the original open
 			// (new and restore over the same checkout produce the same digest), so the
 			// rig-level fingerprint matches.
 			_, restoreCfg := headlessTestAccess(t, tt.cfg, root)
-			assembly, err := buildRig(definitions, stores, root, restoreCfg, false)
+			assembly, err := buildRig(definition, stores, root, restoreCfg, false)
 			if err != nil {
 				t.Fatalf("restore buildRig() error = %v", err)
 			}
@@ -591,11 +591,11 @@ func TestHeadlessNewAndRestoreRoundTrip(t *testing.T) {
 	}
 
 	access, restoreCfg := headlessTestAccess(t, Config{}, root)
-	definitions, err := genericTestDefinitions(&fakeLLM{}, newModelFactory()(), restoreCfg, access)
+	definition, err := genericTestDefinition(&fakeLLM{}, newModelFactory()(), restoreCfg, access)
 	if err != nil {
-		t.Fatalf("genericTestDefinitions error = %v", err)
+		t.Fatalf("genericTestDefinition error = %v", err)
 	}
-	assembly, err := buildRig(definitions, stores, root, restoreCfg, false)
+	assembly, err := buildRig(definition, stores, root, restoreCfg, false)
 	if err != nil {
 		t.Fatalf("buildRig error = %v", err)
 	}

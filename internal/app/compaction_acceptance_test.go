@@ -472,12 +472,12 @@ func openAcceptanceAgentWithContextPolicy(t *testing.T, client inference.Client,
 	}
 	root := t.TempDir()
 	access, cfg := headlessTestAccess(t, Config{}, root)
-	definitions, err := genericTestDefinitionsWithContextPolicy(client, selectedModel, cfg, policy, access)
+	definition, err := genericTestDefinitionWithContextPolicy(client, selectedModel, cfg, policy, access)
 	if err != nil {
-		t.Fatalf("genericTestDefinitionsWithContextPolicy() error = %v", err)
+		t.Fatalf("genericTestDefinitionWithContextPolicy() error = %v", err)
 	}
 	stores := mustHeadlessTestStores(t)
-	assembly, err := buildRig(definitions, stores, root, cfg, false)
+	assembly, err := buildRig(definition, stores, root, cfg, false)
 	if err != nil {
 		t.Fatalf("buildRig() error = %v", err)
 	}
@@ -629,11 +629,11 @@ func TestAcceptanceCompactionFinalizationFailureFaultsSession(t *testing.T) {
 			}
 			root := t.TempDir()
 			access, cfg := headlessTestAccess(t, Config{}, root)
-			definitions, err := genericTestDefinitions(client, testModel(), cfg, access)
+			definition, err := genericTestDefinition(client, testModel(), cfg, access)
 			if err != nil {
-				t.Fatalf("genericTestDefinitions() error = %v", err)
+				t.Fatalf("genericTestDefinition() error = %v", err)
 			}
-			assembly, err := buildRig(definitions, stores, root, cfg, false)
+			assembly, err := buildRig(definition, stores, root, cfg, false)
 			if err != nil {
 				t.Fatalf("buildRig() error = %v", err)
 			}

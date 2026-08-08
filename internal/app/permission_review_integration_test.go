@@ -211,7 +211,7 @@ func newScriptedClassifierClient() *scriptedClassifierClient {
 // isolated in-memory store + throwaway workspace, exactly newTestAgent's
 // isolation contract) over the production assembly path
 // (buildRigForDelegationCaps), with permissionReview installed exactly as
-// production's openSessionWithDefinitions does. interactive selects a real,
+// production's openSessionWithDefinition does. interactive selects a real,
 // writable, HOME-derived permission store and gate.NewInteractiveEvaluator
 // (headless's evaluator never opens an awaitable gate — a Gated capability
 // is denied outright, never left open for a human) — every scenario that
@@ -245,9 +245,9 @@ func permissionReviewIntegrationAgentWithClassifier(t *testing.T, cfg Config, ag
 	t.Cleanup(func() { _ = access.Close() })
 	cfg.AccessConfigRev = access.configRev
 
-	definitions, err := genericTestDefinitions(agentClient, testModel(), cfg, access)
+	definition, err := genericTestDefinition(agentClient, testModel(), cfg, access)
 	if err != nil {
-		t.Fatalf("genericTestDefinitions() error = %v", err)
+		t.Fatalf("genericTestDefinition() error = %v", err)
 	}
 	permissionReview, err := newPermissionReviewRegistration(cfg, classifierClient)
 	if err != nil {
@@ -258,7 +258,7 @@ func permissionReviewIntegrationAgentWithClassifier(t *testing.T, cfg Config, ag
 		t.Fatalf("openTestStores() error = %v", err)
 	}
 	assembly, err := buildRigForDelegationCaps(
-		definitions, stores, root, cfg, false,
+		definition, stores, root, cfg, false,
 		rig.DelegationLimits{Depth: delegationSpawnDepth, Quota: delegationSpawnQuota}, permissionReview,
 	)
 	if err != nil {
@@ -1453,13 +1453,13 @@ func TestPermissionReviewDisabledConfigMatchesPreFeatureBuildRig(t *testing.T) {
 	}
 	root := t.TempDir()
 	access, cfg := headlessTestAccess(t, Config{}, root)
-	definitions, err := genericTestDefinitions(&fakeLLM{}, testModel(), cfg, access)
+	definition, err := genericTestDefinition(&fakeLLM{}, testModel(), cfg, access)
 	if err != nil {
-		t.Fatalf("genericTestDefinitions() error = %v", err)
+		t.Fatalf("genericTestDefinition() error = %v", err)
 	}
 
 	// Open with the OLD path (buildRig — every pre-Task-23 CodeRig call site).
-	oldAssembly, err := buildRig(definitions, stores, root, cfg, false)
+	oldAssembly, err := buildRig(definition, stores, root, cfg, false)
 	if err != nil {
 		t.Fatalf("buildRig() error = %v", err)
 	}
@@ -1485,12 +1485,12 @@ func TestPermissionReviewDisabledConfigMatchesPreFeatureBuildRig(t *testing.T) {
 	if options := disabled.options(); len(options) != 0 {
 		t.Fatalf("disabled.options() = %d options, want 0", len(options))
 	}
-	definitions2, err := genericTestDefinitions(&fakeLLM{}, testModel(), cfg, access)
+	definition2, err := genericTestDefinition(&fakeLLM{}, testModel(), cfg, access)
 	if err != nil {
-		t.Fatalf("genericTestDefinitions() error = %v", err)
+		t.Fatalf("genericTestDefinition() error = %v", err)
 	}
 	newAssembly, err := buildRigForDelegationCaps(
-		definitions2, stores, root, cfg, false,
+		definition2, stores, root, cfg, false,
 		rig.DelegationLimits{Depth: delegationSpawnDepth, Quota: delegationSpawnQuota}, disabled,
 	)
 	if err != nil {

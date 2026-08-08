@@ -265,7 +265,6 @@ func newWithClientUsingStores(ctx context.Context, client inference.Client, fact
 		_ = access.Close()
 		return nil, err
 	}
-	definitions := []loop.Definition{definition}
 	permissionReview, err := newPermissionReviewRegistration(cfg, client)
 	if err != nil {
 		_ = access.Close()
@@ -276,7 +275,7 @@ func newWithClientUsingStores(ctx context.Context, client inference.Client, fact
 		_ = access.Close()
 		return nil, err
 	}
-	adapter, err := openSessionWithDefinitions(ctx, definitions, cfg, stores, root, SessionSelector{}, permissionReview)
+	adapter, err := openSessionWithDefinition(ctx, definition, cfg, stores, root, SessionSelector{}, permissionReview)
 	if err != nil {
 		_ = access.Close()
 		return nil, err
@@ -477,12 +476,11 @@ func openRuntimeAgent(ctx context.Context, client inference.Client, factory Mode
 	if err != nil {
 		return fail(err)
 	}
-	definitions := []loop.Definition{definition}
 	permissionReview, err := newPermissionReviewRegistration(cfg, client)
 	if err != nil {
 		return fail(err)
 	}
-	adapter, err := openSessionWithDefinitions(ctx, definitions, cfg, stores, root, selector, permissionReview)
+	adapter, err := openSessionWithDefinition(ctx, definition, cfg, stores, root, selector, permissionReview)
 	if err != nil {
 		return fail(err)
 	}
@@ -495,14 +493,14 @@ func openRuntimeAgent(ctx context.Context, client inference.Client, factory Mode
 	return newRuntimeAgentWithMCP(adapter, adapter.Controller(), root, access, mcpAssembly.manager, mcpAssembly.adopter, mcpAssembly.recorder, cfg.PrimerAlias, cfg.PrimerEfforts, cfg.PrimerCandidates), nil
 }
 
-// openSessionWithDefinitions is CodeRig's single new-or-restore assembly path.
+// openSessionWithDefinition is CodeRig's single new-or-restore assembly path.
 // Production and tests differ only in the injected stores, workspace, and selector.
 // permissionReview is the caller-constructed classifier registration (built where
 // the live inference Client is available); its disabled zero value adds no rig
 // options, so every existing caller that never sets cfg.PermissionReviewEnabled
 // sees no behavior change.
-func openSessionWithDefinitions(ctx context.Context, definitions []loop.Definition, cfg Config, stores *sessionStores, root string, selector SessionSelector, permissionReview permissionReviewRegistration) (*sessionadapter.Adapter, error) {
-	assembly, err := buildRigForDelegationCaps(definitions, stores, root, cfg, selector.AllowConfigMismatch, rig.DelegationLimits{Depth: delegationSpawnDepth, Quota: delegationSpawnQuota}, permissionReview)
+func openSessionWithDefinition(ctx context.Context, definition loop.Definition, cfg Config, stores *sessionStores, root string, selector SessionSelector, permissionReview permissionReviewRegistration) (*sessionadapter.Adapter, error) {
+	assembly, err := buildRigForDelegationCaps(definition, stores, root, cfg, selector.AllowConfigMismatch, rig.DelegationLimits{Depth: delegationSpawnDepth, Quota: delegationSpawnQuota}, permissionReview)
 	if err != nil {
 		return nil, err
 	}

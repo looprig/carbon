@@ -181,10 +181,10 @@ func TestACPRequestPermissionDeniesOutsidePostureWithoutNativePermissionWrites(t
 			return nil, fmt.Errorf("unexpected task6 parent step %d", step)
 		}
 	}}
-	access, cfg := headlessTestAccess(t, Config{ACPChildren: composition}, workspace)
-	definitions, err := genericTestDefinitions(parent, testModel(), cfg, access)
+	access, cfg := headlessTestAccess(t, Config{ACPChildren: composition, RuntimeCatalog: compiled.RuntimeCatalog}, workspace)
+	definition, err := genericTestDefinition(parent, testModel(), cfg, access)
 	if err != nil {
-		t.Fatalf("genericTestDefinitions: %v", err)
+		t.Fatalf("genericTestDefinition: %v", err)
 	}
 	stores, err := openTestStores(t)
 	if err != nil {
@@ -194,7 +194,7 @@ func TestACPRequestPermissionDeniesOutsidePostureWithoutNativePermissionWrites(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	assembly, err := buildRigWithRegistrationAndACP(definitions, stores, workspace, cfg, false,
+	assembly, err := buildRigWithRegistrationAndACP(definition, stores, workspace, cfg, false,
 		rig.DelegationLimits{Depth: delegationSpawnDepth, Quota: delegationSpawnQuota},
 		registration, permissionReviewRegistration{}, composition)
 	if err != nil {
@@ -328,10 +328,10 @@ func TestAgentRuntimeChoicesEndToEnd(t *testing.T) {
 		}
 	}
 
-	access, cfg := headlessTestAccess(t, Config{ACPChildren: composition}, workspace)
-	definitions, err := genericTestDefinitions(client, testModel(), cfg, access)
+	access, cfg := headlessTestAccess(t, Config{ACPChildren: composition, RuntimeCatalog: compiled.RuntimeCatalog}, workspace)
+	definition, err := genericTestDefinition(client, testModel(), cfg, access)
 	if err != nil {
-		t.Fatalf("genericTestDefinitions() error = %v", err)
+		t.Fatalf("genericTestDefinition() error = %v", err)
 	}
 	stores, err := openTestStores(t)
 	if err != nil {
@@ -342,7 +342,7 @@ func TestAgentRuntimeChoicesEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	assembly, err := buildRigWithRegistrationAndACP(
-		definitions,
+		definition,
 		stores,
 		workspace,
 		cfg,

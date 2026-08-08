@@ -20,52 +20,35 @@ import (
 	model "github.com/looprig/inference/model"
 )
 
-func genericDefs(t *testing.T, cfg Config) []loop.Definition {
+func genericDef(t *testing.T, cfg Config) loop.Definition {
 	t.Helper()
 	access, cfg := headlessTestAccess(t, cfg, t.TempDir())
-	defs, err := genericTestDefinitions(&fakeLLM{}, testModel(), cfg, access)
+	definition, err := genericDefinition(&fakeLLM{}, testModel(), cfg, access, nil)
 	if err != nil {
-		t.Fatalf("genericTestDefinitions() error = %v", err)
+		t.Fatalf("genericDefinition() error = %v", err)
 	}
-	if len(defs) != 1 {
-		t.Fatalf("genericTestDefinitions() len = %d, want 1", len(defs))
-	}
-	return defs
+	return definition
 }
 
-// genericTestDefinitions keeps older assembly-oriented tests concise while the
-// production composition root remains a direct genericDefinition call.
-func genericTestDefinitions(client inference.Client, model model.Model, cfg Config, access *sessionAccess) ([]loop.Definition, error) {
-	definition, err := genericDefinition(client, model, cfg, access, nil)
-	if err != nil {
-		return nil, err
-	}
-	return []loop.Definition{definition}, nil
+func genericTestDefinition(client inference.Client, model model.Model, cfg Config, access *sessionAccess) (loop.Definition, error) {
+	return genericDefinition(client, model, cfg, access, nil)
 }
 
-func genericTestDefinitionsWithContextPolicy(client inference.Client, model model.Model, cfg Config, contextPolicy conversationContextPolicy, access *sessionAccess) ([]loop.Definition, error) {
-	definition, err := genericDefinitionWithContextPolicy(client, model, cfg, contextPolicy, access, nil)
-	if err != nil {
-		return nil, err
-	}
-	return []loop.Definition{definition}, nil
+func genericTestDefinitionWithContextPolicy(client inference.Client, model model.Model, cfg Config, contextPolicy conversationContextPolicy, access *sessionAccess) (loop.Definition, error) {
+	return genericDefinitionWithContextPolicy(client, model, cfg, contextPolicy, access, nil)
 }
 
-func genericTestDefinitionsWithAdditionalTools(client inference.Client, model model.Model, cfg Config, access *sessionAccess, extras []tool.Definition) ([]loop.Definition, error) {
+func genericTestDefinitionWithAdditionalTools(client inference.Client, model model.Model, cfg Config, access *sessionAccess, extras []tool.Definition) (loop.Definition, error) {
 	contextPolicy, err := newConversationContextPolicy(model, cfg.PrimerCandidates, cfg.DelegateModels)
 	if err != nil {
-		return nil, err
+		return loop.Definition{}, err
 	}
-	definition, err := genericDefinitionWithContextPolicy(client, model, cfg, contextPolicy, access, extras)
-	if err != nil {
-		return nil, err
-	}
-	return []loop.Definition{definition}, nil
+	return genericDefinitionWithContextPolicy(client, model, cfg, contextPolicy, access, extras)
 }
 
 func TestGenericDefinitionIsSoleManagedLoop(t *testing.T) {
 	t.Parallel()
-	definition := genericDefs(t, Config{})[0]
+	definition := genericDef(t, Config{})
 	if got := definition.Name(); got != generic.Name {
 		t.Fatalf("Name() = %q, want %q", got, generic.Name)
 	}
@@ -106,7 +89,7 @@ func TestGenericDefinitionIsSoleManagedLoop(t *testing.T) {
 
 func TestGenericDefinitionUsesQuickAndDeepModes(t *testing.T) {
 	t.Parallel()
-	definition := genericDefs(t, Config{})[0]
+	definition := genericDef(t, Config{})
 	if got := definition.InitialMode(); got != initialCodingMode {
 		t.Fatalf("initial mode = %q, want %q", got, initialCodingMode)
 	}

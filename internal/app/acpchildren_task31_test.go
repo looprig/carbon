@@ -143,7 +143,7 @@ func testACPDelegationRig(t *testing.T, cfg Config) (*rig.Rig, *sessionStores, *
 		return finalText("child done"), nil
 	}}
 	probe := &delegateProbe{}
-	definitions, root, cfg := task31ProductionDefinitions(t, client, probe, cfg)
+	definition, root, cfg := task31ProductionDefinition(t, client, probe, cfg)
 	stores, err := openTestStores(t)
 	if err != nil {
 		t.Fatal(err)
@@ -153,7 +153,7 @@ func testACPDelegationRig(t *testing.T, cfg Config) (*rig.Rig, *sessionStores, *
 		t.Fatal(err)
 	}
 	assembly, err := buildRigWithRegistrationAndACP(
-		definitions, stores, root, cfg, false,
+		definition, stores, root, cfg, false,
 		rig.DelegationLimits{Depth: delegationSpawnDepth, Quota: delegationSpawnQuota},
 		registration, permissionReviewRegistration{}, cfg.ACPChildren,
 	)
@@ -163,15 +163,15 @@ func testACPDelegationRig(t *testing.T, cfg Config) (*rig.Rig, *sessionStores, *
 	return assembly, stores, probe
 }
 
-func task31ProductionDefinitions(t *testing.T, client inference.Client, probe *delegateProbe, cfg Config) ([]loop.Definition, string, Config) {
+func task31ProductionDefinition(t *testing.T, client inference.Client, probe *delegateProbe, cfg Config) (loop.Definition, string, Config) {
 	t.Helper()
 	root := t.TempDir()
 	access, cfg := headlessTestAccess(t, cfg, root)
-	definitions, err := genericTestDefinitionsWithAdditionalTools(client, testModel(), cfg, access, []tool.Definition{probe.definition()})
+	definition, err := genericTestDefinitionWithAdditionalTools(client, testModel(), cfg, access, []tool.Definition{probe.definition()})
 	if err != nil {
-		t.Fatalf("genericTestDefinitionsWithAdditionalTools() error = %v", err)
+		t.Fatalf("genericTestDefinitionWithAdditionalTools() error = %v", err)
 	}
-	return definitions, root, cfg
+	return definition, root, cfg
 }
 
 func gatewayRuntimeCatalogForTask31(t *testing.T, clients map[model.ProviderName]inference.Client) loop.RuntimeCatalog {
@@ -277,7 +277,7 @@ func TestACPCompositionRestoresCodexRuntimeThroughCurrentCatalog(t *testing.T) {
 	})
 	recorder := &acpCompositionRecorder{backend: newACPCompositionBackend()}
 	composition := testACPComposition(t, catalog, recorder)
-	assembly, stores, probe := testACPDelegationRig(t, Config{ACPChildren: composition})
+	assembly, stores, probe := testACPDelegationRig(t, Config{ACPChildren: composition, RuntimeCatalog: catalog})
 
 	live, err := assembly.NewSession(ctx)
 	if err != nil {
@@ -352,7 +352,7 @@ func TestACPCompositionMissingLunaTombstonesChildAndKeepsPrimer(t *testing.T) {
 	})
 	recorder := &acpCompositionRecorder{backend: newACPCompositionBackend()}
 	fullComposition := testACPComposition(t, fullCatalog, recorder)
-	assembly, stores, probe := testACPDelegationRig(t, Config{ACPChildren: fullComposition})
+	assembly, stores, probe := testACPDelegationRig(t, Config{ACPChildren: fullComposition, RuntimeCatalog: fullCatalog})
 	live, err := assembly.NewSession(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -378,16 +378,16 @@ func TestACPCompositionMissingLunaTombstonesChildAndKeepsPrimer(t *testing.T) {
 		"anthropic": &fakeLLM{},
 	})
 	missingComposition := testACPComposition(t, missingCatalog, &acpCompositionRecorder{backend: newACPCompositionBackend()})
-	missingCfg := Config{ACPChildren: missingComposition}
+	missingCfg := Config{ACPChildren: missingComposition, RuntimeCatalog: missingCatalog}
 	// Rebuild the same CodeRig topology with the current, deliberately incomplete catalog.
 	client := &managedScript{fn: func(context.Context, inference.Request) ([]content.Chunk, error) { return finalText("unused"), nil }}
 	probe2 := &delegateProbe{}
-	definitions, root, missingCfg := task31ProductionDefinitions(t, client, probe2, missingCfg)
+	definition, root, missingCfg := task31ProductionDefinition(t, client, probe2, missingCfg)
 	registration, err := newConversationHustleRegistration()
 	if err != nil {
 		t.Fatal(err)
 	}
-	currentRig, err := buildRigWithRegistrationAndACP(definitions, stores, root, missingCfg, true, rig.DelegationLimits{Depth: delegationSpawnDepth, Quota: delegationSpawnQuota}, registration, permissionReviewRegistration{}, missingComposition)
+	currentRig, err := buildRigWithRegistrationAndACP(definition, stores, root, missingCfg, true, rig.DelegationLimits{Depth: delegationSpawnDepth, Quota: delegationSpawnQuota}, registration, permissionReviewRegistration{}, missingComposition)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -436,7 +436,7 @@ func TestACPCompositionWithoutProfilesUsesManagedNativeFallback(t *testing.T) {
 	}
 	probe := &delegateProbe{}
 	emptyComposition := testACPEmptyComposition(t)
-	definitions, root, noACPCfg := task31ProductionDefinitions(t, client, probe, Config{ACPChildren: emptyComposition})
+	definition, root, noACPCfg := task31ProductionDefinition(t, client, probe, Config{ACPChildren: emptyComposition, RuntimeCatalog: emptyComposition.Catalog.RuntimeCatalog})
 	stores, err := openTestStores(t)
 	if err != nil {
 		t.Fatal(err)
@@ -446,7 +446,7 @@ func TestACPCompositionWithoutProfilesUsesManagedNativeFallback(t *testing.T) {
 		t.Fatal(err)
 	}
 	assembly, err := buildRigWithRegistrationAndACP(
-		definitions, stores, root, noACPCfg, false,
+		definition, stores, root, noACPCfg, false,
 		rig.DelegationLimits{Depth: delegationSpawnDepth, Quota: delegationSpawnQuota}, registration, permissionReviewRegistration{}, emptyComposition,
 	)
 	if err != nil {

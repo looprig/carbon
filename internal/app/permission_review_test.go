@@ -161,13 +161,13 @@ func TestPermissionReviewExplicitEnable(t *testing.T) {
 
 	root := t.TempDir()
 	access, sessionCfg := headlessTestAccess(t, cfg, root)
-	definitions, err := genericTestDefinitions(&fakeLLM{}, testModel(), sessionCfg, access)
+	definition, err := genericTestDefinition(&fakeLLM{}, testModel(), sessionCfg, access)
 	if err != nil {
-		t.Fatalf("genericTestDefinitions() error = %v", err)
+		t.Fatalf("genericTestDefinition() error = %v", err)
 	}
 	stores := mustHeadlessTestStores(t)
 	if _, err := buildRigForDelegationCaps(
-		definitions, stores, root, sessionCfg, false,
+		definition, stores, root, sessionCfg, false,
 		rig.DelegationLimits{Depth: delegationSpawnDepth, Quota: delegationSpawnQuota}, registration,
 	); err != nil {
 		t.Fatalf("buildRigForDelegationCaps() error = %v", err)
@@ -208,13 +208,13 @@ func TestPermissionReviewSecurityCeilingOptionInstalled(t *testing.T) {
 		PermissionReviewModel:   permissionReviewTestModel(),
 		AccessProfile:           AccessTrusted,
 	}, root)
-	definitions, err := genericTestDefinitions(&fakeLLM{}, testModel(), sessionCfg, access)
+	definition, err := genericTestDefinition(&fakeLLM{}, testModel(), sessionCfg, access)
 	if err != nil {
-		t.Fatalf("genericTestDefinitions() error = %v", err)
+		t.Fatalf("genericTestDefinition() error = %v", err)
 	}
 	stores := mustHeadlessTestStores(t)
 	if _, err := buildRigForDelegationCaps(
-		definitions, stores, root, sessionCfg, false,
+		definition, stores, root, sessionCfg, false,
 		rig.DelegationLimits{Depth: delegationSpawnDepth, Quota: delegationSpawnQuota}, registration,
 	); err != nil {
 		t.Fatalf("buildRigForDelegationCaps() error = %v, want success now that WithPermissionReviewSecurityCeiling is wired", err)
@@ -532,9 +532,9 @@ func TestPermissionReviewHeadlessComposesSafely(t *testing.T) {
 		t.Fatalf("Generic gate = %+v, want a non-interactive headless gate with no rule writer", access.gate)
 	}
 
-	definitions, err := genericTestDefinitions(&fakeLLM{}, testModel(), sessionCfg, access)
+	definition, err := genericTestDefinition(&fakeLLM{}, testModel(), sessionCfg, access)
 	if err != nil {
-		t.Fatalf("genericTestDefinitions() error = %v", err)
+		t.Fatalf("genericTestDefinition() error = %v", err)
 	}
 	permissionReview, err := newPermissionReviewRegistration(sessionCfg, &fakeLLM{})
 	if err != nil {
@@ -545,7 +545,7 @@ func TestPermissionReviewHeadlessComposesSafely(t *testing.T) {
 	// session (assembly.NewSession) is blocked by the same known, out-of-scope
 	// evidence-collaborator gap documented there.
 	if _, err := buildRigForDelegationCaps(
-		definitions, stores, root, sessionCfg, false,
+		definition, stores, root, sessionCfg, false,
 		rig.DelegationLimits{Depth: delegationSpawnDepth, Quota: delegationSpawnQuota}, permissionReview,
 	); err != nil {
 		t.Fatalf("buildRigForDelegationCaps() error = %v", err)
@@ -774,11 +774,11 @@ func TestPermissionReviewConfigFingerprintChanges(t *testing.T) {
 		}
 		root = t.TempDir()
 		access, cfg := headlessTestAccess(t, Config{}, root)
-		definitions, err := genericTestDefinitions(&fakeLLM{}, testModel(), cfg, access)
+		definition, err := genericTestDefinition(&fakeLLM{}, testModel(), cfg, access)
 		if err != nil {
-			t.Fatalf("genericTestDefinitions() error = %v", err)
+			t.Fatalf("genericTestDefinition() error = %v", err)
 		}
-		assembly, err := buildRig(definitions, stores, root, cfg, false)
+		assembly, err := buildRig(definition, stores, root, cfg, false)
 		if err != nil {
 			t.Fatalf("buildRig() error = %v", err)
 		}
@@ -796,12 +796,12 @@ func TestPermissionReviewConfigFingerprintChanges(t *testing.T) {
 	restoreWith := func(t *testing.T, stores *sessionStores, root string, sid uuid.UUID, permissionReview permissionReviewRegistration, allowMismatch bool) error {
 		t.Helper()
 		racc, rcfg := headlessTestAccess(t, Config{}, root)
-		rdefs, err := genericTestDefinitions(&fakeLLM{}, testModel(), rcfg, racc)
+		rdef, err := genericTestDefinition(&fakeLLM{}, testModel(), rcfg, racc)
 		if err != nil {
-			t.Fatalf("genericTestDefinitions() error = %v", err)
+			t.Fatalf("genericTestDefinition() error = %v", err)
 		}
 		rasm, err := buildRigForDelegationCaps(
-			rdefs, stores, root, rcfg, allowMismatch,
+			rdef, stores, root, rcfg, allowMismatch,
 			rig.DelegationLimits{Depth: delegationSpawnDepth, Quota: delegationSpawnQuota}, permissionReview,
 		)
 		if err != nil {

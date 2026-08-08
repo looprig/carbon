@@ -20,7 +20,7 @@ import (
 // backed by one t.TempDir() base, auto-cleaned by the testing package. It exists
 // because Generic's Bash definition
 // tool.RequiresProcessServices, so ANY test that assembles the real production
-// session (genericTestDefinitions) and feeds it through buildRig/rig.Define now needs
+// session (genericTestDefinition) and feeds it through buildRig/rig.Define now needs
 // SOME session-resource-storage provider wired — exactly like production's
 // persistedResourceStorageProvider (persisted sessions) and
 // headlessResourceStorageProvider (headless sessions) already are. A test that
@@ -239,15 +239,15 @@ func newTestAgent(t *testing.T, client inference.Client, cfg Config) *sessionAda
 	t.Helper()
 	root := t.TempDir()
 	access, cfg := headlessTestAccess(t, cfg, root)
-	definitions, err := genericTestDefinitions(client, testModel(), cfg, access)
+	definition, err := genericTestDefinition(client, testModel(), cfg, access)
 	if err != nil {
-		t.Fatalf("genericTestDefinitions() error = %v", err)
+		t.Fatalf("genericTestDefinition() error = %v", err)
 	}
 	stores, err := openTestStores(t)
 	if err != nil {
 		t.Fatalf("openTestStores() error = %v", err)
 	}
-	assembly, err := buildRig(definitions, stores, root, cfg, false)
+	assembly, err := buildRig(definition, stores, root, cfg, false)
 	if err != nil {
 		t.Fatalf("buildRig() error = %v", err)
 	}

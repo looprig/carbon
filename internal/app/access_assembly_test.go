@@ -74,11 +74,11 @@ func TestRestoreRejectsAccessProfileDrift(t *testing.T) {
 	root := t.TempDir()
 
 	access, cfg := headlessTestAccess(t, Config{AccessProfile: AccessReadOnly}, root)
-	definitions, err := genericTestDefinitions(&fakeLLM{}, testModel(), cfg, access)
+	definition, err := genericTestDefinition(&fakeLLM{}, testModel(), cfg, access)
 	if err != nil {
-		t.Fatalf("genericTestDefinitions: %v", err)
+		t.Fatalf("genericTestDefinition: %v", err)
 	}
-	assembly, err := buildRig(definitions, stores, root, cfg, false)
+	assembly, err := buildRig(definition, stores, root, cfg, false)
 	if err != nil {
 		t.Fatalf("buildRig: %v", err)
 	}
@@ -94,11 +94,11 @@ func TestRestoreRejectsAccessProfileDrift(t *testing.T) {
 	restore := func(t *testing.T, profile AccessProfile) error {
 		t.Helper()
 		racc, rcfg := headlessTestAccess(t, Config{AccessProfile: profile}, root)
-		rdefs, err := genericTestDefinitions(&fakeLLM{}, testModel(), rcfg, racc)
+		rdef, err := genericTestDefinition(&fakeLLM{}, testModel(), rcfg, racc)
 		if err != nil {
-			t.Fatalf("genericTestDefinitions: %v", err)
+			t.Fatalf("genericTestDefinition: %v", err)
 		}
-		rasm, err := buildRig(rdefs, stores, root, rcfg, false)
+		rasm, err := buildRig(rdef, stores, root, rcfg, false)
 		if err != nil {
 			t.Fatalf("buildRig: %v", err)
 		}

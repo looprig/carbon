@@ -586,8 +586,8 @@ func TestMCPLiveStdioGenericOnlyVisibility(t *testing.T) {
 //
 // This test manually replicates openRuntimeAgent's own composition (the
 // same private helpers it calls, in the same order -- buildSessionAccess,
-// newMCPSessionAssembly, genericTestDefinitions, newPermissionReviewRegistration,
-// openSessionWithDefinitions, mcpSessionAssembly.attach) instead of calling
+// newMCPSessionAssembly, genericTestDefinition, newPermissionReviewRegistration,
+// openSessionWithDefinition, mcpSessionAssembly.attach) instead of calling
 // it directly, for one reason: it needs to Subscribe() to the session's
 // events BEFORE attach() runs Start() and the dead binding's connect
 // attempt begins. event.IntegrationStatus is Ephemeral (events.go's own
@@ -623,18 +623,18 @@ func TestMCPLiveStdioDeadServerDegradesSessionOpen(t *testing.T) {
 	cfg.MCPConfigRev = mcpAssembly.configRev()
 
 	client := &fakeLLM{}
-	definitions, err := genericTestDefinitions(client, testModel(), cfg, access)
+	definition, err := genericTestDefinition(client, testModel(), cfg, access)
 	if err != nil {
-		t.Fatalf("genericTestDefinitions() error = %v", err)
+		t.Fatalf("genericTestDefinition() error = %v", err)
 	}
 	permissionReview, err := newPermissionReviewRegistration(cfg, client)
 	if err != nil {
 		t.Fatalf("newPermissionReviewRegistration() error = %v", err)
 	}
 	stores := mustOpenStores(t)
-	adapter, err := openSessionWithDefinitions(ctx, definitions, cfg, stores, root, SessionSelector{}, permissionReview)
+	adapter, err := openSessionWithDefinition(ctx, definition, cfg, stores, root, SessionSelector{}, permissionReview)
 	if err != nil {
-		t.Fatalf("openSessionWithDefinitions() error = %v", err)
+		t.Fatalf("openSessionWithDefinition() error = %v", err)
 	}
 
 	sub, err := adapter.Subscribe(event.EventFilter{Enduring: event.LoopScope{All: true}})

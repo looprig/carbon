@@ -31,13 +31,13 @@ import (
 func compactionFingerprintFor(t *testing.T, root string, client *fakeLLM, policy conversationContextPolicy, registration conversationHustleRegistration) event.ConfigFingerprint {
 	t.Helper()
 	access, cfg := headlessTestAccess(t, Config{}, root)
-	definitions, err := genericTestDefinitionsWithContextPolicy(client, testModel(), cfg, policy, access)
+	definition, err := genericTestDefinitionWithContextPolicy(client, testModel(), cfg, policy, access)
 	if err != nil {
-		t.Fatalf("genericTestDefinitionsWithContextPolicy() error = %v", err)
+		t.Fatalf("genericTestDefinitionWithContextPolicy() error = %v", err)
 	}
 	stores := mustHeadlessTestStores(t)
 	assembly, err := buildRigWithRegistration(
-		definitions, stores, root, cfg, false,
+		definition, stores, root, cfg, false,
 		rig.DelegationLimits{Depth: delegationSpawnDepth, Quota: delegationSpawnQuota}, registration,
 		permissionReviewRegistration{},
 	)

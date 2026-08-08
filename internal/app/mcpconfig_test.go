@@ -74,8 +74,8 @@ func TestNormalizeMCPConfigHappyPath(t *testing.T) {
 	if context7.command != "" || context7.args != nil || context7.env != nil {
 		t.Errorf("context7 stdio fields leaked into http spec: %+v", context7)
 	}
-	if len(context7.roles) != 0 {
-		t.Errorf("context7.roles = %v, want empty (generic default sentinel)", context7.roles)
+	if got := strings.Join(context7.roles, ","); got != "generic" {
+		t.Errorf("context7.roles = %v, want [generic]", context7.roles)
 	}
 
 	if docsLocal.name != "docs-local" {

@@ -194,11 +194,11 @@ func TestMCPConfigFingerprintRestoreBehavior(t *testing.T) {
 	root := t.TempDir()
 
 	access, cfg := headlessTestAccess(t, Config{MCPConfigRev: baselineDigest}, root)
-	definitions, err := genericTestDefinitions(&fakeLLM{}, testModel(), cfg, access)
+	definition, err := genericTestDefinition(&fakeLLM{}, testModel(), cfg, access)
 	if err != nil {
-		t.Fatalf("genericTestDefinitions() error = %v", err)
+		t.Fatalf("genericTestDefinition() error = %v", err)
 	}
-	assembly, err := buildRig(definitions, stores, root, cfg, false)
+	assembly, err := buildRig(definition, stores, root, cfg, false)
 	if err != nil {
 		t.Fatalf("buildRig() error = %v", err)
 	}
@@ -214,11 +214,11 @@ func TestMCPConfigFingerprintRestoreBehavior(t *testing.T) {
 	restoreWith := func(t *testing.T, mcpConfigRev string, allowMismatch bool) error {
 		t.Helper()
 		racc, rcfg := headlessTestAccess(t, Config{MCPConfigRev: mcpConfigRev}, root)
-		rdefs, err := genericTestDefinitions(&fakeLLM{}, testModel(), rcfg, racc)
+		rdef, err := genericTestDefinition(&fakeLLM{}, testModel(), rcfg, racc)
 		if err != nil {
-			t.Fatalf("genericTestDefinitions() error = %v", err)
+			t.Fatalf("genericTestDefinition() error = %v", err)
 		}
-		rasm, err := buildRig(rdefs, stores, root, rcfg, allowMismatch)
+		rasm, err := buildRig(rdef, stores, root, rcfg, allowMismatch)
 		if err != nil {
 			t.Fatalf("buildRig() error = %v", err)
 		}
@@ -271,11 +271,11 @@ func TestMCPAbsentConfigRestoresUnaffected(t *testing.T) {
 	if cfg.MCPConfigRev != "" {
 		t.Fatalf("cfg.MCPConfigRev = %q, want \"\" for a Config with no mcp.json", cfg.MCPConfigRev)
 	}
-	definitions, err := genericTestDefinitions(&fakeLLM{}, testModel(), cfg, access)
+	definition, err := genericTestDefinition(&fakeLLM{}, testModel(), cfg, access)
 	if err != nil {
-		t.Fatalf("genericTestDefinitions() error = %v", err)
+		t.Fatalf("genericTestDefinition() error = %v", err)
 	}
-	assembly, err := buildRig(definitions, stores, root, cfg, false)
+	assembly, err := buildRig(definition, stores, root, cfg, false)
 	if err != nil {
 		t.Fatalf("buildRig() error = %v", err)
 	}
@@ -289,11 +289,11 @@ func TestMCPAbsentConfigRestoresUnaffected(t *testing.T) {
 	}
 
 	racc, rcfg := headlessTestAccess(t, Config{}, root)
-	rdefs, err := genericTestDefinitions(&fakeLLM{}, testModel(), rcfg, racc)
+	rdef, err := genericTestDefinition(&fakeLLM{}, testModel(), rcfg, racc)
 	if err != nil {
-		t.Fatalf("genericTestDefinitions() error = %v", err)
+		t.Fatalf("genericTestDefinition() error = %v", err)
 	}
-	rasm, err := buildRig(rdefs, stores, root, rcfg, false)
+	rasm, err := buildRig(rdef, stores, root, rcfg, false)
 	if err != nil {
 		t.Fatalf("buildRig() error = %v", err)
 	}

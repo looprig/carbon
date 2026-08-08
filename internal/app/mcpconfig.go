@@ -10,6 +10,7 @@ import (
 	"sort"
 	"unicode/utf8"
 
+	"github.com/looprig/coderig/internal/catalog/generic"
 	mcpauth "github.com/looprig/mcp/pkg/auth"
 	mcpclient "github.com/looprig/mcp/pkg/client"
 )
@@ -41,7 +42,7 @@ type mcpServerConfig struct {
 // mcpServerConfig entry: a binding name that already passed
 // mcp/pkg/client.Name's rules, the resolved transport kind, that kind's
 // transport configuration (the other kind's fields are left zero), and the
-// normalized, sorted role set -- nil/empty means the Generic agent.
+// normalized, sorted role list, always containing Generic's name.
 type mcpServerSpec struct {
 	name    string
 	kind    string
@@ -51,12 +52,6 @@ type mcpServerSpec struct {
 	url     string
 	headers map[string]string
 	roles   []string
-}
-
-// mcpServerRoleSet is the closed set of role names a server's roles list may
-// draw from. MCP visibility is intentionally scoped to Generic only.
-var mcpServerRoleSet = map[string]struct{}{
-	"generic": {},
 }
 
 const (
@@ -281,16 +276,16 @@ func resolveMCPServerKind(name string, cfg mcpServerConfig) (string, error) {
 
 // normalizeMCPServerRoles validates roles against the closed Generic set,
 // rejects unknown values and duplicates, and returns a sorted copy.
-// Nil/empty input means Generic and is returned as nil.
+// Nil/empty input resolves directly to the sole Generic role.
 func normalizeMCPServerRoles(name string, roles []string) ([]string, error) {
 	if len(roles) == 0 {
-		return nil, nil
+		return []string{string(generic.Name)}, nil
 	}
 	seen := make(map[string]struct{}, len(roles))
 	normalized := make([]string, 0, len(roles))
 	for i, role := range roles {
 		field := fmt.Sprintf("roles[%d]", i)
-		if _, ok := mcpServerRoleSet[role]; !ok {
+		if role != string(generic.Name) {
 			return nil, mcpConfigFailure(name, field, fmt.Errorf(
 				"unknown role %q, want generic", role))
 		}

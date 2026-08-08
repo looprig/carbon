@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/looprig/coderig/internal/catalog/generic"
 	"github.com/looprig/core/uuid"
 	"github.com/looprig/fsstore"
 	"github.com/looprig/harness/pkg/loop"
@@ -245,25 +246,12 @@ func agentFingerprintFields(cfg Config) rig.ConfigFingerprintFields {
 		AppFields:                 accessAppFields(cfg.AccessProfile),
 	}
 	fields.RuntimeCatalogRev = cfg.ModelConfigRev
-	catalog := effectiveRuntimeCatalog(cfg)
+	catalog := cfg.RuntimeCatalog
 	if catalog.HasEntries() {
 		catalogRev := catalog.Digest()
 		fields.RuntimeCatalogRev = combineRuntimeCatalogRevisions(fields.RuntimeCatalogRev, catalogRev)
 	}
 	return fields
-}
-
-// effectiveRuntimeCatalog keeps focused pre-general-catalogue fixtures
-// source-compatible while production always supplies RuntimeCatalog directly.
-// The ACP fallback is intentionally not used by production composition.
-func effectiveRuntimeCatalog(cfg Config) loop.RuntimeCatalog {
-	if cfg.RuntimeCatalog.HasEntries() {
-		return cfg.RuntimeCatalog
-	}
-	if cfg.ACPChildren != nil {
-		return cfg.ACPChildren.Catalog.RuntimeCatalog
-	}
-	return cfg.RuntimeCatalog
 }
 
 // combineRuntimeCatalogRevisions derives the one durable runtime revision from
@@ -300,26 +288,26 @@ func accessAppFields(profile AccessProfile) map[string]string {
 // security limit, and offload-blob GC. allowMismatch opts a resume into proceeding despite a config
 // fingerprint change (never set for a new session). It always assembles with permission review
 // DISABLED (the zero permissionReviewRegistration): the two session-opening paths that can
-// actually enable it (openSessionWithDefinitions, called from assembly.go, where the inference
+// actually enable it (openSessionWithDefinition, called from assembly.go, where the inference
 // Client the classifier needs is available) call buildRigForDelegationCaps directly with an
 // explicit registration instead. buildRig stays the plain default-composition path most
 // existing callers (production's default delegation limits, and every test unconcerned with
 // permission review) use unchanged.
-func buildRig(definitions []loop.Definition, stores *sessionStores, root string, cfg Config, allowMismatch bool) (*rig.Rig, error) {
-	return buildRigForDelegationCaps(definitions, stores, root, cfg, allowMismatch, rig.DelegationLimits{Depth: delegationSpawnDepth, Quota: delegationSpawnQuota}, permissionReviewRegistration{})
+func buildRig(definition loop.Definition, stores *sessionStores, root string, cfg Config, allowMismatch bool) (*rig.Rig, error) {
+	return buildRigForDelegationCaps(definition, stores, root, cfg, allowMismatch, rig.DelegationLimits{Depth: delegationSpawnDepth, Quota: delegationSpawnQuota}, permissionReviewRegistration{})
 }
 
 // buildRigForDelegationCaps is the common assembly path with explicit delegation caps and an
 // explicit permission-review registration. Production callers use buildRig's CodeRig delegation
 // defaults paired with the real registration built from the live inference Client
-// (openSessionWithDefinitions); focused topology tests vary only the delegation limits while
+// (openSessionWithDefinition); focused tests vary only the delegation limits while
 // retaining the exact production definitions, stores, workspace, and policy wiring.
-func buildRigForDelegationCaps(definitions []loop.Definition, stores *sessionStores, root string, cfg Config, allowMismatch bool, limits rig.DelegationLimits, permissionReview permissionReviewRegistration) (*rig.Rig, error) {
+func buildRigForDelegationCaps(definition loop.Definition, stores *sessionStores, root string, cfg Config, allowMismatch bool, limits rig.DelegationLimits, permissionReview permissionReviewRegistration) (*rig.Rig, error) {
 	registration, err := newConversationHustleRegistration()
 	if err != nil {
 		return nil, err
 	}
-	return buildRigWithRegistrationAndACP(definitions, stores, root, cfg, allowMismatch, limits, registration, permissionReview, cfg.ACPChildren)
+	return buildRigWithRegistrationAndACP(definition, stores, root, cfg, allowMismatch, limits, registration, permissionReview, cfg.ACPChildren)
 }
 
 // buildRigWithRegistration is the common immutable rig assembly. Production
@@ -327,16 +315,15 @@ func buildRigForDelegationCaps(definitions []loop.Definition, stores *sessionSto
 // registration; focused tests can vary either's public descriptor/limits to
 // prove fingerprint sensitivity. permissionReview's disabled zero value adds
 // no options, so passing it changes nothing about the assembled rig.
-func buildRigWithRegistration(definitions []loop.Definition, stores *sessionStores, root string, cfg Config, allowMismatch bool, limits rig.DelegationLimits, registration conversationHustleRegistration, permissionReview permissionReviewRegistration) (*rig.Rig, error) {
-	return buildRigWithRegistrationAndACP(definitions, stores, root, cfg, allowMismatch, limits, registration, permissionReview, cfg.ACPChildren)
+func buildRigWithRegistration(definition loop.Definition, stores *sessionStores, root string, cfg Config, allowMismatch bool, limits rig.DelegationLimits, registration conversationHustleRegistration, permissionReview permissionReviewRegistration) (*rig.Rig, error) {
+	return buildRigWithRegistrationAndACP(definition, stores, root, cfg, allowMismatch, limits, registration, permissionReview, cfg.ACPChildren)
 }
 
-func buildRigWithRegistrationAndACP(definitions []loop.Definition, stores *sessionStores, root string, cfg Config, allowMismatch bool, limits rig.DelegationLimits, registration conversationHustleRegistration, permissionReview permissionReviewRegistration, acpChildren *ACPComposition) (*rig.Rig, error) {
-	primers, activePrimer := primerConfiguration(definitions)
+func buildRigWithRegistrationAndACP(definition loop.Definition, stores *sessionStores, root string, cfg Config, allowMismatch bool, limits rig.DelegationLimits, registration conversationHustleRegistration, permissionReview permissionReviewRegistration, acpChildren *ACPComposition) (*rig.Rig, error) {
 	options := []rig.Option{
-		rig.WithLoops(definitions...),
-		rig.WithPrimers(primers...),
-		rig.WithActivePrimer(activePrimer),
+		rig.WithLoops(definition),
+		rig.WithPrimers(string(generic.Name)),
+		rig.WithActivePrimer(string(generic.Name)),
 		rig.WithSessionStore(stores.session),
 		rig.WithExclusiveWorkspace(stores.workspace, root, stores.leaser),
 		// Manual, never OnIdle: CodeRig's exclusive workspace is the user's own persistent
@@ -359,8 +346,8 @@ func buildRigWithRegistrationAndACP(definitions []loop.Definition, stores *sessi
 	if stores.resourceStorage != nil {
 		options = append(options, rig.WithSessionResourceStorage(stores.resourceStorage))
 	}
-	if catalog := effectiveRuntimeCatalog(cfg); catalog.HasEntries() {
-		options = append(options, rig.WithRuntimeCatalog(catalog))
+	if cfg.RuntimeCatalog.HasEntries() {
+		options = append(options, rig.WithRuntimeCatalog(cfg.RuntimeCatalog))
 	}
 	if acpChildren != nil {
 		if acpChildren.Live != nil && acpChildren.Restored != nil {
@@ -373,23 +360,6 @@ func buildRigWithRegistrationAndACP(definitions []loop.Definition, stores *sessi
 		options = append(options, rig.WithAllowConfigMismatch())
 	}
 	return rig.Define(options...)
-}
-
-// primerConfiguration chooses the sole Generic primer. Narrow package tests
-// may still provide one custom managed definition as a local seam.
-func primerConfiguration(definitions []loop.Definition) ([]string, string) {
-	if len(definitions) == 1 && definitions[0].Name() == activePrimerName {
-		return []string{string(activePrimerName)}, string(activePrimerName)
-	}
-	for _, definition := range definitions {
-		if len(definition.Delegates()) != 0 || definition.Delegation().Style == loop.DelegationManaged {
-			return []string{string(definition.Name())}, string(definition.Name())
-		}
-	}
-	if len(definitions) == 0 {
-		return nil, ""
-	}
-	return []string{string(definitions[0].Name())}, string(definitions[0].Name())
 }
 
 // SessionSelector chooses which session a persisted Open opens. The zero value (Resume zero)
