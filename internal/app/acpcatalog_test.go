@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/looprig/harness/pkg/identity"
+	"github.com/looprig/coderig/internal/catalog/generic"
 	"github.com/looprig/harness/pkg/loop"
 	"github.com/looprig/inference/model"
 )
@@ -23,13 +23,13 @@ func TestCompileACPRuntimeEntriesProducesNonDefaultGenericRows(t *testing.T) {
 		t.Fatalf("raw entries = %#v, want Claude and Codex rows", raw.entries)
 	}
 	for _, entry := range raw.entries {
-		if entry.AgentType != "generic" || entry.Default {
+		if entry.AgentType != generic.Name || entry.Default {
 			t.Fatalf("raw ACP entry = %#v, want generic non-default row", entry)
 		}
 	}
 }
 
-func TestCompileACPCatalogUsesConfiguredTargetsAndDeterministicDefault(t *testing.T) {
+func TestCompileAgentRuntimeCatalogUsesConfiguredTargetsAndDeterministicDefault(t *testing.T) {
 	clientA := &fakeLLM{}
 	clientB := &fakeLLM{}
 	targets := []ACPGatewaySource{
@@ -46,58 +46,71 @@ func TestCompileACPCatalogUsesConfiguredTargetsAndDeterministicDefault(t *testin
 			Efforts:       []model.Effort{model.EffortLow, model.EffortMax},
 		},
 	}
-	compiled, err := CompileACPCatalog(ACPCatalogInput{
+	compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
 		GatewayTargets: targets,
 		ClaudeSmall:    "fixture-b",
 	})
 	if err != nil {
-		t.Fatalf("CompileACPCatalog() error = %v", err)
+		t.Fatalf("CompileAgentRuntimeCatalog() error = %v", err)
 	}
 
-	for _, role := range []identity.AgentName{"planner", "builder", "reviewer"} {
-		for _, harness := range []loop.AgentHarnessName{"claude-code", "codex"} {
-			for _, target := range targets {
-				resolved, err := compiled.RuntimeCatalog.ResolveWithExplicitEffort(role, harness, target.Alias, target.Efforts[0], true)
-				if err != nil {
-					t.Errorf("Resolve(%s, %s, %s) error = %v", role, harness, target.Alias, err)
-					continue
-				}
-				if resolved.ModelAlias != target.Alias || resolved.Effort != target.Efforts[0] {
-					t.Errorf("Resolve(%s, %s, %s) = alias %q effort %q", role, harness, target.Alias, resolved.ModelAlias, resolved.Effort)
-				}
+	entries := compiled.RuntimeCatalog.EntriesFor(generic.Name)
+	if len(entries) != 3 {
+		t.Fatalf("Generic entries = %d, want looprig/native plus Claude and Codex rows: %#v", len(entries), entries)
+	}
+	defaults := 0
+	for _, entry := range entries {
+		if entry.AgentType != generic.Name {
+			t.Fatalf("entry agent type = %q, want generic", entry.AgentType)
+		}
+		if entry.Default {
+			defaults++
+			if entry.AgentHarness != looprigRuntimeHarness || entry.Profile != looprigRuntimeProfile || entry.Source != loop.RuntimeSourceNative {
+				t.Fatalf("default entry = %#v, want looprig/native native entry", entry)
+			}
+			continue
+		}
+		if entry.AgentHarness != "codex" && entry.AgentHarness != "claude-code" {
+			t.Fatalf("non-default entry = %#v, want ACP harness", entry)
+		}
+	}
+	if defaults != 1 {
+		t.Fatalf("Generic defaults = %d, want exactly one: %#v", defaults, entries)
+	}
+
+	for _, harness := range []loop.AgentHarnessName{"claude-code", "codex"} {
+		for _, target := range targets {
+			resolved, err := compiled.RuntimeCatalog.ResolveWithExplicitEffort(generic.Name, harness, target.Alias, target.Efforts[0], true)
+			if err != nil {
+				t.Errorf("Resolve(%s, %s) error = %v", harness, target.Alias, err)
+				continue
+			}
+			if resolved.AgentType != generic.Name || resolved.AgentHarness != harness || resolved.ModelAlias != target.Alias || resolved.Effort != target.Efforts[0] {
+				t.Errorf("Resolve(%s, %s) = %#v", harness, target.Alias, resolved)
 			}
 		}
-
-		resolved, err := compiled.RuntimeCatalog.Resolve(role, "", "", model.EffortNone)
-		if err != nil {
-			t.Fatalf("Resolve(%s default) error = %v", role, err)
-		}
-		if resolved.AgentHarness != "claude-code" || resolved.ModelAlias != "fixture-a" || resolved.Effort != model.EffortMedium {
-			t.Errorf("Resolve(%s default) = %s/%s@%s, want claude-code/fixture-a@medium", role, resolved.AgentHarness, resolved.ModelAlias, resolved.Effort)
-		}
 	}
-
-	claude, err := compiled.RuntimeCatalog.Resolve("planner", "claude-code", "fixture-a", model.EffortLow)
+	resolved, err := compiled.RuntimeCatalog.Resolve(generic.Name, "", "", model.EffortNone)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("Resolve(generic default) error = %v", err)
 	}
-	if claude.SmallModel != "fixture-b" {
-		t.Fatalf("Claude small alias = %q, want fixture-b", claude.SmallModel)
+	if resolved.AgentHarness != looprigRuntimeHarness || resolved.Profile != looprigRuntimeProfile {
+		t.Errorf("Resolve(generic default) = %#v, want looprig/native", resolved)
 	}
 	for _, oldAlias := range []loop.ModelAlias{"fable-5", "sonnet-5", "opus-5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"} {
-		if _, err := compiled.RuntimeCatalog.Resolve("builder", "codex", oldAlias, model.EffortMedium); err == nil {
+		if _, err := compiled.RuntimeCatalog.Resolve(generic.Name, "codex", oldAlias, model.EffortMedium); err == nil {
 			t.Errorf("unconfigured old alias %q resolved", oldAlias)
 		}
 	}
 }
 
-func TestCompileACPCatalogDerivesDistinctEffortTargets(t *testing.T) {
+func TestCompileAgentRuntimeCatalogDerivesDistinctEffortTargets(t *testing.T) {
 	compiled := compileFixtureACPCatalog(t)
-	low, err := compiled.RuntimeCatalog.ResolveWithExplicitEffort("worker", "codex", "fixture-a", model.EffortLow, true)
+	low, err := compiled.RuntimeCatalog.ResolveWithExplicitEffort(generic.Name, "codex", "fixture-a", model.EffortLow, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	high, err := compiled.RuntimeCatalog.ResolveWithExplicitEffort("worker", "codex", "fixture-a", model.EffortHigh, true)
+	high, err := compiled.RuntimeCatalog.ResolveWithExplicitEffort(generic.Name, "codex", "fixture-a", model.EffortHigh, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,35 +122,20 @@ func TestCompileACPCatalogDerivesDistinctEffortTargets(t *testing.T) {
 	}
 }
 
-func TestCompileACPCatalogRejectsDuplicateAliases(t *testing.T) {
+func TestCompileAgentRuntimeCatalogRejectsDuplicateAliases(t *testing.T) {
 	target := fixtureGatewaySource("fixture-a", &fakeLLM{})
-	tests := []struct {
-		name  string
-		input ACPCatalogInput
-	}{
-		{
-			name: "duplicate alias",
-			input: ACPCatalogInput{
-				AgentTypes:     []identity.AgentName{"worker"},
-				GatewayTargets: []ACPGatewaySource{target, target},
-				ClaudeSmall:    "fixture-a",
-			},
-		},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			if _, err := CompileACPCatalog(test.input); err == nil {
-				t.Fatal("CompileACPCatalog() succeeded")
-			}
-		})
+	if _, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
+		GatewayTargets: []ACPGatewaySource{target, target},
+		ClaudeSmall:    "fixture-a",
+	}); err == nil {
+		t.Fatal("CompileAgentRuntimeCatalog() succeeded")
 	}
 }
 
 func TestACPGatewayTargetReturnsExactClientAndAuthoritativeEffort(t *testing.T) {
 	client := &fakeLLM{}
 	targetModel := model.CustomModel("openai", model.APIFormatOpenAIResponses, "", "provider-a", model.WithTools(), model.WithThinking())
-	compiled, err := CompileACPCatalog(ACPCatalogInput{
-		AgentTypes: []identity.AgentName{"worker"},
+	compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
 		GatewayTargets: []ACPGatewaySource{{
 			Alias: "fixture-a", Client: client, Model: targetModel,
 			DefaultEffort: model.EffortMedium, Efforts: []model.Effort{model.EffortLow, model.EffortMedium, model.EffortHigh},
@@ -147,7 +145,7 @@ func TestACPGatewayTargetReturnsExactClientAndAuthoritativeEffort(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolved, err := compiled.RuntimeCatalog.ResolveWithExplicitEffort("worker", "codex", "fixture-a", model.EffortHigh, true)
+	resolved, err := compiled.RuntimeCatalog.ResolveWithExplicitEffort(generic.Name, "codex", "fixture-a", model.EffortHigh, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,17 +163,16 @@ func TestACPGatewayTargetReturnsExactClientAndAuthoritativeEffort(t *testing.T) 
 	}
 }
 
-func TestCompileACPCatalogErrorDoesNotEchoAliases(t *testing.T) {
+func TestCompileAgentRuntimeCatalogErrorDoesNotEchoAliases(t *testing.T) {
 	const sentinel = "test-secret-do-not-log"
 	target := fixtureGatewaySource("fixture-a", &fakeLLM{})
 	target.Alias = loop.ModelAlias(sentinel)
-	_, err := CompileACPCatalog(ACPCatalogInput{
-		AgentTypes:     []identity.AgentName{"worker"},
+	_, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
 		GatewayTargets: []ACPGatewaySource{target, target},
 		ClaudeSmall:    loop.ModelAlias(sentinel),
 	})
 	if err == nil {
-		t.Fatal("CompileACPCatalog() succeeded")
+		t.Fatal("CompileAgentRuntimeCatalog() succeeded")
 	}
 	if strings.Contains(err.Error(), sentinel) {
 		t.Fatalf("error exposed configured alias: %q", err)
@@ -184,8 +181,7 @@ func TestCompileACPCatalogErrorDoesNotEchoAliases(t *testing.T) {
 
 func compileFixtureACPCatalog(t *testing.T) ACPCompiledCatalog {
 	t.Helper()
-	compiled, err := CompileACPCatalog(ACPCatalogInput{
-		AgentTypes:     []identity.AgentName{"worker"},
+	compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
 		GatewayTargets: []ACPGatewaySource{fixtureGatewaySource("fixture-a", &fakeLLM{})},
 		ClaudeSmall:    "fixture-a",
 	})

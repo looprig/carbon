@@ -41,8 +41,7 @@ type mcpServerConfig struct {
 // mcpServerConfig entry: a binding name that already passed
 // mcp/pkg/client.Name's rules, the resolved transport kind, that kind's
 // transport configuration (the other kind's fields are left zero), and the
-// normalized, sorted role set -- nil/empty means all three (planner,
-// builder, reviewer).
+// normalized, sorted role set -- nil/empty means the Generic agent.
 type mcpServerSpec struct {
 	name    string
 	kind    string
@@ -55,12 +54,9 @@ type mcpServerSpec struct {
 }
 
 // mcpServerRoleSet is the closed set of role names a server's roles list may
-// draw from: the internal/catalog loop identities design §1.2's visibility
-// selects by.
+// draw from. MCP visibility is intentionally scoped to Generic only.
 var mcpServerRoleSet = map[string]struct{}{
-	"planner":  {},
-	"builder":  {},
-	"reviewer": {},
+	"generic": {},
 }
 
 const (
@@ -283,10 +279,9 @@ func resolveMCPServerKind(name string, cfg mcpServerConfig) (string, error) {
 	}
 }
 
-// normalizeMCPServerRoles validates roles against the closed
-// planner/builder/reviewer set, rejects unknown values and duplicates, and
-// returns a sorted copy. Nil/empty input means "all three" and is returned
-// as nil.
+// normalizeMCPServerRoles validates roles against the closed Generic set,
+// rejects unknown values and duplicates, and returns a sorted copy.
+// Nil/empty input means Generic and is returned as nil.
 func normalizeMCPServerRoles(name string, roles []string) ([]string, error) {
 	if len(roles) == 0 {
 		return nil, nil
@@ -297,7 +292,7 @@ func normalizeMCPServerRoles(name string, roles []string) ([]string, error) {
 		field := fmt.Sprintf("roles[%d]", i)
 		if _, ok := mcpServerRoleSet[role]; !ok {
 			return nil, mcpConfigFailure(name, field, fmt.Errorf(
-				"unknown role %q, want planner, builder, or reviewer", role))
+				"unknown role %q, want generic", role))
 		}
 		if _, duplicate := seen[role]; duplicate {
 			return nil, mcpConfigFailure(name, field, fmt.Errorf(

@@ -159,7 +159,7 @@ func TestAgentToolsNoACPProductionSurfaceAndNativeSelection(t *testing.T) {
 			if strings.Contains(req.System, "Fast implementation model.") || strings.Contains(req.System, "Deep analysis model.") {
 				return nil, fmt.Errorf("system prompt leaked runtime model descriptions: %q", req.System)
 			}
-			return startAgentCall("native-start", `{"agent_type":"planner","instructions":"implement","model":"alpha","effort":"low"}`), nil
+			return startAgentCall("native-start", `{"agent_type":"generic","instructions":"implement","model":"alpha","effort":"low"}`), nil
 		}
 		var result struct {
 			Response string `json:"response"`
@@ -210,7 +210,7 @@ func TestAgentToolsRejectIncompatibleNativeModelEffort(t *testing.T) {
 		}
 		if step == 0 {
 			step++
-			return startAgentCall("invalid-native", `{"agent_type":"planner","instructions":"reject","model":"beta","effort":"low"}`), nil
+			return startAgentCall("invalid-native", `{"agent_type":"generic","instructions":"reject","model":"beta","effort":"low"}`), nil
 		}
 		result = lastToolText(req)
 		return finalText("invalid selection handled"), nil

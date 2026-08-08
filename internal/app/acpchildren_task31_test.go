@@ -176,8 +176,7 @@ func task31ProductionDefinitions(t *testing.T, client inference.Client, probe *d
 
 func gatewayRuntimeCatalogForTask31(t *testing.T, clients map[model.ProviderName]inference.Client) loop.RuntimeCatalog {
 	t.Helper()
-	compiled, err := CompileACPCatalog(ACPCatalogInput{
-		AgentTypes:     []identity.AgentName{generic.Name, generic.Name, generic.Name},
+	compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
 		GatewayTargets: legacyTestGatewayTargets(clients),
 		ClaudeSmall:    "sonnet-5",
 	})
@@ -226,9 +225,9 @@ func task31PrimerRootIDs(t *testing.T, store *sessionstore.Store, sessionID uuid
 			rootIDs[ev.AgentName] = ev.LoopID
 		}
 	}
-	wantPrimers := []identity.AgentName{generic.Name, generic.Name, generic.Name}
+	wantPrimers := []identity.AgentName{generic.Name}
 	if len(rootIDs) != len(wantPrimers) {
-		t.Fatalf("durable root loops = %v, want planner, builder, and reviewer", rootIDs)
+		t.Fatalf("durable root loops = %v, want one Generic root", rootIDs)
 	}
 	for _, name := range wantPrimers {
 		if _, ok := rootIDs[name]; !ok {
@@ -240,22 +239,20 @@ func task31PrimerRootIDs(t *testing.T, store *sessionstore.Store, sessionID uuid
 
 func assertTask31PrimersPresent(t *testing.T, rootIDs map[identity.AgentName]uuid.UUID, lookup func(uuid.UUID) (loop.Handle, bool)) {
 	t.Helper()
-	for _, name := range []identity.AgentName{generic.Name, generic.Name, generic.Name} {
+	for _, name := range []identity.AgentName{generic.Name} {
 		if _, ok := lookup(rootIDs[name]); !ok {
 			t.Fatalf("primer %q is missing", name)
 		}
 	}
 }
 
-func TestACPPostureUsesProductionRolesOnly(t *testing.T) {
+func TestACPPostureUsesGenericOnly(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		role    string
 		posture driver.Posture
 	}{
-		{role: string(generic.Name), posture: driver.PostureReadOnly},
 		{role: string(generic.Name), posture: driver.PostureWorkspaceWrite},
-		{role: string(generic.Name), posture: driver.PostureReadOnly},
 	}
 	for _, tt := range tests {
 		got, err := acpPostureFor(tt.role)
@@ -289,7 +286,7 @@ func TestACPCompositionRestoresCodexRuntimeThroughCurrentCatalog(t *testing.T) {
 	assertTask31PrimersPresent(t, rootIDs, live.Loop)
 	rootID := rootIDs[generic.Name]
 	if live.ActiveLoop().ID() != rootID {
-		t.Fatalf("active primer = %v, want builder root %v", live.ActiveLoop().ID(), rootID)
+		t.Fatalf("active primer = %v, want Generic root %v", live.ActiveLoop().ID(), rootID)
 	}
 	started, err := probe.captured().Execute(ctx, tool.DelegateRequest{
 		Operation: tool.DelegateStart, AgentType: string(generic.Name), Message: "review", WaitForResponse: false, Runtime: codexMaxRuntime(),
@@ -303,7 +300,7 @@ func TestACPCompositionRestoresCodexRuntimeThroughCurrentCatalog(t *testing.T) {
 	}
 	liveCalls, _, runtime, _, _ := recorder.snapshot()
 	if liveCalls != 1 || runtime.Profile != "acp/codex" || runtime.ModelAlias != "gpt-5.6-luna@max" || runtime.Effort != model.EffortMax {
-		t.Fatalf("live builder calls=%d runtime=%+v", liveCalls, runtime)
+		t.Fatalf("live ACP calls=%d runtime=%+v", liveCalls, runtime)
 	}
 
 	if err := live.Shutdown(ctx); err != nil {
@@ -335,14 +332,14 @@ func TestACPCompositionRestoresCodexRuntimeThroughCurrentCatalog(t *testing.T) {
 	defer func() { _ = restored.Shutdown(ctx) }()
 	_, restoredCalls, restoredRuntime, _, seed := recorder.snapshot()
 	if restoredCalls != 1 || restoredRuntime.Profile != "acp/codex" || restoredRuntime.ModelAlias != "gpt-5.6-luna@max" || restoredRuntime.Effort != model.EffortMax {
-		t.Fatalf("restored builder calls=%d runtime=%+v", restoredCalls, restoredRuntime)
+		t.Fatalf("restored ACP calls=%d runtime=%+v", restoredCalls, restoredRuntime)
 	}
 	if seed.AgentSessionID != "acp-live-session" || seed.ForeignSID != "acp-live-session" {
 		t.Fatalf("restore seed = %+v, want durable ACP session id", seed)
 	}
 	assertTask31PrimersPresent(t, rootIDs, restored.Loop)
 	if restored.ActiveLoop().ID() != rootID {
-		t.Fatalf("restored active primer = %v, want builder root %v", restored.ActiveLoop().ID(), rootID)
+		t.Fatalf("restored active primer = %v, want Generic root %v", restored.ActiveLoop().ID(), rootID)
 	}
 }
 
@@ -363,7 +360,7 @@ func TestACPCompositionMissingLunaTombstonesChildAndKeepsPrimer(t *testing.T) {
 	assertTask31PrimersPresent(t, rootIDs, live.Loop)
 	rootID := rootIDs[generic.Name]
 	if live.ActiveLoop().ID() != rootID {
-		t.Fatalf("active primer = %v, want builder root %v", live.ActiveLoop().ID(), rootID)
+		t.Fatalf("active primer = %v, want Generic root %v", live.ActiveLoop().ID(), rootID)
 	}
 	started, err := probe.captured().Execute(ctx, tool.DelegateRequest{
 		Operation: tool.DelegateStart, AgentType: string(generic.Name), Message: "review", WaitForResponse: false, Runtime: codexMaxRuntime(),
@@ -400,7 +397,7 @@ func TestACPCompositionMissingLunaTombstonesChildAndKeepsPrimer(t *testing.T) {
 	defer func() { _ = restored.Shutdown(ctx) }()
 	assertTask31PrimersPresent(t, rootIDs, restored.Loop)
 	if restored.ActiveLoop().ID() != rootID {
-		t.Fatalf("restored active primer = %v, want builder root %v", restored.ActiveLoop().ID(), rootID)
+		t.Fatalf("restored active primer = %v, want Generic root %v", restored.ActiveLoop().ID(), rootID)
 	}
 	if _, ok := restored.Loop(childID); !ok {
 		t.Fatal("missing-runtime child was not retained as a tombstone")
@@ -424,12 +421,6 @@ func TestACPCompositionWithoutProfilesUsesManagedNativeFallback(t *testing.T) {
 	var result string
 	step := 0
 	client.fn = func(_ context.Context, req inference.Request) ([]content.Chunk, error) {
-		if requestHasRole(req, generic.Name) {
-			return finalText("reviewer done"), nil
-		}
-		if !requestHasRole(req, generic.Name) {
-			return nil, errors.New("unexpected role in managed native fallback request")
-		}
 		if step == 0 {
 			for _, info := range req.Tools {
 				if info.Name == "StartAgent" {
@@ -437,7 +428,7 @@ func TestACPCompositionWithoutProfilesUsesManagedNativeFallback(t *testing.T) {
 				}
 			}
 			step++
-			return startAgentCall("no-acp", `{"agent_type":"reviewer","instructions":"do it","wait_for_response":false}`), nil
+			return startAgentCall("no-acp", `{"agent_type":"generic","instructions":"do it","wait_for_response":false}`), nil
 		}
 		result = lastToolText(req)
 		return finalText("parent done"), nil

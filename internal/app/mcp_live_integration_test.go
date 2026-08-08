@@ -532,34 +532,18 @@ func TestMCPLiveStdioFirstInvokeHeadlessDeniesWithTypedApprovalRequired(t *testi
 }
 
 // ================================================================
-// Assertion 3: reviewer excluded when roles: ["planner","builder"].
+// Assertion 3: a Generic-only binding is hidden from legacy role names.
 // ================================================================
 
-// TestMCPLiveStdioReviewerExcludedByRoles proves Visibility restriction
-// against a real, live-connected binding's real catalog: with roles limited
-// to ["planner","builder"], the active primer (builder) still sees
-// mcp__fixture__echo, but a query for the reviewer role's own visible tools
-// comes back empty. This uses Manager.SessionTools directly rather than
-// spinning up a real delegated reviewer Loop and driving Submit() through
-// it: a freshly spawned delegate Loop has never run and so has never
-// reached the LoopIdle boundary the Adopter reacts to (mcpharness's own
-// adoption.go doc: "a Loop that has never run has never parked... nothing
-// has signalled an idle"), and coderig's own eager Install() call
-// (assembly.go's mcpSessionAssembly.attach) only ever targets the ORIGINAL
-// active primer at session-open, never a Loop spawned later via StartAgent
-// -- so a live round trip through a fresh reviewer delegate's first turn
-// would prove "the reviewer's first turn races the Adopter", a genuine but
-// SEPARATE property, not "the reviewer's role is excluded". Manager.
-// SessionTools reads the binding's live, already-connected catalog directly
-// (no adoption step gates it -- see mcpharness/refresh.go: the initial
-// discovery populates Client.generation directly, Candidate/Adopt exist only
-// for LATER refreshes), so it is exactly this feature's own mechanism,
-// still exercised against a real, live-connected server, without needing to
-// also prove the unrelated delegate-first-turn timing property.
-func TestMCPLiveStdioReviewerExcludedByRoles(t *testing.T) {
+// TestMCPLiveStdioGenericOnlyVisibility proves Visibility restriction against
+// a real, live-connected binding: explicit Generic visibility reaches the
+// active Generic primer, while former role names remain hidden. It uses
+// Manager.SessionTools directly because the initial discovery populates the
+// live catalog before any later adoption refresh is involved.
+func TestMCPLiveStdioGenericOnlyVisibility(t *testing.T) {
 	fixture := buildMCPFixture(t)
 	home := t.TempDir()
-	writeLiveMCPConfig(t, home, "fixture", mcpLiveServerSpec{Command: fixture, Roles: []string{"planner", "builder"}})
+	writeLiveMCPConfig(t, home, "fixture", mcpLiveServerSpec{Command: fixture, Roles: []string{"generic"}})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -570,17 +554,18 @@ func TestMCPLiveStdioReviewerExcludedByRoles(t *testing.T) {
 	primerLoopID := agent.sess.ActiveLoop().ID()
 	primerDefs := agent.mgr.SessionTools(primerLoopID, string(activePrimerName))
 	if len(primerDefs) != 1 || len(primerDefs[0].ProducedToolNames()) != 1 || primerDefs[0].ProducedToolNames()[0] != "mcp__fixture__echo" {
-		t.Fatalf("SessionTools(primer) = %+v, want exactly [mcp__fixture__echo] (roles include %q)", primerDefs, activePrimerName)
+		t.Fatalf("SessionTools(primer) = %+v, want exactly [mcp__fixture__echo] (Generic visibility)", primerDefs)
 	}
 
 	// Any fresh, non-colliding loop id works here: Visibility's Named()
 	// selector matches on loop NAME alone and ignores loopID entirely (the
 	// same established pattern mcp_test.go's own
 	// TestMCPDefinitionsStdioHappyPath documents and relies on).
-	reviewerLoopID := mustUUID(t)
-	reviewerDefs := agent.mgr.SessionTools(reviewerLoopID, string(generic.Name))
-	if len(reviewerDefs) != 0 {
-		t.Errorf("SessionTools(reviewer) = %+v, want none (roles [planner,builder] excludes reviewer)", reviewerDefs)
+	for _, legacy := range []string{"planner", "builder", "reviewer"} {
+		legacyDefs := agent.mgr.SessionTools(mustUUID(t), legacy)
+		if len(legacyDefs) != 0 {
+			t.Errorf("SessionTools(%s) = %+v, want none for legacy role", legacy, legacyDefs)
+		}
 	}
 }
 

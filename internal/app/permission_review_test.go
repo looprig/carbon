@@ -479,8 +479,8 @@ func TestPermissionReviewRigOptionDoubleRegistrationRejected(t *testing.T) {
 // TestPermissionReviewDoesNotWidenAccessCeiling proves requirement 6: for
 // every named access profile, enabling permission review (any model, either
 // policy) leaves the durable access-config digest — which folds the
-// selected profile and the complete normalized planner/builder/reviewer sandbox
-// profiles (accessConfigDigest, access.go) — byte-for-byte IDENTICAL to the
+// selected profile and the complete normalized Generic sandbox profile
+// (accessConfigDigest, access.go) — byte-for-byte IDENTICAL to the
 // same profile with permission review disabled. CodeRig exposes no
 // independent "security ceiling" knob for the classifier: whatever ceiling a
 // request's own access-gate binding already grants under the selected

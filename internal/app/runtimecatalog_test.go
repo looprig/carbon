@@ -132,6 +132,38 @@ func TestCompileAgentRuntimeCatalogEntriesAreDeterministic(t *testing.T) {
 	}
 }
 
+func TestCompileAgentRuntimeCatalogHasOneGenericEntryPerProfile(t *testing.T) {
+	target := runtimeCatalogTargets()[0]
+	compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
+		GatewayTargets: []ACPGatewaySource{target},
+		ClaudeSmall:    target.Alias,
+		NativeACP: map[string]ACPNativeProfile{
+			"codex": {Harness: "codex", Enabled: true, Models: []loop.ModelAlias{"native-a"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CompileAgentRuntimeCatalog() error = %v", err)
+	}
+	entries := compiled.RuntimeCatalog.EntriesFor(generic.Name)
+	seen := make(map[loop.RuntimeProfileName]struct{}, len(entries))
+	for _, entry := range entries {
+		if _, duplicate := seen[entry.Profile]; duplicate {
+			t.Fatalf("duplicate Generic runtime profile %q: %#v", entry.Profile, entries)
+		}
+		seen[entry.Profile] = struct{}{}
+	}
+	if len(entries) != 3 {
+		t.Fatalf("Generic entries = %d, want looprig/native plus one Claude and one Codex ACP entry: %#v", len(entries), entries)
+	}
+	codex, err := compiled.RuntimeCatalog.ResolveWithExplicitSource(generic.Name, "codex", loop.RuntimeSourceNative, "native-a", model.EffortNone, false)
+	if err != nil {
+		t.Fatalf("Resolve explicit native Codex model: %v", err)
+	}
+	if codex.Profile != "acp/codex" || codex.Source != loop.RuntimeSourceNative {
+		t.Fatalf("native Codex resolution = %#v", codex)
+	}
+}
+
 func TestCompileAgentRuntimeCatalogFiltersUnavailableACPWithoutRepairingDefault(t *testing.T) {
 	targets := runtimeCatalogTargets()
 	compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{GatewayTargets: targets, ClaudeSmall: targets[0].Alias})
@@ -173,6 +205,20 @@ func runtimeCatalogPrimer() GenericRuntimeSource {
 		Alias: "primer", Description: "Configured primer.", Client: &runtimeCatalogClient{},
 		Model:         model.CustomModel("openai", model.APIFormatOpenAIResponses, "", "primer", model.WithTools(), model.WithThinking()),
 		DefaultEffort: model.EffortMedium, Efforts: []model.Effort{model.EffortLow, model.EffortMedium},
+	}
+}
+
+func TestConfiguredPrimerRuntimeTargetPinsAnAdmittedEffort(t *testing.T) {
+	primerModel := model.CustomModel("openai", model.APIFormatOpenAIResponses, "", "primer", model.WithTools(), model.WithThinking())
+	configured := productionModels{
+		PrimerAlias:   "primer",
+		PrimerClient:  &runtimeCatalogClient{},
+		PrimerModel:   primerModel,
+		PrimerEfforts: []model.Effort{model.EffortHigh},
+	}
+	target := configuredPrimerRuntimeTarget(configured)
+	if target.DefaultEffort != model.EffortHigh {
+		t.Fatalf("configured primer default effort = %q, want admitted high effort", target.DefaultEffort)
 	}
 }
 

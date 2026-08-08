@@ -151,7 +151,7 @@ func TestProductionACPCompositionKeepsConfiguredGatewayRowsAlongsideOrdinaryRows
 	}
 	entries := composition.Catalog.RuntimeCatalog.EntriesFor(generic.Name)
 	if len(entries) != 3 {
-		t.Fatalf("builder entries = %#v, want ordinary plus configured Claude and Codex entries", entries)
+		t.Fatalf("Generic entries = %#v, want ordinary plus configured Claude and Codex entries", entries)
 	}
 	var gatewayRows, nativeRows int
 	for _, entry := range entries {

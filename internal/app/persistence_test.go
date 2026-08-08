@@ -95,7 +95,7 @@ func TestPersistedOpenRoutesNativeAgentThroughRuntimeClientAcrossRestore(t *test
 			switch parentStep {
 			case 0:
 				parentStep++
-				return startAgentCall("persisted-native-start", `{"agent_type":"planner","instructions":"initial","model":"persisted-delegate","effort":"low"}`), nil
+				return startAgentCall("persisted-native-start", `{"agent_type":"generic","instructions":"initial","model":"persisted-delegate","effort":"low"}`), nil
 			case 1:
 				parentStep++
 				return finalText("initial parent complete"), nil
@@ -154,7 +154,7 @@ func TestPersistedOpenRoutesNativeAgentThroughRuntimeClientAcrossRestore(t *test
 		}
 	}
 	if childID == "" {
-		t.Fatal("initial native start emitted no planner child")
+		t.Fatal("initial native start emitted no Generic child")
 	}
 
 	phase = "restored"

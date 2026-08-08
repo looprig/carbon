@@ -11,34 +11,23 @@ import (
 
 	"github.com/looprig/acp/launch"
 	"github.com/looprig/coderig/internal/catalog/generic"
+	"github.com/looprig/foreignloops/driver"
 	"github.com/looprig/harness/pkg/foreign"
-	"github.com/looprig/harness/pkg/identity"
 	"github.com/looprig/harness/pkg/loop"
 	"github.com/looprig/harness/pkg/tool"
 	"github.com/looprig/inference"
 	model "github.com/looprig/inference/model"
 )
 
-func TestACPPostureForRole(t *testing.T) {
+func TestACPPostureForGenericOnly(t *testing.T) {
 	t.Parallel()
-	for _, test := range []struct {
-		role string
-		want string
-	}{
-		{role: "planner", want: "read-only"},
-		{role: "reviewer", want: "read-only"},
-		{role: "builder", want: "workspace-write"},
-	} {
-		t.Run(test.role, func(t *testing.T) {
-			got, err := acpPostureFor(test.role)
-			if err != nil || string(got) != test.want {
-				t.Fatalf("posture = %q, %v; want %q", got, err, test.want)
-			}
-		})
+	got, err := acpPostureFor("generic")
+	if err != nil || got != driver.PostureWorkspaceWrite {
+		t.Fatalf("generic posture = %q, %v; want workspace-write", got, err)
 	}
-	for _, role := range []string{"operator", "unknown"} {
+	for _, role := range []string{"planner", "builder", "reviewer", "operator", "unknown"} {
 		if _, err := acpPostureFor(role); err == nil {
-			t.Fatalf("stale/unknown role posture for %q succeeded", role)
+			t.Fatalf("legacy/unknown role posture for %q succeeded", role)
 		}
 	}
 }
@@ -87,8 +76,8 @@ func TestNewACPCompositionPreflightsProfilesAndFiltersEnv(t *testing.T) {
 	if !composition.Catalog.HasProfile("acp/claude-code") {
 		t.Fatal("Claude profile disappeared from the filtered catalog")
 	}
-	if composition.Catalog.HasProfile("acp/codex") || len(composition.Catalog.RuntimeCatalog.EntriesFor("worker")) != 1 {
-		t.Fatalf("filtered catalog still advertises the failed Codex connector: %#v", composition.Catalog.RuntimeCatalog.EntriesFor("worker"))
+	if composition.Catalog.HasProfile("acp/codex") {
+		t.Fatalf("filtered catalog still advertises the failed Codex connector: %#v", composition.Catalog.RuntimeCatalog.EntriesFor(generic.Name))
 	}
 	if got := filterACPEnv([]string{"PATH=/bin", "SECRET=x", "LANG=C"}, []string{"PATH", "LANG"}); len(got) != 2 || got[0] != "PATH=/bin" || got[1] != "LANG=C" {
 		t.Fatalf("filtered env = %#v", got)
@@ -208,17 +197,16 @@ func TestNewACPCompositionBuildsNativeAuthProfileWithoutGateway(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	compiled, err := CompileACPCatalog(ACPCatalogInput{
-		AgentTypes: []identity.AgentName{"worker"},
-		NativeAuth: []ACPNativeAuthSource{{
-			Harness: "codex", Alias: "native-model", Model: testModel(),
-			DefaultEffort: model.EffortNone, Efforts: []model.Effort{model.EffortNone},
-		}},
+	compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
+		NativeACP: map[string]ACPNativeProfile{
+			"codex": {Harness: "codex", Enabled: true, Models: []loop.ModelAlias{"native-model"}},
+		},
+		PrimerTarget: runtimeCatalogPrimer(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolved, err := compiled.RuntimeCatalog.Resolve("worker", "codex", "native-model", model.EffortNone)
+	resolved, err := compiled.RuntimeCatalog.Resolve(generic.Name, "codex", "native-model", model.EffortNone)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -309,7 +297,7 @@ func TestACPChildEnvironmentAndGatewayPreflightExcludeParentSecrets(t *testing.T
 	if !sawProbes {
 		t.Fatal("gateway preflight did not run")
 	}
-	claudeEntries := composition.Catalog.RuntimeCatalog.EntriesFor("worker")
+	claudeEntries := composition.Catalog.RuntimeCatalog.EntriesFor(generic.Name)
 	var claude loop.RuntimeCatalogEntry
 	for _, entry := range claudeEntries {
 		if entry.AgentHarness == "claude-code" {
@@ -442,12 +430,11 @@ func TestNewACPCompositionNativePreflightKeepsNativeEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	compiled, err := CompileACPCatalog(ACPCatalogInput{
-		AgentTypes: []identity.AgentName{"worker"},
-		NativeAuth: []ACPNativeAuthSource{{
-			Harness: "codex", Alias: "native-model", Model: testModel(),
-			DefaultEffort: model.EffortNone, Efforts: []model.Effort{model.EffortNone},
-		}},
+	compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
+		NativeACP: map[string]ACPNativeProfile{
+			"codex": {Harness: "codex", Enabled: true, Models: []loop.ModelAlias{"native-model"}},
+		},
+		PrimerTarget: runtimeCatalogPrimer(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -493,11 +480,11 @@ func TestNewACPCompositionNativePreflightKeepsNativeEnvironment(t *testing.T) {
 func TestACPChildModelAliasesUseConcreteGatewayTargetsAndNativeModels(t *testing.T) {
 	t.Parallel()
 	compiled := testACPGatewayCatalog(t)
-	claude, err := compiled.RuntimeCatalog.Resolve("worker", "claude-code", "sonnet-5", model.EffortHigh)
+	claude, err := compiled.RuntimeCatalog.Resolve(generic.Name, "claude-code", "sonnet-5", model.EffortHigh)
 	if err != nil {
 		t.Fatal(err)
 	}
-	mainAlias, smallAlias, err := acpChildModelAliases(compiled, "worker", "claude-code", claude)
+	mainAlias, smallAlias, err := acpChildModelAliases(compiled, generic.Name, "claude-code", claude)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -505,11 +492,11 @@ func TestACPChildModelAliasesUseConcreteGatewayTargetsAndNativeModels(t *testing
 		t.Fatalf("Claude child aliases = %q/%q, want sonnet-5@high/sonnet-5", mainAlias, smallAlias)
 	}
 
-	codex, err := compiled.RuntimeCatalog.Resolve("worker", "codex", "gpt-5.6-luna", model.EffortMax)
+	codex, err := compiled.RuntimeCatalog.Resolve(generic.Name, "codex", "gpt-5.6-luna", model.EffortMax)
 	if err != nil {
 		t.Fatal(err)
 	}
-	mainAlias, smallAlias, err = acpChildModelAliases(compiled, "worker", "codex", codex)
+	mainAlias, smallAlias, err = acpChildModelAliases(compiled, generic.Name, "codex", codex)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -517,21 +504,20 @@ func TestACPChildModelAliasesUseConcreteGatewayTargetsAndNativeModels(t *testing
 		t.Fatalf("Codex child aliases = %q/%q, want gpt-5.6-luna@max/empty", mainAlias, smallAlias)
 	}
 
-	nativeCatalog, err := CompileACPCatalog(ACPCatalogInput{
-		AgentTypes: []identity.AgentName{"worker"},
-		NativeAuth: []ACPNativeAuthSource{{
-			Harness: "codex", Alias: "native-model", Model: testModel(),
-			DefaultEffort: model.EffortNone, Efforts: []model.Effort{model.EffortNone},
-		}},
+	nativeCatalog, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
+		NativeACP: map[string]ACPNativeProfile{
+			"codex": {Harness: "codex", Enabled: true, Models: []loop.ModelAlias{"native-model"}},
+		},
+		PrimerTarget: runtimeCatalogPrimer(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	native, err := nativeCatalog.RuntimeCatalog.Resolve("worker", "codex", "native-model", model.EffortNone)
+	native, err := nativeCatalog.RuntimeCatalog.Resolve(generic.Name, "codex", "native-model", model.EffortNone)
 	if err != nil {
 		t.Fatal(err)
 	}
-	mainAlias, smallAlias, err = acpChildModelAliases(nativeCatalog, "worker", "codex", native)
+	mainAlias, smallAlias, err = acpChildModelAliases(nativeCatalog, generic.Name, "codex", native)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -542,8 +528,7 @@ func TestACPChildModelAliasesUseConcreteGatewayTargetsAndNativeModels(t *testing
 
 func TestACPBoundRuntimeResolutionUsesPinnedSelectors(t *testing.T) {
 	t.Parallel()
-	compiled, err := CompileACPCatalog(ACPCatalogInput{
-		AgentTypes: []identity.AgentName{"builder"},
+	compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
 		GatewayTargets: legacyTestGatewayTargets(map[model.ProviderName]inference.Client{
 			"anthropic": &fakeLLM{}, "openai": &fakeLLM{},
 		}),
@@ -553,7 +538,7 @@ func TestACPBoundRuntimeResolutionUsesPinnedSelectors(t *testing.T) {
 		t.Fatal(err)
 	}
 	definition, err := loop.Define(
-		loop.WithName(identity.AgentName("builder")),
+		loop.WithName(generic.Name),
 		loop.WithInference(&fakeLLM{}, testModel()),
 		loop.WithPolicyRevision("acp-child-test"),
 	)
@@ -564,7 +549,7 @@ func TestACPBoundRuntimeResolutionUsesPinnedSelectors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolved, err := compiled.RuntimeCatalog.Resolve("builder", "codex", "gpt-5.6-luna", model.EffortMax)
+	resolved, err := compiled.RuntimeCatalog.Resolve(generic.Name, "codex", "gpt-5.6-luna", model.EffortMax)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -669,17 +654,16 @@ func TestNewACPCompositionDiagnosticsPreflightFailedBothModes(t *testing.T) {
 	// Codex gets both a gateway row (from GatewayTargets' openai entries) and a
 	// native-auth row (from NativeAuth), so a universally failing preflight
 	// exercises the "gateway or native" both-attempted branch.
-	compiled, err := CompileACPCatalog(ACPCatalogInput{
-		AgentTypes: []identity.AgentName{"worker"},
+	compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
 		GatewayTargets: legacyTestGatewayTargets(map[model.ProviderName]inference.Client{
 			"anthropic": &fakeLLM{},
 			"openai":    &fakeLLM{},
 		}),
 		ClaudeSmall: "sonnet-5",
-		NativeAuth: []ACPNativeAuthSource{{
-			Harness: "codex", Alias: "native-model", Model: testModel(),
-			DefaultEffort: model.EffortNone, Efforts: []model.Effort{model.EffortNone},
-		}},
+		NativeACP: map[string]ACPNativeProfile{
+			"codex": {Harness: "codex", Enabled: true, Models: []loop.ModelAlias{"native-model"}},
+		},
+		PrimerTarget: runtimeCatalogPrimer(),
 	})
 	if err != nil {
 		t.Fatal(err)

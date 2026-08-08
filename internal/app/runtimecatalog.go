@@ -140,6 +140,13 @@ func configuredPrimerRuntimeTarget(configured productionModels) GenericRuntimeSo
 		}
 	}
 	defaultEffort := configured.PrimerModel.Sampling.Effort
+	if !containsACPEffort(configured.PrimerEfforts, defaultEffort) && len(configured.PrimerEfforts) != 0 {
+		// Production normalization keeps these values aligned. Keep this
+		// composition seam fail-safe for persisted/test inputs whose model
+		// descriptor is stale: the runtime catalog may only advertise an
+		// effort admitted by the configured primer.
+		defaultEffort = configured.PrimerEfforts[0]
+	}
 	return GenericRuntimeSource{
 		Alias:         loop.ModelAlias(configured.PrimerAlias),
 		Description:   description,

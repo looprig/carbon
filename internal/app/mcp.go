@@ -26,10 +26,9 @@ import (
 // wider environment.
 var mcpEnvPassThrough = []string{"PATH", "HOME", "TMPDIR", "LANG", "LC_ALL"}
 
-// mcpAllRoles is internal/catalog's three fixed loop identities -- the exact
-// loop names a binding's Visibility selects by (design §1.2) -- in the order
-// an omitted or empty mcpServerSpec.roles defaults to.
-var mcpAllRoles = []string{"planner", "builder", "reviewer"}
+// mcpAllRoles is the sole Generic loop identity -- the exact loop name a
+// binding's Visibility selects by -- used when roles are omitted or empty.
+var mcpAllRoles = []string{"generic"}
 
 // mcpDefinitions turns a validated spec list (loadMCPConfig's result) into
 // ready-to-hand-to-Manager bindings. It is pure construction: no network
@@ -205,9 +204,8 @@ func mcpHeadersFrom(headers map[string]string) []mcpauth.Header {
 
 // mcpVisibilityRoles resolves a spec's roles to the set a Binding's
 // Visibility is built from: empty/nil (normalizeMCPServerRoles's "not yet
-// resolved" sentinel) means all three fixed loop identities, and a
-// non-empty list -- already sorted and deduplicated by Task 6 -- is used as
-// given.
+// resolved" sentinel) means Generic, and a non-empty list -- already sorted
+// and deduplicated by normalizeMCPServerRoles -- is used as given.
 func mcpVisibilityRoles(specRoles []string) []string {
 	if len(specRoles) == 0 {
 		return mcpAllRoles

@@ -125,12 +125,11 @@ func TestACPRequestPermissionDeniesOutsidePostureWithoutNativePermissionWrites(t
 	provider := &task33InferenceClient{}
 	configured := configuredProductionModelsForTest("fixture-model")
 	configured.ACP[0].Client = provider
-	compiled, err := CompileACPCatalog(ACPCatalogInput{
-		AgentTypes:     []identity.AgentName{generic.Name},
+	compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
 		GatewayTargets: configured.ACP,
 	})
 	if err != nil {
-		t.Fatalf("CompileACPCatalog: %v", err)
+		t.Fatalf("CompileAgentRuntimeCatalog: %v", err)
 	}
 	executable, err := os.Executable()
 	if err != nil {
@@ -170,11 +169,11 @@ func TestACPRequestPermissionDeniesOutsidePostureWithoutNativePermissionWrites(t
 	}
 
 	step := 0
-	parent := &managedScript{fn: func(_ context.Context, _ inference.Request) ([]content.Chunk, error) {
+	parent := &managedScript{fn: func(_ context.Context, req inference.Request) ([]content.Chunk, error) {
 		switch step {
 		case 0:
 			step++
-			return startAgentCall("task6-permission", `{"agent_type":"builder","instructions":"request outside write"}`), nil
+			return startAgentCall("task6-permission", `{"agent_type":"generic","instructions":"request outside write","agent_harness":"codex","model":"fixture-model","effort":"none"}`), nil
 		case 1:
 			step++
 			return finalText("task6 parent complete"), nil
@@ -260,8 +259,7 @@ func (c *task33InferenceClient) Stream(_ context.Context, req inference.Request)
 func TestAgentRuntimeChoicesEndToEnd(t *testing.T) {
 	openAI := &task33InferenceClient{}
 	anthropic := &task33InferenceClient{}
-	compiled, err := CompileACPCatalog(ACPCatalogInput{
-		AgentTypes: []identity.AgentName{generic.Name, generic.Name, generic.Name},
+	compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
 		GatewayTargets: legacyTestGatewayTargets(map[model.ProviderName]inference.Client{
 			"openai":    openAI,
 			"anthropic": anthropic,
@@ -269,7 +267,7 @@ func TestAgentRuntimeChoicesEndToEnd(t *testing.T) {
 		ClaudeSmall: "sonnet-5",
 	})
 	if err != nil {
-		t.Fatalf("CompileACPCatalog() error = %v", err)
+		t.Fatalf("CompileAgentRuntimeCatalog() error = %v", err)
 	}
 	workspace := t.TempDir()
 	executable, err := os.Executable()
@@ -309,7 +307,7 @@ func TestAgentRuntimeChoicesEndToEnd(t *testing.T) {
 		switch step {
 		case 0:
 			step++
-			return startAgentCall("task33-claude-start", `{"agent_type":"reviewer","instructions":"check it","agent_harness":"claude-code","model":"sonnet-5","effort":"high"}`), nil
+			return startAgentCall("task33-claude-start", `{"agent_type":"generic","instructions":"check it","agent_harness":"claude-code","model":"sonnet-5","effort":"high"}`), nil
 		case 1:
 			toolResult = prior
 			var foreground struct {
@@ -366,7 +364,7 @@ func TestAgentRuntimeChoicesEndToEnd(t *testing.T) {
 		t.Fatalf("newSessionAdapter() error = %v", err)
 	}
 	t.Cleanup(func() { _ = agent.Close(context.Background()) })
-	result := runManagedTurn(t, agent, "run the reviewer")
+	result := runManagedTurn(t, agent, "run the Generic ACP child")
 	if result != "task33 complete" {
 		t.Fatalf("parent final = %q", result)
 	}
@@ -415,7 +413,7 @@ func assertTask33DurableEvents(t *testing.T, events []event.Event, claude agentH
 		}
 	}
 	if len(ids) != 1 {
-		t.Fatalf("durable ACP LoopStarted identities = %v, want reviewer", ids)
+		t.Fatalf("durable ACP LoopStarted identities = %v, want one Generic child", ids)
 	}
 	if bound[generic.Name] != "task33-claude-code-session" {
 		t.Fatalf("durable ACP session bindings = %v", bound)

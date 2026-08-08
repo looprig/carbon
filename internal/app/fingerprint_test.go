@@ -295,7 +295,7 @@ func TestSecretRedactionAcrossModelCatalogueGatewayFingerprintAndDurableEvents(t
 		NativeACP:      configured.NativeACP,
 	})
 	if err != nil {
-		t.Fatalf("CompileACPCatalog: %v", err)
+		t.Fatalf("CompileAgentRuntimeCatalog: %v", err)
 	}
 	capture("runtime catalogue digest", compiled.RuntimeCatalog.Digest())
 	capture("runtime catalogue "+string(generic.Name), compiled.RuntimeCatalog.EntriesFor(generic.Name))
@@ -461,7 +461,7 @@ func TestAgentFingerprintCombinesModelAndRuntimeCatalogRevisionsAsValidIdentifie
 	t.Parallel()
 
 	catalog, err := loop.NewRuntimeCatalog([]loop.RuntimeCatalogEntry{{
-		AgentType:     "worker",
+		AgentType:     generic.Name,
 		AgentHarness:  "codex",
 		Profile:       "acp/codex",
 		Source:        loop.RuntimeSourceNative,
@@ -487,9 +487,12 @@ func TestAgentFingerprintBoundsProductionLengthModelAndRuntimeCatalogRevisions(t
 
 	modelRevision := strings.Repeat("a", 64)
 	otherModelRevision := strings.Repeat("b", 64)
-	emptyCatalog := mustEmptyRuntimeCatalog()
+	emptyCatalog, err := loop.NewRuntimeCatalog(nil)
+	if err != nil {
+		t.Fatalf("NewRuntimeCatalog(nil) error = %v", err)
+	}
 	populatedCatalog, err := loop.NewRuntimeCatalog([]loop.RuntimeCatalogEntry{{
-		AgentType:     "worker",
+		AgentType:     generic.Name,
 		AgentHarness:  "codex",
 		Profile:       "acp/codex",
 		Credential:    loop.CredentialNativeAuth,

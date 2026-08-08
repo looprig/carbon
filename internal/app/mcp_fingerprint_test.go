@@ -106,14 +106,14 @@ func TestMCPConfigDigestMovesWithRealTopologyChanges(t *testing.T) {
 		}
 	})
 
-	t.Run("roles changed", func(t *testing.T) {
+	t.Run("omitted roles equal explicit generic", func(t *testing.T) {
 		t.Parallel()
-		before := []mcpServerSpec{{name: "a", kind: "stdio", command: "/bin/sh", roles: []string{"planner", "builder"}}}
-		after := []mcpServerSpec{{name: "a", kind: "stdio", command: "/bin/sh", roles: []string{"planner", "builder", "reviewer"}}}
+		before := []mcpServerSpec{{name: "a", kind: "stdio", command: "/bin/sh", roles: []string{"generic"}}}
+		after := []mcpServerSpec{{name: "a", kind: "stdio", command: "/bin/sh", roles: nil}}
 		digestBefore := mcpManagerDigest(t, before)
 		digestAfter := mcpManagerDigest(t, after)
-		if digestBefore == digestAfter {
-			t.Errorf("ConfigDigest() unchanged after changing server roles: %q", digestBefore)
+		if digestBefore != digestAfter {
+			t.Errorf("ConfigDigest() changed between explicit and omitted Generic roles: %q != %q", digestBefore, digestAfter)
 		}
 	})
 }

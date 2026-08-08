@@ -988,9 +988,7 @@ func resolveACPBoundRuntime(catalog ACPCompiledCatalog, cfg loop.BoundDefinition
 
 func acpPostureFor(role string) (driver.Posture, error) {
 	switch role {
-	case "planner", "reviewer":
-		return driver.PostureReadOnly, nil
-	case "builder":
+	case "generic":
 		return driver.PostureWorkspaceWrite, nil
 	default:
 		return "", fmt.Errorf("coderig: unsupported ACP role posture")

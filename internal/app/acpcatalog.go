@@ -143,6 +143,7 @@ func compileACPRuntimeEntries(input acpCatalogInput) (acpRuntimeEntries, error) 
 
 	entries := make([]loop.RuntimeCatalogEntry, 0, 4)
 	for _, harness := range []loop.AgentHarnessName{"claude-code", "codex"} {
+		var gatewayEntry *loop.RuntimeCatalogEntry
 		if len(rows) > 0 && (harness != "claude-code" || input.ClaudeSmall != "") {
 			models := cloneRuntimeOptions(rows)
 			defaultModel := firstRuntimeAlias(models)
@@ -161,14 +162,11 @@ func compileACPRuntimeEntries(input acpCatalogInput) (acpRuntimeEntries, error) 
 					return acpRuntimeEntries{}, fmt.Errorf("coderig: ACP Claude small model unavailable")
 				}
 			}
-			entries = append(entries, entry)
+			gatewayEntry = &entry
 		}
 
 		options, enabled := nativeByHarness[harness]
 		profile, hasProfile := nativeProfileFor(nativeProfiles, harness)
-		if !enabled && !hasProfile {
-			continue
-		}
 		if hasProfile && profile.Models == nil {
 			entry := loop.RuntimeCatalogEntry{
 				AgentType: generic.Name, AgentHarness: harness, Profile: loop.RuntimeProfileName("acp/" + string(harness)),
@@ -176,22 +174,36 @@ func compileACPRuntimeEntries(input acpCatalogInput) (acpRuntimeEntries, error) 
 				Source:      loop.RuntimeSourceNative, Credential: loop.CredentialNativeAuth,
 				SelectionKind: loop.RuntimeSelectionHarnessManaged, Default: false,
 			}
+			if gatewayEntry != nil {
+				entries = append(entries, *gatewayEntry)
+			}
 			entries = append(entries, entry)
 			continue
 		}
-		if len(options) == 0 {
+		if enabled && len(options) > 0 {
+			options = cloneRuntimeOptions(options)
+			sort.Slice(options, func(i, j int) bool { return options[i].Alias < options[j].Alias })
+			if gatewayEntry != nil {
+				// Keep one Generic row per explicit ACP harness while allowing
+				// each model to retain its source and credential route.
+				gatewayEntry.Models = append(gatewayEntry.Models, options...)
+				sort.Slice(gatewayEntry.Models, func(i, j int) bool { return gatewayEntry.Models[i].Alias < gatewayEntry.Models[j].Alias })
+				entries = append(entries, *gatewayEntry)
+				continue
+			}
+			defaultModel := options[0].Alias
+			entries = append(entries, loop.RuntimeCatalogEntry{
+				AgentType: generic.Name, AgentHarness: harness, Profile: loop.RuntimeProfileName("acp/" + string(harness)),
+				Description: runtimeHarnessDescription(harness),
+				Source:      loop.RuntimeSourceNative, Credential: loop.CredentialNativeAuth,
+				SelectionKind: loop.RuntimeSelectionExplicit, Default: false,
+				DefaultModel: defaultModel, Models: options,
+			})
 			continue
 		}
-		options = cloneRuntimeOptions(options)
-		sort.Slice(options, func(i, j int) bool { return options[i].Alias < options[j].Alias })
-		defaultModel := options[0].Alias
-		entries = append(entries, loop.RuntimeCatalogEntry{
-			AgentType: generic.Name, AgentHarness: harness, Profile: loop.RuntimeProfileName("acp/" + string(harness)),
-			Description: runtimeHarnessDescription(harness),
-			Source:      loop.RuntimeSourceNative, Credential: loop.CredentialNativeAuth,
-			SelectionKind: loop.RuntimeSelectionExplicit, Default: false,
-			DefaultModel: defaultModel, Models: options,
-		})
+		if gatewayEntry != nil {
+			entries = append(entries, *gatewayEntry)
+		}
 	}
 	return acpRuntimeEntries{entries: entries, gatewayOptions: rows, gatewayTargets: gatewayRows}, nil
 }

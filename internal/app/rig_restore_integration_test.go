@@ -99,9 +99,9 @@ func TestRigRestoreStateWorkspaceAndContinuation(t *testing.T) {
 		if strings.Contains(req.System, `<role name="`+string(generic.Name)+`">`) {
 			primaryCalls++
 			if primaryCalls == 1 {
-				return startAgentCall("restore-state-child", `{"agent_type":"planner","instructions":"work"}`), nil
+				return startAgentCall("restore-state-child", `{"agent_type":"generic","instructions":"work"}`), nil
 			}
-			return finalText("builder work complete"), nil
+			return finalText("generic work complete"), nil
 		}
 		if phase == "restored" {
 			restoredEffort = req.Model.Sampling.Effort
@@ -119,7 +119,7 @@ func TestRigRestoreStateWorkspaceAndContinuation(t *testing.T) {
 		t.Fatal(err)
 	}
 	sessionID := a1.SessionID()
-	_, observed := runManagedTurnObserved(t, a1, "perform builder work")
+	_, observed := runManagedTurnObserved(t, a1, "perform generic work")
 	var childID uuid.UUID
 	for _, ev := range observed {
 		if started, ok := ev.(event.LoopStarted); ok && !started.Cause.Coordinates.LoopID.IsZero() {
@@ -127,7 +127,7 @@ func TestRigRestoreStateWorkspaceAndContinuation(t *testing.T) {
 		}
 	}
 	if childID.IsZero() {
-		t.Fatal("managed builder work did not create a delegate")
+		t.Fatal("managed Generic work did not create a delegate")
 	}
 	if err := a1.sess.SetActiveLoop(context.Background(), childID); err != nil {
 		t.Fatalf("SetActiveLoop(delegate): %v", err)
@@ -225,7 +225,7 @@ func TestRigRestoreDelegateOwnership(t *testing.T) {
 		if phase == "initial" {
 			if step == 0 {
 				step++
-				return startAgentCall("own-start", `{"agent_type":"planner","instructions":"first"}`), nil
+				return startAgentCall("own-start", `{"agent_type":"generic","instructions":"first"}`), nil
 			}
 			initialSyncResult = lastToolText(req)
 			return finalText("initial parent"), nil
@@ -330,7 +330,7 @@ func TestAgentToolsFSStorePersistence(t *testing.T) {
 		switch step {
 		case 0:
 			step++
-			return startAgentCall("fs-agent-1", `{"agent_type":"planner","instructions":"first","wait_for_response":false}`), nil
+			return startAgentCall("fs-agent-1", `{"agent_type":"generic","instructions":"first","wait_for_response":false}`), nil
 		case 1:
 			var err error
 			first, err = parseAgentHandle(prior)
@@ -343,7 +343,7 @@ func TestAgentToolsFSStorePersistence(t *testing.T) {
 				return nil, ctx.Err()
 			}
 			step++
-			return startAgentCall("fs-agent-2", `{"agent_type":"planner","instructions":"second","wait_for_response":false}`), nil
+			return startAgentCall("fs-agent-2", `{"agent_type":"generic","instructions":"second","wait_for_response":false}`), nil
 		case 2:
 			var err error
 			second, err = parseAgentHandle(prior)
@@ -556,7 +556,7 @@ func TestManagedDelegateUndeclaredModeFSStore(t *testing.T) {
 	client.fn = func(_ context.Context, req inference.Request) ([]content.Chunk, error) {
 		calls++
 		if calls == 1 {
-			return startAgentCall("undeclared-mode", `{"agent_type":"planner","instructions":"must reject","agent_mode":"build"}`), nil
+			return startAgentCall("undeclared-mode", `{"agent_type":"generic","instructions":"must reject","agent_mode":"build"}`), nil
 		}
 		result = lastToolText(req)
 		return finalText("rejection observed"), nil
@@ -846,7 +846,7 @@ func TestProcessAdapterResolverIndependentOfHarnessTransport(t *testing.T) {
 	}
 
 	if a2.access == nil || a2.access.set == nil {
-		t.Fatal("restored RuntimeAgent has no builder *sandbox.ExecutorSet to resolve against")
+		t.Fatal("restored RuntimeAgent has no Generic *sandbox.ExecutorSet to resolve against")
 	}
 	resolver := newProcessRunnerResolver(a2.access.set)
 	runner, err := resolver(context.Background(), restoredLoopID)
