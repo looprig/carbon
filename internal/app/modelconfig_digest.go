@@ -19,9 +19,9 @@ type secretFreeModelConfig struct {
 }
 
 type secretFreeNativeACPProfile struct {
-	Harness string                     `json:"harness"`
-	Enabled bool                       `json:"enabled"`
-	Models  []secretFreeNativeACPModel `json:"models,omitempty"`
+	Harness string `json:"harness"`
+	Enabled bool   `json:"enabled"`
+	Models  any    `json:"models,omitempty"`
 }
 
 type secretFreeNativeACPModel struct {
@@ -77,36 +77,7 @@ func secretFreeModelConfigJSON(config normalizedModelConfig) ([]byte, error) {
 		NativeACP:            make([]secretFreeNativeACPProfile, 0, len(config.NativeACP)),
 	}
 	for _, profile := range config.NativeACP {
-		models := make([]secretFreeNativeACPModel, 0)
-		if profile.ModelOptions != nil {
-			models = make([]secretFreeNativeACPModel, 0, len(profile.ModelOptions))
-			for _, option := range profile.ModelOptions {
-				efforts := append([]model.Effort(nil), option.Efforts...)
-				sort.Slice(efforts, func(i, j int) bool {
-					return modelConfigEffortRank(efforts[i]) < modelConfigEffortRank(efforts[j])
-				})
-				effortNames := make([]string, len(efforts))
-				for index, effort := range efforts {
-					effortNames[index] = modelConfigEffortName(effort)
-				}
-				models = append(models, secretFreeNativeACPModel{
-					Model: option.Model, Efforts: effortNames, DefaultEffort: modelConfigEffortName(option.DefaultEffort),
-				})
-			}
-		} else if profile.Models != nil {
-			// Keep manually constructed normalized values (including older
-			// callers that only know the legacy ID projection) deterministic and
-			// semantically equivalent to a legacy string entry.
-			models = make([]secretFreeNativeACPModel, 0, len(profile.Models))
-			for _, modelID := range profile.Models {
-				models = append(models, secretFreeNativeACPModel{
-					Model: modelID, Efforts: []string{"none"}, DefaultEffort: "none",
-				})
-			}
-		}
-		sort.Slice(models, func(i, j int) bool {
-			return models[i].Model < models[j].Model
-		})
+		models := secretFreeNativeACPModels(profile)
 		projection.NativeACP = append(projection.NativeACP, secretFreeNativeACPProfile{
 			Harness: profile.Harness, Enabled: profile.Enabled, Models: models,
 		})
@@ -146,6 +117,38 @@ func secretFreeModelConfigJSON(config normalizedModelConfig) ([]byte, error) {
 		return projection.Models[i].Alias < projection.Models[j].Alias
 	})
 	return json.Marshal(projection)
+}
+
+func secretFreeNativeACPModels(profile normalizedNativeACPProfile) any {
+	if !profile.HasStructuredModels {
+		if profile.Models == nil {
+			return nil
+		}
+		// Preserve the pre-extension projection for legacy-only profiles so an
+		// unchanged models.json keeps its existing configuration revision.
+		models := append([]string(nil), profile.Models...)
+		sort.Strings(models)
+		return models
+	}
+
+	models := make([]secretFreeNativeACPModel, 0, len(profile.ModelOptions))
+	for _, option := range profile.ModelOptions {
+		efforts := append([]model.Effort(nil), option.Efforts...)
+		sort.Slice(efforts, func(i, j int) bool {
+			return modelConfigEffortRank(efforts[i]) < modelConfigEffortRank(efforts[j])
+		})
+		effortNames := make([]string, len(efforts))
+		for index, effort := range efforts {
+			effortNames[index] = modelConfigEffortName(effort)
+		}
+		models = append(models, secretFreeNativeACPModel{
+			Model: option.Model, Efforts: effortNames, DefaultEffort: modelConfigEffortName(option.DefaultEffort),
+		})
+	}
+	sort.Slice(models, func(i, j int) bool {
+		return models[i].Model < models[j].Model
+	})
+	return models
 }
 
 func modelConfigEffortName(effort model.Effort) string {

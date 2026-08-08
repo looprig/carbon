@@ -115,6 +115,7 @@ func TestModelConfigRejectsInvalidNativeACPProfiles(t *testing.T) {
 		{name: "missing structured efforts", nativeJSON: `{"codex":{"enabled":true,"models":[{"model":"same","default_effort":"medium"}]}}`},
 		{name: "duplicate structured efforts", nativeJSON: `{"codex":{"enabled":true,"models":[{"model":"same","efforts":["medium","medium"],"default_effort":"medium"}]}}`},
 		{name: "invalid structured effort", nativeJSON: `{"codex":{"enabled":true,"models":[{"model":"same","efforts":["unsupported"],"default_effort":"unsupported"}]}}`},
+		{name: "invalid structured default with valid efforts", nativeJSON: `{"codex":{"enabled":true,"models":[{"model":"same","efforts":["medium"],"default_effort":"unsupported"}]}}`},
 		{name: "missing structured default", nativeJSON: `{"codex":{"enabled":true,"models":[{"model":"same","efforts":["medium"]}]}}`},
 		{name: "default outside structured efforts", nativeJSON: `{"codex":{"enabled":true,"models":[{"model":"same","efforts":["medium"],"default_effort":"high"}]}}`},
 	}
@@ -187,6 +188,20 @@ func TestNativeACPModelEntryRejectsTrailingJSONTokens(t *testing.T) {
 				t.Fatal("nativeACPModelConfig.UnmarshalJSON() error = nil, want trailing-token rejection")
 			}
 		})
+	}
+}
+
+func TestNativeACPModelEntryRejectsDuplicateJSONKeysWhenUnmarshaledDirectly(t *testing.T) {
+	modelEntry := `{"model":"first","efforts":["medium"],"default_effort":"medium","model":"last"}`
+	var entry nativeACPModelConfig
+	if err := entry.UnmarshalJSON([]byte(modelEntry)); err == nil {
+		t.Fatal("nativeACPModelConfig.UnmarshalJSON() error = nil, want duplicate-key rejection")
+	}
+
+	profileEntry := `{"enabled":true,"models":[{"model":"first","efforts":["medium"],"default_effort":"medium","default_effort":"high"}]}`
+	var profile nativeACPProfileConfig
+	if err := profile.UnmarshalJSON([]byte(profileEntry)); err == nil {
+		t.Fatal("nativeACPProfileConfig.UnmarshalJSON() error = nil, want nested duplicate-key rejection")
 	}
 }
 

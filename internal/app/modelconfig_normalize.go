@@ -33,10 +33,11 @@ type normalizedPermissionReview struct {
 }
 
 type normalizedNativeACPProfile struct {
-	Harness      string
-	Enabled      bool
-	Models       []string
-	ModelOptions []normalizedNativeACPModel
+	Harness             string
+	Enabled             bool
+	Models              []string
+	ModelOptions        []normalizedNativeACPModel
+	HasStructuredModels bool
 }
 
 // normalizedNativeACPModel is one static native ACP selection option. Models
@@ -169,6 +170,7 @@ func normalizeNativeACPProfiles(config map[string]nativeACPProfileConfig) (map[s
 		}
 		var models []string
 		var options []normalizedNativeACPModel
+		hasStructuredModels := false
 		if profile.Models != nil {
 			models = make([]string, 0, len(*profile.Models))
 			options = make([]normalizedNativeACPModel, 0, len(*profile.Models))
@@ -193,6 +195,7 @@ func normalizeNativeACPProfiles(config map[string]nativeACPProfileConfig) (map[s
 				efforts = []model.Effort{model.EffortNone}
 				defaultEffort = model.EffortNone
 			} else {
+				hasStructuredModels = true
 				if len(configured.Efforts) == 0 {
 					return nil, modelConfigValidationError("native_acp model efforts must be non-empty")
 				}
@@ -232,6 +235,7 @@ func normalizeNativeACPProfiles(config map[string]nativeACPProfileConfig) (map[s
 		})
 		profiles[harness] = normalizedNativeACPProfile{
 			Harness: harness, Enabled: profile.Enabled, Models: models, ModelOptions: options,
+			HasStructuredModels: hasStructuredModels,
 		}
 	}
 	return profiles, nil

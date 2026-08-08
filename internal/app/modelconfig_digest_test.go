@@ -205,13 +205,53 @@ func TestModelConfigNativeACPStructuredDigestCanonicalizesOrderAndCoversAllowlis
 	}
 }
 
-func TestModelConfigNativeACPLegacyNoneMatchesStructuredNoneDigest(t *testing.T) {
+func TestModelConfigNativeACPLegacyDigestRetainsPriorProjection(t *testing.T) {
 	legacy := decodeModelConfigWithNativeACP(t, `{"codex":{"enabled":true,"models":["same"]}}`)
+	normalized, err := normalizeModelConfig(legacy)
+	if err != nil {
+		t.Fatalf("normalize legacy config: %v", err)
+	}
+	material, err := secretFreeModelConfigJSON(normalized)
+	if err != nil {
+		t.Fatalf("legacy secret-free projection: %v", err)
+	}
+	// This is the exact native_acp projection emitted before structured
+	// entries existed. Keeping the legacy string array preserves ConfigRev for
+	// an unchanged models.json after this schema extension.
+	const wantNativeProjection = `"native_acp":[{"harness":"codex","enabled":true,"models":["same"]}]`
+	if !strings.Contains(string(material), wantNativeProjection) {
+		t.Fatalf("legacy native projection = %s, want substring %s", material, wantNativeProjection)
+	}
+
 	structured := decodeModelConfigWithNativeACP(t, `{"codex":{"enabled":true,"models":[
 		{"model":"same","efforts":["none"],"default_effort":"none"}
 	]}}`)
-	if legacyDigest, structuredDigest := digestNativeACPConfig(t, legacy), digestNativeACPConfig(t, structured); legacyDigest != structuredDigest {
-		t.Fatalf("semantically equivalent legacy/structured native entries changed digest: legacy=%q structured=%q", legacyDigest, structuredDigest)
+	structuredNormalized, err := normalizeModelConfig(structured)
+	if err != nil {
+		t.Fatalf("normalize structured config: %v", err)
+	}
+	structuredMaterial, err := secretFreeModelConfigJSON(structuredNormalized)
+	if err != nil {
+		t.Fatalf("structured secret-free projection: %v", err)
+	}
+	const wantStructuredProjection = `"native_acp":[{"harness":"codex","enabled":true,"models":[{"model":"same","efforts":["none"],"default_effort":"none"}]}]`
+	if !strings.Contains(string(structuredMaterial), wantStructuredProjection) {
+		t.Fatalf("structured native projection = %s, want substring %s", structuredMaterial, wantStructuredProjection)
+	}
+	legacyDigest, err := modelConfigDigest(normalized)
+	if err != nil {
+		t.Fatalf("legacy digest: %v", err)
+	}
+	const wantLegacyDigest = "dc7d8dea4e32ed1a3747d8c64dd5cf03b4bb2a77a3a3c0714afd9285c529f6a2"
+	if legacyDigest != wantLegacyDigest {
+		t.Fatalf("legacy digest = %q, want pre-extension digest %q", legacyDigest, wantLegacyDigest)
+	}
+	structuredDigest, err := modelConfigDigest(structuredNormalized)
+	if err != nil {
+		t.Fatalf("structured digest: %v", err)
+	}
+	if legacyDigest == structuredDigest {
+		t.Fatalf("structured model/effort/default projection did not change digest: %q", legacyDigest)
 	}
 }
 

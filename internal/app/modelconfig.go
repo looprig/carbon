@@ -67,6 +67,9 @@ func (c *nativeACPModelConfig) UnmarshalJSON(data []byte) error {
 	if len(trimmed) == 0 {
 		return errors.New("native_acp model entry is empty")
 	}
+	if err := rejectDuplicateJSONKeys(trimmed); err != nil {
+		return errors.New("invalid native_acp model entry")
+	}
 
 	if trimmed[0] == '"' {
 		decoder := json.NewDecoder(bytes.NewReader(trimmed))
@@ -114,10 +117,13 @@ func (c *nativeACPModelConfig) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// UnmarshalJSON keeps the wire representation strict enough to distinguish
-// an omitted models field (the harness-managed mode) from an explicit null,
-// which is not an array and therefore is invalid configuration.
+// UnmarshalJSON keeps the wire representation strict enough to preserve the
+// harness-managed mode for both an omitted models field and an explicit null;
+// any non-null models value must be an array.
 func (c *nativeACPProfileConfig) UnmarshalJSON(data []byte) error {
+	if err := rejectDuplicateJSONKeys(bytes.TrimSpace(data)); err != nil {
+		return errors.New("invalid native_acp profile")
+	}
 	var wire struct {
 		Enabled bool            `json:"enabled"`
 		Models  json.RawMessage `json:"models"`
@@ -284,8 +290,8 @@ func safeModelConfigDecodeError(err error) error {
 // explicit null from an absent key — both leave PermissionReview nil with no
 // error. A lightweight raw-message probe, run before the real decode, is the
 // simplest way to see the wire bytes for this one key and catch the null
-// case explicitly, matching nativeACPProfileConfig's null-rejection
-// precedent for its own (nested) optional field.
+// case explicitly, matching nativeACPProfileConfig's explicit-null handling
+// for its own (nested) optional field.
 func rejectNullPermissionReview(data []byte) error {
 	var probe struct {
 		PermissionReview json.RawMessage `json:"permission_review"`
