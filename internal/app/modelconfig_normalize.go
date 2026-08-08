@@ -33,9 +33,20 @@ type normalizedPermissionReview struct {
 }
 
 type normalizedNativeACPProfile struct {
-	Harness string
-	Enabled bool
-	Models  []string
+	Harness      string
+	Enabled      bool
+	Models       []string
+	ModelOptions []normalizedNativeACPModel
+}
+
+// normalizedNativeACPModel is one static native ACP selection option. Models
+// remains the legacy ID-only projection for existing composition callers;
+// ModelOptions carries the complete model/effort/default tuple for catalogue
+// compilation and digesting.
+type normalizedNativeACPModel struct {
+	Model         string
+	Efforts       []model.Effort
+	DefaultEffort model.Effort
 }
 
 type normalizedACPLauncher struct {
@@ -157,21 +168,71 @@ func normalizeNativeACPProfiles(config map[string]nativeACPProfileConfig) (map[s
 			return nil, modelConfigValidationError("native_acp models must be omitted for harness-managed mode and non-empty when present")
 		}
 		var models []string
+		var options []normalizedNativeACPModel
 		if profile.Models != nil {
-			models = append([]string(nil), (*profile.Models)...)
+			models = make([]string, 0, len(*profile.Models))
+			options = make([]normalizedNativeACPModel, 0, len(*profile.Models))
 		}
-		seen := make(map[string]struct{}, len(models))
-		for _, alias := range models {
-			if !validModelConfigAlias(alias) {
+		seenModels := make(map[string]struct{}, len(models))
+		var configuredModels []nativeACPModelConfig
+		if profile.Models != nil {
+			configuredModels = *profile.Models
+		}
+		for _, configured := range configuredModels {
+			if !validModelConfigAlias(configured.Model) {
 				return nil, modelConfigValidationError("native_acp model alias violates the runtime identifier contract")
 			}
-			if _, duplicate := seen[alias]; duplicate {
+			if _, duplicate := seenModels[configured.Model]; duplicate {
 				return nil, modelConfigValidationError("native_acp model aliases must be unique")
 			}
-			seen[alias] = struct{}{}
+			seenModels[configured.Model] = struct{}{}
+
+			var efforts []model.Effort
+			var defaultEffort model.Effort
+			if configured.Legacy {
+				efforts = []model.Effort{model.EffortNone}
+				defaultEffort = model.EffortNone
+			} else {
+				if len(configured.Efforts) == 0 {
+					return nil, modelConfigValidationError("native_acp model efforts must be non-empty")
+				}
+				efforts = make([]model.Effort, 0, len(configured.Efforts))
+				seenEfforts := make(map[model.Effort]struct{}, len(configured.Efforts))
+				for _, rawEffort := range configured.Efforts {
+					effort, valid := neutralModelConfigEffort(rawEffort)
+					if !valid {
+						return nil, modelConfigValidationError("native_acp model efforts contain an invalid effort")
+					}
+					if _, duplicate := seenEfforts[effort]; duplicate {
+						return nil, modelConfigValidationError("native_acp model efforts must be unique")
+					}
+					seenEfforts[effort] = struct{}{}
+					efforts = append(efforts, effort)
+				}
+				var valid bool
+				defaultEffort, valid = neutralModelConfigEffort(configured.DefaultEffort)
+				if !valid {
+					return nil, modelConfigValidationError("native_acp model default_effort is invalid")
+				}
+				if _, admitted := seenEfforts[defaultEffort]; !admitted {
+					return nil, modelConfigValidationError("native_acp model default_effort must be present in efforts")
+				}
+			}
+			sort.Slice(efforts, func(i, j int) bool {
+				return modelConfigEffortRank(efforts[i]) < modelConfigEffortRank(efforts[j])
+			})
+			models = append(models, configured.Model)
+			options = append(options, normalizedNativeACPModel{
+				Model: configured.Model, Efforts: efforts, DefaultEffort: defaultEffort,
+			})
 		}
 		sort.Strings(models)
-		profiles[harness] = normalizedNativeACPProfile{Harness: harness, Enabled: profile.Enabled, Models: models}
+		sort.Slice(options, func(i, j int) bool {
+			return options[i].Model < options[j].Model
+		})
+		profiles[harness] = normalizedNativeACPProfile{
+			Harness: harness, Enabled: profile.Enabled, Models: models, ModelOptions: options,
+		}
 	}
 	return profiles, nil
 }

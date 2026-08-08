@@ -163,6 +163,71 @@ func TestModelConfigDigestExcludesACPLaunchers(t *testing.T) {
 	}
 }
 
+func TestModelConfigNativeACPStructuredDigestCanonicalizesOrderAndCoversAllowlist(t *testing.T) {
+	first := decodeModelConfigWithNativeACP(t, `{"codex":{"enabled":true,"models":[
+		{"model":"zeta","efforts":["high","medium"],"default_effort":"medium"},
+		{"model":"alpha","efforts":["max","none"],"default_effort":"max"}
+	]}}`)
+	second := decodeModelConfigWithNativeACP(t, `{"codex":{"enabled":true,"models":[
+		{"model":"alpha","efforts":["none","max"],"default_effort":"max"},
+		{"model":"zeta","efforts":["medium","high"],"default_effort":"medium"}
+	]}}`)
+	firstDigest := digestNativeACPConfig(t, first)
+	secondDigest := digestNativeACPConfig(t, second)
+	if firstDigest != secondDigest {
+		t.Fatalf("reordered native allowlist changed digest: first=%q second=%q", firstDigest, secondDigest)
+	}
+
+	mutations := []struct {
+		name       string
+		nativeJSON string
+	}{
+		{name: "model", nativeJSON: `{"codex":{"enabled":true,"models":[
+			{"model":"other","efforts":["high","medium"],"default_effort":"medium"},
+			{"model":"alpha","efforts":["max","none"],"default_effort":"max"}
+		]}}`},
+		{name: "allowed effort", nativeJSON: `{"codex":{"enabled":true,"models":[
+			{"model":"zeta","efforts":["high","medium","max"],"default_effort":"medium"},
+			{"model":"alpha","efforts":["max","none"],"default_effort":"max"}
+		]}}`},
+		{name: "default effort", nativeJSON: `{"codex":{"enabled":true,"models":[
+			{"model":"zeta","efforts":["high","medium"],"default_effort":"high"},
+			{"model":"alpha","efforts":["max","none"],"default_effort":"max"}
+		]}}`},
+	}
+	for _, mutation := range mutations {
+		t.Run(mutation.name, func(t *testing.T) {
+			changed := digestNativeACPConfig(t, decodeModelConfigWithNativeACP(t, mutation.nativeJSON))
+			if changed == firstDigest {
+				t.Fatalf("native allowlist %s did not change digest %q", mutation.name, changed)
+			}
+		})
+	}
+}
+
+func TestModelConfigNativeACPLegacyNoneMatchesStructuredNoneDigest(t *testing.T) {
+	legacy := decodeModelConfigWithNativeACP(t, `{"codex":{"enabled":true,"models":["same"]}}`)
+	structured := decodeModelConfigWithNativeACP(t, `{"codex":{"enabled":true,"models":[
+		{"model":"same","efforts":["none"],"default_effort":"none"}
+	]}}`)
+	if legacyDigest, structuredDigest := digestNativeACPConfig(t, legacy), digestNativeACPConfig(t, structured); legacyDigest != structuredDigest {
+		t.Fatalf("semantically equivalent legacy/structured native entries changed digest: legacy=%q structured=%q", legacyDigest, structuredDigest)
+	}
+}
+
+func digestNativeACPConfig(t *testing.T, config modelConfigFile) string {
+	t.Helper()
+	normalized, err := normalizeModelConfig(config)
+	if err != nil {
+		t.Fatalf("normalize native config: %v", err)
+	}
+	digest, err := modelConfigDigest(normalized)
+	if err != nil {
+		t.Fatalf("digest native config: %v", err)
+	}
+	return digest
+}
+
 func digestModelConfigFixture(t *testing.T, apiKey string) modelConfigFile {
 	t.Helper()
 	config := validDecodedModelConfig(t)
@@ -199,6 +264,13 @@ func cloneNormalizedModelConfig(input normalizedModelConfig) normalizedModelConf
 		cloned.NativeACP = make(map[string]normalizedNativeACPProfile, len(input.NativeACP))
 		for harness, profile := range input.NativeACP {
 			profile.Models = append([]string(nil), profile.Models...)
+			if profile.ModelOptions != nil {
+				profile.ModelOptions = make([]normalizedNativeACPModel, len(profile.ModelOptions))
+				for i, option := range profile.ModelOptions {
+					profile.ModelOptions[i] = option
+					profile.ModelOptions[i].Efforts = append([]model.Effort(nil), option.Efforts...)
+				}
+			}
 			cloned.NativeACP[harness] = profile
 		}
 	}
