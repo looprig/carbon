@@ -68,9 +68,9 @@ limit ordinal or any in-session authority-mutation surface.
   structured entries are `{ "model": "<id>", "efforts": ["<effort>"],
   "default_effort": "<effort>" }`; `default_effort` must be one of the listed
   efforts, and `StartAgent` may select only those model/effort pairs. Legacy
-  string entries remain accepted for compatibility and retain model-only
-  behavior (the normalized effort is `none`); they do not make structured
-  entries model-only.
+  string entries remain accepted for compatibility and have the same model-only
+  behavior as structured entries whose sole effort and default are `none`;
+  non-`none` structured entries carry their exact model/effort selector.
 - Native model/effort support and runtime adapter/session availability are
   validated lazily when a selected child starts and the adapter advertises its
   runtime choices. CodeRig performs static decode/normalization and executable

@@ -234,7 +234,7 @@ func TestModelConfigNativeACPLegacyDigestRetainsPriorProjection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("structured secret-free projection: %v", err)
 	}
-	const wantStructuredProjection = `"native_acp":[{"harness":"codex","enabled":true,"models":[{"model":"same","efforts":["none"],"default_effort":"none"}]}]`
+	const wantStructuredProjection = `"native_acp":[{"harness":"codex","enabled":true,"models":["same"]}]`
 	if !strings.Contains(string(structuredMaterial), wantStructuredProjection) {
 		t.Fatalf("structured native projection = %s, want substring %s", structuredMaterial, wantStructuredProjection)
 	}
@@ -250,8 +250,38 @@ func TestModelConfigNativeACPLegacyDigestRetainsPriorProjection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("structured digest: %v", err)
 	}
-	if legacyDigest == structuredDigest {
-		t.Fatalf("structured model/effort/default projection did not change digest: %q", legacyDigest)
+	if legacyDigest != structuredDigest {
+		t.Fatalf("legacy and structured-none entries must have the same digest: legacy=%q structured=%q", legacyDigest, structuredDigest)
+	}
+}
+
+func TestModelConfigNativeACPMixedDigestCanonicalizesNoneEntriesIndividually(t *testing.T) {
+	legacyMixed := decodeModelConfigWithNativeACP(t, `{"codex":{"enabled":true,"models":[
+		"legacy",
+		{"model":"deep","efforts":["high"],"default_effort":"high"}
+	]}}`)
+	structuredNoneMixed := decodeModelConfigWithNativeACP(t, `{"codex":{"enabled":true,"models":[
+		{"model":"legacy","efforts":["none"],"default_effort":"none"},
+		{"model":"deep","efforts":["high"],"default_effort":"high"}
+	]}}`)
+
+	legacyDigest := digestNativeACPConfig(t, legacyMixed)
+	structuredNoneDigest := digestNativeACPConfig(t, structuredNoneMixed)
+	if legacyDigest != structuredNoneDigest {
+		t.Fatalf("mixed legacy/structured-none digest mismatch: legacy=%q structured=%q", legacyDigest, structuredNoneDigest)
+	}
+
+	normalized, err := normalizeModelConfig(legacyMixed)
+	if err != nil {
+		t.Fatalf("normalize mixed legacy config: %v", err)
+	}
+	material, err := secretFreeModelConfigJSON(normalized)
+	if err != nil {
+		t.Fatalf("mixed secret-free projection: %v", err)
+	}
+	const wantMixedProjection = `"models":[{"model":"deep","efforts":["high"],"default_effort":"high"},"legacy"]`
+	if !strings.Contains(string(material), wantMixedProjection) {
+		t.Fatalf("mixed projection = %s, want per-entry legacy string plus structured non-none row %s", material, wantMixedProjection)
 	}
 }
 

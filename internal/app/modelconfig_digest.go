@@ -120,19 +120,46 @@ func secretFreeModelConfigJSON(config normalizedModelConfig) ([]byte, error) {
 }
 
 func secretFreeNativeACPModels(profile normalizedNativeACPProfile) any {
-	if !profile.HasStructuredModels {
-		if profile.Models == nil {
-			return nil
-		}
-		// Preserve the pre-extension projection for legacy-only profiles so an
-		// unchanged models.json keeps its existing configuration revision.
+	if profile.Models == nil {
+		return nil
+	}
+	if len(profile.ModelOptions) == 0 {
+		// Keep lower-level normalized profiles that carry only the historical
+		// model-ID projection stable as well.
 		models := append([]string(nil), profile.Models...)
 		sort.Strings(models)
 		return models
 	}
 
-	models := make([]secretFreeNativeACPModel, 0, len(profile.ModelOptions))
-	for _, option := range profile.ModelOptions {
+	options := append([]normalizedNativeACPModel(nil), profile.ModelOptions...)
+	sort.Slice(options, func(i, j int) bool { return options[i].Model < options[j].Model })
+	allModelOnly := true
+	for _, option := range options {
+		if !nativeACPModelOnly(option) {
+			allModelOnly = false
+			break
+		}
+	}
+	if allModelOnly {
+		// A legacy string and a structured row with only neutral effort are
+		// semantically identical. Returning the historical string projection
+		// also preserves the exact pre-feature digest for legacy-only files.
+		models := make([]string, 0, len(options))
+		for _, option := range options {
+			models = append(models, option.Model)
+		}
+		return models
+	}
+
+	// Mixed profiles retain the semantic representation of each row instead of
+	// switching every legacy/neutral row to an object when one non-none row is
+	// configured. []any marshals the per-entry string/object union faithfully.
+	models := make([]any, 0, len(options))
+	for _, option := range options {
+		if nativeACPModelOnly(option) {
+			models = append(models, option.Model)
+			continue
+		}
 		efforts := append([]model.Effort(nil), option.Efforts...)
 		sort.Slice(efforts, func(i, j int) bool {
 			return modelConfigEffortRank(efforts[i]) < modelConfigEffortRank(efforts[j])
@@ -145,10 +172,11 @@ func secretFreeNativeACPModels(profile normalizedNativeACPProfile) any {
 			Model: option.Model, Efforts: effortNames, DefaultEffort: modelConfigEffortName(option.DefaultEffort),
 		})
 	}
-	sort.Slice(models, func(i, j int) bool {
-		return models[i].Model < models[j].Model
-	})
 	return models
+}
+
+func nativeACPModelOnly(option normalizedNativeACPModel) bool {
+	return option.DefaultEffort == model.EffortNone && len(option.Efforts) == 1 && option.Efforts[0] == model.EffortNone
 }
 
 func modelConfigEffortName(effort model.Effort) string {

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -30,6 +32,28 @@ var errACPChildUnavailable = errors.New("coderig: ACP child unavailable")
 // including its fixed prefix. This matches foreignloops' ACP turn projection
 // so both child-failure paths have the same model-facing byte ceiling.
 const maxACPModelFacingErrorBytes = 512
+
+const (
+	maxACPErrorDepth    = 32
+	maxACPErrorNodes    = 128
+	maxACPErrorChildren = 64
+)
+
+const (
+	redactedACPChildValue = "[REDACTED]"
+	redactedACPChildURL   = "[REDACTED_URL]"
+	redactedACPChildPath  = "[REDACTED_PATH]"
+)
+
+var (
+	acpChildMessageURLPattern              = regexp.MustCompile(`(?i)\b[a-z][a-z0-9+.-]*://[^\s<>"']+`)
+	acpChildMessageAuthPattern             = regexp.MustCompile(`(?i)(\b(?:authorization|proxy-authorization)\b\s*["']?\s*[:=]\s*)[^\r\n,;&}\]]+`)
+	acpChildMessageSecretAssignmentPattern = regexp.MustCompile(`(?i)(\b(?:api[\s_-]*key|access[\s_-]*token|refresh[\s_-]*token|token|password|credential|secret)\b\s*["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;&}\]]+)`)
+	acpChildMessageBearerPattern           = regexp.MustCompile(`(?i)\bBearer\s+[A-Za-z0-9][A-Za-z0-9._~+/=-]*`)
+	acpChildMessageUnixPathPattern         = regexp.MustCompile(`/[^\s,;)}\]<>"']+`)
+	acpChildMessageWindowsPathPattern      = regexp.MustCompile(`(?i)[A-Za-z]:[\\/][^\s,;)}\]<>"']*`)
+	acpChildCredentialTokenPattern         = regexp.MustCompile(`(?i)\b(?:sk|pk|ghp|gho|ghu|ghs|ghr|xox[baprs]|AIza)[-_][a-z0-9][a-z0-9._-]*\b`)
+)
 
 // acpChildModelFacingError is the only ACP construction error that opts into
 // Harness's model-facing failure detail. The concrete type stays private; the
@@ -66,10 +90,10 @@ func boundedACPChildError(err error) error {
 	if err == nil {
 		return nil
 	}
-	if errors.Is(err, context.Canceled) {
+	if containsACPChildErrorIdentity(err, context.Canceled) {
 		return context.Canceled
 	}
-	if errors.Is(err, context.DeadlineExceeded) {
+	if containsACPChildErrorIdentity(err, context.DeadlineExceeded) {
 		return context.DeadlineExceeded
 	}
 	if detail, ok := boundedACPProtocolErrorDetail(err); ok {
@@ -78,19 +102,168 @@ func boundedACPChildError(err error) error {
 	return errACPChildUnavailable
 }
 
+func containsACPChildErrorIdentity(err, target error) bool {
+	type node struct {
+		err   error
+		depth int
+	}
+	if isNilACPChildError(err) || isNilACPChildError(target) {
+		return false
+	}
+	pending := []node{{err: err}}
+	seen := make(map[error]struct{})
+	visited := 0
+	for len(pending) > 0 && visited < maxACPErrorNodes {
+		current := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		if isNilACPChildError(current.err) || markACPChildErrorSeen(seen, current.err) {
+			continue
+		}
+		visited++
+		if sameACPChildError(current.err, target) {
+			return true
+		}
+		if current.depth >= maxACPErrorDepth {
+			continue
+		}
+		if wrapper, ok := current.err.(interface{ Unwrap() []error }); ok {
+			children := safeACPChildUnwrapMany(wrapper)
+			if len(children) > maxACPErrorChildren {
+				children = children[:maxACPErrorChildren]
+			}
+			for index := len(children) - 1; index >= 0; index-- {
+				pending = append(pending, node{err: children[index], depth: current.depth + 1})
+			}
+			continue
+		}
+		if wrapper, ok := current.err.(interface{ Unwrap() error }); ok {
+			pending = append(pending, node{err: safeACPChildUnwrapOne(wrapper), depth: current.depth + 1})
+		}
+	}
+	return false
+}
+
+func sameACPChildError(left, right error) (same bool) {
+	defer func() {
+		if recover() != nil {
+			same = false
+		}
+	}()
+	leftType, rightType := reflect.TypeOf(left), reflect.TypeOf(right)
+	return leftType != nil && leftType == rightType && leftType.Comparable() && left == right
+}
+
 // boundedACPProtocolErrorDetail intentionally reads only the exported Code and
 // Message fields from an ACP wire error. It never calls Error, inspects Data,
 // or unwraps the protocol fault's local cause.
 func boundedACPProtocolErrorDetail(err error) (string, bool) {
-	var fault *protocol.Fault
-	if errors.As(err, &fault) && fault != nil {
-		return formatACPModelFacingError(fault.Code, fault.Message), true
+	type node struct {
+		err   error
+		depth int
 	}
-	var wireErr *protocol.Error
-	if errors.As(err, &wireErr) && wireErr != nil {
-		return formatACPModelFacingError(wireErr.Code, wireErr.Message), true
+	if isNilACPChildError(err) {
+		return "", false
+	}
+	pending := []node{{err: err}}
+	seen := make(map[error]struct{})
+	visited := 0
+	for len(pending) > 0 && visited < maxACPErrorNodes {
+		current := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		if isNilACPChildError(current.err) || markACPChildErrorSeen(seen, current.err) {
+			continue
+		}
+		visited++
+		if code, message, ok := directACPProtocolErrorFields(current.err); ok {
+			return formatACPModelFacingError(code, message), true
+		}
+		if current.depth >= maxACPErrorDepth {
+			continue
+		}
+		if wrapper, ok := current.err.(interface{ Unwrap() []error }); ok {
+			children := safeACPChildUnwrapMany(wrapper)
+			if len(children) > maxACPErrorChildren {
+				children = children[:maxACPErrorChildren]
+			}
+			for index := len(children) - 1; index >= 0; index-- {
+				pending = append(pending, node{err: children[index], depth: current.depth + 1})
+			}
+			continue
+		}
+		if wrapper, ok := current.err.(interface{ Unwrap() error }); ok {
+			pending = append(pending, node{err: safeACPChildUnwrapOne(wrapper), depth: current.depth + 1})
+		}
 	}
 	return "", false
+}
+
+func directACPProtocolErrorFields(err error) (protocol.ErrorCode, string, bool) {
+	switch typed := any(err).(type) {
+	case *protocol.Error:
+		if typed == nil {
+			return 0, "", false
+		}
+		return typed.Code, typed.Message, true
+	case protocol.Error:
+		return typed.Code, typed.Message, true
+	case *protocol.Fault:
+		if typed == nil {
+			return 0, "", false
+		}
+		return typed.Code, typed.Message, true
+	case protocol.Fault:
+		return typed.Code, typed.Message, true
+	default:
+		return 0, "", false
+	}
+}
+
+func isNilACPChildError(err error) bool {
+	if err == nil {
+		return true
+	}
+	value := reflect.ValueOf(err)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
+}
+
+func markACPChildErrorSeen(seen map[error]struct{}, err error) (alreadySeen bool) {
+	defer func() {
+		if recover() != nil {
+			alreadySeen = false
+		}
+	}()
+	typeOfError := reflect.TypeOf(err)
+	if typeOfError == nil || !typeOfError.Comparable() {
+		return false
+	}
+	if _, ok := seen[err]; ok {
+		return true
+	}
+	seen[err] = struct{}{}
+	return false
+}
+
+func safeACPChildUnwrapOne(wrapper interface{ Unwrap() error }) (next error) {
+	defer func() {
+		if recover() != nil {
+			next = nil
+		}
+	}()
+	return wrapper.Unwrap()
+}
+
+func safeACPChildUnwrapMany(wrapper interface{ Unwrap() []error }) (children []error) {
+	defer func() {
+		if recover() != nil {
+			children = nil
+		}
+	}()
+	return wrapper.Unwrap()
 }
 
 func formatACPModelFacingError(code protocol.ErrorCode, message string) string {
@@ -113,7 +286,18 @@ func normalizeACPModelFacingMessage(message string) string {
 		}
 		normalized.WriteRune(r)
 	}
-	return strings.Join(strings.Fields(normalized.String()), " ")
+	return redactACPModelFacingMessage(strings.Join(strings.Fields(normalized.String()), " "))
+}
+
+func redactACPModelFacingMessage(message string) string {
+	message = acpChildMessageURLPattern.ReplaceAllString(message, redactedACPChildURL)
+	message = acpChildMessageAuthPattern.ReplaceAllString(message, "$1"+redactedACPChildValue)
+	message = acpChildMessageSecretAssignmentPattern.ReplaceAllString(message, "$1"+redactedACPChildValue)
+	message = acpChildMessageBearerPattern.ReplaceAllString(message, redactedACPChildValue)
+	message = acpChildCredentialTokenPattern.ReplaceAllString(message, redactedACPChildValue)
+	message = acpChildMessageWindowsPathPattern.ReplaceAllString(message, redactedACPChildPath)
+	message = acpChildMessageUnixPathPattern.ReplaceAllString(message, redactedACPChildPath)
+	return message
 }
 
 func truncateACPModelFacingUTF8(value string, maxBytes int) string {

@@ -429,6 +429,94 @@ func TestBoundedACPChildErrorKeepsArbitraryFailuresGeneric(t *testing.T) {
 	}
 }
 
+type forgedACPProtocolAsError struct{ message string }
+
+func (e forgedACPProtocolAsError) Error() string { return "ordinary forged error" }
+
+func (e forgedACPProtocolAsError) As(target any) bool {
+	switch typed := target.(type) {
+	case **protocol.Fault:
+		*typed = protocol.InternalError(e.message, nil)
+		return true
+	case **protocol.Error:
+		*typed = &protocol.Error{Code: protocol.ErrorCodeInternalError, Message: e.message}
+		return true
+	default:
+		return false
+	}
+}
+
+func TestBoundedACPChildErrorDoesNotTrustCustomAs(t *testing.T) {
+	t.Parallel()
+	got := boundedACPChildError(forgedACPProtocolAsError{message: "forged quota reset"})
+	if got != errACPChildUnavailable {
+		t.Fatalf("forged protocol As error = %T %v, want generic sentinel", got, got)
+	}
+}
+
+func TestBoundedACPChildErrorTraversesRealWrapperAndJoinChains(t *testing.T) {
+	t.Parallel()
+	const message = "quota exceeded; resets at 3:00 PM"
+	fault := protocol.InternalError(message, nil)
+	for _, wrapped := range []error{
+		fmt.Errorf("outer: %w", fault),
+		errors.Join(forgedACPProtocolAsError{message: "must not win"}, fmt.Errorf("inner: %w", fault)),
+	} {
+		got := boundedACPChildError(wrapped)
+		if got.Error() != "ACP error -32603: "+message {
+			t.Fatalf("wrapped protocol error = %q, want direct protocol detail", got)
+		}
+	}
+}
+
+type cyclicACPError struct{ next error }
+
+func (e *cyclicACPError) Error() string { return "cyclic" }
+
+func (e *cyclicACPError) Unwrap() error { return e.next }
+
+func TestBoundedACPChildErrorBoundsCyclicChains(t *testing.T) {
+	t.Parallel()
+	cycle := &cyclicACPError{}
+	cycle.next = cycle
+	if got := boundedACPChildError(cycle); got != errACPChildUnavailable {
+		t.Fatalf("cyclic ACP error = %T %v, want generic sentinel", got, got)
+	}
+}
+
+func TestBoundedACPChildErrorRedactsDirectProtocolMessage(t *testing.T) {
+	t.Parallel()
+	const (
+		urlSentinel       = "https://provider.invalid/v1?api_key=url-secret&token=query-secret"
+		pathSentinel      = "/private/login/.config/credentials.json"
+		tokenSentinel     = "sk-test-secret-value"
+		apiKeySentinel    = "api_key=inline-secret"
+		passwordSentinel  = "password: inline-password"
+		authoritySentinel = "Authorization: Bearer bearer-secret"
+	)
+	message := "usage limit reached; resets at 3:00 PM " + urlSentinel + " path=" + pathSentinel + " " + tokenSentinel + " " + apiKeySentinel + " " + passwordSentinel + " " + authoritySentinel + "\nnext\t\x00invalid-utf8-\xff"
+	got := boundedACPChildError(&protocol.Error{Code: protocol.ErrorCodeAuthenticationRequired, Message: message})
+	var modelFacing interface{ ModelFacingError() string }
+	if !errors.As(got, &modelFacing) || modelFacing == nil {
+		t.Fatalf("direct protocol error = %T %v, want ModelFacingError", got, got)
+	}
+	detail := modelFacing.ModelFacingError()
+	if !strings.Contains(detail, "usage limit reached; resets at 3:00 PM") {
+		t.Fatalf("redacted detail = %q, want useful quota/reset wording", detail)
+	}
+	for _, sentinel := range []string{urlSentinel, pathSentinel, tokenSentinel, "url-secret", "query-secret", "inline-secret", "inline-password", "bearer-secret", "\n", "\r", "\t", "\x00"} {
+		if strings.Contains(detail, sentinel) {
+			t.Fatalf("direct protocol message leaked %q: %q", sentinel, detail)
+		}
+	}
+	if len(detail) > maxACPModelFacingErrorBytes {
+		t.Fatalf("direct protocol detail bytes = %d, want <= %d", len(detail), maxACPModelFacingErrorBytes)
+	}
+	if !utf8.ValidString(detail) {
+		t.Fatal("direct protocol detail is invalid UTF-8")
+	}
+}
+
 func TestACPChildConfigReceivesNativeResolvedEffort(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -521,6 +609,215 @@ func TestACPChildConfigKeepsHarnessManagedModelAndEffortEmpty(t *testing.T) {
 	}
 	if config.ModelAlias != "" || config.Effort != "" {
 		t.Fatalf("harness-managed config model/effort = %q/%q, want empty", config.ModelAlias, config.Effort)
+	}
+}
+
+func TestACPChildConfigNativeNoneKeepsEffortEmptyForLegacyAndStructuredRows(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		harness    loop.AgentHarnessName
+		modelJSON  string
+		modelAlias loop.ModelAlias
+	}{
+		{name: "codex legacy", harness: "codex", modelJSON: `"native-codex"`, modelAlias: "native-codex"},
+		{name: "codex structured none", harness: "codex", modelJSON: `{"model":"native-codex","efforts":["none"],"default_effort":"none"}`, modelAlias: "native-codex"},
+		{name: "claude legacy", harness: "claude-code", modelJSON: `"sonnet-5"`, modelAlias: "sonnet-5"},
+		{name: "claude structured none", harness: "claude-code", modelJSON: `{"model":"sonnet-5","efforts":["none"],"default_effort":"none"}`, modelAlias: "sonnet-5"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := decodeModelConfigWithNativeACP(t, `{"`+string(tt.harness)+`":{"enabled":true,"models":[`+tt.modelJSON+`]}}`)
+			normalized, err := normalizeModelConfig(config)
+			if err != nil {
+				t.Fatalf("normalizeModelConfig(): %v", err)
+			}
+			profile := normalized.NativeACP[string(tt.harness)]
+			options := make([]ACPNativeModelOption, 0, len(profile.ModelOptions))
+			for _, option := range profile.ModelOptions {
+				options = append(options, ACPNativeModelOption{
+					Alias:         loop.ModelAlias(option.Model),
+					Model:         option.Model,
+					Efforts:       append([]model.Effort(nil), option.Efforts...),
+					DefaultEffort: option.DefaultEffort,
+				})
+			}
+			compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
+				NativeACP: map[string]ACPNativeProfile{string(tt.harness): {
+					Harness: tt.harness, Enabled: profile.Enabled, ModelOptions: options,
+				}},
+				PrimerTarget: runtimeCatalogPrimer(),
+			})
+			if err != nil {
+				t.Fatalf("CompileAgentRuntimeCatalog(): %v", err)
+			}
+			resolved, err := compiled.RuntimeCatalog.ResolveWithExplicitSource(generic.Name, tt.harness, loop.RuntimeSourceNative, tt.modelAlias, model.EffortNone, true)
+			if err != nil {
+				t.Fatalf("ResolveWithExplicitSource(): %v", err)
+			}
+			bound := testACPChildBound(t, resolved)
+			factory := &acpChildFactory{config: ACPChildrenConfig{Catalog: compiled, AccessProfile: AccessReadOnly, posture: driver.PostureReadOnly}}
+			_, childConfig, ownedGateway, err := factory.configFor(context.Background(), bound, "")
+			if err != nil {
+				t.Fatalf("configFor(): %v", err)
+			}
+			if ownedGateway != nil {
+				t.Fatal("native model-only config unexpectedly owns a gateway")
+			}
+			if childConfig.ModelAlias != string(tt.modelAlias) || childConfig.Effort != "" {
+				t.Fatalf("native %s config = model %q effort %q, want model %q and empty effort", tt.harness, childConfig.ModelAlias, childConfig.Effort, tt.modelAlias)
+			}
+		})
+	}
+}
+
+func TestACPChildConfigNativeNonNoneEffortPropagatesExactly(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		harness loop.AgentHarnessName
+		model   string
+		effort  model.Effort
+	}{
+		{harness: "codex", model: "native-codex", effort: model.EffortHigh},
+		{harness: "claude-code", model: "sonnet-5", effort: model.EffortHigh},
+	} {
+		t.Run(string(tt.harness), func(t *testing.T) {
+			compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
+				NativeACP: map[string]ACPNativeProfile{string(tt.harness): {
+					Harness: tt.harness, Enabled: true,
+					ModelOptions: []ACPNativeModelOption{{Alias: loop.ModelAlias(tt.model), Model: tt.model, Efforts: []model.Effort{tt.effort}, DefaultEffort: tt.effort}},
+				}},
+				PrimerTarget: runtimeCatalogPrimer(),
+			})
+			if err != nil {
+				t.Fatalf("CompileAgentRuntimeCatalog(): %v", err)
+			}
+			resolved, err := compiled.RuntimeCatalog.ResolveWithExplicitSource(generic.Name, tt.harness, loop.RuntimeSourceNative, loop.ModelAlias(tt.model), tt.effort, true)
+			if err != nil {
+				t.Fatalf("ResolveWithExplicitSource(): %v", err)
+			}
+			bound := testACPChildBound(t, resolved)
+			factory := &acpChildFactory{config: ACPChildrenConfig{Catalog: compiled, AccessProfile: AccessReadOnly, posture: driver.PostureReadOnly}}
+			_, childConfig, _, err := factory.configFor(context.Background(), bound, "")
+			if err != nil {
+				t.Fatalf("configFor(): %v", err)
+			}
+			if childConfig.Effort != string(tt.effort) {
+				t.Fatalf("native %s effort = %q, want %q", tt.harness, childConfig.Effort, tt.effort)
+			}
+		})
+	}
+}
+
+func testACPChildBound(t *testing.T, resolved loop.Resolved) loop.BoundDefinition {
+	t.Helper()
+	definition, err := loop.Define(
+		loop.WithName(generic.Name),
+		loop.WithInference(&fakeLLM{}, testModel()),
+		loop.WithSystem("native ACP compatibility test"),
+		loop.WithPolicyRevision("acp-child-native-compatibility-test"),
+	)
+	if err != nil {
+		t.Fatalf("loop.Define(): %v", err)
+	}
+	bound, err := definition.Bind(context.Background(), tool.Bindings{SessionID: mustUUID(t), LoopID: mustUUID(t)})
+	if err != nil {
+		t.Fatalf("definition.Bind(): %v", err)
+	}
+	bound, err = loop.OverrideBoundRuntimeSelectionWithIdentity(bound, resolved.Profile, resolved.ModelAlias, resolved.Target, resolved.Effort, resolved.Source, resolved.SelectionKind)
+	if err != nil {
+		t.Fatalf("OverrideBoundRuntimeSelectionWithIdentity(): %v", err)
+	}
+	return bound
+}
+
+func TestACPChildNativeModelOnlyRowsBuildThroughDriverWithoutLivePreflight(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name       string
+		harness    loop.AgentHarnessName
+		helperPath string
+		model      string
+		modelJSON  string
+	}{
+		{name: "codex legacy", harness: "codex", helperPath: task33NativeCodexACPHelperPath, model: "native-codex", modelJSON: `"native-codex"`},
+		{name: "codex structured none", harness: "codex", helperPath: task33NativeCodexACPHelperPath, model: "native-codex", modelJSON: `{"model":"native-codex","efforts":["none"],"default_effort":"none"}`},
+		{name: "claude legacy", harness: "claude-code", helperPath: task33NativeClaudeACPHelperPath, model: "sonnet-5", modelJSON: `"sonnet-5"`},
+		{name: "claude structured none", harness: "claude-code", helperPath: task33NativeClaudeACPHelperPath, model: "sonnet-5", modelJSON: `{"model":"sonnet-5","efforts":["none"],"default_effort":"none"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := decodeModelConfigWithNativeACP(t, `{"`+string(tt.harness)+`":{"enabled":true,"models":[`+tt.modelJSON+`]}}`)
+			normalized, err := normalizeModelConfig(config)
+			if err != nil {
+				t.Fatalf("normalizeModelConfig(): %v", err)
+			}
+			profile := normalized.NativeACP[string(tt.harness)]
+			options := make([]ACPNativeModelOption, 0, len(profile.ModelOptions))
+			for _, option := range profile.ModelOptions {
+				options = append(options, ACPNativeModelOption{
+					Alias:         loop.ModelAlias(option.Model),
+					Model:         option.Model,
+					Efforts:       append([]model.Effort(nil), option.Efforts...),
+					DefaultEffort: option.DefaultEffort,
+				})
+			}
+			compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
+				NativeACP: map[string]ACPNativeProfile{string(tt.harness): {
+					Harness: tt.harness, Enabled: profile.Enabled, ModelOptions: options,
+				}},
+				PrimerTarget: runtimeCatalogPrimer(),
+			})
+			if err != nil {
+				t.Fatalf("CompileAgentRuntimeCatalog(): %v", err)
+			}
+			workspace := t.TempDir()
+			preflightCalls := 0
+			composition, err := NewACPComposition(ACPChildrenConfig{
+				Catalog:            compiled,
+				AccessProfile:      AccessReadOnly,
+				Executables:        map[loop.AgentHarnessName]string{tt.harness: executable},
+				WorkspaceRoot:      workspace,
+				Env:                []string{"PATH=" + tt.helperPath},
+				NativeEnvAllowlist: []string{"PATH"},
+				executablePreflight: func(context.Context, ACPExecutableProbe) ACPPreflightResult {
+					preflightCalls++
+					return ACPPreflightResult{Ready: true}
+				},
+			})
+			if err != nil {
+				t.Fatalf("NewACPComposition(): %v", err)
+			}
+			if preflightCalls != 0 {
+				t.Fatalf("native model availability preflight calls = %d, want zero", preflightCalls)
+			}
+			resolved, err := composition.Catalog.RuntimeCatalog.ResolveWithExplicitSource(generic.Name, tt.harness, loop.RuntimeSourceNative, loop.ModelAlias(tt.model), model.EffortNone, true)
+			if err != nil {
+				t.Fatalf("ResolveWithExplicitSource(): %v", err)
+			}
+			if resolved.Effort != model.EffortNone {
+				t.Fatalf("resolved native effort = %q, want neutral effort", resolved.Effort)
+			}
+			bound := testACPChildBound(t, resolved)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			backend, _, err := composition.Live(ctx, mustUUID(t), mustUUID(t), loop.Provenance{}, acpPostureMatrixPublisher{}, bound, func() (uuid.UUID, error) { return uuid.New() }, event.NewFactory(func() (uuid.UUID, error) { return uuid.New() }, time.Now))
+			if err != nil {
+				t.Fatalf("native %s BuildWith(): %v", tt.harness, err)
+			}
+			if backend == nil {
+				cancel()
+				t.Fatal("native ACP BuildWith() returned nil backend")
+			}
+			cancel()
+			select {
+			case <-backend.DoneChan():
+			case <-time.After(5 * time.Second):
+				t.Fatalf("native %s backend did not close after cancellation", tt.harness)
+			}
+		})
 	}
 }
 
