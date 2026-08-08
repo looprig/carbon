@@ -15,6 +15,9 @@ func TestDefaultRetryPolicy_Valid(t *testing.T) {
 	if defaultRetryPolicy.StableRetries != 3 || defaultRetryPolicy.StableDelay != 2*time.Second {
 		t.Fatalf("agreed schedule drifted: %+v", defaultRetryPolicy)
 	}
+	if defaultRetryPolicy.MaxAttempts != 10 || defaultRetryPolicy.MaxDelay != 256*time.Second {
+		t.Fatalf("production retry budget drifted: %+v", defaultRetryPolicy)
+	}
 }
 
 func TestNewProductionClient_Wrapped(t *testing.T) {
