@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -327,8 +326,12 @@ type ACPChildrenConfig struct {
 	// DefaultAccessProfile; NewACPComposition normalizes and validates it once.
 	AccessProfile AccessProfile
 	Executables   map[loop.AgentHarnessName]string
-	WorkspaceRoot string
-	Env           []string
+	// CollabMCPExecutable is already-resolved and verified by the composition
+	// root. When set, ACP children use the additive Harness services seam to
+	// receive one loop-scoped collaboration MCP descriptor.
+	CollabMCPExecutable string
+	WorkspaceRoot       string
+	Env                 []string
 	// EnvAllowlist is the compatibility fallback for callers that predate
 	// credential-specific allowlists. Production supplies both mode-specific
 	// lists below.
@@ -349,6 +352,16 @@ type ACPChildrenConfig struct {
 	// captured by both the live and restored builders. It is deliberately
 	// unexported: callers cannot mutate a child posture after composition.
 	posture driver.Posture
+
+	// requireCollabMCP is set by the production composition root. Lower-level
+	// legacy callers that have no collaboration capability may continue to use
+	// the zero-services builder shape; a production ACP builder never does.
+	requireCollabMCP bool
+	// executableSnapshots are captured at registration and checked again just
+	// before each live/restore launch, closing the path replacement window as
+	// far as a path-only child API permits.
+	executableSnapshots map[loop.AgentHarnessName]verifiedExecutableSnapshot
+	collabMCPSnapshot   *verifiedExecutableSnapshot
 }
 
 // ACPExecutableProbe is the bounded, secret-free input to an explicit ACP
@@ -375,16 +388,22 @@ type ACPPreflightResult struct {
 // The registry is retained for inspection and the function pair is the narrow
 // legacy rig option; dispatch still selects by bound RuntimeProfile.
 type ACPComposition struct {
-	Catalog     ACPCompiledCatalog
-	Registry    *foreign.BuilderRegistry
-	Live        foreign.Builder
-	Restored    foreign.RestoredBuilder
-	Diagnostics []string
+	Catalog  ACPCompiledCatalog
+	Registry *foreign.BuilderRegistry
+	Live     foreign.Builder
+	Restored foreign.RestoredBuilder
+	// LiveServices and RestoredServices are the capability-aware builder pair.
+	// They are populated only when collaboration MCP injection is enabled;
+	// legacy Live/Restored remain available as zero-services adapters.
+	LiveServices     foreign.ServicesBuilder
+	RestoredServices foreign.ServicesRestoredBuilder
+	Diagnostics      []string
 
 	// These values are captured for composition inspection. The builders use
 	// the same values retained in their private factory configuration.
-	accessProfile AccessProfile
-	posture       driver.Posture
+	accessProfile       AccessProfile
+	posture             driver.Posture
+	collabMCPExecutable string
 }
 
 // NewACPComposition performs only static executable/path checks, registers
@@ -402,6 +421,25 @@ func NewACPComposition(config ACPChildrenConfig) (*ACPComposition, error) {
 	}
 	config.AccessProfile = effectiveProfile
 	config.posture = posture
+	if config.Executables != nil {
+		executables := make(map[loop.AgentHarnessName]string, len(config.Executables))
+		for harness, executable := range config.Executables {
+			executables[harness] = executable
+		}
+		config.Executables = executables
+	}
+	if config.CollabMCPExecutable != "" {
+		resolved, resolveErr := resolveCollabMCPExecutableFrom(config.CollabMCPExecutable, "")
+		if resolveErr != nil {
+			return nil, resolveErr
+		}
+		config.CollabMCPExecutable = resolved
+		snapshot, ok := verifiedExecutableSnapshotFor(resolved)
+		if !ok {
+			return nil, errCollabMCPExecutableUnavailable
+		}
+		config.collabMCPSnapshot = &snapshot
+	}
 	if (config.Catalog.HasProfile("acp/claude-code") || config.Catalog.HasProfile("acp/codex")) && !cleanAbsolutePath(config.WorkspaceRoot) {
 		return nil, fmt.Errorf("coderig: ACP workspace root must be a clean absolute path")
 	}
@@ -409,6 +447,7 @@ func NewACPComposition(config ACPChildrenConfig) (*ACPComposition, error) {
 	var diagnostics []string
 	profiles := []loop.RuntimeProfileName{"acp/claude-code", "acp/codex"}
 	runnable := make(map[loop.AgentHarnessName]struct{}, len(profiles))
+	config.executableSnapshots = make(map[loop.AgentHarnessName]verifiedExecutableSnapshot, len(profiles))
 	for _, profile := range profiles {
 		if !config.Catalog.HasProfile(profile) {
 			continue
@@ -419,10 +458,13 @@ func NewACPComposition(config ACPChildrenConfig) (*ACPComposition, error) {
 			diagnostics = append(diagnostics, acpDiagnosticNoExecutable(harness))
 			continue
 		}
-		if !preflightACPExecutable(executable) {
+		snapshot, ok := verifiedExecutableSnapshotFor(executable)
+		if !ok {
 			diagnostics = append(diagnostics, acpDiagnosticExecutableNotRunnable(harness))
 			continue
 		}
+		config.Executables[harness] = snapshot.path
+		config.executableSnapshots[harness] = snapshot
 		runnable[harness] = struct{}{}
 	}
 	staticCatalog, err := filterACPStaticCatalog(config.Catalog, runnable)
@@ -430,23 +472,50 @@ func NewACPComposition(config ACPChildrenConfig) (*ACPComposition, error) {
 		return nil, err
 	}
 	config.Catalog = staticCatalog
+	if config.requireCollabMCP && len(runnable) != 0 && config.CollabMCPExecutable == "" {
+		resolved, resolveErr := resolveCollabMCPExecutable("")
+		if resolveErr != nil {
+			return nil, resolveErr
+		}
+		config.CollabMCPExecutable = resolved
+		snapshot, ok := verifiedExecutableSnapshotFor(resolved)
+		if !ok {
+			return nil, errCollabMCPExecutableUnavailable
+		}
+		config.collabMCPSnapshot = &snapshot
+	}
 	factory := &acpChildFactory{config: config}
 	for _, profile := range []loop.RuntimeProfileName{"acp/claude-code", "acp/codex"} {
 		if !config.Catalog.HasProfile(profile) {
+			continue
+		}
+		if config.CollabMCPExecutable != "" {
+			if err := registry.RegisterServices(profile, factory.liveServices, factory.restoredServices); err != nil {
+				return nil, err
+			}
 			continue
 		}
 		if err := registry.Register(profile, factory.live, factory.restored); err != nil {
 			return nil, err
 		}
 	}
+	var liveServices foreign.ServicesBuilder
+	var restoredServices foreign.ServicesRestoredBuilder
+	if config.CollabMCPExecutable != "" {
+		liveServices = dispatchACPServicesBuilder(registry)
+		restoredServices = dispatchACPServicesRestoredBuilder(registry)
+	}
 	return &ACPComposition{
-		Catalog:       config.Catalog,
-		Registry:      registry,
-		Live:          dispatchACPBuilder(registry),
-		Restored:      dispatchACPRestoredBuilder(registry),
-		Diagnostics:   diagnostics,
-		accessProfile: config.AccessProfile,
-		posture:       config.posture,
+		Catalog:             config.Catalog,
+		Registry:            registry,
+		Live:                dispatchACPBuilder(registry),
+		Restored:            dispatchACPRestoredBuilder(registry),
+		LiveServices:        liveServices,
+		RestoredServices:    restoredServices,
+		Diagnostics:         diagnostics,
+		accessProfile:       config.AccessProfile,
+		posture:             config.posture,
+		collabMCPExecutable: config.CollabMCPExecutable,
 	}, nil
 }
 
@@ -976,11 +1045,7 @@ func hasACPModelAlias(models []loop.RuntimeModelOption, alias loop.ModelAlias) b
 }
 
 func preflightACPExecutable(path string) bool {
-	if !cleanAbsolutePath(path) {
-		return false
-	}
-	info, err := os.Stat(path)
-	return err == nil && !info.IsDir() && info.Mode()&0111 != 0
+	return verifiedExecutable(path)
 }
 
 type acpChildFactory struct {
@@ -996,11 +1061,24 @@ func (f *acpChildFactory) live(
 	idGen func() (uuid.UUID, error),
 	fac *event.Factory,
 ) (loop.Backend, string, error) {
-	_, acpConfig, ownedGateway, err := f.configFor(loopCtx, cfg, "")
+	return f.liveServices(loopCtx, sessionID, loopID, parent, pub, cfg, idGen, fac, foreign.Services{})
+}
+
+func (f *acpChildFactory) liveServices(
+	loopCtx context.Context,
+	sessionID, loopID uuid.UUID,
+	parent loop.Provenance,
+	pub foreign.EventPublisher,
+	cfg loop.BoundDefinition,
+	idGen func() (uuid.UUID, error),
+	fac *event.Factory,
+	services foreign.Services,
+) (loop.Backend, string, error) {
+	_, acpConfig, ownedGateway, err := f.configForServices(loopCtx, cfg, "", services)
 	if err != nil {
 		return nil, "", boundedACPChildError(err)
 	}
-	backend, sid, err := acpdriver.BuildWith(acpConfig)(loopCtx, sessionID, loopID, parent, pub, cfg, idGen, fac)
+	backend, sid, err := acpdriver.BuildWithServices(acpConfig)(loopCtx, sessionID, loopID, parent, pub, cfg, idGen, fac, services)
 	if err != nil {
 		_ = ownedGateway.Close(context.Background())
 		return nil, "", boundedACPChildError(err)
@@ -1022,11 +1100,25 @@ func (f *acpChildFactory) restored(
 	fac *event.Factory,
 	seed foreign.RestoredForeign,
 ) (loop.Backend, error) {
-	_, acpConfig, ownedGateway, err := f.configFor(loopCtx, cfg, seed.AgentSessionID)
+	return f.restoredServices(loopCtx, sessionID, loopID, parent, pub, cfg, idGen, fac, seed, foreign.Services{})
+}
+
+func (f *acpChildFactory) restoredServices(
+	loopCtx context.Context,
+	sessionID, loopID uuid.UUID,
+	parent loop.Provenance,
+	pub foreign.EventPublisher,
+	cfg loop.BoundDefinition,
+	idGen func() (uuid.UUID, error),
+	fac *event.Factory,
+	seed foreign.RestoredForeign,
+	services foreign.Services,
+) (loop.Backend, error) {
+	_, acpConfig, ownedGateway, err := f.configForServices(loopCtx, cfg, seed.AgentSessionID, services)
 	if err != nil {
 		return nil, boundedACPChildError(err)
 	}
-	backend, err := acpdriver.BuildRestoredWith(acpConfig)(loopCtx, sessionID, loopID, parent, pub, cfg, idGen, fac, seed)
+	backend, err := acpdriver.BuildRestoredWithServices(acpConfig)(loopCtx, sessionID, loopID, parent, pub, cfg, idGen, fac, seed, services)
 	if err != nil {
 		_ = ownedGateway.Close(context.Background())
 		return nil, boundedACPChildError(err)
@@ -1039,6 +1131,10 @@ func (f *acpChildFactory) restored(
 }
 
 func (f *acpChildFactory) configFor(ctx context.Context, cfg loop.BoundDefinition, agentSessionID string) (loop.Resolved, acpdriver.Config, *ACPGateway, error) {
+	return f.configForServices(ctx, cfg, agentSessionID, foreign.Services{})
+}
+
+func (f *acpChildFactory) configForServices(ctx context.Context, cfg loop.BoundDefinition, agentSessionID string, services foreign.Services) (loop.Resolved, acpdriver.Config, *ACPGateway, error) {
 	resolved, harness, err := resolveACPBoundRuntime(f.config.Catalog, cfg)
 	if err != nil {
 		return loop.Resolved{}, acpdriver.Config{}, nil, err
@@ -1053,6 +1149,22 @@ func (f *acpChildFactory) configFor(ctx context.Context, cfg loop.BoundDefinitio
 	expectedPosture, err := acpPostureFor(f.config.AccessProfile)
 	if err != nil || posture != expectedPosture {
 		return loop.Resolved{}, acpdriver.Config{}, nil, errACPAccessProfileUnavailable
+	}
+	executable := f.config.Executables[harness]
+	if executable != "" {
+		if snapshot, ok := f.config.executableSnapshots[harness]; ok {
+			if !snapshot.matchesCurrent() || !verifiedExecutable(executable) {
+				return loop.Resolved{}, acpdriver.Config{}, nil, errACPChildUnavailable
+			}
+		}
+	}
+	if f.config.CollabMCPExecutable != "" {
+		if f.config.collabMCPSnapshot != nil && !f.config.collabMCPSnapshot.matchesCurrent() {
+			return loop.Resolved{}, acpdriver.Config{}, nil, errCollabMCPExecutableUnavailable
+		}
+		if !verifiedExecutable(f.config.CollabMCPExecutable) {
+			return loop.Resolved{}, acpdriver.Config{}, nil, errCollabMCPExecutableUnavailable
+		}
 	}
 	var ownedGateway *ACPGateway
 	if resolved.Credential == loop.CredentialGatewayBacked {
@@ -1074,9 +1186,18 @@ func (f *acpChildFactory) configFor(ctx context.Context, cfg loop.BoundDefinitio
 	if resolved.Credential == loop.CredentialNativeAuth {
 		effort = string(resolved.Effort)
 	}
+	servers := []protocol.McpServer(nil)
+	if f.config.CollabMCPExecutable != "" {
+		server, serverErr := collabMCPServerFor(f.config.CollabMCPExecutable, services.Broker)
+		if serverErr != nil {
+			_ = ownedGateway.Close(context.Background())
+			return loop.Resolved{}, acpdriver.Config{}, nil, serverErr
+		}
+		servers = []protocol.McpServer{server}
+	}
 	return resolved, acpdriver.Config{
 		Harness:         acpdriver.Harness(harness),
-		Executable:      f.config.Executables[harness],
+		Executable:      executable,
 		Env:             f.config.envForCredential(resolved.Credential),
 		Credential:      resolved.Credential,
 		Binding:         binding,
@@ -1086,6 +1207,7 @@ func (f *acpChildFactory) configFor(ctx context.Context, cfg loop.BoundDefinitio
 		Posture:         posture,
 		AgentSessionID:  agentSessionID,
 		WorkspaceRoot:   f.config.WorkspaceRoot,
+		McpServers:      servers,
 	}, ownedGateway, nil
 }
 
@@ -1270,6 +1392,26 @@ func dispatchACPRestoredBuilder(registry *foreign.BuilderRegistry) foreign.Resto
 	}
 }
 
+func dispatchACPServicesBuilder(registry *foreign.BuilderRegistry) foreign.ServicesBuilder {
+	return func(loopCtx context.Context, sessionID, loopID uuid.UUID, parent loop.Provenance, pub foreign.EventPublisher, cfg loop.BoundDefinition, idGen func() (uuid.UUID, error), fac *event.Factory, services foreign.Services) (loop.Backend, string, error) {
+		builder, _, err := registry.ServicesBuilder(cfg.RuntimeProfile())
+		if err != nil {
+			return nil, "", boundedACPChildError(err)
+		}
+		return builder(loopCtx, sessionID, loopID, parent, pub, cfg, idGen, fac, services)
+	}
+}
+
+func dispatchACPServicesRestoredBuilder(registry *foreign.BuilderRegistry) foreign.ServicesRestoredBuilder {
+	return func(loopCtx context.Context, sessionID, loopID uuid.UUID, parent loop.Provenance, pub foreign.EventPublisher, cfg loop.BoundDefinition, idGen func() (uuid.UUID, error), fac *event.Factory, seed foreign.RestoredForeign, services foreign.Services) (loop.Backend, error) {
+		_, builder, err := registry.ServicesBuilder(cfg.RuntimeProfile())
+		if err != nil {
+			return nil, boundedACPChildError(err)
+		}
+		return builder(loopCtx, sessionID, loopID, parent, pub, cfg, idGen, fac, seed, services)
+	}
+}
+
 type acpGatewayBackend struct {
 	loop.Backend
 	done <-chan struct{}
@@ -1292,6 +1434,8 @@ func (b *acpGatewayBackend) DoneChan() <-chan struct{} { return b.done }
 
 var _ foreign.Builder = (*acpChildFactory)(nil).live
 var _ foreign.RestoredBuilder = (*acpChildFactory)(nil).restored
+var _ foreign.ServicesBuilder = (*acpChildFactory)(nil).liveServices
+var _ foreign.ServicesRestoredBuilder = (*acpChildFactory)(nil).restoredServices
 var _ loop.Backend = (*acpGatewayBackend)(nil)
 
 func cleanAbsolutePath(path string) bool {

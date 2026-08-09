@@ -19,6 +19,12 @@ type Config struct {
 	// operation remains available when it is nil or when its catalog has no
 	// statically runnable executable profiles.
 	ACPChildren *ACPComposition
+	// CollabMCPExecutable is the optional explicit absolute path to the
+	// collaboration MCP proxy. An empty value lets composition discover a
+	// verified coderig-collab-mcp sibling next to the current executable.
+	// The path is resolved once before any session is opened and is never
+	// passed to Harness.
+	CollabMCPExecutable string
 	// ACPDiagnostics are the bounded, secret-free ACP availability notices
 	// produced by static composition checks (for example, a missing or
 	// non-runnable executable). They ride the same presentation channel as the

@@ -261,6 +261,22 @@ own.
   This is a real, pre-existing gap flagged in code comments
   (`runtime_controls.go`, `assembly.go`), not something this feature closes.
 
+## Collaboration MessageAgent support
+
+CodeRig exposes only the existing `MessageAgent` operation to foreign ACP
+children through the per-loop collaboration MCP server. The support matrix is:
+
+| Runtime | MessageAgent support |
+| --- | --- |
+| Native Harness | Steering |
+| Claude ACP 0.65.0 | Steering |
+| Current Codex ACP | Queued fallback |
+| Future adapters | Require advertised host-owned idle fallback before steering is enabled |
+
+The exact Claude ACP version is intentional. CodeRig does not probe unknown ACP
+methods or infer safe idle behavior: a future adapter must advertise both
+steering and a host-owned idle fallback before it can be enabled.
+
 ## Placement
 
 Keep behavior here when it is specific to a coding Rig, such as Generic's
