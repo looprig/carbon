@@ -583,6 +583,13 @@ func TestNativeCodexStartAgentSelectsModelAndEffortOverWire(t *testing.T) {
 	if err := agent.Close(context.Background()); err != nil {
 		t.Fatalf("native Codex initial Close() error = %v", err)
 	}
+	receiptPath := filepath.Join(workspace, task33NativeCodexStateReceipt)
+	if err := os.Remove(receiptPath); err != nil {
+		t.Fatalf("remove fresh native Codex peer state: %v", err)
+	}
+	if _, err := os.Stat(receiptPath); !os.IsNotExist(err) {
+		t.Fatalf("fresh native Codex peer state after removal: err = %v, want not exist", err)
+	}
 	restoredController, err := assembly.RestoreSession(context.Background(), sessionID)
 	if err != nil {
 		t.Fatalf("native Codex RestoreSession() error = %v", err)
@@ -592,7 +599,7 @@ func TestNativeCodexStartAgentSelectsModelAndEffortOverWire(t *testing.T) {
 		t.Fatalf("native Codex restored adapter error = %v", err)
 	}
 	t.Cleanup(func() { _ = restored.Close(context.Background()) })
-	restoredState, err := os.ReadFile(filepath.Join(workspace, task33NativeCodexStateReceipt))
+	restoredState, err := os.ReadFile(receiptPath)
 	if err != nil {
 		t.Fatalf("read restored native Codex peer state: %v", err)
 	}
@@ -656,12 +663,16 @@ func TestNativeCodexUnavailableEffortFailsLazilyWithoutInvalidWireCall(t *testin
 		_ = backend
 		t.Fatal("native Codex unavailable effort selection succeeded")
 	}
-	state, err := os.ReadFile(filepath.Join(workspace, "task33-codex-state.receipt"))
-	if err != nil {
-		t.Fatalf("read native Codex peer state after bounded failure: %v", err)
+	statePath := filepath.Join(workspace, task33NativeCodexStateReceipt)
+	if _, statErr := os.Stat(statePath); !os.IsNotExist(statErr) {
+		t.Fatalf("native Codex final state receipt after unavailable effort: err = %v, want not exist", statErr)
 	}
-	if got, want := string(state), "model=gpt-5.6-terra\neffort=none\ncalls=model=gpt-5.6-terra\n"; got != want {
-		t.Fatalf("native Codex peer state after unavailable effort = %q, want %q", got, want)
+	state, err := os.ReadFile(filepath.Join(workspace, task33NativeCodexCallsReceipt))
+	if err != nil {
+		t.Fatalf("read native Codex wire calls after bounded failure: %v", err)
+	}
+	if got, want := string(state), "calls=model=gpt-5.6-terra\n"; got != want {
+		t.Fatalf("native Codex wire calls after unavailable effort = %q, want %q", got, want)
 	}
 }
 

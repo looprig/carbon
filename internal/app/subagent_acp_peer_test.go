@@ -24,6 +24,7 @@ const (
 	acpPostureReceiptName           = "acp-posture.receipt"
 	acpPostureWriteName             = "acp-posture-write.txt"
 	task33NativeCodexStateReceipt   = "task33-codex-state.receipt"
+	task33NativeCodexCallsReceipt   = "task33-codex-wire-calls.receipt"
 )
 
 // testIsolatedHome is the process-wide temporary directory TestMain
@@ -210,7 +211,12 @@ func runTask33ACPHelper() int {
 		state.mu.Lock()
 		if state.harness == "codex" && native {
 			if !task33ApplyCodexConfigLocked(state, request.ConfigID, value) {
+				workspace := state.workspace
+				configCalls := append([]string(nil), state.configCalls...)
 				state.mu.Unlock()
+				if len(configCalls) > 0 {
+					_ = writeTask33CodexCallsReceipt(workspace, configCalls)
+				}
 				return nil, protocol.InvalidParams("task33 session/set_config_option", nil)
 			}
 			response := task33CodexConfigResponseLocked(state)
@@ -219,8 +225,14 @@ func runTask33ACPHelper() int {
 			effort := state.effort
 			configCalls := append([]string(nil), state.configCalls...)
 			state.mu.Unlock()
-			if err := writeTask33CodexStateReceipt(workspace, modelAlias, effort, configCalls); err != nil {
-				return nil, err
+			if len(configCalls) == 1 {
+				if err := writeTask33CodexCallsReceipt(workspace, configCalls); err != nil {
+					return nil, err
+				}
+			} else if len(configCalls) == 2 {
+				if err := writeTask33CodexStateReceipt(workspace, modelAlias, effort, configCalls); err != nil {
+					return nil, err
+				}
 			}
 			return response, nil
 		}
@@ -456,6 +468,14 @@ func writeTask33CodexStateReceipt(workspace, modelAlias, effort string, configCa
 	}
 	payload := "model=" + modelAlias + "\neffort=" + effort + "\ncalls=" + strings.Join(configCalls, ",") + "\n"
 	return os.WriteFile(filepath.Join(workspace, task33NativeCodexStateReceipt), []byte(payload), 0o600)
+}
+
+func writeTask33CodexCallsReceipt(workspace string, configCalls []string) error {
+	if workspace == "" {
+		return fmt.Errorf("task33 helper: empty workspace for Codex calls receipt")
+	}
+	payload := "calls=" + strings.Join(configCalls, ",") + "\n"
+	return os.WriteFile(filepath.Join(workspace, task33NativeCodexCallsReceipt), []byte(payload), 0o600)
 }
 
 func task33HelperGatewayRequest(ctx context.Context, harness, baseURL, token, modelAlias, prompt string) error {
