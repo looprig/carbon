@@ -49,9 +49,49 @@ func loadProductionModels(home string) (productionModels, error) {
 	if err != nil {
 		return productionModels{}, err
 	}
-	return loadProductionModelsFrom(path, func(selected model.Model, input modelClientInput) (inference.Client, error) {
-		return newProductionClient(selected, input)
+	data, present, err := readModelConfigFile(path)
+	if err != nil {
+		return productionModels{}, err
+	}
+	if !present {
+		return productionModels{}, nil
+	}
+	decoded, err := decodeModelConfig(data)
+	if err != nil {
+		return productionModels{}, err
+	}
+	normalized, err := normalizeModelConfig(decoded)
+	if err != nil {
+		return productionModels{}, err
+	}
+	if !normalizedUsesCredentialRefs(normalized) {
+		return compileProductionModels(normalized, func(selected model.Model, input modelClientInput) (inference.Client, error) {
+			return newProductionClient(selected, input)
+		})
+	}
+	runtime, err := newCredentialRuntime(home)
+	if err != nil {
+		return productionModels{}, err
+	}
+	configured, err := compileProductionModels(normalized, func(selected model.Model, input modelClientInput) (inference.Client, error) {
+		return credentialClientFor(runtime, selected, input)
 	})
+	if err != nil {
+		_ = runtime.Close()
+		return productionModels{}, err
+	}
+	configured.credentialRuntime = runtime
+	configured.credentialRefs = runtime.refsSnapshot()
+	return configured, nil
+}
+
+func normalizedUsesCredentialRefs(config normalizedModelConfig) bool {
+	for _, target := range config.Models {
+		if target.client.hasCredentialRef() {
+			return true
+		}
+	}
+	return false
 }
 
 func loadProductionModelsFrom(path string, factory configuredClientFactory) (productionModels, error) {

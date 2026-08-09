@@ -281,6 +281,87 @@ func TestParseFlags(t *testing.T) {
 	}
 }
 
+func TestParseCredentialFlagsAndRejectMixedCommands(t *testing.T) {
+	flags, err := parseFlags([]string{"--credentials-list"})
+	if err != nil {
+		t.Fatalf("parse credential list: %v", err)
+	}
+	if !flags.credentialList || flags.credentialLogin != "" || flags.credentialLogout != "" {
+		t.Fatalf("credential list flags = %+v", flags)
+	}
+	flags, err = parseFlags([]string{"--login", "OpenAI"})
+	if err != nil {
+		t.Fatalf("parse login: %v", err)
+	}
+	if flags.credentialLogin != "OpenAI" {
+		t.Fatalf("credential login = %q, want OpenAI", flags.credentialLogin)
+	}
+	flags, err = parseFlags([]string{"credentials", "login", "anthropic"})
+	if err != nil || flags.credentialLogin != "anthropic" {
+		t.Fatalf("subcommand login = %+v, err=%v", flags, err)
+	}
+	flags, err = parseFlags([]string{"login", "openai"})
+	if err != nil || flags.credentialLogin != "openai" {
+		t.Fatalf("direct login = %+v, err=%v", flags, err)
+	}
+	flags, err = parseFlags([]string{"credential", "logout", "credential://openai/personal"})
+	if err != nil || flags.credentialLogout != "credential://openai/personal" {
+		t.Fatalf("subcommand logout = %+v, err=%v", flags, err)
+	}
+	flags, err = parseFlags([]string{"logout", "credential://openai/personal"})
+	if err != nil || flags.credentialLogout != "credential://openai/personal" {
+		t.Fatalf("direct logout = %+v, err=%v", flags, err)
+	}
+	if _, err := parseFlags([]string{"--list", "--credentials-list"}); err == nil {
+		t.Fatal("mixed session/credential command error = nil")
+	}
+	if _, err := parseFlags([]string{"--login", "openai", "--logout", "credential://openai/personal"}); err == nil {
+		t.Fatal("mixed credential command error = nil")
+	}
+}
+
+func TestPrintCredentialsRedactsSensitiveFieldsByConstruction(t *testing.T) {
+	var out bytes.Buffer
+	err := printCredentials(&out, []coderig.CredentialSummary{{
+		Reference: "credential://openai/personal",
+		Provider:  "openai",
+		Transport: "responses",
+		Scheme:    "api_key",
+		Usage:     "metered_api",
+		Status:    "configured",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "credential://openai/personal") || !strings.Contains(got, "status=configured") {
+		t.Fatalf("credential output = %q, missing safe fields", got)
+	}
+	for _, forbidden := range []string{"sk-", "token", "secret", "@", "/credentials/"} {
+		if strings.Contains(strings.ToLower(got), forbidden) {
+			t.Fatalf("credential output = %q, contains forbidden %q", got, forbidden)
+		}
+	}
+}
+
+func TestPrintCredentialLogoutDoesNotClaimRemoteRevocation(t *testing.T) {
+	var out bytes.Buffer
+	if err := printCredentialLogout(&out, coderig.CredentialLogoutOutcome{
+		Reference:           "credential://openai/personal",
+		LocalCatalogDeleted: true,
+		LocalStateDeleted:   true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "local_catalog=deleted") || !strings.Contains(got, "local_state=deleted") || !strings.Contains(got, "remote_revocation=not-attempted") {
+		t.Fatalf("logout output = %q, missing separate local/remote outcomes", got)
+	}
+	if strings.Contains(got, "revoked") {
+		t.Fatalf("logout output falsely claimed remote revocation: %q", got)
+	}
+}
+
 // TestFlagParseErrorIsTyped proves FlagParseError carries its reason and unwraps its cause,
 // so the boundary failure is errors.As-recoverable rather than a bare string.
 func TestFlagParseErrorIsTyped(t *testing.T) {

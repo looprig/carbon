@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"io"
 	"reflect"
 
 	"github.com/looprig/credentials"
@@ -16,6 +17,34 @@ type configuredClientCacheKey struct {
 	Target        runtimeModelKey
 	APIKey        string
 	CredentialRef credentials.Reference
+}
+
+// configuredClientConstructionError retains only a safe cause classification
+// for callers that need to distinguish a missing/mismatched credential ref.
+// Its Error text deliberately contains aliases/providers only; it never
+// reflects factory errors that might carry provider material.
+type configuredClientConstructionError struct {
+	Alias    string
+	Provider string
+	Cause    error
+}
+
+func (e *configuredClientConstructionError) Error() string {
+	if e == nil {
+		return "coderig: configured model client construction failed"
+	}
+	return fmt.Sprintf("coderig: construct configured model alias %q provider %q", e.Alias, e.Provider)
+}
+
+func (e *configuredClientConstructionError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
+}
+
+func (e *configuredClientConstructionError) Format(state fmt.State, _ rune) {
+	_, _ = io.WriteString(state, e.Error())
 }
 
 // PrimerCandidate is one models.json entry tagged primer-capable
@@ -55,6 +84,11 @@ type productionModels struct {
 	PermissionReviewEnabled bool
 	PermissionReviewModel   model.Model
 	PermissionReviewStrict  bool
+	// credentialRuntime is owned by the RuntimeAgent produced from this
+	// composition. It is intentionally absent for legacy/static model
+	// configurations, preserving their existing no-store behavior.
+	credentialRuntime *credentialRuntime
+	credentialRefs    []credentials.Reference
 }
 
 func compileProductionModels(config normalizedModelConfig, factory configuredClientFactory) (productionModels, error) {
@@ -87,7 +121,7 @@ func compileProductionModels(config normalizedModelConfig, factory configuredCli
 		if !ok {
 			client, err = factory(target.Model, target.client)
 			if err != nil {
-				return productionModels{}, fmt.Errorf("coderig: construct configured model alias %q provider %q", target.Alias, target.Model.Provider)
+				return productionModels{}, &configuredClientConstructionError{Alias: target.Alias, Provider: string(target.Model.Provider), Cause: err}
 			}
 			if nilInferenceClient(client) {
 				return productionModels{}, modelConfigValidationError("configured model factory returned no client")

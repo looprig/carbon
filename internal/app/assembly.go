@@ -197,9 +197,26 @@ func newWithProductionModelsLoader(ctx context.Context, cfg Config, loader produ
 	if err != nil {
 		return nil, err
 	}
+	// Carry the resolved absolute home through every downstream composition
+	// helper (permissions, MCP, credentials) so this process root is resolved
+	// exactly once.
+	cfg.HomeDir = home
 	configured, err := loader(home)
 	if err != nil {
 		return nil, err
+	}
+	credentialRuntime := configured.credentialRuntime
+	if credentialRuntime != nil {
+		if err := credentialRuntime.beginSession(); err != nil {
+			_ = credentialRuntime.Close()
+			return nil, err
+		}
+		defer func() {
+			if credentialRuntime != nil {
+				credentialRuntime.endSession()
+				_ = credentialRuntime.Close()
+			}
+		}()
 	}
 	if configured.PrimerClient == nil || configured.PrimerModel.Name == "" {
 		return nil, &ModelConfigCapabilityError{}
@@ -227,7 +244,15 @@ func newWithProductionModelsLoader(ctx context.Context, cfg Config, loader produ
 	if runtimeClient == nil {
 		runtimeClient = configured.PrimerClient
 	}
-	return newWithClientUsingStores(ctx, runtimeClient, newModelFactoryFor(configured.PrimerModel), cfg, storesProvider)
+	agent, err := newWithClientUsingStores(ctx, runtimeClient, newModelFactoryFor(configured.PrimerModel), cfg, storesProvider)
+	if err != nil {
+		return nil, err
+	}
+	if credentialRuntime != nil {
+		agent.credentialRuntime = credentialRuntime
+		credentialRuntime = nil
+	}
+	return agent, nil
 }
 
 type sessionStoresProvider func() (*sessionStores, error)

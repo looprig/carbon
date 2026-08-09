@@ -1064,6 +1064,29 @@ func TestACPChildEnvIsCredentialScoped(t *testing.T) {
 	}
 }
 
+func TestACPChildEnvAlwaysRejectsProviderSecrets(t *testing.T) {
+	config := ACPChildrenConfig{
+		Env: []string{
+			"PATH=/bin", "LANG=C", "OPENAI_API_KEY=sk-test", "ANTHROPIC_TOKEN=secret",
+			"AWS_SECRET_ACCESS_KEY=secret", "CLAUDE_CODE_OAUTH_TOKEN=oauth", "USER=runner",
+		},
+		NativeEnvAllowlist:  []string{"PATH", "LANG", "OPENAI_API_KEY", "ANTHROPIC_TOKEN", "AWS_SECRET_ACCESS_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "USER"},
+		GatewayEnvAllowlist: []string{"PATH", "LANG", "OPENAI_API_KEY", "ANTHROPIC_TOKEN", "AWS_SECRET_ACCESS_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "USER"},
+	}
+	for _, mode := range []loop.CredentialMode{loop.CredentialNativeAuth, loop.CredentialGatewayBacked} {
+		env := config.envForCredential(mode)
+		joined := strings.Join(env, "\n")
+		for _, forbidden := range []string{"OPENAI_API_KEY", "ANTHROPIC_TOKEN", "AWS_SECRET_ACCESS_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "sk-test", "secret", "oauth"} {
+			if strings.Contains(joined, forbidden) {
+				t.Fatalf("%s env leaked %q: %v", mode, forbidden, env)
+			}
+		}
+		if !strings.Contains(joined, "PATH=/bin") || !strings.Contains(joined, "USER=runner") {
+			t.Fatalf("%s env lost safe mechanics: %v", mode, env)
+		}
+	}
+}
+
 func containsEnv(env []string, wanted string) bool {
 	for _, entry := range env {
 		if entry == wanted {

@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/looprig/core/uuid"
 	"github.com/looprig/harness/pkg/loop"
@@ -21,15 +22,21 @@ import (
 // access profile is fixed at Open; there is no in-session authority mutation surface.
 type RuntimeAgent struct {
 	*sessionadapter.Adapter
-	sess             session.SessionController
-	root             string
-	access           *sessionAccess
-	mgr              *mcpharness.Manager
-	adopter          *mcpharness.Adopter
-	recorder         *mcpNoticeRecorder
-	primerAlias      string
-	primerEfforts    []model.Effort
-	primerCandidates []PrimerCandidate
+	sess              session.SessionController
+	root              string
+	access            *sessionAccess
+	mgr               *mcpharness.Manager
+	adopter           *mcpharness.Adopter
+	recorder          *mcpNoticeRecorder
+	primerAlias       string
+	primerEfforts     []model.Effort
+	primerCandidates  []PrimerCandidate
+	credentialRuntime *credentialRuntime
+	closeMu           sync.Mutex
+	closeDone         chan struct{}
+	closeErr          error
+	closing           bool
+	closed            bool
 }
 
 // newRuntimeAgentWithPrimerCandidates builds a RuntimeAgent with no MCP composition. It is
@@ -81,11 +88,36 @@ func (a *RuntimeAgent) MCPNotices() []mcpharness.Notice {
 // to the now-stopped session's own idle events); the MCP manager closes its connections
 // third; the executor sets close LAST, removing their owned scratch HOME directories and
 // revoking their grant keys and egress proxies. mgr and adopter are nil-safe (a session
-// opened with no mcp.json has neither), and mgr.Close is independently idempotent, but
-// RuntimeAgent.Close itself is not guarded against being called twice -- matching this
-// method's pre-existing behavior for access.Close.
+// opened with no mcp.json has neither), and RuntimeAgent.Close is linearized and
+// idempotent so a close/logout race cannot release a source before the adapter drains.
 func (a *RuntimeAgent) Close(ctx context.Context) error {
-	err := a.Adapter.Close(ctx)
+	if a == nil {
+		return nil
+	}
+	a.closeMu.Lock()
+	if a.closed {
+		err := a.closeErr
+		a.closeMu.Unlock()
+		return err
+	}
+	if a.closing {
+		done := a.closeDone
+		a.closeMu.Unlock()
+		<-done
+		a.closeMu.Lock()
+		err := a.closeErr
+		a.closeMu.Unlock()
+		return err
+	}
+	a.closing = true
+	a.closeDone = make(chan struct{})
+	done := a.closeDone
+	a.closeMu.Unlock()
+
+	var err error
+	if a.Adapter != nil {
+		err = a.Adapter.Close(ctx)
+	}
 	if a.adopter != nil {
 		if closeErr := a.adopter.Close(); closeErr != nil && err == nil {
 			err = closeErr
@@ -101,6 +133,21 @@ func (a *RuntimeAgent) Close(ctx context.Context) error {
 			err = closeErr
 		}
 	}
+	// The inference/session adapter and its executor-backed access set are
+	// drained before the credential source and its catalog/store. This is the
+	// reverse dependency order required by the credential lifecycle.
+	if a.credentialRuntime != nil {
+		a.credentialRuntime.endSession()
+		if closeErr := a.credentialRuntime.Close(); closeErr != nil && err == nil {
+			err = closeErr
+		}
+	}
+	a.closeMu.Lock()
+	a.closeErr = err
+	a.closed = true
+	a.closing = false
+	close(done)
+	a.closeMu.Unlock()
 	return err
 }
 

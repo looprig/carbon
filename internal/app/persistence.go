@@ -382,11 +382,12 @@ type SessionStoreFactory struct {
 	// buildClient is retained as an explicit-client compatibility seam for
 	// package tests. When set, Open bypasses models.json and production ACP
 	// composition exactly like openWithClient.
-	buildClient    func() (inference.Client, ModelFactory, error)
-	storeMu        sync.Mutex
-	closed         bool
-	mu             sync.Mutex
-	currentSession uuid.UUID
+	buildClient        func() (inference.Client, ModelFactory, error)
+	storeMu            sync.Mutex
+	closed             bool
+	credentialRuntimes map[*credentialRuntime]struct{}
+	mu                 sync.Mutex
+	currentSession     uuid.UUID
 }
 
 // NewSessionStoreFactory returns a lazy production factory for the on-disk store rooted at
@@ -400,16 +401,30 @@ func NewSessionStoreFactory(dataDir string) (*SessionStoreFactory, error) {
 // opened from this factory has been Closed). It is idempotent.
 func (f *SessionStoreFactory) Close() error {
 	f.storeMu.Lock()
-	defer f.storeMu.Unlock()
 	if f.closed {
+		f.storeMu.Unlock()
 		return nil
 	}
 	f.closed = true
 	fs := f.fs
-	if fs == nil {
-		return nil
+	runtimes := make([]*credentialRuntime, 0, len(f.credentialRuntimes))
+	for runtime := range f.credentialRuntimes {
+		runtimes = append(runtimes, runtime)
 	}
-	return fs.Close()
+	f.storeMu.Unlock()
+
+	var first error
+	for _, runtime := range runtimes {
+		if err := runtime.Close(); err != nil && first == nil {
+			first = err
+		}
+	}
+	if fs != nil {
+		if err := fs.Close(); err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
 }
 
 func (f *SessionStoreFactory) ensureStoresLocked() (*sessionStores, error) {
@@ -526,6 +541,7 @@ func lastActivity(meta sessionstore.SessionMeta) time.Time {
 func (f *SessionStoreFactory) Open(ctx context.Context, sel SessionSelector, cfg Config) (*RuntimeAgent, error) {
 	var client inference.Client
 	var factory ModelFactory
+	var credentialLifecycle *credentialRuntime
 	if f.buildClient != nil {
 		var err error
 		client, factory, err = f.buildClient()
@@ -537,12 +553,29 @@ func (f *SessionStoreFactory) Open(ctx context.Context, sel SessionSelector, cfg
 		if err != nil {
 			return nil, err
 		}
+		cfg.HomeDir = home
 		configured, err := f.loadModels(home)
 		if err != nil {
 			return nil, err
 		}
 		if configured.PrimerClient == nil || configured.PrimerModel.Name == "" {
+			if configured.credentialRuntime != nil {
+				_ = configured.credentialRuntime.Close()
+			}
 			return nil, &ModelConfigCapabilityError{}
+		}
+		credentialLifecycle = configured.credentialRuntime
+		if credentialLifecycle != nil {
+			if err := credentialLifecycle.beginSession(); err != nil {
+				_ = credentialLifecycle.Close()
+				return nil, err
+			}
+			defer func() {
+				if credentialLifecycle != nil {
+					credentialLifecycle.endSession()
+					_ = credentialLifecycle.Close()
+				}
+			}()
 		}
 		client = configured.RuntimeClient
 		if client == nil {
@@ -572,6 +605,21 @@ func (f *SessionStoreFactory) Open(ctx context.Context, sel SessionSelector, cfg
 	agent, err := f.openWithClient(ctx, client, factory, sel, cfg)
 	if err != nil {
 		return nil, err
+	}
+	if credentialLifecycle != nil {
+		agent.credentialRuntime = credentialLifecycle
+		credentialLifecycle = nil
+		f.storeMu.Lock()
+		if f.closed {
+			f.storeMu.Unlock()
+			_ = agent.Close(ctx)
+			return nil, &StoreClosedError{}
+		}
+		if f.credentialRuntimes == nil {
+			f.credentialRuntimes = make(map[*credentialRuntime]struct{})
+		}
+		f.credentialRuntimes[agent.credentialRuntime] = struct{}{}
+		f.storeMu.Unlock()
 	}
 	f.mu.Lock()
 	f.currentSession = agent.SessionID()
