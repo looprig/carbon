@@ -11,7 +11,6 @@ import (
 	"github.com/looprig/harness/pkg/loop"
 	"github.com/looprig/harness/pkg/tool"
 	"github.com/looprig/inference"
-	"github.com/looprig/inference/auth"
 	model "github.com/looprig/inference/model"
 )
 
@@ -63,7 +62,7 @@ func TestProductionNativeModelOptionsCompileExactEffortsAndDefault(t *testing.T)
 	if err != nil {
 		t.Fatalf("normalizeModelConfig() error = %v", err)
 	}
-	configured, err := compileProductionModels(normalized, func(model.Model, auth.APIKey) (inference.Client, error) {
+	configured, err := compileProductionModels(normalized, func(model.Model, modelClientInput) (inference.Client, error) {
 		return &fakeLLM{}, nil
 	})
 	if err != nil {

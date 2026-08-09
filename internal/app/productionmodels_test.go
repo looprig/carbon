@@ -9,9 +9,9 @@ import (
 	"testing"
 
 	"github.com/looprig/coderig/internal/catalog/generic"
+	"github.com/looprig/credentials"
 	"github.com/looprig/harness/pkg/loop"
 	"github.com/looprig/inference"
-	"github.com/looprig/inference/auth"
 	"github.com/looprig/inference/model"
 )
 
@@ -24,7 +24,7 @@ func TestProductionModelsWithoutDelegateDefaultsCompileACPPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("normalizeModelConfig() error = %v", err)
 	}
-	configured, err := compileProductionModels(normalized, func(model.Model, auth.APIKey) (inference.Client, error) {
+	configured, err := compileProductionModels(normalized, func(model.Model, modelClientInput) (inference.Client, error) {
 		return &fakeLLM{}, nil
 	})
 	if err != nil {
@@ -62,13 +62,13 @@ func TestProductionModelsConstructsCredentialBoundClients(t *testing.T) {
 
 	type factoryCall struct {
 		model model.Model
-		key   auth.APIKey
+		input modelClientInput
 	}
 	var calls []factoryCall
 	clients := make([]inference.Client, 0, len(config.Models))
-	factory := func(gotModel model.Model, gotKey auth.APIKey) (inference.Client, error) {
-		calls = append(calls, factoryCall{model: gotModel, key: gotKey})
-		client := &fakeLLM{credential: string(gotKey)}
+	factory := func(gotModel model.Model, input modelClientInput) (inference.Client, error) {
+		calls = append(calls, factoryCall{model: gotModel, input: input})
+		client := &fakeLLM{credential: input.APIKey}
 		clients = append(clients, client)
 		return client, nil
 	}
@@ -80,12 +80,12 @@ func TestProductionModelsConstructsCredentialBoundClients(t *testing.T) {
 	if len(calls) != len(config.Models) {
 		t.Fatalf("factory calls = %d, want %d", len(calls), len(config.Models))
 	}
-	wantKeys := []auth.APIKey{auth.APIKey(primerKey), auth.APIKey(delegateKey), ""}
+	wantKeys := []string{primerKey, delegateKey, ""}
 	for index := range calls {
 		if !reflect.DeepEqual(calls[index].model, config.Models[index].Model) {
 			t.Errorf("factory call %d model = %#v, want %#v", index, calls[index].model, config.Models[index].Model)
 		}
-		if calls[index].key != wantKeys[index] {
+		if calls[index].input.APIKey != wantKeys[index] {
 			t.Errorf("factory call %d key mismatch", index)
 		}
 	}
@@ -127,6 +127,34 @@ func TestProductionModelsConstructsCredentialBoundClients(t *testing.T) {
 	}
 }
 
+func TestProductionModelsFactoryReceivesExplicitCredentialReference(t *testing.T) {
+	ref, err := credentials.ParseReference("credential://openai/personal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := normalizedModelConfig{
+		Version:       modelConfigVersionV3,
+		PrimerDefault: "fixture-primer",
+		Models: []normalizedModelTarget{{
+			Alias: "fixture-primer",
+			Model: model.CustomModel("openai", model.APIFormatOpenAIResponses, "https://api.openai.com/v1", "gpt-5", model.WithTools()),
+			Uses:  []string{"primer"}, Efforts: []model.Effort{model.EffortNone}, DefaultEffort: model.EffortNone,
+			client: modelClientInput{CredentialRef: ref},
+		}},
+	}
+	var gotAuth modelClientInput
+	_, err = compileProductionModels(config, func(_ model.Model, authInput modelClientInput) (inference.Client, error) {
+		gotAuth = authInput
+		return &fakeLLM{}, nil
+	})
+	if err != nil {
+		t.Fatalf("compileProductionModels() error = %v", err)
+	}
+	if gotAuth.APIKey != "" || gotAuth.CredentialRef != ref {
+		t.Fatalf("factory auth input = %#v, want only credential reference", gotAuth)
+	}
+}
+
 func TestProductionModelsConstructionFailureIsSecretFree(t *testing.T) {
 	const sentinel = "test-secret-do-not-log"
 	config := normalizedModelConfig{
@@ -138,7 +166,7 @@ func TestProductionModelsConstructionFailureIsSecretFree(t *testing.T) {
 			client: modelClientInput{APIKey: sentinel},
 		}},
 	}
-	factory := func(model.Model, auth.APIKey) (inference.Client, error) {
+	factory := func(model.Model, modelClientInput) (inference.Client, error) {
 		return nil, errors.New("factory rejected " + sentinel)
 	}
 
@@ -172,7 +200,7 @@ func TestProductionModelsCarriesNativeACPProfilesAndSources(t *testing.T) {
 		}},
 	}
 
-	got, err := compileProductionModels(config, func(model.Model, auth.APIKey) (inference.Client, error) {
+	got, err := compileProductionModels(config, func(model.Model, modelClientInput) (inference.Client, error) {
 		return &fakeLLM{}, nil
 	})
 	if err != nil {
@@ -202,7 +230,7 @@ func TestProductionModelsCollectsAllPrimerCapableCandidates(t *testing.T) {
 		},
 	}
 
-	got, err := compileProductionModels(config, func(model.Model, auth.APIKey) (inference.Client, error) {
+	got, err := compileProductionModels(config, func(model.Model, modelClientInput) (inference.Client, error) {
 		return &fakeLLM{}, nil
 	})
 	if err != nil {
@@ -228,7 +256,7 @@ func TestProductionModelsCollectsAllPrimerCapableCandidates(t *testing.T) {
 func TestProductionModelsRejectsSharedPrimerProviderTargets(t *testing.T) {
 	sharedModel := model.CustomModel("chutes", model.APIFormatOpenAI, "https://api.chutes.ai", "shared-target", model.WithTools())
 	primaryModel := model.CustomModel("lmstudio", model.APIFormatOpenAI, "http://localhost:1234/v1", "primary", model.WithTools())
-	factory := func(model.Model, auth.APIKey) (inference.Client, error) { return &fakeLLM{}, nil }
+	factory := func(model.Model, modelClientInput) (inference.Client, error) { return &fakeLLM{}, nil }
 
 	tests := []struct {
 		name    string
@@ -280,7 +308,7 @@ func TestProductionModelsResolvesPermissionReview(t *testing.T) {
 		"openai", model.APIFormatOpenAIResponses, "", "classifier-model",
 		model.WithTools(), model.WithStructuredOutput(), model.WithStructuredOutputWithTools(),
 	)
-	factory := func(model.Model, auth.APIKey) (inference.Client, error) { return &fakeLLM{}, nil }
+	factory := func(model.Model, modelClientInput) (inference.Client, error) { return &fakeLLM{}, nil }
 
 	t.Run("present section resolves the enabled model and strict flag", func(t *testing.T) {
 		config := normalizedModelConfig{
@@ -352,7 +380,7 @@ func TestProductionModelsResolvesUnusedClassifierPermissionReview(t *testing.T) 
 		t.Fatal("normalized config missing the classifier model")
 	}
 
-	factory := func(model.Model, auth.APIKey) (inference.Client, error) { return &fakeLLM{}, nil }
+	factory := func(model.Model, modelClientInput) (inference.Client, error) { return &fakeLLM{}, nil }
 	got, err := compileProductionModels(normalized, factory)
 	if err != nil {
 		t.Fatalf("compileProductionModels() error = %v", err)
@@ -388,7 +416,7 @@ func TestCompileProductionModelsCarriesACPLaunchers(t *testing.T) {
 		"claude-code": {Harness: "claude-code", Executable: "/usr/local/bin/claude-code-acp"},
 	}
 
-	produced, err := compileProductionModels(config, func(model.Model, auth.APIKey) (inference.Client, error) {
+	produced, err := compileProductionModels(config, func(model.Model, modelClientInput) (inference.Client, error) {
 		return &fakeLLM{}, nil
 	})
 	if err != nil {

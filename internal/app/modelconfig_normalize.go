@@ -9,12 +9,14 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/looprig/credentials"
 	"github.com/looprig/inference/auth"
 	model "github.com/looprig/inference/model"
 	"github.com/looprig/llm"
 )
 
 type normalizedModelConfig struct {
+	Version              int
 	PrimerDefault        string
 	ClaudeCodeSmallModel string
 	Models               []normalizedModelTarget
@@ -66,14 +68,40 @@ type normalizedModelTarget struct {
 }
 
 type modelClientInput struct {
-	APIKey string
+	// Exactly one of APIKey and CredentialRef is populated for authenticated
+	// targets. Both are zero for a validated local/none target.
+	APIKey        string
+	CredentialRef credentials.Reference
+}
+
+func (c modelClientInput) hasAPIKey() bool { return c.APIKey != "" }
+
+func (c modelClientInput) hasCredentialRef() bool { return !c.CredentialRef.IsZero() }
+
+func (c modelClientInput) isInline() bool { return c.hasAPIKey() }
+
+func (c modelClientInput) valid() bool {
+	// A local/none target intentionally carries neither value; an
+	// authenticated target carries exactly one.
+	return !(c.hasAPIKey() && c.hasCredentialRef())
+}
+
+func sameModelClientInput(left, right modelClientInput) bool {
+	if left.hasAPIKey() || right.hasAPIKey() {
+		return left.APIKey != "" && right.APIKey != "" && left.APIKey == right.APIKey
+	}
+	if left.hasCredentialRef() || right.hasCredentialRef() {
+		return left.CredentialRef == right.CredentialRef
+	}
+	return true
 }
 
 func normalizeModelConfig(config modelConfigFile) (normalizedModelConfig, error) {
 	var normalized normalizedModelConfig
-	if config.Version != modelConfigVersion {
-		return normalized, modelConfigValidationError("version must be exactly 2")
+	if config.Version != modelConfigVersionV2 && config.Version != modelConfigVersionV3 {
+		return normalized, modelConfigValidationError("version must be exactly 2 or 3")
 	}
+	normalized.Version = config.Version
 	if len(config.Models) == 0 {
 		return normalized, modelConfigValidationError("models must contain at least one entry")
 	}
@@ -92,7 +120,13 @@ func normalizeModelConfig(config modelConfigFile) (normalizedModelConfig, error)
 	byAlias := make(map[string]*normalizedModelTarget, len(config.Models))
 	normalized.Models = make([]normalizedModelTarget, 0, len(config.Models))
 	for _, target := range config.Models {
-		normalizedTarget, err := normalizeModelTarget(target)
+		var normalizedTarget normalizedModelTarget
+		var err error
+		if config.Version == modelConfigVersionV2 {
+			normalizedTarget, err = normalizeModelTarget(target)
+		} else {
+			normalizedTarget, err = normalizeModelTargetForVersion(target, config.Version)
+		}
 		if err != nil {
 			return normalizedModelConfig{}, err
 		}
@@ -101,6 +135,9 @@ func normalizeModelConfig(config modelConfigFile) (normalizedModelConfig, error)
 		}
 		normalized.Models = append(normalized.Models, normalizedTarget)
 		byAlias[normalizedTarget.Alias] = &normalized.Models[len(normalized.Models)-1]
+	}
+	if err := rejectDuplicateDeploymentIdentities(normalized.Models); err != nil {
+		return normalizedModelConfig{}, err
 	}
 
 	if !isExactNonEmptyModelConfigString(config.PrimerDefault) {
@@ -263,6 +300,10 @@ func normalizeACPLaunchers(config map[string]acpLauncherConfig) (map[string]norm
 }
 
 func normalizeModelTarget(target modelTargetConfig) (normalizedModelTarget, error) {
+	return normalizeModelTargetForVersion(target, modelConfigVersionV2)
+}
+
+func normalizeModelTargetForVersion(target modelTargetConfig, version int) (normalizedModelTarget, error) {
 	var normalized normalizedModelTarget
 	if !validModelConfigAlias(target.Alias) {
 		return normalized, modelConfigValidationError("alias violates the runtime identifier contract")
@@ -344,21 +385,9 @@ func normalizeModelTarget(target modelTargetConfig) (normalizedModelTarget, erro
 	if err := llm.ValidateModel(constructed); err != nil {
 		return normalized, modelConfigFailure("validate", err)
 	}
-	requiredAuth, err := llm.Provider(target.Provider).RequiredAuth()
+	client, err := normalizeModelClientInput(target, constructed, version)
 	if err != nil {
-		return normalized, modelConfigFailure("validate", err)
-	}
-	switch requiredAuth {
-	case auth.AuthNone:
-		if target.APIKey != "" {
-			return normalized, modelConfigValidationError("no-auth provider must not receive api_key")
-		}
-	case auth.AuthAPIKey:
-		if target.APIKey == "" {
-			return normalized, modelConfigValidationError("API-key provider requires api_key")
-		}
-	default:
-		return normalized, modelConfigValidationError("provider requires credentials unsupported by this schema")
+		return normalized, err
 	}
 
 	sort.Strings(uses)
@@ -367,8 +396,106 @@ func normalizeModelTarget(target modelTargetConfig) (normalizedModelTarget, erro
 	})
 	return normalizedModelTarget{
 		Alias: target.Alias, Description: description, Model: constructed, Uses: uses, Efforts: efforts,
-		DefaultEffort: defaultEffort, client: modelClientInput{APIKey: target.APIKey},
+		DefaultEffort: defaultEffort, client: client,
 	}, nil
+}
+
+func normalizeModelClientInput(target modelTargetConfig, constructed model.Model, version int) (modelClientInput, error) {
+	if version == modelConfigVersionV2 {
+		if target.CredentialRef != "" {
+			return modelClientInput{}, modelConfigValidationError("credential_ref is only supported in schema version 3")
+		}
+		requiredAuth, err := llm.Provider(target.Provider).RequiredAuth()
+		if err != nil {
+			return modelClientInput{}, modelConfigFailure("validate", err)
+		}
+		switch requiredAuth {
+		case auth.AuthNone:
+			if target.APIKey != "" {
+				return modelClientInput{}, modelConfigValidationError("no-auth provider must not receive api_key")
+			}
+		case auth.AuthAPIKey:
+			if target.APIKey == "" {
+				return modelClientInput{}, modelConfigValidationError("API-key provider requires api_key")
+			}
+		default:
+			return modelClientInput{}, modelConfigValidationError("provider requires credentials unsupported by this schema")
+		}
+		return modelClientInput{APIKey: target.APIKey}, nil
+	}
+
+	policy, err := llm.AuthPolicyForModel(constructed)
+	if err != nil {
+		return modelClientInput{}, modelConfigFailure("validate", err)
+	}
+	if len(policy.Accepted) != 1 {
+		return modelClientInput{}, modelConfigValidationError("provider auth policy must contain exactly one binding")
+	}
+	binding := policy.Accepted[0]
+	apiKeyPresent := target.apiKeyPresent || target.APIKey != ""
+	credentialRefPresent := target.credentialRefPresent || target.CredentialRef != ""
+	isLocal := binding.Scheme == credentials.SchemeNone && binding.Usage == credentials.UsageLocal
+	if isLocal {
+		if apiKeyPresent || credentialRefPresent {
+			return modelClientInput{}, modelConfigValidationError("local transport must omit api_key and credential_ref")
+		}
+		return modelClientInput{}, nil
+	}
+
+	if apiKeyPresent == credentialRefPresent {
+		return modelClientInput{}, modelConfigValidationError("authenticated transport requires exactly one of api_key or credential_ref")
+	}
+	if apiKeyPresent {
+		if target.APIKey == "" {
+			return modelClientInput{}, modelConfigValidationError("api_key must be non-empty when present")
+		}
+		if binding.Scheme != credentials.SchemeAPIKey {
+			return modelClientInput{}, modelConfigValidationError("api_key is incompatible with the provider auth policy")
+		}
+		return modelClientInput{APIKey: target.APIKey}, nil
+	}
+	ref, err := credentials.ParseReference(target.CredentialRef)
+	if err != nil {
+		return modelClientInput{}, modelConfigValidationError("credential_ref is invalid")
+	}
+	return modelClientInput{CredentialRef: ref}, nil
+}
+
+type modelDeploymentIdentity struct {
+	Provider  string
+	Transport string
+	Model     string
+	BaseURL   string
+	APIFormat string
+}
+
+func deploymentIdentityForModel(selected model.Model) (modelDeploymentIdentity, error) {
+	policy, err := llm.AuthPolicyForModel(selected)
+	if err != nil {
+		return modelDeploymentIdentity{}, err
+	}
+	if len(policy.Accepted) != 1 {
+		return modelDeploymentIdentity{}, errors.New("provider auth policy must contain exactly one binding")
+	}
+	return modelDeploymentIdentity{
+		Provider: string(selected.Provider), Transport: policy.Accepted[0].Transport,
+		Model: selected.Name, BaseURL: selected.BaseURL, APIFormat: string(selected.APIFormat),
+	}, nil
+}
+
+func rejectDuplicateDeploymentIdentities(targets []normalizedModelTarget) error {
+	seen := make(map[modelDeploymentIdentity]modelClientInput, len(targets))
+	for _, target := range targets {
+		identity, err := deploymentIdentityForModel(target.Model)
+		if err != nil {
+			return modelConfigFailure("validate", err)
+		}
+		if prior, exists := seen[identity]; exists && !sameModelClientInput(prior, target.client) {
+			return modelConfigValidationError("model deployment identity must not use multiple credentials")
+		}
+		seen[identity] = target.client
+	}
+	return nil
 }
 
 const maxModelDescriptionBytes = 256

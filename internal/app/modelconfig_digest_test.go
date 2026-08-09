@@ -113,6 +113,73 @@ func TestDigestModelConfigExcludesAPIKeyBytes(t *testing.T) {
 	}
 }
 
+func TestDigestV3BindsSafeCredentialReferenceAndAuthIdentity(t *testing.T) {
+	base := strings.Replace(validLMStudioModelConfig, `"version": 2`, `"version": 3`, 1)
+	base = strings.NewReplacer(
+		`"provider": "lmstudio"`, `"provider": "openai"`,
+		`"api_format": "openai"`, `"api_format": "openai-responses"`,
+		`"base_url": "http://localhost:1234/v1"`, `"base_url": "https://api.openai.com/v1"`,
+		`"api_key": ""`, `"credential_ref": "credential://openai/personal"`,
+	).Replace(base)
+	first, err := decodeModelConfig([]byte(base))
+	if err != nil {
+		t.Fatalf("decode first v3 config: %v", err)
+	}
+	firstNormalized, err := normalizeModelConfig(first)
+	if err != nil {
+		t.Fatalf("normalize first v3 config: %v", err)
+	}
+	firstDigest, err := modelConfigDigest(firstNormalized)
+	if err != nil {
+		t.Fatalf("digest first v3 config: %v", err)
+	}
+
+	secondWire := strings.Replace(base, "credential://openai/personal", "credential://openai/work", 1)
+	second, err := decodeModelConfig([]byte(secondWire))
+	if err != nil {
+		t.Fatalf("decode second v3 config: %v", err)
+	}
+	secondNormalized, err := normalizeModelConfig(second)
+	if err != nil {
+		t.Fatalf("normalize second v3 config: %v", err)
+	}
+	secondDigest, err := modelConfigDigest(secondNormalized)
+	if err != nil {
+		t.Fatalf("digest second v3 config: %v", err)
+	}
+	if firstDigest == secondDigest {
+		t.Fatal("credential reference change did not change v3 digest")
+	}
+	material, err := secretFreeModelConfigJSON(firstNormalized)
+	if err != nil {
+		t.Fatalf("secret-free v3 projection: %v", err)
+	}
+	if !strings.Contains(string(material), "credential://openai/personal") {
+		t.Fatalf("v3 projection = %s, want safe credential reference", material)
+	}
+	if strings.Contains(string(material), `"api_key":"`) || strings.Contains(string(material), "test-secret") {
+		t.Fatalf("v3 projection exposed credential material: %s", material)
+	}
+}
+
+func TestInlineKeyCatalogDisablesClientReuseWithoutDigestingKey(t *testing.T) {
+	config := digestModelConfigFixture(t, "test-secret-do-not-log")
+	normalized, err := normalizeModelConfig(config)
+	if err != nil {
+		t.Fatalf("normalize inline-key config: %v", err)
+	}
+	if modelConfigDigestEligible(normalized) {
+		t.Fatal("inline-key catalog is digest-eligible, want fresh composition")
+	}
+	material, err := secretFreeModelConfigJSON(normalized)
+	if err != nil {
+		t.Fatalf("secret-free inline-key projection: %v", err)
+	}
+	if strings.Contains(string(material), "test-secret-do-not-log") {
+		t.Fatalf("inline-key projection exposed credential bytes: %s", material)
+	}
+}
+
 func TestDigestModelConfigAndFormattingExcludeSecrets(t *testing.T) {
 	const secret = "test-secret-do-not-log"
 	normalized, err := normalizeModelConfig(digestModelConfigFixture(t, secret))

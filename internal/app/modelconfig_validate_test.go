@@ -91,6 +91,97 @@ func TestValidateModelConfig(t *testing.T) {
 	}
 }
 
+func TestNormalizeModelConfigV3AuthModes(t *testing.T) {
+	base := strings.Replace(validLMStudioModelConfig, `"version": 2`, `"version": 3`, 1)
+	base = strings.NewReplacer(
+		`"provider": "lmstudio"`, `"provider": "openai"`,
+		`"api_format": "openai"`, `"api_format": "openai-responses"`,
+		`"base_url": "http://localhost:1234/v1"`, `"base_url": "https://api.openai.com/v1"`,
+		`"api_key": ""`, `"api_key": "test-secret-do-not-log"`,
+	).Replace(base)
+
+	tests := []struct {
+		name    string
+		mutate  func(string) string
+		wantErr bool
+	}{
+		{name: "inline key", mutate: func(input string) string { return input }},
+		{name: "credential reference", mutate: func(input string) string {
+			return strings.Replace(input, `"api_key": "test-secret-do-not-log"`, `"credential_ref": "credential://openai/personal"`, 1)
+		}},
+		{name: "both credentials", mutate: func(input string) string {
+			return strings.Replace(input, `"api_key": "test-secret-do-not-log"`, `"api_key": "test-secret-do-not-log", "credential_ref": "credential://openai/personal"`, 1)
+		}, wantErr: true},
+		{name: "neither on authenticated transport", mutate: func(input string) string {
+			return strings.Replace(input, `"api_key": "test-secret-do-not-log",`, "", 1)
+		}, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			decoded, err := decodeModelConfig([]byte(tt.mutate(base)))
+			if err != nil {
+				t.Fatalf("decodeModelConfig() error = %v", err)
+			}
+			_, err = normalizeModelConfig(decoded)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("normalizeModelConfig() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestNormalizeModelConfigV3LocalRequiresNeitherCredential(t *testing.T) {
+	input := strings.Replace(validLMStudioModelConfig, `"version": 2`, `"version": 3`, 1)
+	input = strings.Replace(input, `"api_key": "",`, "", 1)
+	decoded, err := decodeModelConfig([]byte(input))
+	if err != nil {
+		t.Fatalf("decodeModelConfig(local v3) error = %v", err)
+	}
+	if _, err := normalizeModelConfig(decoded); err != nil {
+		t.Fatalf("normalizeModelConfig(local v3) error = %v, want valid", err)
+	}
+
+	withEmptyKey := strings.Replace(input, `"model": "qwen3-coder",`, `"model": "qwen3-coder", "api_key": "",`, 1)
+	decoded, err = decodeModelConfig([]byte(withEmptyKey))
+	if err != nil {
+		t.Fatalf("decodeModelConfig(local explicit key) error = %v", err)
+	}
+	if _, err := normalizeModelConfig(decoded); err == nil {
+		t.Fatal("normalizeModelConfig(local explicit api_key) error = nil, want explicit-none rejection")
+	}
+}
+
+func TestNormalizeModelConfigRejectsDuplicateDeploymentIdentityAcrossCredentials(t *testing.T) {
+	input := strings.Replace(validLMStudioModelConfig, `"version": 2`, `"version": 3`, 1)
+	input = strings.NewReplacer(
+		`"provider": "lmstudio"`, `"provider": "openai"`,
+		`"api_format": "openai"`, `"api_format": "openai-responses"`,
+		`"base_url": "http://localhost:1234/v1"`, `"base_url": "https://api.openai.com/v1"`,
+		`"api_key": ""`, `"credential_ref": "credential://openai/first"`,
+	).Replace(input)
+	second := strings.Replace(input, `"alias": "local"`, `"alias": "other"`, 1)
+	second = strings.Replace(second, `credential://openai/first`, `credential://openai/second`, 1)
+	rowStart := strings.Index(second, "{\n    \"alias\"")
+	rowEnd := strings.LastIndex(second, "\n  }]")
+	if rowStart < 0 || rowEnd < 0 {
+		t.Fatal("duplicate deployment fixture shape changed")
+	}
+	secondRow := second[rowStart:rowEnd]
+	firstEnd := strings.LastIndex(input, "\n  }]\n}")
+	if firstEnd < 0 {
+		t.Fatal("base deployment fixture shape changed")
+	}
+	input = input[:firstEnd] + "\n  },\n" + secondRow + "\n  }]\n}"
+
+	decoded, err := decodeModelConfig([]byte(input))
+	if err != nil {
+		t.Fatalf("decodeModelConfig(duplicate deployment) error = %v", err)
+	}
+	if _, err := normalizeModelConfig(decoded); err == nil {
+		t.Fatal("normalizeModelConfig(duplicate deployment) error = nil, want conflict")
+	}
+}
+
 func TestValidateModelConfigRejectsUnsafeAliases(t *testing.T) {
 	tests := []struct {
 		name  string

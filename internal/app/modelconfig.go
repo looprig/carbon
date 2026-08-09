@@ -16,7 +16,13 @@ import (
 
 const maxModelConfigBytes = 1 << 20
 
-const modelConfigVersion = 2
+const (
+	modelConfigVersionV2 = 2
+	modelConfigVersionV3 = 3
+	// modelConfigVersion is the version emitted by new schema-aware callers.
+	// The loader still accepts modelConfigVersionV2 explicitly for compatibility.
+	modelConfigVersion = modelConfigVersionV3
+)
 
 const (
 	maxModelConfigErrorBytes          = 512
@@ -166,6 +172,89 @@ func rejectTrailingJSON(decoder *json.Decoder) error {
 	return nil
 }
 
+func decodeStrictModelConfig(data []byte, target any) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return safeModelConfigDecodeError(err)
+	}
+	if err := rejectTrailingJSON(decoder); err != nil {
+		return safeModelConfigDecodeError(err)
+	}
+	return nil
+}
+
+func decodeV3AuthField(raw json.RawMessage, field string) (value string, present bool, err error) {
+	if len(raw) == 0 {
+		return "", false, nil
+	}
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return "", true, errors.New(field + " must be a string when present")
+	}
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return "", true, errors.New(field + " must be a string when present")
+	}
+	return value, true, nil
+}
+
+func modelTargetConfigFromV2(wire modelTargetConfigV2Wire) modelTargetConfig {
+	return modelTargetConfig{
+		Alias: wire.Alias, Description: wire.Description, Provider: wire.Provider,
+		APIFormat: wire.APIFormat, BaseURL: wire.BaseURL, Model: wire.Model,
+		ContextLimits: wire.ContextLimits, APIKey: wire.APIKey, Uses: wire.Uses,
+		Capabilities: wire.Capabilities, Efforts: wire.Efforts, DefaultEffort: wire.DefaultEffort,
+	}
+}
+
+func modelTargetConfigFromV3(wire modelTargetConfigV3Wire) (modelTargetConfig, error) {
+	apiKey, apiKeyPresent, err := decodeV3AuthField(wire.APIKey, "api_key")
+	if err != nil {
+		return modelTargetConfig{}, err
+	}
+	credentialRef, credentialRefPresent, err := decodeV3AuthField(wire.CredentialRef, "credential_ref")
+	if err != nil {
+		return modelTargetConfig{}, err
+	}
+	return modelTargetConfig{
+		Alias: wire.Alias, Description: wire.Description, Provider: wire.Provider,
+		APIFormat: wire.APIFormat, BaseURL: wire.BaseURL, Model: wire.Model,
+		ContextLimits: wire.ContextLimits, APIKey: apiKey, CredentialRef: credentialRef,
+		Uses: wire.Uses, Capabilities: wire.Capabilities, Efforts: wire.Efforts,
+		DefaultEffort: wire.DefaultEffort, apiKeyPresent: apiKeyPresent,
+		credentialRefPresent: credentialRefPresent,
+	}, nil
+}
+
+func modelConfigFileFromV2(wire modelConfigV2Wire) modelConfigFile {
+	config := modelConfigFile{
+		Version: wire.Version, PrimerDefault: wire.PrimerDefault,
+		ClaudeCodeSmallModel: wire.ClaudeCodeSmallModel, NativeACP: wire.NativeACP,
+		PermissionReview: wire.PermissionReview, ACPLaunchers: wire.ACPLaunchers,
+		Models: make([]modelTargetConfig, len(wire.Models)),
+	}
+	for i, target := range wire.Models {
+		config.Models[i] = modelTargetConfigFromV2(target)
+	}
+	return config
+}
+
+func modelConfigFileFromV3(wire modelConfigV3Wire) (modelConfigFile, error) {
+	config := modelConfigFile{
+		Version: wire.Version, PrimerDefault: wire.PrimerDefault,
+		ClaudeCodeSmallModel: wire.ClaudeCodeSmallModel, NativeACP: wire.NativeACP,
+		PermissionReview: wire.PermissionReview, ACPLaunchers: wire.ACPLaunchers,
+		Models: make([]modelTargetConfig, len(wire.Models)),
+	}
+	for i, target := range wire.Models {
+		converted, err := modelTargetConfigFromV3(target)
+		if err != nil {
+			return modelConfigFile{}, err
+		}
+		config.Models[i] = converted
+	}
+	return config, nil
+}
+
 // permissionReviewConfig holds the optional classifier-based automatic
 // permission review section. It is parsing plumbing only: whether Model is
 // required, whether it names a configured alias, and whether review may
@@ -201,6 +290,68 @@ type modelTargetConfig struct {
 	Model         string                   `json:"model"`
 	ContextLimits modelContextLimitsConfig `json:"context_limits"`
 	APIKey        string                   `json:"api_key"`
+	CredentialRef string                   `json:"credential_ref,omitempty"`
+	Uses          []string                 `json:"uses"`
+	Capabilities  modelCapabilitiesConfig  `json:"capabilities"`
+	Efforts       []string                 `json:"efforts"`
+	DefaultEffort string                   `json:"default_effort"`
+
+	// v3 wire decoding tracks presence separately from value. An explicitly
+	// empty api_key/credential_ref is not the same as an omitted field: auth
+	// ambiguity and local explicit-none validation must reject both cases.
+	apiKeyPresent        bool
+	credentialRefPresent bool
+}
+
+// modelConfigV2Wire and modelConfigV3Wire deliberately remain separate. v2's
+// API-key field keeps its historical value semantics; v3 uses raw optional
+// fields so it can distinguish omitted, empty, null, and populated auth
+// values before normalization.
+type modelConfigV2Wire struct {
+	Version              int                               `json:"version"`
+	PrimerDefault        string                            `json:"primer_default"`
+	ClaudeCodeSmallModel string                            `json:"claude_code_small_model"`
+	Models               []modelTargetConfigV2Wire         `json:"models"`
+	NativeACP            map[string]nativeACPProfileConfig `json:"native_acp"`
+	PermissionReview     *permissionReviewConfig           `json:"permission_review,omitempty"`
+	ACPLaunchers         map[string]acpLauncherConfig      `json:"acp_launchers"`
+}
+
+type modelConfigV3Wire struct {
+	Version              int                               `json:"version"`
+	PrimerDefault        string                            `json:"primer_default"`
+	ClaudeCodeSmallModel string                            `json:"claude_code_small_model"`
+	Models               []modelTargetConfigV3Wire         `json:"models"`
+	NativeACP            map[string]nativeACPProfileConfig `json:"native_acp"`
+	PermissionReview     *permissionReviewConfig           `json:"permission_review,omitempty"`
+	ACPLaunchers         map[string]acpLauncherConfig      `json:"acp_launchers"`
+}
+
+type modelTargetConfigV2Wire struct {
+	Alias         string                   `json:"alias"`
+	Description   string                   `json:"description"`
+	Provider      string                   `json:"provider"`
+	APIFormat     string                   `json:"api_format"`
+	BaseURL       string                   `json:"base_url"`
+	Model         string                   `json:"model"`
+	ContextLimits modelContextLimitsConfig `json:"context_limits"`
+	APIKey        string                   `json:"api_key"`
+	Uses          []string                 `json:"uses"`
+	Capabilities  modelCapabilitiesConfig  `json:"capabilities"`
+	Efforts       []string                 `json:"efforts"`
+	DefaultEffort string                   `json:"default_effort"`
+}
+
+type modelTargetConfigV3Wire struct {
+	Alias         string                   `json:"alias"`
+	Description   string                   `json:"description"`
+	Provider      string                   `json:"provider"`
+	APIFormat     string                   `json:"api_format"`
+	BaseURL       string                   `json:"base_url"`
+	Model         string                   `json:"model"`
+	ContextLimits modelContextLimitsConfig `json:"context_limits"`
+	APIKey        json.RawMessage          `json:"api_key"`
+	CredentialRef json.RawMessage          `json:"credential_ref"`
 	Uses          []string                 `json:"uses"`
 	Capabilities  modelCapabilitiesConfig  `json:"capabilities"`
 	Efforts       []string                 `json:"efforts"`
@@ -253,24 +404,40 @@ func decodeModelConfig(data []byte) (modelConfigFile, error) {
 		return config, modelConfigFailure("decode", err)
 	}
 
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&config); err != nil {
+	var probe struct {
+		Version json.RawMessage `json:"version"`
+	}
+	if err := json.Unmarshal(data, &probe); err != nil {
 		return modelConfigFile{}, modelConfigFailure("decode", safeModelConfigDecodeError(err))
 	}
-	var trailing json.RawMessage
-	if err := decoder.Decode(&trailing); err != io.EOF {
-		if err == nil {
-			err = errors.New("multiple top-level JSON values")
-		} else {
-			err = safeModelConfigDecodeError(err)
+	if len(probe.Version) == 0 {
+		return modelConfigFile{}, modelConfigFailure("decode", errors.New("version is required"))
+	}
+	var version int
+	if err := json.Unmarshal(probe.Version, &version); err != nil {
+		return modelConfigFile{}, modelConfigFailure("decode", errors.New("version must be an integer"))
+	}
+
+	switch version {
+	case modelConfigVersionV2:
+		var wire modelConfigV2Wire
+		if err := decodeStrictModelConfig(data, &wire); err != nil {
+			return modelConfigFile{}, modelConfigFailure("decode", err)
 		}
-		return modelConfigFile{}, modelConfigFailure("decode", err)
+		return modelConfigFileFromV2(wire), nil
+	case modelConfigVersionV3:
+		var wire modelConfigV3Wire
+		if err := decodeStrictModelConfig(data, &wire); err != nil {
+			return modelConfigFile{}, modelConfigFailure("decode", err)
+		}
+		config, err := modelConfigFileFromV3(wire)
+		if err != nil {
+			return modelConfigFile{}, modelConfigFailure("decode", err)
+		}
+		return config, nil
+	default:
+		return modelConfigFile{}, modelConfigFailure("decode", errors.New("version must be exactly 2 or 3"))
 	}
-	if config.Version != modelConfigVersion {
-		return modelConfigFile{}, modelConfigFailure("decode", errors.New("version must be exactly 2"))
-	}
-	return config, nil
 }
 
 func safeModelConfigDecodeError(err error) error {

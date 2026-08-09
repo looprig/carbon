@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/looprig/inference"
-	"github.com/looprig/inference/auth"
 	model "github.com/looprig/inference/model"
 )
 
@@ -22,7 +21,7 @@ func TestModelFactoryForYieldsConfiguredPrimerModel(t *testing.T) {
 func TestProductionModelsLoaderReturnsEmptyWhenConfigIsAbsent(t *testing.T) {
 	t.Parallel()
 
-	got, err := loadProductionModelsFrom(filepath.Join(t.TempDir(), "models.json"), func(model.Model, auth.APIKey) (inference.Client, error) {
+	got, err := loadProductionModelsFrom(filepath.Join(t.TempDir(), "models.json"), func(model.Model, modelClientInput) (inference.Client, error) {
 		t.Fatal("client factory called for absent configuration")
 		return nil, nil
 	})
@@ -46,12 +45,12 @@ func TestProductionModelsLoaderCompilesSecureConfigurationOnce(t *testing.T) {
 	}
 
 	calls := 0
-	got, err := loadProductionModelsFrom(path, func(selected model.Model, key auth.APIKey) (inference.Client, error) {
+	got, err := loadProductionModelsFrom(path, func(selected model.Model, input modelClientInput) (inference.Client, error) {
 		calls++
-		if string(key) != sentinel {
-			t.Fatalf("client key = %q, want sentinel", key)
+		if input.APIKey != sentinel {
+			t.Fatalf("client key = %q, want sentinel", input.APIKey)
 		}
-		return &fakeLLM{credential: string(key)}, nil
+		return &fakeLLM{credential: input.APIKey}, nil
 	})
 	if err != nil {
 		t.Fatalf("loadProductionModelsFrom() error = %v", err)

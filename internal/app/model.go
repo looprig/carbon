@@ -28,8 +28,11 @@ var defaultRetryPolicy = retry.Policy{
 
 // newProductionClient builds the concrete provider client and decorates it
 // with the default retry schedule.
-func newProductionClient(selected model.Model, key auth.APIKey) (inference.Client, error) {
-	client, err := auto.New(selected, key)
+func newProductionClient(selected model.Model, input modelClientInput) (inference.Client, error) {
+	if input.hasCredentialRef() {
+		return nil, modelConfigValidationError("credential_ref requires the credential lifecycle composition")
+	}
+	client, err := auto.New(selected, auth.APIKey(input.APIKey))
 	if err != nil {
 		return nil, err
 	}
@@ -46,8 +49,8 @@ func loadProductionModels(home string) (productionModels, error) {
 	if err != nil {
 		return productionModels{}, err
 	}
-	return loadProductionModelsFrom(path, func(selected model.Model, key auth.APIKey) (inference.Client, error) {
-		return newProductionClient(selected, key)
+	return loadProductionModelsFrom(path, func(selected model.Model, input modelClientInput) (inference.Client, error) {
+		return newProductionClient(selected, input)
 	})
 }
 

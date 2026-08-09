@@ -1,9 +1,15 @@
 package app
 
 import (
+	"bytes"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/looprig/inference"
+	"github.com/looprig/inference/model"
 )
 
 func TestDecodeModelConfigErrorBoundsCompleteMessage(t *testing.T) {
@@ -96,6 +102,51 @@ func TestModelConfigWithoutDelegateDefaultsIsValid(t *testing.T) {
 	}
 }
 
+func TestDecodeModelConfigAcceptsSchemaV3CredentialReference(t *testing.T) {
+	input := strings.Replace(validLMStudioModelConfig, `"version": 2`, `"version": 3`, 1)
+	input = strings.NewReplacer(
+		`"provider": "lmstudio"`, `"provider": "openai"`,
+		`"api_format": "openai"`, `"api_format": "openai-responses"`,
+		`"base_url": "http://localhost:1234/v1"`, `"base_url": "https://api.openai.com/v1"`,
+		`"api_key": ""`, `"credential_ref": "credential://openai/personal"`,
+	).Replace(input)
+
+	got, err := decodeModelConfig([]byte(input))
+	if err != nil {
+		t.Fatalf("decodeModelConfig(v3) error = %v", err)
+	}
+	if got.Version != 3 || got.Models[0].CredentialRef != "credential://openai/personal" {
+		t.Fatalf("decodeModelConfig(v3) = %+v, want version 3 and credential reference", got)
+	}
+}
+
+func TestDecodeModelConfigV3RejectsUnknownModelField(t *testing.T) {
+	input := strings.Replace(validLMStudioModelConfig, `"version": 2`, `"version": 3`, 1)
+	input = strings.Replace(input, `"alias": "local"`, `"alias": "local", "future": true`, 1)
+	if _, err := decodeModelConfig([]byte(input)); err == nil {
+		t.Fatal("decodeModelConfig(v3 unknown field) error = nil, want strict rejection")
+	}
+}
+
+func TestLoadV2ModelConfigDoesNotRewriteBytes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "models.json")
+	want := []byte(validLMStudioModelConfig)
+	writeModelConfigFixture(t, path, want, 0o600)
+
+	if _, err := loadProductionModelsFrom(path, func(model.Model, modelClientInput) (inference.Client, error) {
+		return &fakeLLM{}, nil
+	}); err != nil {
+		t.Fatalf("loadProductionModelsFrom(v2) error = %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read loaded v2 file: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("v2 file changed after load: got %q, want %q", got, want)
+	}
+}
+
 func TestDecodeModelConfigRejectsRemovedDelegateDefaults(t *testing.T) {
 	// This wire value is a strict-rejection fixture for the removed field; it
 	// must not be accepted or migrated.
@@ -163,7 +214,7 @@ func TestDecodeModelConfig(t *testing.T) {
 		{name: "missing version", input: replaceOnce(t, validLMStudioModelConfig, `"version": 2,`, ``), want: "version"},
 		{name: "zero version", input: replaceOnce(t, validLMStudioModelConfig, `"version": 2`, `"version": 0`), want: "version"},
 		{name: "version 1 is rejected", input: replaceOnce(t, validLMStudioModelConfig, `"version": 2`, `"version": 1`), want: "version"},
-		{name: "future version", input: replaceOnce(t, validLMStudioModelConfig, `"version": 2`, `"version": 3`), want: "version"},
+		{name: "future version", input: replaceOnce(t, validLMStudioModelConfig, `"version": 2`, `"version": 4`), want: "version"},
 		{name: "invalid UTF-8", input: append([]byte(`{"version":1,"primer_default":"`), 0xff, '"', '}')},
 	}
 	for _, tt := range invalid {

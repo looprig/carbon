@@ -3,17 +3,18 @@ package app
 import (
 	"fmt"
 
+	"github.com/looprig/credentials"
 	"github.com/looprig/harness/pkg/loop"
 	"github.com/looprig/inference"
-	"github.com/looprig/inference/auth"
 	model "github.com/looprig/inference/model"
 )
 
-type configuredClientFactory func(model.Model, auth.APIKey) (inference.Client, error)
+type configuredClientFactory func(model.Model, modelClientInput) (inference.Client, error)
 
 type configuredClientCacheKey struct {
-	Target runtimeModelKey
-	APIKey string
+	Target        runtimeModelKey
+	APIKey        string
+	CredentialRef credentials.Reference
 }
 
 // PrimerCandidate is one models.json entry tagged primer-capable
@@ -66,10 +67,16 @@ func compileProductionModels(config normalizedModelConfig, factory configuredCli
 	models := make(map[string]model.Model, len(config.Models))
 	var primerEfforts []model.Effort
 	for _, target := range config.Models {
-		cacheKey := configuredClientCacheKey{Target: runtimeModelKeyFor(target.Model), APIKey: target.client.APIKey}
+		if !target.client.valid() {
+			return productionModels{}, modelConfigValidationError("configured model auth must contain at most one of api_key or credential_ref")
+		}
+		cacheKey := configuredClientCacheKey{
+			Target: runtimeModelKeyFor(target.Model), APIKey: target.client.APIKey,
+			CredentialRef: target.client.CredentialRef,
+		}
 		client, ok := boundClients[cacheKey]
 		if !ok {
-			client, err = factory(target.Model, auth.APIKey(target.client.APIKey))
+			client, err = factory(target.Model, target.client)
 			if err != nil {
 				return productionModels{}, fmt.Errorf("coderig: construct configured model alias %q provider %q", target.Alias, target.Model.Provider)
 			}
