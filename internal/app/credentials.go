@@ -370,6 +370,11 @@ type credentialRegistryLease struct {
 
 var processCredentialRegistry = &credentialRegistry{entries: make(map[string]*credentialRegistryEntry)}
 
+// credentialRegistryBeforeDeleteHook is a narrow package-test seam for
+// holding the interval after runtime.Close has completed and before the
+// releasing lease removes its registry entry. Production leaves it nil.
+var credentialRegistryBeforeDeleteHook func(*credentialRegistryEntry)
+
 func canonicalCredentialHome(home string) (string, error) {
 	if home == "" || !filepath.IsAbs(home) {
 		return "", &CredentialCompositionError{Reason: "credential home is unavailable"}
@@ -408,9 +413,21 @@ func acquireCredentialRuntime(home string) (*credentialRegistryLease, *credentia
 		}
 		if entry.closing {
 			done := entry.done
-			processCredentialRegistry.mu.Unlock()
-			<-done
-			continue
+			select {
+			case <-done:
+				// Close publishes done before the final Release cleanup. Reap
+				// only this exact entry so a stale releaser cannot delete a
+				// replacement runtime installed for the same home.
+				if processCredentialRegistry.entries[key] == entry {
+					delete(processCredentialRegistry.entries, key)
+				}
+				processCredentialRegistry.mu.Unlock()
+				continue
+			default:
+				processCredentialRegistry.mu.Unlock()
+				<-done
+				continue
+			}
 		}
 		closed, closing := entry.runtime.lifecycleState()
 		if !closed && !closing {
@@ -449,6 +466,9 @@ func (l *credentialRegistryLease) Release() error {
 		l.registry.mu.Unlock()
 		if last {
 			l.err = l.entry.runtime.Close()
+			if hook := credentialRegistryBeforeDeleteHook; hook != nil {
+				hook(l.entry)
+			}
 			l.registry.mu.Lock()
 			if l.registry.entries[l.key] == l.entry {
 				delete(l.registry.entries, l.key)

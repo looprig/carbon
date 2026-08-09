@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -592,6 +593,106 @@ func TestCredentialRegistryLastReleaseWaitsForFreshRuntime(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("acquire did not resume after runtime close")
+	}
+}
+
+func TestCredentialRegistryReapsClosedEntryBeforeStaleReleaseCleanup(t *testing.T) {
+	home := t.TempDir()
+	lease, oldRuntime, err := acquireCredentialRuntime(home)
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+
+	cleanupEntered := make(chan *credentialRegistryEntry, 1)
+	allowCleanup := make(chan struct{})
+	var allowCleanupOnce sync.Once
+	releaseCleanup := func() {
+		allowCleanupOnce.Do(func() { close(allowCleanup) })
+	}
+	credentialRegistryBeforeDeleteHook = func(entry *credentialRegistryEntry) {
+		cleanupEntered <- entry
+		<-allowCleanup
+	}
+	t.Cleanup(func() {
+		credentialRegistryBeforeDeleteHook = nil
+		releaseCleanup()
+		_ = lease.Release()
+	})
+
+	releaseDone := make(chan error, 1)
+	go func() { releaseDone <- lease.Release() }()
+	oldEntry := <-cleanupEntered
+
+	acquireDone := make(chan struct {
+		lease   *credentialRegistryLease
+		runtime *credentialRuntime
+		err     error
+	}, 1)
+	go func() {
+		freshLease, freshRuntime, acquireErr := acquireCredentialRuntime(home)
+		acquireDone <- struct {
+			lease   *credentialRegistryLease
+			runtime *credentialRuntime
+			err     error
+		}{lease: freshLease, runtime: freshRuntime, err: acquireErr}
+	}()
+
+	var acquired struct {
+		lease   *credentialRegistryLease
+		runtime *credentialRuntime
+		err     error
+	}
+	select {
+	case acquired = <-acquireDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("acquire remained dependent on stale release cleanup")
+	}
+	if acquired.err != nil {
+		t.Fatalf("fresh acquire: %v", acquired.err)
+	}
+	if acquired.runtime == oldRuntime {
+		_ = acquired.lease.Release()
+		t.Fatal("acquire reused a runtime after close completion")
+	}
+	if acquired.lease == nil {
+		t.Fatal("fresh acquire returned a nil lease")
+	}
+	processCredentialRegistry.mu.Lock()
+	if current := processCredentialRegistry.entries[home]; current == oldEntry {
+		processCredentialRegistry.mu.Unlock()
+		_ = acquired.lease.Release()
+		t.Fatal("closed registry entry remained installed")
+	}
+	processCredentialRegistry.mu.Unlock()
+
+	releaseCleanup()
+	select {
+	case err := <-releaseDone:
+		if err != nil {
+			_ = acquired.lease.Release()
+			t.Fatalf("stale release: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		_ = acquired.lease.Release()
+		t.Fatal("stale release did not finish")
+	}
+
+	otherLease, otherRuntime, err := acquireCredentialRuntime(home)
+	if err != nil {
+		_ = acquired.lease.Release()
+		t.Fatalf("acquire after stale cleanup: %v", err)
+	}
+	if otherRuntime != acquired.runtime {
+		_ = otherLease.Release()
+		_ = acquired.lease.Release()
+		t.Fatal("stale release deleted the replacement registry entry")
+	}
+	if err := otherLease.Release(); err != nil {
+		_ = acquired.lease.Release()
+		t.Fatalf("other lease release: %v", err)
+	}
+	if err := acquired.lease.Release(); err != nil {
+		t.Fatalf("fresh lease release: %v", err)
 	}
 }
 
