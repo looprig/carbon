@@ -350,7 +350,9 @@ func buildRigWithRegistrationAndACP(definition loop.Definition, stores *sessionS
 		options = append(options, rig.WithRuntimeCatalog(cfg.RuntimeCatalog))
 	}
 	if acpChildren != nil {
-		if acpChildren.Live != nil && acpChildren.Restored != nil {
+		if acpChildren.LiveServices != nil && acpChildren.RestoredServices != nil {
+			options = append(options, rig.WithForeignServicesBuilders(acpChildren.LiveServices, acpChildren.RestoredServices))
+		} else if acpChildren.Live != nil && acpChildren.Restored != nil {
 			options = append(options, rig.WithForeignBuilders(acpChildren.Live, acpChildren.Restored))
 		}
 	}
