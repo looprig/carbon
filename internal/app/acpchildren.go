@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -353,6 +352,16 @@ type ACPChildrenConfig struct {
 	// captured by both the live and restored builders. It is deliberately
 	// unexported: callers cannot mutate a child posture after composition.
 	posture driver.Posture
+
+	// requireCollabMCP is set by the production composition root. Lower-level
+	// legacy callers that have no collaboration capability may continue to use
+	// the zero-services builder shape; a production ACP builder never does.
+	requireCollabMCP bool
+	// executableSnapshots are captured at registration and checked again just
+	// before each live/restore launch, closing the path replacement window as
+	// far as a path-only child API permits.
+	executableSnapshots map[loop.AgentHarnessName]verifiedExecutableSnapshot
+	collabMCPSnapshot   *verifiedExecutableSnapshot
 }
 
 // ACPExecutableProbe is the bounded, secret-free input to an explicit ACP
@@ -412,12 +421,24 @@ func NewACPComposition(config ACPChildrenConfig) (*ACPComposition, error) {
 	}
 	config.AccessProfile = effectiveProfile
 	config.posture = posture
+	if config.Executables != nil {
+		executables := make(map[loop.AgentHarnessName]string, len(config.Executables))
+		for harness, executable := range config.Executables {
+			executables[harness] = executable
+		}
+		config.Executables = executables
+	}
 	if config.CollabMCPExecutable != "" {
 		resolved, resolveErr := resolveCollabMCPExecutableFrom(config.CollabMCPExecutable, "")
 		if resolveErr != nil {
 			return nil, resolveErr
 		}
 		config.CollabMCPExecutable = resolved
+		snapshot, ok := verifiedExecutableSnapshotFor(resolved)
+		if !ok {
+			return nil, errCollabMCPExecutableUnavailable
+		}
+		config.collabMCPSnapshot = &snapshot
 	}
 	if (config.Catalog.HasProfile("acp/claude-code") || config.Catalog.HasProfile("acp/codex")) && !cleanAbsolutePath(config.WorkspaceRoot) {
 		return nil, fmt.Errorf("coderig: ACP workspace root must be a clean absolute path")
@@ -426,6 +447,7 @@ func NewACPComposition(config ACPChildrenConfig) (*ACPComposition, error) {
 	var diagnostics []string
 	profiles := []loop.RuntimeProfileName{"acp/claude-code", "acp/codex"}
 	runnable := make(map[loop.AgentHarnessName]struct{}, len(profiles))
+	config.executableSnapshots = make(map[loop.AgentHarnessName]verifiedExecutableSnapshot, len(profiles))
 	for _, profile := range profiles {
 		if !config.Catalog.HasProfile(profile) {
 			continue
@@ -436,10 +458,13 @@ func NewACPComposition(config ACPChildrenConfig) (*ACPComposition, error) {
 			diagnostics = append(diagnostics, acpDiagnosticNoExecutable(harness))
 			continue
 		}
-		if !preflightACPExecutable(executable) {
+		snapshot, ok := verifiedExecutableSnapshotFor(executable)
+		if !ok {
 			diagnostics = append(diagnostics, acpDiagnosticExecutableNotRunnable(harness))
 			continue
 		}
+		config.Executables[harness] = snapshot.path
+		config.executableSnapshots[harness] = snapshot
 		runnable[harness] = struct{}{}
 	}
 	staticCatalog, err := filterACPStaticCatalog(config.Catalog, runnable)
@@ -447,6 +472,18 @@ func NewACPComposition(config ACPChildrenConfig) (*ACPComposition, error) {
 		return nil, err
 	}
 	config.Catalog = staticCatalog
+	if config.requireCollabMCP && len(runnable) != 0 && config.CollabMCPExecutable == "" {
+		resolved, resolveErr := resolveCollabMCPExecutable("")
+		if resolveErr != nil {
+			return nil, resolveErr
+		}
+		config.CollabMCPExecutable = resolved
+		snapshot, ok := verifiedExecutableSnapshotFor(resolved)
+		if !ok {
+			return nil, errCollabMCPExecutableUnavailable
+		}
+		config.collabMCPSnapshot = &snapshot
+	}
 	factory := &acpChildFactory{config: config}
 	for _, profile := range []loop.RuntimeProfileName{"acp/claude-code", "acp/codex"} {
 		if !config.Catalog.HasProfile(profile) {
@@ -1008,11 +1045,7 @@ func hasACPModelAlias(models []loop.RuntimeModelOption, alias loop.ModelAlias) b
 }
 
 func preflightACPExecutable(path string) bool {
-	if !cleanAbsolutePath(path) {
-		return false
-	}
-	info, err := os.Stat(path)
-	return err == nil && !info.IsDir() && info.Mode()&0111 != 0
+	return verifiedExecutable(path)
 }
 
 type acpChildFactory struct {
@@ -1117,6 +1150,22 @@ func (f *acpChildFactory) configForServices(ctx context.Context, cfg loop.BoundD
 	if err != nil || posture != expectedPosture {
 		return loop.Resolved{}, acpdriver.Config{}, nil, errACPAccessProfileUnavailable
 	}
+	executable := f.config.Executables[harness]
+	if executable != "" {
+		if snapshot, ok := f.config.executableSnapshots[harness]; ok {
+			if !snapshot.matchesCurrent() || !verifiedExecutable(executable) {
+				return loop.Resolved{}, acpdriver.Config{}, nil, errACPChildUnavailable
+			}
+		}
+	}
+	if f.config.CollabMCPExecutable != "" {
+		if f.config.collabMCPSnapshot != nil && !f.config.collabMCPSnapshot.matchesCurrent() {
+			return loop.Resolved{}, acpdriver.Config{}, nil, errCollabMCPExecutableUnavailable
+		}
+		if !verifiedExecutable(f.config.CollabMCPExecutable) {
+			return loop.Resolved{}, acpdriver.Config{}, nil, errCollabMCPExecutableUnavailable
+		}
+	}
 	var ownedGateway *ACPGateway
 	if resolved.Credential == loop.CredentialGatewayBacked {
 		ownedGateway, err = NewACPGateway(ctx, f.config.Catalog, resolved)
@@ -1148,7 +1197,7 @@ func (f *acpChildFactory) configForServices(ctx context.Context, cfg loop.BoundD
 	}
 	return resolved, acpdriver.Config{
 		Harness:         acpdriver.Harness(harness),
-		Executable:      f.config.Executables[harness],
+		Executable:      executable,
 		Env:             f.config.envForCredential(resolved.Credential),
 		Credential:      resolved.Credential,
 		Binding:         binding,

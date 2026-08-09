@@ -47,6 +47,48 @@ func TestResolveCollabMCPExecutableFallsBackToVerifiedSibling(t *testing.T) {
 	}
 }
 
+func TestResolveCollabMCPExecutableRejectsSymlinkedParent(t *testing.T) {
+	base := t.TempDir()
+	first := filepath.Join(base, "first")
+	second := filepath.Join(base, "second")
+	for _, dir := range []string{first, second} {
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeExecutable(t, filepath.Join(dir, collabMCPExecutableName))
+	}
+	parent := filepath.Join(base, "current")
+	if err := os.Symlink(first, parent); err != nil {
+		t.Fatal(err)
+	}
+	candidate := filepath.Join(parent, collabMCPExecutableName)
+	if _, err := resolveCollabMCPExecutableFrom(candidate, ""); err == nil {
+		t.Fatal("resolveCollabMCPExecutableFrom() followed a symlinked parent")
+	}
+	if err := os.Remove(parent); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(second, parent); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolveCollabMCPExecutableFrom(candidate, ""); err == nil {
+		t.Fatal("resolveCollabMCPExecutableFrom() accepted a retargeted symlinked parent")
+	}
+}
+
+func TestResolveCollabMCPExecutableRejectsSymlinkedDefaultSibling(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target")
+	writeExecutable(t, target)
+	sibling := filepath.Join(dir, collabMCPExecutableName)
+	if err := os.Symlink(target, sibling); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolveCollabMCPExecutableFrom("", filepath.Join(dir, "coderig")); err == nil {
+		t.Fatal("resolveCollabMCPExecutableFrom() accepted a symlinked default sibling")
+	}
+}
+
 func TestResolveCollabMCPExecutableRejectsUnsafeCandidates(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "target")
@@ -231,6 +273,41 @@ func TestProductionACPCompositionRejectsUnavailableExplicitCollabMCP(t *testing.
 	}
 }
 
+func TestProductionACPCompositionFailsClosedWhenCollabMCPIsMissing(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonicalExecutable, err := filepath.EvalSymlinks(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(acpClaudeExecutableEnv, canonicalExecutable)
+	t.Setenv(acpCodexExecutableEnv, canonicalExecutable)
+	_, err = withProductionACPChildren(nil, Config{}, configuredProductionModelsForTest("configured-only"))
+	if err == nil {
+		t.Fatal("withProductionACPChildren() succeeded without the collaboration MCP sibling")
+	}
+}
+
+func TestProductionACPCompositionKeepsNoACPSetupWithoutCollabMCP(t *testing.T) {
+	configured := configuredProductionModelsForTest("configured-only")
+	configured.ACP = nil
+	configured.ClaudeSmall = ""
+	configured.PrimerAlias = "configured-only"
+	configured.PrimerEfforts = []model.Effort{model.EffortNone}
+	cfg, err := withProductionACPChildren(nil, Config{}, configured)
+	if err != nil {
+		t.Fatalf("withProductionACPChildren() error = %v", err)
+	}
+	if cfg.ACPChildren == nil {
+		t.Fatal("withProductionACPChildren() returned no composition")
+	}
+	if cfg.ACPChildren.LiveServices != nil || cfg.ACPChildren.RestoredServices != nil {
+		t.Fatalf("no-ACP composition unexpectedly installed services builders: %#v", cfg.ACPChildren)
+	}
+}
+
 func TestACPChildConfigInjectsCollabMCPDescriptorForNewAndRestore(t *testing.T) {
 	path := filepath.Join(t.TempDir(), collabMCPExecutableName)
 	writeExecutable(t, path)
@@ -272,6 +349,49 @@ func TestACPChildConfigInjectsCollabMCPDescriptorForNewAndRestore(t *testing.T) 
 	if len(restoredCfg.McpServers) != 1 || restoredCfg.McpServers[0].Stdio == nil {
 		t.Fatalf("restore MCP servers = %#v, want one stdio server", restoredCfg.McpServers)
 	}
+}
+
+func TestACPChildConfigRejectsCollabMCPReplacementDrift(t *testing.T) {
+	path := filepath.Join(t.TempDir(), collabMCPExecutableName)
+	writeExecutable(t, path)
+	snapshot, ok := verifiedExecutableSnapshotFor(path)
+	if !ok {
+		t.Fatal("verifiedExecutableSnapshotFor() rejected the test executable")
+	}
+	compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
+		NativeACP: map[string]ACPNativeProfile{"codex": {
+			Harness: "codex", Enabled: true,
+			ModelOptions: []ACPNativeModelOption{{Alias: "native", Model: "native", Efforts: []model.Effort{model.EffortNone}, DefaultEffort: model.EffortNone}},
+		}},
+		PrimerTarget: runtimeCatalogPrimer(),
+	})
+	if err != nil {
+		t.Fatalf("CompileAgentRuntimeCatalog() error = %v", err)
+	}
+	bound := testACPChildBound(t, mustResolveNativeACPCollabTask16(t, compiled))
+	factory := &acpChildFactory{config: ACPChildrenConfig{
+		Catalog: compiled, AccessProfile: AccessReadOnly, posture: driver.PostureReadOnly,
+		CollabMCPExecutable: path, collabMCPSnapshot: &snapshot,
+	}}
+	replacement := path + ".replacement"
+	writeExecutable(t, replacement)
+	if err := os.Rename(replacement, path); err != nil {
+		t.Fatal(err)
+	}
+	capability := make([]byte, collab.CapabilityBytes)
+	services := foreign.NewServices(foreign.NewBrokerDescriptor("/tmp/broker.sock", capability), nil)
+	if _, _, _, err := factory.configForServices(context.Background(), bound, "", services); err == nil {
+		t.Fatal("configForServices() accepted a replaced collaboration executable")
+	}
+}
+
+func mustResolveNativeACPCollabTask16(t *testing.T, compiled ACPCompiledCatalog) loop.Resolved {
+	t.Helper()
+	resolved, err := compiled.RuntimeCatalog.ResolveWithExplicitSource(generic.Name, "codex", loop.RuntimeSourceNative, "native", model.EffortNone, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resolved
 }
 
 func writeExecutable(t *testing.T, path string) {

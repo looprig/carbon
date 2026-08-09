@@ -52,24 +52,20 @@ func withProductionACPChildren(ctx context.Context, cfg Config, configured produ
 			return Config{}, err
 		}
 		collabExecutable = resolved
-	} else if resolved, err := resolveCollabMCPExecutable(""); err == nil {
-		// Retain the verified absolute path for every child builder. Discovery
-		// happens once here, before any session is opened.
-		collabExecutable = resolved
 	}
-	composition, err := newProductionACPCompositionWithCollab(ctx, cfg.AccessProfile, configured, collabExecutable)
+	composition, err := newProductionACPCompositionWithCollabRequired(ctx, cfg.AccessProfile, configured, collabExecutable, true)
 	if err != nil {
 		return Config{}, err
 	}
 	cfg.ACPChildren = composition
-	cfg.CollabMCPExecutable = collabExecutable
+	cfg.CollabMCPExecutable = composition.collabMCPExecutable
 	cfg.RuntimeCatalog = composition.Catalog.RuntimeCatalog
 	cfg.ACPDiagnostics = composition.Diagnostics
 	return cfg, nil
 }
 
 func newProductionACPComposition(ctx context.Context, accessProfile AccessProfile, configured productionModels) (*ACPComposition, error) {
-	return newProductionACPCompositionWithCollab(ctx, accessProfile, configured, "")
+	return newProductionACPCompositionWithCollabRequired(ctx, accessProfile, configured, "", true)
 }
 
 // newProductionACPCompositionWithPreflight is retained as a lower-level test
@@ -77,10 +73,14 @@ func newProductionACPComposition(ctx context.Context, accessProfile AccessProfil
 // startup now performs only static checks and defers ACP availability to the
 // selected child launch.
 func newProductionACPCompositionWithPreflight(_ context.Context, accessProfile AccessProfile, configured productionModels, _ func(context.Context, ACPExecutableProbe) ACPPreflightResult) (*ACPComposition, error) {
-	return newProductionACPCompositionWithCollab(context.Background(), accessProfile, configured, "")
+	return newProductionACPCompositionWithCollabRequired(context.Background(), accessProfile, configured, "", false)
 }
 
 func newProductionACPCompositionWithCollab(_ context.Context, accessProfile AccessProfile, configured productionModels, collabExecutable string) (*ACPComposition, error) {
+	return newProductionACPCompositionWithCollabRequired(context.Background(), accessProfile, configured, collabExecutable, true)
+}
+
+func newProductionACPCompositionWithCollabRequired(_ context.Context, accessProfile AccessProfile, configured productionModels, collabExecutable string, requireCollabMCP bool) (*ACPComposition, error) {
 	effectiveProfile, err := normalizeAccessProfile(accessProfile)
 	if err != nil {
 		return nil, errACPAccessProfileUnavailable
@@ -106,6 +106,7 @@ func newProductionACPCompositionWithCollab(_ context.Context, accessProfile Acce
 			"codex":       resolveACPExecutable(os.Getenv(acpCodexExecutableEnv), configured.ACPLaunchers["codex"], "codex-acp"),
 		},
 		CollabMCPExecutable: collabExecutable,
+		requireCollabMCP:    requireCollabMCP,
 		WorkspaceRoot:       root,
 		Env:                 os.Environ(),
 		NativeEnvAllowlist:  acpNativeAuthEnvAllowlist,
