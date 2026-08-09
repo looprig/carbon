@@ -15,8 +15,8 @@ require (
 	github.com/looprig/foreignloops v0.1.1
 	github.com/looprig/fsstore v0.3.0
 	github.com/looprig/harness v0.21.0
-	github.com/looprig/inference v0.7.0
-	github.com/looprig/llm v0.10.0
+	github.com/looprig/inference v0.8.0
+	github.com/looprig/llm v0.12.0
 	github.com/looprig/mcp v0.4.0
 	github.com/looprig/sandbox v0.7.0
 	github.com/looprig/storage v0.3.0
