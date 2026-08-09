@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -751,6 +752,160 @@ func TestCredentialLogoutCASProtectsStateChangedAfterResolve(t *testing.T) {
 	}
 	if current.Version == initial.Version || string(current.Value.Bytes()) != "rotated-state" {
 		t.Fatalf("state after CAS conflict = version %v value %q, want rotated state", current.Version, current.Value.Bytes())
+	}
+}
+
+func TestCredentialLogoutStateDeletionErrorDoesNotClaimStateAfterCatalogDurabilityWarning(t *testing.T) {
+	home := t.TempDir()
+	stateRoot := filepath.Join(home, "state")
+	catalogRoot := filepath.Join(home, "catalog")
+	mutator, err := secretslocal.New(stateRoot)
+	if err != nil {
+		t.Fatalf("mutator store: %v", err)
+	}
+	defer mutator.Close()
+	var stateRef secrets.Reference
+	var catalogDeleteStarted atomic.Bool
+	catalog, err := credentialcatalog.NewWithOptions(catalogRoot, credentialcatalog.Options{Hooks: credentialcatalog.Hooks{
+		BeforeUnlink: func() error {
+			value, valueErr := secrets.New([]byte("rotated-state"))
+			if valueErr != nil {
+				return valueErr
+			}
+			if _, putErr := mutator.Put(context.Background(), stateRef, value, secrets.UnconditionalPut()); putErr != nil {
+				return putErr
+			}
+			catalogDeleteStarted.Store(true)
+			return nil
+		},
+		SyncDir: func() error {
+			if catalogDeleteStarted.Load() {
+				return errors.New("test catalog durability failure")
+			}
+			return nil
+		},
+	}})
+	if err != nil {
+		t.Fatalf("hooked catalog: %v", err)
+	}
+	runtime := newCredentialRuntimeWithStores(t, catalog, mustSecretStore(t, stateRoot))
+	defer runtime.Close()
+	ref, err := credentials.ParseReference("credential://openai/catalog-warning-conflict")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateRef, err = secrets.NewReference("local", "credentials/openai/catalog-warning-conflict")
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptor := credentialTestDescriptor(t)
+	state, err := secrets.New([]byte("initial-state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.store.Put(context.Background(), stateRef, state, secrets.UnconditionalPut()); err != nil {
+		t.Fatalf("initial state: %v", err)
+	}
+	now := time.Now().UTC()
+	record, err := credentials.NewRecord(ref, descriptor, stateRef, now, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.catalog.Create(context.Background(), record); err != nil {
+		t.Fatalf("catalog.Create: %v", err)
+	}
+
+	outcome, logoutErr := runtime.logout(context.Background(), ref)
+	if logoutErr == nil {
+		t.Fatal("logout error = nil, want state deletion error")
+	}
+	if !outcome.LocalCatalogDeleted || outcome.LocalStateDeleted || outcome.LocalDeleted {
+		t.Fatalf("logout outcome = %+v, want catalog-only deletion", outcome)
+	}
+	var stateDeletionErr *credentials.StateDeletionError
+	if !errors.As(logoutErr, &stateDeletionErr) {
+		t.Fatalf("logout error = %T %v, want StateDeletionError cause", logoutErr, logoutErr)
+	}
+	var bounded *CredentialLogoutError
+	if !errors.As(logoutErr, &bounded) || !bounded.State || bounded.Catalog || bounded.Warning {
+		t.Fatalf("logout error = %T %+v, want state failure without catalog/warning flags", logoutErr, bounded)
+	}
+	if !errors.Is(logoutErr, credentials.ErrCatalogDurabilityUnknown) || !errors.Is(logoutErr, secrets.ErrConflict) {
+		t.Fatalf("logout error = %v, want catalog durability and state conflict causes", logoutErr)
+	}
+}
+
+func TestCredentialLogoutCanceledStateDeletionRetainsCatalogOutcome(t *testing.T) {
+	home := t.TempDir()
+	stateRoot := filepath.Join(home, "state")
+	catalogRoot := filepath.Join(home, "catalog")
+	store := mustSecretStore(t, stateRoot)
+	defer store.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var armed atomic.Bool
+	catalog, err := credentialcatalog.NewWithOptions(catalogRoot, credentialcatalog.Options{Hooks: credentialcatalog.Hooks{
+		AfterRename: func() error {
+			if armed.Load() {
+				cancel()
+			}
+			return nil
+		},
+	}})
+	if err != nil {
+		t.Fatalf("hooked catalog: %v", err)
+	}
+	runtime := newCredentialRuntimeWithStores(t, catalog, store)
+	defer runtime.Close()
+	ref, err := credentials.ParseReference("credential://openai/canceled-state")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateRef, err := secrets.NewReference("local", "credentials/openai/canceled-state")
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptor := credentialTestDescriptor(t)
+	state, err := secrets.New([]byte("state-to-retain"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.store.Put(context.Background(), stateRef, state, secrets.UnconditionalPut()); err != nil {
+		t.Fatalf("initial state: %v", err)
+	}
+	now := time.Now().UTC()
+	record, err := credentials.NewRecord(ref, descriptor, stateRef, now, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.catalog.Create(context.Background(), record); err != nil {
+		t.Fatalf("catalog.Create: %v", err)
+	}
+	armed.Store(true)
+
+	outcome, logoutErr := runtime.logout(ctx, ref)
+	if logoutErr == nil {
+		t.Fatal("logout error = nil, want canceled state deletion")
+	}
+	if !outcome.LocalCatalogDeleted || outcome.LocalStateDeleted || outcome.LocalDeleted {
+		t.Fatalf("logout outcome = %+v, want catalog-only deletion", outcome)
+	}
+	var stateDeletionErr *credentials.StateDeletionError
+	if !errors.As(logoutErr, &stateDeletionErr) {
+		t.Fatalf("logout error = %T %v, want StateDeletionError cause", logoutErr, logoutErr)
+	}
+	var bounded *CredentialLogoutError
+	if !errors.As(logoutErr, &bounded) || !bounded.Canceled || !bounded.State || bounded.Catalog {
+		t.Fatalf("logout error = %T %+v, want canceled state failure", logoutErr, bounded)
+	}
+	if !errors.Is(logoutErr, context.Canceled) {
+		t.Fatalf("logout error = %v, want context.Canceled", logoutErr)
+	}
+	if _, err := runtime.catalog.Get(context.Background(), ref); !errors.Is(err, credentials.ErrCatalogNotFound) {
+		t.Fatalf("catalog after canceled state deletion = %v, want not-found", err)
+	}
+	if _, err := runtime.store.Resolve(context.Background(), stateRef); err != nil {
+		t.Fatalf("state after canceled deletion = %v, want retained", err)
 	}
 }
 

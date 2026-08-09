@@ -916,6 +916,25 @@ func credentialLogoutDeleteOutcome(outcome CredentialLogoutOutcome, deleteErr er
 		outcome.LocalDeleted = true
 		return outcome, nil
 	}
+	var stateDeletionErr *credentials.StateDeletionError
+	if errors.As(deleteErr, &stateDeletionErr) {
+		// StateDeletionError's contract is that catalog removal is visible but
+		// exact state deletion did not complete. Its unwrap chain may also carry
+		// catalog durability or cancellation causes; neither changes that
+		// authoritative split outcome.
+		outcome.LocalCatalogDeleted = true
+		outcome.LocalStateDeleted = false
+		outcome.LocalDeleted = false
+		canceled := errors.Is(deleteErr, credentials.ErrCanceled) ||
+			errors.Is(deleteErr, context.Canceled) ||
+			errors.Is(deleteErr, context.DeadlineExceeded)
+		return outcome, &CredentialLogoutError{
+			Outcome:  outcome,
+			State:    true,
+			Canceled: canceled,
+			cause:    deleteErr,
+		}
+	}
 	if errors.Is(deleteErr, credentials.ErrCanceled) || errors.Is(deleteErr, context.Canceled) || errors.Is(deleteErr, context.DeadlineExceeded) {
 		return outcome, &CredentialLogoutError{Outcome: outcome, Canceled: true, cause: deleteErr}
 	}
