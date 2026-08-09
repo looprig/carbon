@@ -238,7 +238,7 @@ func TestCollabMCPIntegrationNativeGenericRetainsInProcessMessageAgent(t *testin
 func TestCollabMCPIntegrationMissingBinaryFailsClosed(t *testing.T) {
 	configured := configuredProductionModelsForTest("configured-only")
 	missing := filepath.Join(t.TempDir(), collabMCPExecutableName)
-	_, err := withProductionACPChildren(nil, Config{CollabMCPExecutable: missing}, configured)
+	_, err := withProductionACPChildren(context.Background(), Config{CollabMCPExecutable: missing}, configured)
 	if err == nil {
 		t.Fatal("withProductionACPChildren accepted a missing collaboration MCP executable")
 	}
