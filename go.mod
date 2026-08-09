@@ -2,9 +2,10 @@ module github.com/looprig/coderig
 
 go 1.26.4
 
-// Credential-backed model support is composed from the sibling modules during
-// this repository's development migration. These replacements keep this
-// module independently resolvable when callers intentionally disable go.work.
+// Credential-backed model support is composed from unreleased sibling modules
+// during this repository's development migration and GOWORK=off checks. These
+// are monorepo-only directives; Task14/release tagging must replace them with
+// published pre-release versions before an external release is cut.
 replace github.com/looprig/credentials => ../credentials
 
 replace github.com/looprig/acp => ../acp

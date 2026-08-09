@@ -43,6 +43,9 @@ type productionModels struct {
 	ACPLaunchers     map[string]string // harness -> configured executable path
 	ClaudeSmall      loop.ModelAlias
 	ConfigRev        string
+	// ConfigRev is durable restore identity. Inline-key clients separately
+	// opt out of cross-composition reuse because key bytes are not digest input.
+	ClientReuseEligible bool
 	// PermissionReviewEnabled, PermissionReviewModel, and PermissionReviewStrict
 	// mirror Config's own PermissionReviewEnabled/PermissionReviewModel/
 	// PermissionReviewStrictPolicy fields so production and assembly's
@@ -58,23 +61,20 @@ func compileProductionModels(config normalizedModelConfig, factory configuredCli
 	if factory == nil {
 		return productionModels{}, modelConfigValidationError("configured model factory is unavailable")
 	}
-	var configRev string
-	if modelConfigDigestEligible(config) {
-		var err error
-		configRev, err = modelConfigDigest(config)
-		if err != nil {
-			return productionModels{}, err
-		}
+	configRev, err := modelConfigDigest(config)
+	if err != nil {
+		return productionModels{}, err
 	}
 
 	clients := make(map[string]inference.Client, len(config.Models))
+	// This cache is deliberately scoped to one composition. It is not a
+	// cross-load client-reuse seam, so inline-key rotations still compose fresh.
 	boundClients := make(map[configuredClientCacheKey]inference.Client, len(config.Models))
 	delegateSources := make([]ACPGatewaySource, 0, len(config.Models))
 	primerCandidates := make([]PrimerCandidate, 0, len(config.Models))
 	primerCandidateTargets := make(map[runtimeModelKey]string, len(config.Models))
 	models := make(map[string]model.Model, len(config.Models))
 	var primerEfforts []model.Effort
-	var err error
 	for _, target := range config.Models {
 		if !target.client.valid() {
 			return productionModels{}, modelConfigValidationError("configured model auth must contain at most one of api_key or credential_ref")
@@ -192,6 +192,7 @@ func compileProductionModels(config normalizedModelConfig, factory configuredCli
 		ACPLaunchers:            acpLaunchers,
 		ClaudeSmall:             loop.ModelAlias(config.ClaudeCodeSmallModel),
 		ConfigRev:               configRev,
+		ClientReuseEligible:     modelConfigDigestEligible(config),
 		PermissionReviewEnabled: permissionReviewEnabled,
 		PermissionReviewModel:   permissionReviewModel,
 		PermissionReviewStrict:  permissionReviewStrict,

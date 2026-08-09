@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"reflect"
 
 	"github.com/looprig/core/content"
 	"github.com/looprig/inference"
@@ -44,7 +45,7 @@ func newModelRoutingClient(bindings []modelBinding) (inference.Client, error) {
 			// bound them to the same credential-bound client; distinct clients
 			// would be ambiguous because inference.Request carries the target
 			// descriptor, not the public alias.
-			if existing != binding.Client {
+			if !sameInferenceClient(existing, binding.Client) {
 				return nil, errConfiguredRuntimeClientUnavailable
 			}
 			continue
@@ -52,6 +53,21 @@ func newModelRoutingClient(bindings []modelBinding) (inference.Client, error) {
 		router.clients[key] = binding.Client
 	}
 	return router, nil
+}
+
+// sameInferenceClient uses interface equality only for comparable dynamic
+// types. A client implementation may itself be a map, slice, or function;
+// comparing such interfaces directly panics, and rejecting that ambiguous
+// duplicate is safer than guessing identity.
+func sameInferenceClient(left, right inference.Client) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	leftValue, rightValue := reflect.ValueOf(left), reflect.ValueOf(right)
+	if leftValue.Type() != rightValue.Type() || !leftValue.Type().Comparable() {
+		return false
+	}
+	return leftValue.Interface() == rightValue.Interface()
 }
 
 func runtimeModelKeyFor(value model.Model) runtimeModelKey {

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
 	"github.com/looprig/core/content"
@@ -417,6 +418,15 @@ func (e *ModelConfigError) Error() string {
 
 func (e *ModelConfigError) Unwrap() error { return e.cause }
 
+type boundedModelConfigCause struct {
+	message string
+	cause   error
+}
+
+func (e *boundedModelConfigCause) Error() string { return e.message }
+
+func (e *boundedModelConfigCause) Unwrap() error { return e.cause }
+
 func decodeModelConfig(data []byte) (modelConfigFile, error) {
 	var config modelConfigFile
 	if !utf8.Valid(data) {
@@ -583,30 +593,68 @@ func encodeModelConfigV3(config normalizedModelConfig) ([]byte, error) {
 	return data, nil
 }
 
-// writeMigratedModelConfigV2ToV3 performs the explicit migration publication.
-// It validates the existing owner-only v2 file first, writes a 0600 temporary
-// sibling, fsyncs it, and atomically renames it over the destination. It never
-// runs as part of read-only loadModelConfig paths.
+var (
+	errModelConfigMigrationConcurrent = errors.New("model configuration changed during migration")
+	errModelConfigMigrationDurability = errors.New("model configuration migration durability failure")
+	modelConfigMigrationLocks         sync.Map
+)
+
+type modelConfigMigrationHooks struct {
+	beforeCAS     func() error
+	syncFile      func(*os.File) error
+	syncDirectory func(string) error
+}
+
 func writeMigratedModelConfigV2ToV3(path string) error {
-	data, present, err := readModelConfigFile(path)
+	return writeMigratedModelConfigV2ToV3WithHooks(path, modelConfigMigrationHooks{})
+}
+
+// writeMigratedModelConfigV2ToV3WithHooks is the testable migration seam. The
+// production entry point uses real fsyncs and no edit hook.
+func writeMigratedModelConfigV2ToV3WithHooks(path string, hooks modelConfigMigrationHooks) error {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return modelConfigFailure("migrate", err)
+	}
+	lockValue, _ := modelConfigMigrationLocks.LoadOrStore(absPath, &sync.Mutex{})
+	lock := lockValue.(*sync.Mutex)
+	lock.Lock()
+	defer lock.Unlock()
+
+	initialInfo, initialStatErr := os.Lstat(absPath)
+	data, present, err := readModelConfigFile(absPath)
 	if err != nil {
 		return err
 	}
 	if !present {
 		return modelConfigFailure("migrate", errors.New("model configuration is absent"))
 	}
+	readInfo, readStatErr := os.Lstat(absPath)
+	if initialStatErr != nil || readStatErr != nil || !os.SameFile(initialInfo, readInfo) {
+		return modelConfigMigrationFailure(errModelConfigMigrationConcurrent)
+	}
 	migrated, err := migrateModelConfigV2ToV3(data)
 	if err != nil {
 		return err
 	}
-	info, err := os.Lstat(path)
-	if err != nil {
-		return modelConfigFailure("migrate", errors.New("model configuration changed during migration"))
-	}
+	info := initialInfo
 	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
 		return modelConfigFailure("migrate", errors.New("model configuration is not an owner-only regular file"))
 	}
-	temp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".migration-*")
+	if hooks.beforeCAS != nil {
+		if err := hooks.beforeCAS(); err != nil {
+			return modelConfigMigrationFailure(errModelConfigMigrationConcurrent)
+		}
+	}
+	current, currentPresent, err := readModelConfigFile(absPath)
+	if err != nil || !currentPresent {
+		return modelConfigMigrationFailure(errModelConfigMigrationConcurrent)
+	}
+	currentInfo, err := os.Lstat(absPath)
+	if err != nil || !os.SameFile(info, currentInfo) || !bytes.Equal(data, current) {
+		return modelConfigMigrationFailure(errModelConfigMigrationConcurrent)
+	}
+	temp, err := os.CreateTemp(filepath.Dir(absPath), "."+filepath.Base(absPath)+".migration-*")
 	if err != nil {
 		return modelConfigFailure("migrate", errors.New("could not create migration temporary file"))
 	}
@@ -621,21 +669,45 @@ func writeMigratedModelConfigV2ToV3(path string) error {
 		_ = temp.Close()
 		return modelConfigFailure("migrate", errors.New("could not write migrated model configuration"))
 	}
-	if err := temp.Sync(); err != nil {
-		_ = temp.Close()
-		return modelConfigFailure("migrate", errors.New("could not sync migrated model configuration"))
-	}
-	if err := temp.Close(); err != nil {
-		return modelConfigFailure("migrate", errors.New("could not close migrated model configuration"))
-	}
 	if err := os.Chmod(tempPath, info.Mode().Perm()); err != nil {
+		_ = temp.Close()
 		return modelConfigFailure("migrate", errors.New("could not set migration file permissions"))
 	}
-	if err := os.Rename(tempPath, path); err != nil {
+	syncFile := hooks.syncFile
+	if syncFile == nil {
+		syncFile = (*os.File).Sync
+	}
+	if err := syncFile(temp); err != nil {
+		_ = temp.Close()
+		return modelConfigMigrationFailure(errModelConfigMigrationDurability)
+	}
+	if err := temp.Close(); err != nil {
+		return modelConfigMigrationFailure(errModelConfigMigrationDurability)
+	}
+	if err := os.Rename(tempPath, absPath); err != nil {
 		return modelConfigFailure("migrate", errors.New("could not publish migrated model configuration"))
 	}
 	removeTemp = false
+	syncDirectory := hooks.syncDirectory
+	if syncDirectory == nil {
+		syncDirectory = syncModelConfigMigrationDirectory
+	}
+	if err := syncDirectory(filepath.Dir(absPath)); err != nil {
+		return modelConfigMigrationFailure(errModelConfigMigrationDurability)
+	}
 	return nil
+}
+
+func syncModelConfigMigrationDirectory(path string) error {
+	directory, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	if err := directory.Sync(); err != nil {
+		_ = directory.Close()
+		return err
+	}
+	return directory.Close()
 }
 
 func safeModelConfigDecodeError(err error) error {
@@ -678,13 +750,19 @@ func rejectNullPermissionReview(data []byte) error {
 
 func modelConfigFailure(operation string, cause error) *ModelConfigError {
 	message := "unknown error"
+	boundedCause := error(errors.New(message))
 	if cause != nil {
 		message = boundedModelConfigText(cause.Error(), maxModelConfigErrorCauseBytes)
+		boundedCause = &boundedModelConfigCause{message: message, cause: cause}
 	}
 	return &ModelConfigError{
 		operation: boundedModelConfigText(operation, maxModelConfigErrorOperationBytes),
-		cause:     errors.New(message),
+		cause:     boundedCause,
 	}
+}
+
+func modelConfigMigrationFailure(cause error) *ModelConfigError {
+	return modelConfigFailure("migrate", cause)
 }
 
 func boundedModelConfigText(value string, limit int) string {

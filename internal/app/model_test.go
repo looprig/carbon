@@ -58,8 +58,8 @@ func TestProductionModelsLoaderCompilesSecureConfigurationOnce(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("client factory calls = %d, want 1", calls)
 	}
-	if got.PrimerClient == nil || got.PrimerModel.Name == "" || got.ConfigRev != "" {
-		t.Fatalf("compiled production models = %#v, want no stable revision for inline-key catalog", got)
+	if got.PrimerClient == nil || got.PrimerModel.Name == "" || got.ConfigRev == "" {
+		t.Fatalf("compiled production models = %#v, want secret-free restore revision", got)
 	}
 	if got.ConfigRev == sentinel {
 		t.Fatal("configuration revision exposed API key")

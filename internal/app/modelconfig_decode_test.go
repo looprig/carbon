@@ -293,6 +293,54 @@ func TestWriteMigratedModelConfigV2ToV3RejectsInvalidInputWithoutChangingFile(t 
 	}
 }
 
+func TestWriteMigratedModelConfigV2ToV3RejectsCooperatingConcurrentEdit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "models.json")
+	original := []byte(validLMStudioModelConfig)
+	writeModelConfigFixture(t, path, original, 0o600)
+	changed := bytes.Replace(original, []byte(`"primer_default": "local"`), []byte(`"primer_default": "changed"`), 1)
+	if bytes.Equal(changed, original) {
+		t.Fatal("test fixture did not change source bytes")
+	}
+
+	err := writeMigratedModelConfigV2ToV3WithHooks(path, modelConfigMigrationHooks{
+		beforeCAS: func() error {
+			return os.WriteFile(path, changed, 0o600)
+		},
+	})
+	if !errors.Is(err, errModelConfigMigrationConcurrent) {
+		t.Fatalf("concurrent migration error = %v, want concurrent-modification error", err)
+	}
+	got, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("read concurrently edited config: %v", readErr)
+	}
+	if !bytes.Equal(got, changed) {
+		t.Fatalf("concurrent edit was overwritten: got %q, want %q", got, changed)
+	}
+}
+
+func TestWriteMigratedModelConfigV2ToV3SyncsOwnerModeAndReportsDurability(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "models.json")
+	writeModelConfigFixture(t, path, []byte(validLMStudioModelConfig), 0o600)
+	var syncedMode os.FileMode
+	err := writeMigratedModelConfigV2ToV3WithHooks(path, modelConfigMigrationHooks{
+		syncFile: func(file *os.File) error {
+			info, statErr := file.Stat()
+			if statErr != nil {
+				return statErr
+			}
+			syncedMode = info.Mode().Perm()
+			return errors.New("injected file durability failure")
+		},
+	})
+	if !errors.Is(err, errModelConfigMigrationDurability) {
+		t.Fatalf("durability error = %v, want durability error", err)
+	}
+	if syncedMode != 0o600 {
+		t.Fatalf("temporary mode at sync = %04o, want 0600", syncedMode)
+	}
+}
+
 func TestDecodeModelConfigRejectsRemovedDelegateDefaults(t *testing.T) {
 	// This wire value is a strict-rejection fixture for the removed field; it
 	// must not be accepted or migrated.

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -115,8 +116,11 @@ func TestProductionModelsConstructsCredentialBoundClients(t *testing.T) {
 	if got.ClaudeSmall != "fixture-local" {
 		t.Fatalf("ClaudeSmall = %q, want fixture-local", got.ClaudeSmall)
 	}
-	if got.ConfigRev != "" {
-		t.Fatalf("ConfigRev = %q, want empty for inline-key catalog", got.ConfigRev)
+	if got.ConfigRev == "" {
+		t.Fatalf("ConfigRev = %q, want secret-free restore identity", got.ConfigRev)
+	}
+	if got.ClientReuseEligible {
+		t.Fatal("inline-key catalog is eligible for cross-composition client reuse")
 	}
 	for _, formatted := range []string{fmt.Sprintf("%v", got), fmt.Sprintf("%+v", got), fmt.Sprintf("%#v", got)} {
 		if strings.Contains(formatted, primerKey) || strings.Contains(formatted, delegateKey) {
@@ -153,7 +157,7 @@ func TestProductionModelsFactoryReceivesExplicitCredentialReference(t *testing.T
 	}
 }
 
-func TestProductionModelsInlineKeysSuppressStableRevisionAndRecompose(t *testing.T) {
+func TestProductionModelsInlineKeysPreserveRestoreRevisionAndRecompose(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "models.json")
 	makeConfig := func(key string) []byte {
 		return []byte(strings.NewReplacer(
@@ -175,8 +179,8 @@ func TestProductionModelsInlineKeysSuppressStableRevisionAndRecompose(t *testing
 	if err != nil {
 		t.Fatalf("load first inline-key config: %v", err)
 	}
-	if first.ConfigRev != "" {
-		t.Fatalf("first inline-key ConfigRev = %q, want empty ineligible revision", first.ConfigRev)
+	if first.ConfigRev == "" {
+		t.Fatal("first inline-key ConfigRev is empty, want restore identity")
 	}
 	if err := os.WriteFile(path, makeConfig("test-secret-inline-two"), 0o600); err != nil {
 		t.Fatalf("write second inline-key config: %v", err)
@@ -185,11 +189,46 @@ func TestProductionModelsInlineKeysSuppressStableRevisionAndRecompose(t *testing
 	if err != nil {
 		t.Fatalf("load second inline-key config: %v", err)
 	}
-	if second.ConfigRev != "" {
-		t.Fatalf("second inline-key ConfigRev = %q, want empty ineligible revision", second.ConfigRev)
+	if second.ConfigRev == "" || second.ConfigRev != first.ConfigRev {
+		t.Fatalf("inline-key ConfigRevs = %q and %q, want same secret-free revision", first.ConfigRev, second.ConfigRev)
 	}
 	if calls != 2 {
 		t.Fatalf("inline-key factory calls = %d, want fresh composition for both loads", calls)
+	}
+	if first.ClientReuseEligible {
+		t.Fatal("inline-key catalog is eligible for cross-composition client reuse")
+	}
+}
+
+func TestProductionModelsInlineKeyRevisionTracksNonSecretConfiguration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "models.json")
+	base := []byte(strings.NewReplacer(
+		`"provider": "lmstudio"`, `"provider": "openai"`,
+		`"api_format": "openai"`, `"api_format": "openai-responses"`,
+		`"base_url": "http://localhost:1234/v1"`, `"base_url": "https://api.openai.com/v1"`,
+		`"api_key": ""`, `"api_key": "test-secret-inline"`,
+	).Replace(validLMStudioModelConfig))
+	if err := os.WriteFile(path, base, 0o600); err != nil {
+		t.Fatalf("write base inline-key config: %v", err)
+	}
+	factory := func(model.Model, modelClientInput) (inference.Client, error) { return &fakeLLM{}, nil }
+	first, err := loadProductionModelsFrom(path, factory)
+	if err != nil {
+		t.Fatalf("load base inline-key config: %v", err)
+	}
+	changed := bytes.Replace(base, []byte(`"description": "Local in-process coding model."`), []byte(`"description": "Changed presentation guidance."`), 1)
+	if bytes.Equal(changed, base) {
+		t.Fatal("test fixture did not change non-secret configuration")
+	}
+	if err := os.WriteFile(path, changed, 0o600); err != nil {
+		t.Fatalf("write changed inline-key config: %v", err)
+	}
+	second, err := loadProductionModelsFrom(path, factory)
+	if err != nil {
+		t.Fatalf("load changed inline-key config: %v", err)
+	}
+	if first.ConfigRev == second.ConfigRev {
+		t.Fatalf("non-secret configuration change did not alter ConfigRev %q", first.ConfigRev)
 	}
 }
 
