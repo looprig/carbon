@@ -35,15 +35,12 @@ func buildSkillTool(t *testing.T, def tool.Definition, root string) []string {
 
 func TestGenericSkillDefinitionBinds(t *testing.T) {
 	t.Parallel()
-	loader := testSkillLoader()
-	for _, cfg := range []Config{{}, {RuntimeSkills: true}} {
-		def := skillDefinitionFor(loader, cfg)
-		if def == nil {
-			t.Fatalf("skillDefinitionFor(%+v) = nil", cfg)
-		}
-		names := buildSkillTool(t, def, t.TempDir())
-		if len(names) != 1 || names[0] != skillToolName {
-			t.Errorf("built tool names = %v, want [%q]", names, skillToolName)
-		}
+	def := skillDefinitionFor(testSkillLoader())
+	if def == nil {
+		t.Fatal("skillDefinitionFor() = nil")
+	}
+	names := buildSkillTool(t, def, t.TempDir())
+	if len(names) != 1 || names[0] != skillToolName {
+		t.Errorf("built tool names = %v, want [%q]", names, skillToolName)
 	}
 }

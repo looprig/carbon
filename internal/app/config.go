@@ -29,8 +29,6 @@ type Config struct {
 	// contributes only executable foreign builders and statically admitted ACP
 	// rows.
 	RuntimeCatalog loop.RuntimeCatalog
-	// RuntimeSkills enables the untrusted, human-gated workspace skill source.
-	RuntimeSkills bool
 	// AccessProfile is the selected product access profile (readonly by
 	// default). It is validated at the CLI boundary before Rig construction.
 	AccessProfile AccessProfile

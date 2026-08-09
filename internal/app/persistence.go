@@ -227,7 +227,7 @@ func headlessStores() (*sessionStores, error) {
 }
 
 // agentFingerprintFields assembles the rig-level config-fingerprint inputs that are not
-// part of a loop.Definition: the Generic AgentKind, the human-set RuntimeSkills mode,
+// part of a loop.Definition: the Generic AgentKind, the always-on workspace skill mode,
 // and the durable access configuration identity. NativePermissionPolicyRev carries the
 // secret-free access digest (access ABI version, selected Generic profile, and
 // the non-secret egress route identity/guarantees) so an access-profile or
@@ -240,7 +240,7 @@ func headlessStores() (*sessionStores, error) {
 func agentFingerprintFields(cfg Config) rig.ConfigFingerprintFields {
 	fields := rig.ConfigFingerprintFields{
 		AgentKind:                 agentKind,
-		RuntimeSkills:             cfg.RuntimeSkills,
+		RuntimeSkills:             true,
 		NativePermissionPolicyRev: cfg.AccessConfigRev,
 		ExternalCapabilityRev:     cfg.MCPConfigRev,
 		AppFields:                 accessAppFields(cfg.AccessProfile),

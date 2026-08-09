@@ -19,8 +19,8 @@ import (
 	"github.com/looprig/inference"
 )
 
-// runtime_skills_integration_test.go is the P2b Phase 3c END-TO-END acceptance: with
-// RuntimeSkills ON and a real on-disk <root>/.skills/<name>/SKILL.md, the Generic
+// runtime_skills_integration_test.go is the workspace-skill END-TO-END acceptance: with
+// a real on-disk <root>/.skills/<name>/SKILL.md, the Generic
 // agent delegates to a Generic child, the child calls Skill{name:"<workspace-skill>"}, the
 // workspace load surfaces a HUMAN-GATED SkillLoadRequest (ScopeOnce) attributed to the
 // delegate loop, and after Approve the snapshot body is returned as the tool result.
@@ -71,7 +71,7 @@ func TestRuntimeSkillsWorkspaceLoadGatedEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a1, err := f1.openWithClient(context.Background(), client, newModelFactory(), SessionSelector{}, Config{RuntimeSkills: true})
+	a1, err := f1.openWithClient(context.Background(), client, newModelFactory(), SessionSelector{}, Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +110,7 @@ func TestRuntimeSkillsWorkspaceLoadGatedEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = f2.Close() })
-	a, err := f2.openWithClient(context.Background(), client, newModelFactory(), SessionSelector{Resume: sid}, Config{RuntimeSkills: true})
+	a, err := f2.openWithClient(context.Background(), client, newModelFactory(), SessionSelector{Resume: sid}, Config{})
 	if err != nil {
 		t.Fatal(err)
 	}

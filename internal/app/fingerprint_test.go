@@ -393,7 +393,7 @@ func TestSecretRedactionAcrossModelCatalogueGatewayFingerprintAndDurableEvents(t
 
 // TestAgentFingerprintFields asserts the rig-level config-fingerprint fields the
 // composition root injects via rig.WithFingerprintFields: AgentKind is the Generic
-// identity ("coderig:generic") and RuntimeSkills passes the human-set mode through verbatim. The
+// identity ("coderig:generic") and RuntimeSkills records the always-on workspace source. The
 // workspace-root field is NOT set here — the rig's exclusive-workspace placement folds the
 // canonical root into the fingerprint — so a restore still compares agent identity, skill
 // mode, AND (via the placement) the repo root.
@@ -406,13 +406,8 @@ func TestAgentFingerprintFields(t *testing.T) {
 		want rig.ConfigFingerprintFields
 	}{
 		{
-			name: "runtime skills off",
-			cfg:  Config{RuntimeSkills: false},
-			want: rig.ConfigFingerprintFields{AgentKind: "coderig:generic", RuntimeSkills: false},
-		},
-		{
-			name: "runtime skills on",
-			cfg:  Config{RuntimeSkills: true},
+			name: "runtime skills always on",
+			cfg:  Config{},
 			want: rig.ConfigFingerprintFields{AgentKind: "coderig:generic", RuntimeSkills: true},
 		},
 		{
@@ -420,6 +415,7 @@ func TestAgentFingerprintFields(t *testing.T) {
 			cfg:  Config{AccessProfile: AccessTrusted, AccessConfigRev: "coderig-access-v1:deadbeef"},
 			want: rig.ConfigFingerprintFields{
 				AgentKind:                 "coderig:generic",
+				RuntimeSkills:             true,
 				NativePermissionPolicyRev: "coderig-access-v1:deadbeef",
 				AppFields:                 map[string]string{"access_profile": "trusted"},
 			},
@@ -429,6 +425,7 @@ func TestAgentFingerprintFields(t *testing.T) {
 			cfg:  Config{ModelConfigRev: "coderig-models-v1:deadbeef"},
 			want: rig.ConfigFingerprintFields{
 				AgentKind:         "coderig:generic",
+				RuntimeSkills:     true,
 				RuntimeCatalogRev: "coderig-models-v1:deadbeef",
 			},
 		},

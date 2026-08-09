@@ -335,7 +335,6 @@ func TestBuildRigRegistersConversationCompaction(t *testing.T) {
 		cfg  Config
 	}{
 		{name: "default composition"},
-		{name: "runtime skills composition", cfg: Config{RuntimeSkills: true}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -468,7 +467,6 @@ func TestCompactionWiringSurvivesHeadlessNewRestoreAndClear(t *testing.T) {
 		cfg  Config
 	}{
 		{name: "default composition"},
-		{name: "runtime skills composition", cfg: Config{RuntimeSkills: true}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

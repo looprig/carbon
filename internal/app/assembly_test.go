@@ -72,8 +72,8 @@ func TestGenericDefinitionIsSoleManagedLoop(t *testing.T) {
 	if got := strings.Count(initial.EffectiveSystem, "<delegation>"); got != 1 {
 		t.Fatalf("delegation section count = %d, want exactly 1", got)
 	}
-	if got := strings.Count(initial.EffectiveSystem, "<available_skills>"); got != 1 {
-		t.Fatalf("skill catalog count = %d, want exactly 1", got)
+	if got := strings.Count(initial.EffectiveSystem, "<available_skills>"); got != 0 {
+		t.Fatalf("embedded skill catalog count = %d, want 0", got)
 	}
 	for _, name := range []string{"ReadFile", "WriteFile", "EditFile", "Bash", "ProcessOutput", "ProcessInput", "ProcessStop", "WebSearch", "Fetch", "TaskCreate", "TaskGet", "TaskList", "TaskUpdate", "AskUser", "Skill"} {
 		if !slices.Contains(initial.ToolNames, name) {

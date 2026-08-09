@@ -111,27 +111,13 @@ func (e *LoopDefinitionError) Error() string {
 
 func (e *LoopDefinitionError) Unwrap() error { return e.Cause }
 
-// genericSkills is Generic's closed set of trusted embedded skills.
-var genericSkills = []string{"code-style"}
-
-// skillDefinitionFor builds Generic's optional Skill definition. The embedded
-// code-style skill is always available; workspace skills are added only when
-// the runtime-skills policy is enabled.
-func skillDefinitionFor(loader skill.SkillLoader, cfg Config) tool.Definition {
-	workspaceEnabled := cfg.RuntimeSkills
-	if len(genericSkills) == 0 && !workspaceEnabled {
-		return nil
-	}
-	requirements := tool.Requirements(0)
-	if workspaceEnabled {
-		requirements = tool.RequiresWorkspace
-	}
+// skillDefinitionFor builds Generic's always-on, workspace-backed Skill
+// definition. Workspace skill documents are untrusted and remain subject to
+// the Skill tool's context.load and filesystem.read approval flow.
+func skillDefinitionFor(loader skill.SkillLoader) tool.Definition {
 	agent := generic.Name
-	return tool.NewDefinition(skillToolName, requirements, func(_ context.Context, bind tool.Bindings) ([]tool.InvokableTool, error) {
-		if workspaceEnabled {
-			return []tool.InvokableTool{skill.NewSkill(loader, agent, skill.WithWorkspaceRoot(bind.Workspace.Root))}, nil
-		}
-		return []tool.InvokableTool{skill.NewSkill(loader, agent)}, nil
+	return tool.NewDefinition(skillToolName, tool.RequiresWorkspace, func(_ context.Context, bind tool.Bindings) ([]tool.InvokableTool, error) {
+		return []tool.InvokableTool{skill.NewSkill(loader, agent, skill.WithWorkspaceRoot(bind.Workspace.Root))}, nil
 	})
 }
 
@@ -151,13 +137,11 @@ func genericDefinitionWithContextPolicy(client inference.Client, model model.Mod
 	httpCl := newHTTPClient()
 	runtimeCtx := NewRuntimeContextProvider()
 
-	scopes := []skillScope{{name: generic.Name, skills: genericSkills}}
-	loader := skill.NewEmbeddedSkillLoader(SkillsFS, buildSkillAllow(scopes))
-	definitions := append([]tool.Definition(nil), genericToolDefinitions(access.set, httpCl, skillDefinitionFor(loader, cfg))...)
+	loader := skill.NewEmbeddedSkillLoader(nil, nil)
+	definitions := append([]tool.Definition(nil), genericToolDefinitions(access.set, httpCl, skillDefinitionFor(loader))...)
 	definitions = append(definitions, extras...)
 
-	ctx := context.Background()
-	system := contextPolicy.system(generic.SystemPrompt + availableSkillsCatalog(ctx, loader, generic.Name, genericSkills))
+	system := contextPolicy.system(generic.SystemPrompt)
 	options := []loop.Option{
 		loop.WithName(generic.Name),
 		loop.WithDisplayName(string(generic.Name)),

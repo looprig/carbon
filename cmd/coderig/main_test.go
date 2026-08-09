@@ -197,7 +197,7 @@ func TestRunHasNoServeAdapter(t *testing.T) {
 	}
 }
 
-// TestParseFlags covers the CodeRig CLI flag parser: --list, --resume <uuid>, --runtime-skills,
+// TestParseFlags covers the CodeRig CLI flag parser: --list, --resume <uuid>,
 // --data-dir, and the boundary validation (an invalid/empty resume id fails at the
 // boundary, not deep in the wiring; --list and --resume are mutually exclusive). CodeRig has no
 // positional agent name (it is one fixed Generic session), so an unexpected positional arg is rejected.
@@ -209,25 +209,21 @@ func TestParseFlags(t *testing.T) {
 		t.Fatalf("uuid.New: %v", err)
 	}
 	tests := []struct {
-		name              string
-		args              []string
-		wantList          bool
-		wantResume        uuid.UUID
-		wantRuntimeSkills bool
-		wantDataDir       string
-		wantProfile       coderig.AccessProfile
-		wantAck           bool
-		wantErr           bool
+		name        string
+		args        []string
+		wantList    bool
+		wantResume  uuid.UUID
+		wantDataDir string
+		wantProfile coderig.AccessProfile
+		wantAck     bool
+		wantErr     bool
 	}{
 		{name: "no flags → new session", args: nil, wantProfile: coderig.AccessReadOnly},
 		{name: "list flag", args: []string{"-list"}, wantList: true, wantProfile: coderig.AccessReadOnly},
 		{name: "list flag double dash", args: []string{"--list"}, wantList: true, wantProfile: coderig.AccessReadOnly},
 		{name: "resume a session", args: []string{"-resume", validID.String()}, wantResume: validID, wantProfile: coderig.AccessReadOnly},
 		{name: "resume double dash", args: []string{"--resume", validID.String()}, wantResume: validID, wantProfile: coderig.AccessReadOnly},
-		{name: "runtime-skills off by default", args: nil, wantRuntimeSkills: false, wantProfile: coderig.AccessReadOnly},
-		{name: "runtime-skills flag", args: []string{"-runtime-skills"}, wantRuntimeSkills: true, wantProfile: coderig.AccessReadOnly},
-		{name: "runtime-skills flag double dash", args: []string{"--runtime-skills"}, wantRuntimeSkills: true, wantProfile: coderig.AccessReadOnly},
-		{name: "runtime-skills with resume", args: []string{"-runtime-skills", "-resume", validID.String()}, wantResume: validID, wantRuntimeSkills: true, wantProfile: coderig.AccessReadOnly},
+		{name: "removed runtime-skills flag rejected", args: []string{"--runtime-skills"}, wantErr: true},
 		{name: "removed greeting flag rejected", args: []string{"--greeting"}, wantErr: true},
 		{name: "removed security-mode flag rejected", args: []string{"--security-mode", "write"}, wantErr: true},
 		{name: "data-dir default empty", args: nil, wantDataDir: "", wantProfile: coderig.AccessReadOnly},
@@ -264,9 +260,6 @@ func TestParseFlags(t *testing.T) {
 			}
 			if got.resume != tt.wantResume {
 				t.Errorf("resume = %v, want %v", got.resume, tt.wantResume)
-			}
-			if got.runtimeSkills != tt.wantRuntimeSkills {
-				t.Errorf("runtimeSkills = %v, want %v", got.runtimeSkills, tt.wantRuntimeSkills)
 			}
 			if got.dataDir != tt.wantDataDir {
 				t.Errorf("dataDir = %q, want %q", got.dataDir, tt.wantDataDir)

@@ -17,9 +17,10 @@ CodeRig is the reference coding Rig built from looprig modules. This repository 
   session. The set resolves a distinct executor (separate grants and scratch
   HOME) for each Loop ID. The roster is ReadFile, WriteFile, EditFile, Bash,
   ProcessOutput, ProcessInput, ProcessStop, WebSearch, Fetch, Task, AskUser,
-  and optional Skill; CodeRig has no dedicated Glob or Grep tools because Bash
-  handles search and discovery. There is no policy-translation or compatibility
-  bridge.
+  and Skill. Skill always exposes the untrusted, human-gated workspace `.skills/`
+  source; CodeRig ships no embedded skills. CodeRig has no dedicated Glob or
+  Grep tools because Bash handles search and discovery. There is no
+  policy-translation or compatibility bridge.
 - `cmd/coderig` imports the private `internal/app` composition boundary. The
   module root has no Go package.
 - `github.com/looprig/tools` provides standard tools; `github.com/looprig/sandbox`

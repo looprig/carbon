@@ -40,17 +40,15 @@ const (
 )
 
 // cliFlags is the parsed CLI invocation: whether to list sessions and exit (--list), which
-// session to resume (--resume <uuid>; zero = new session), whether to enable the untrusted,
-// human-gated workspace skill source (--runtime-skills; off by default, §7a), the session
-// store root (--data-dir; empty = the ~/.looprig/store default), the selected access profile
+// session to resume (--resume <uuid>; zero = new session), the session store root
+// (--data-dir; empty = the ~/.looprig/store default), the selected access profile
 // (--access-profile readonly|trusted|unconfined; default readonly), and the explicit
 // unconfined acknowledgement (--acknowledge-unconfined; required to select unconfined). There
 // is no positional agent name because CodeRig is one fixed Rig.
 type cliFlags struct {
-	list          bool
-	resume        uuid.UUID
-	runtimeSkills bool
-	dataDir       string
+	list    bool
+	resume  uuid.UUID
+	dataDir string
 	// accessProfile is the session-fixed product access profile, validated at this
 	// boundary against exactly the three known names before the Rig is constructed.
 	accessProfile coderig.AccessProfile
@@ -89,7 +87,6 @@ func parseFlags(args []string) (cliFlags, error) {
 	var (
 		list          = fs.Bool("list", false, "list resumable sessions and exit")
 		resume        = fs.String("resume", "", "resume the session with this id")
-		runtimeSkills = fs.Bool("runtime-skills", false, "enable the untrusted, human-gated workspace skill source (.skills/) for read-only agents")
 		dataDir       = fs.String("data-dir", "", "session store root (default ~/.looprig/store)")
 		accessProfile = fs.String("access-profile", string(coderig.DefaultAccessProfile), "session access profile: readonly|trusted|unconfined")
 		ackUnconfined = fs.Bool("acknowledge-unconfined", false, "acknowledge that --access-profile unconfined runs commands directly on the host with no OS confinement")
@@ -119,7 +116,7 @@ func parseFlags(args []string) (cliFlags, error) {
 		return cliFlags{}, &FlagParseError{Reason: "--access-profile unconfined requires --acknowledge-unconfined (it runs commands directly on the host with no OS confinement)"}
 	}
 
-	out := cliFlags{list: *list, runtimeSkills: *runtimeSkills, dataDir: strings.TrimSpace(*dataDir), accessProfile: profile, acknowledgeUnconfined: *ackUnconfined}
+	out := cliFlags{list: *list, dataDir: strings.TrimSpace(*dataDir), accessProfile: profile, acknowledgeUnconfined: *ackUnconfined}
 
 	// Detect whether --resume was explicitly given (vs left at its empty default): an
 	// explicit --resume with an empty/whitespace value is a malformed invocation, rejected
@@ -190,9 +187,8 @@ type sessionOpen func(context.Context, coderig.SessionSelector, coderig.Config) 
 // persisted Generic session: the FIRST call honors resume (a non-zero id restores that
 // session); every later call (a /clear reopen) starts a fresh NEW session, so /clear never
 // re-restores the same id. The CLI serializes lifecycle handoff by closing the live session
-// before invoking this opener for /clear. cfg carries the human-set construction modes
-// (RuntimeSkills) and applies to
-// every open, including a /clear reopen (the launch flag holds for the whole process). Every
+// before invoking this opener for /clear. cfg applies to every open, including a /clear
+// reopen. Every
 // open (or, on the first call, resume) addresses its session by name in the SHARED store, so a
 // /clear reopen's new session is independent of the one it replaces. The returned thunk yields
 // a tui.Agent (the persisted session adapter exposes current active selection and independent
@@ -239,7 +235,7 @@ func run(ctx context.Context, args []string, out, errOut io.Writer) int {
 	// store-root resolution below and the later open thunk (openThunk) resolve through the
 	// SAME Config. There is no CLI flag for HomeDir (programmatic-only), so cfg.HomeDir is
 	// always empty today and this resolves identically to the ~/.looprig/store default.
-	cfg := coderig.Config{RuntimeSkills: flags.runtimeSkills, AccessProfile: flags.accessProfile}
+	cfg := coderig.Config{AccessProfile: flags.accessProfile}
 
 	// Resolve the store root: the explicit --data-dir, or the ~/.looprig/store default
 	// (relative to cfg's resolved home directory). A home directory that cannot be resolved
@@ -291,7 +287,7 @@ func run(ctx context.Context, args []string, out, errOut io.Writer) int {
 	}
 
 	// The initial open honors --resume; every /clear reopen starts a FRESH persisted session.
-	// The --runtime-skills mode applies to every open. runtime.Run owns logging, signal
+	// The selected access profile applies to every open. runtime.Run owns logging, signal
 	// teardown, the TUI, the session-identifying startup banner, and bounded Close. cfg was
 	// already built above (the single point of Config construction this run resolves both the
 	// store root and the session-opening modes through).
