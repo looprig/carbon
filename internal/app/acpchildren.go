@@ -6,11 +6,16 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/looprig/acp/launch"
+	"github.com/looprig/acp/protocol"
 	"github.com/looprig/core/uuid"
 	"github.com/looprig/foreignloops/driver"
 	acpdriver "github.com/looprig/foreignloops/driver/acp"
@@ -23,6 +28,52 @@ import (
 
 var errACPChildUnavailable = errors.New("coderig: ACP child unavailable")
 
+// maxACPModelFacingErrorBytes bounds the complete ACP construction detail,
+// including its fixed prefix. This matches foreignloops' ACP turn projection
+// so both child-failure paths have the same model-facing byte ceiling.
+const maxACPModelFacingErrorBytes = 512
+
+const (
+	maxACPErrorDepth    = 32
+	maxACPErrorNodes    = 128
+	maxACPErrorChildren = 64
+)
+
+const (
+	redactedACPChildValue = "[REDACTED]"
+	redactedACPChildURL   = "[REDACTED_URL]"
+	redactedACPChildPath  = "[REDACTED_PATH]"
+)
+
+var (
+	acpChildMessageURLPattern              = regexp.MustCompile(`(?i)\b[a-z][a-z0-9+.-]*://[^\s<>"']+`)
+	acpChildMessageAuthPattern             = regexp.MustCompile(`(?i)(\b(?:authorization|proxy-authorization)\b\s*["']?\s*[:=]\s*)[^\r\n,;&}\]]+`)
+	acpChildMessageSecretAssignmentPattern = regexp.MustCompile(`(?i)(\b(?:api[\s_-]*key|access[\s_-]*token|refresh[\s_-]*token|token|password|credential|secret)\b\s*["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;&}\]]+)`)
+	acpChildMessageBearerPattern           = regexp.MustCompile(`(?i)\bBearer\s+[A-Za-z0-9][A-Za-z0-9._~+/=-]*`)
+	acpChildMessageUnixPathPattern         = regexp.MustCompile(`/[^\s,;)}\]<>"']+`)
+	acpChildMessageWindowsPathPattern      = regexp.MustCompile(`(?i)[A-Za-z]:[\\/][^\s,;)}\]<>"']*`)
+	acpChildCredentialTokenPattern         = regexp.MustCompile(`(?i)\b(?:(?:sk|pk|ghp|gho|ghu|ghs|ghr|xox[baprs])[-_][a-z0-9][a-z0-9._-]*|AIza[0-9A-Za-z_-]+|(?:AKIA|ASIA|AIDA|AROA)[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)\b`)
+)
+
+// acpChildModelFacingError is the only ACP construction error that opts into
+// Harness's model-facing failure detail. The concrete type stays private; the
+// public boundary is the narrow ModelFacingError method.
+type acpChildModelFacingError struct{ detail string }
+
+func (e *acpChildModelFacingError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return e.detail
+}
+
+func (e *acpChildModelFacingError) ModelFacingError() string {
+	if e == nil {
+		return ""
+	}
+	return e.detail
+}
+
 // errACPAccessProfileUnavailable is intentionally fixed and bounded. An
 // invalid Config.AccessProfile must stop ACP composition before any child or
 // gateway launch without reflecting caller-controlled values in the error.
@@ -31,24 +82,245 @@ var errACPAccessProfileUnavailable = errors.New("coderig: ACP access profile una
 // boundedACPChildError is the model-facing error boundary for ACP startup and
 // restore. ACP launch/RPC/stdio errors can contain executable paths, login
 // locations, URLs, provider messages, or stderr; none of those details belong
-// in an agent result or durable Harness error. Keep cancellation recognizable
-// for controller shutdown, but collapse every other cause to one fixed result.
+// in an agent result or durable Harness error. Only an ACP protocol Error or
+// Fault contributes the explicitly bounded Code/Message projection. Keep
+// cancellation recognizable for controller shutdown, but collapse every other
+// cause to one fixed result.
 func boundedACPChildError(err error) error {
 	if err == nil {
 		return nil
 	}
-	if errors.Is(err, context.Canceled) {
+	if containsACPChildErrorIdentity(err, context.Canceled) {
 		return context.Canceled
 	}
-	if errors.Is(err, context.DeadlineExceeded) {
+	if containsACPChildErrorIdentity(err, context.DeadlineExceeded) {
 		return context.DeadlineExceeded
+	}
+	if detail, ok := boundedACPProtocolErrorDetail(err); ok {
+		return &acpChildModelFacingError{detail: detail}
 	}
 	return errACPChildUnavailable
 }
 
+func containsACPChildErrorIdentity(err, target error) bool {
+	type node struct {
+		err   error
+		depth int
+	}
+	if isNilACPChildError(err) || isNilACPChildError(target) {
+		return false
+	}
+	pending := []node{{err: err}}
+	seen := make(map[error]struct{})
+	visited := 0
+	for len(pending) > 0 && visited < maxACPErrorNodes {
+		current := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		if isNilACPChildError(current.err) || markACPChildErrorSeen(seen, current.err) {
+			continue
+		}
+		visited++
+		if sameACPChildError(current.err, target) {
+			return true
+		}
+		if current.depth >= maxACPErrorDepth {
+			continue
+		}
+		if wrapper, ok := current.err.(interface{ Unwrap() []error }); ok {
+			children := safeACPChildUnwrapMany(wrapper)
+			if len(children) > maxACPErrorChildren {
+				children = children[:maxACPErrorChildren]
+			}
+			for index := len(children) - 1; index >= 0; index-- {
+				pending = append(pending, node{err: children[index], depth: current.depth + 1})
+			}
+			continue
+		}
+		if wrapper, ok := current.err.(interface{ Unwrap() error }); ok {
+			pending = append(pending, node{err: safeACPChildUnwrapOne(wrapper), depth: current.depth + 1})
+		}
+	}
+	return false
+}
+
+func sameACPChildError(left, right error) (same bool) {
+	defer func() {
+		if recover() != nil {
+			same = false
+		}
+	}()
+	leftType, rightType := reflect.TypeOf(left), reflect.TypeOf(right)
+	return leftType != nil && leftType == rightType && leftType.Comparable() && left == right
+}
+
+// boundedACPProtocolErrorDetail intentionally reads only the exported Code and
+// Message fields from an ACP wire error. It never calls Error, inspects Data,
+// or unwraps the protocol fault's local cause.
+func boundedACPProtocolErrorDetail(err error) (string, bool) {
+	type node struct {
+		err   error
+		depth int
+	}
+	if isNilACPChildError(err) {
+		return "", false
+	}
+	pending := []node{{err: err}}
+	seen := make(map[error]struct{})
+	visited := 0
+	for len(pending) > 0 && visited < maxACPErrorNodes {
+		current := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		if isNilACPChildError(current.err) || markACPChildErrorSeen(seen, current.err) {
+			continue
+		}
+		visited++
+		if code, message, ok := directACPProtocolErrorFields(current.err); ok {
+			return formatACPModelFacingError(code, message), true
+		}
+		if current.depth >= maxACPErrorDepth {
+			continue
+		}
+		if wrapper, ok := current.err.(interface{ Unwrap() []error }); ok {
+			children := safeACPChildUnwrapMany(wrapper)
+			if len(children) > maxACPErrorChildren {
+				children = children[:maxACPErrorChildren]
+			}
+			for index := len(children) - 1; index >= 0; index-- {
+				pending = append(pending, node{err: children[index], depth: current.depth + 1})
+			}
+			continue
+		}
+		if wrapper, ok := current.err.(interface{ Unwrap() error }); ok {
+			pending = append(pending, node{err: safeACPChildUnwrapOne(wrapper), depth: current.depth + 1})
+		}
+	}
+	return "", false
+}
+
+func directACPProtocolErrorFields(err error) (protocol.ErrorCode, string, bool) {
+	switch typed := any(err).(type) {
+	case *protocol.Error:
+		if typed == nil {
+			return 0, "", false
+		}
+		return typed.Code, typed.Message, true
+	case protocol.Error:
+		return typed.Code, typed.Message, true
+	case *protocol.Fault:
+		if typed == nil {
+			return 0, "", false
+		}
+		return typed.Code, typed.Message, true
+	case protocol.Fault:
+		return typed.Code, typed.Message, true
+	default:
+		return 0, "", false
+	}
+}
+
+func isNilACPChildError(err error) bool {
+	if err == nil {
+		return true
+	}
+	value := reflect.ValueOf(err)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
+}
+
+func markACPChildErrorSeen(seen map[error]struct{}, err error) (alreadySeen bool) {
+	defer func() {
+		if recover() != nil {
+			alreadySeen = false
+		}
+	}()
+	typeOfError := reflect.TypeOf(err)
+	if typeOfError == nil || !typeOfError.Comparable() {
+		return false
+	}
+	if _, ok := seen[err]; ok {
+		return true
+	}
+	seen[err] = struct{}{}
+	return false
+}
+
+func safeACPChildUnwrapOne(wrapper interface{ Unwrap() error }) (next error) {
+	defer func() {
+		if recover() != nil {
+			next = nil
+		}
+	}()
+	return wrapper.Unwrap()
+}
+
+func safeACPChildUnwrapMany(wrapper interface{ Unwrap() []error }) (children []error) {
+	defer func() {
+		if recover() != nil {
+			children = nil
+		}
+	}()
+	return wrapper.Unwrap()
+}
+
+func formatACPModelFacingError(code protocol.ErrorCode, message string) string {
+	message = normalizeACPModelFacingMessage(message)
+	detail := fmt.Sprintf("ACP error %d", code)
+	if message != "" {
+		detail += ": " + message
+	}
+	return truncateACPModelFacingUTF8(detail, maxACPModelFacingErrorBytes)
+}
+
+func normalizeACPModelFacingMessage(message string) string {
+	message = strings.ToValidUTF8(message, "\uFFFD")
+	var normalized strings.Builder
+	normalized.Grow(len(message))
+	for _, r := range message {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || r == '\u2028' || r == '\u2029' {
+			normalized.WriteByte(' ')
+			continue
+		}
+		normalized.WriteRune(r)
+	}
+	return redactACPModelFacingMessage(strings.Join(strings.Fields(normalized.String()), " "))
+}
+
+func redactACPModelFacingMessage(message string) string {
+	message = acpChildMessageURLPattern.ReplaceAllString(message, redactedACPChildURL)
+	message = acpChildMessageAuthPattern.ReplaceAllString(message, "$1"+redactedACPChildValue)
+	message = acpChildMessageSecretAssignmentPattern.ReplaceAllString(message, "$1"+redactedACPChildValue)
+	message = acpChildMessageBearerPattern.ReplaceAllString(message, redactedACPChildValue)
+	message = acpChildCredentialTokenPattern.ReplaceAllString(message, redactedACPChildValue)
+	message = acpChildMessageWindowsPathPattern.ReplaceAllString(message, redactedACPChildPath)
+	message = acpChildMessageUnixPathPattern.ReplaceAllString(message, redactedACPChildPath)
+	return message
+}
+
+func truncateACPModelFacingUTF8(value string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
+	if len(value) <= maxBytes {
+		return value
+	}
+	end := 0
+	for end < len(value) {
+		_, size := utf8.DecodeRuneInString(value[end:])
+		if end+size > maxBytes {
+			break
+		}
+		end += size
+	}
+	return value[:end]
+}
+
 // ACPChildrenConfig is the composition-root input for delegated ACP loops.
-// Executable paths are preflighted before a profile is registered. Env is
-// reduced to EnvAllowlist before it reaches the child process.
+// Executable paths are checked statically before a profile is registered. Env
+// is reduced to EnvAllowlist before it reaches the child process.
 type ACPChildrenConfig struct {
 	Catalog ACPCompiledCatalog
 	// AccessProfile is the session-fixed CodeRig profile. Empty selects
@@ -63,19 +335,15 @@ type ACPChildrenConfig struct {
 	EnvAllowlist        []string
 	NativeEnvAllowlist  []string
 	GatewayEnvAllowlist []string
-	// executablePreflight is an internal test seam. Production leaves it nil,
-	// which performs a bounded ACP initialize/session probe before advertising
-	// a profile; focused composition tests can replace the process probe with a
-	// deterministic result. The probe is credential-scoped so a gateway row is
-	// never admitted by a native-login check.
+	// executablePreflight is retained as a lower-level diagnostic/test seam for
+	// callers that explicitly invoke the preflight helpers. NewACPComposition
+	// deliberately never calls it: runtime rows are authoritative until the
+	// selected child is launched.
 	executablePreflight func(context.Context, ACPExecutableProbe) ACPPreflightResult
 	// gatewayPreflightBinding avoids starting a loopback listener in focused
-	// composition tests. Production leaves it nil and NewACPComposition owns a
-	// short-lived ACPGateway solely for the SharedProxy preflight binding.
+	// diagnostic-preflight tests. Production leaves it nil; ordinary
+	// composition never creates a gateway solely to inspect adapter readiness.
 	gatewayPreflightBinding *launch.ProxyBinding
-	// preflightContext bounds production startup work to the caller's
-	// construction context. Lower-level callers default to Background.
-	preflightContext context.Context
 
 	// posture is derived once by NewACPComposition from AccessProfile and then
 	// captured by both the live and restored builders. It is deliberately
@@ -83,10 +351,10 @@ type ACPChildrenConfig struct {
 	posture driver.Posture
 }
 
-// ACPExecutableProbe is the bounded, secret-free input to one ACP startup
-// preflight. Models contains model-facing aliases for a Claude session or a
-// single exact launch model for Codex. SharedProxy is set only for a
-// gateway-backed child; native-auth probes use NoProxy and keep it nil.
+// ACPExecutableProbe is the bounded, secret-free input to an explicit ACP
+// diagnostic probe. Models contains model-facing aliases for a Claude session
+// or a single exact launch model for Codex. SharedProxy is set only for a
+// gateway-backed child; native-auth probes use no proxy and keep it nil.
 type ACPExecutableProbe struct {
 	ACPNativeAuthProbe
 	Credential  loop.CredentialMode
@@ -96,10 +364,8 @@ type ACPExecutableProbe struct {
 	SharedProxy *launch.ProxyBinding
 }
 
-// ACPPreflightResult is the bounded result of an ACP initialize/session probe.
-// Claude uses AdvertisedModels to close the catalog to values the adapter
-// actually offered. Codex is checked by launching each candidate in turn and
-// therefore only needs Ready.
+// ACPPreflightResult is the bounded result of an explicit ACP diagnostic
+// initialize/session probe. It is not used to filter the production catalog.
 type ACPPreflightResult struct {
 	Ready            bool
 	AdvertisedModels []string
@@ -121,9 +387,10 @@ type ACPComposition struct {
 	posture       driver.Posture
 }
 
-// NewACPComposition preflights configured executable paths, registers only
+// NewACPComposition performs only static executable/path checks, registers
 // cataloged ACP profiles, and returns a registry-backed builder pair. Missing
-// executables simply omit that harness; native primers remain usable.
+// executables simply omit that harness; native primers remain usable. ACP
+// process/session/model availability is resolved lazily by the child launch.
 func NewACPComposition(config ACPChildrenConfig) (*ACPComposition, error) {
 	effectiveProfile, err := normalizeAccessProfile(config.AccessProfile)
 	if err != nil {
@@ -139,99 +406,30 @@ func NewACPComposition(config ACPChildrenConfig) (*ACPComposition, error) {
 		return nil, fmt.Errorf("coderig: ACP workspace root must be a clean absolute path")
 	}
 	registry := new(foreign.BuilderRegistry)
-	preflight := config.executablePreflight
-	if preflight == nil {
-		preflight = func(ctx context.Context, probe ACPExecutableProbe) ACPPreflightResult {
-			return preflightProductionACPExecutable(ctx, probe)
-		}
-	}
-	decisions := make(map[loop.AgentHarnessName]acpPreflightDecision)
 	var diagnostics []string
-	preflightContext := config.preflightContext
-	if preflightContext == nil {
-		preflightContext = context.Background()
-	}
-
-	// Two harnesses' preflights touch completely independent executables,
-	// catalog entries, and (per-harness) gateway instances, so the slow I/O
-	// step below runs concurrently instead of sequentially. The cheap,
-	// synchronous, non-I/O gating checks (HasProfile/executable presence/
-	// executable-bit) stay in this single sequential pass, exactly as
-	// before, so their ordering and short-circuit-on-cancellation behavior
-	// is unchanged; only the slow preflightACPProfile call itself is
-	// deferred into a job list and run concurrently below.
 	profiles := []loop.RuntimeProfileName{"acp/claude-code", "acp/codex"}
-	outcomes := make([]acpHarnessPreflightOutcome, len(profiles))
-	type acpHarnessPreflightJob struct {
-		index   int
-		harness loop.AgentHarnessName
-	}
-	var jobs []acpHarnessPreflightJob
-	for i, profile := range profiles {
-		if preflightContext.Err() != nil {
-			break
-		}
+	runnable := make(map[loop.AgentHarnessName]struct{}, len(profiles))
+	for _, profile := range profiles {
 		if !config.Catalog.HasProfile(profile) {
 			continue
 		}
-		outcomes[i].configured = true
 		harness := loop.AgentHarnessName(strings.TrimPrefix(string(profile), "acp/"))
 		executable := config.Executables[harness]
 		if executable == "" {
-			outcomes[i].diagnostic = acpDiagnosticNoExecutable(harness)
+			diagnostics = append(diagnostics, acpDiagnosticNoExecutable(harness))
 			continue
 		}
 		if !preflightACPExecutable(executable) {
-			outcomes[i].diagnostic = acpDiagnosticExecutableNotRunnable(harness)
+			diagnostics = append(diagnostics, acpDiagnosticExecutableNotRunnable(harness))
 			continue
 		}
-		outcomes[i].needsPreflight = true
-		jobs = append(jobs, acpHarnessPreflightJob{index: i, harness: harness})
+		runnable[harness] = struct{}{}
 	}
-
-	// Each goroutine below writes only to its own pre-allocated slot in
-	// outcomes (indexed by its job's position), so there is no shared
-	// mutable state between them; the deterministic merge into
-	// decisions/diagnostics happens afterward, sequentially, in the
-	// original profile order.
-	if len(jobs) > 0 && preflightContext.Err() == nil {
-		var wg sync.WaitGroup
-		wg.Add(len(jobs))
-		for _, job := range jobs {
-			go func(job acpHarnessPreflightJob) {
-				defer wg.Done()
-				outcomes[job.index].decision = preflightACPProfile(preflightContext, config, job.harness, preflight)
-			}(job)
-		}
-		wg.Wait()
-	}
-
-	for i, profile := range profiles {
-		outcome := outcomes[i]
-		if !outcome.configured {
-			continue
-		}
-		harness := loop.AgentHarnessName(strings.TrimPrefix(string(profile), "acp/"))
-		if outcome.diagnostic != "" {
-			diagnostics = append(diagnostics, outcome.diagnostic)
-			continue
-		}
-		if !outcome.needsPreflight {
-			continue
-		}
-		decision := outcome.decision
-		if decision.gatewayReady || decision.nativeReady {
-			decisions[harness] = decision
-			continue
-		}
-		diagnostics = append(diagnostics, acpDiagnosticPreflightFailed(harness, decision))
-	}
-	filtered, err := filterACPPreflightCatalog(config.Catalog, decisions)
+	staticCatalog, err := filterACPStaticCatalog(config.Catalog, runnable)
 	if err != nil {
 		return nil, err
 	}
-	diagnostics = append(diagnostics, acpDiagnosticsReducedModels(config.Catalog, filtered)...)
-	config.Catalog = filtered
+	config.Catalog = staticCatalog
 	factory := &acpChildFactory{config: config}
 	for _, profile := range []loop.RuntimeProfileName{"acp/claude-code", "acp/codex"} {
 		if !config.Catalog.HasProfile(profile) {
@@ -252,9 +450,9 @@ func NewACPComposition(config ACPChildrenConfig) (*ACPComposition, error) {
 	}, nil
 }
 
-// acpDiagnosticNoExecutable and acpDiagnosticPreflightFailed produce fixed,
-// secret-free category strings. They never include stderr content, provider
-// messages, URLs, tokens, or full filesystem paths.
+// acpDiagnosticNoExecutable produces a fixed, secret-free category string.
+// It never includes stderr content, provider messages, URLs, tokens, or full
+// filesystem paths.
 func acpDiagnosticNoExecutable(harness loop.AgentHarnessName) string {
 	envVar := ""
 	switch harness {
@@ -278,94 +476,12 @@ func acpDiagnosticExecutableNotRunnable(harness loop.AgentHarnessName) string {
 	return fmt.Sprintf("acp: %s unavailable: configured executable not runnable (from acp_launchers)", harness)
 }
 
-func acpDiagnosticPreflightFailed(harness loop.AgentHarnessName, decision acpPreflightDecision) string {
-	mode := "gateway or native"
-	switch {
-	case decision.gatewayAttempted && !decision.nativeAttempted:
-		mode = "gateway"
-	case decision.nativeAttempted && !decision.gatewayAttempted:
-		mode = "native"
-	}
-	return fmt.Sprintf("acp: %s unavailable: preflight failed (%s)", harness, mode)
-}
-
-// acpDiagnosticsReducedModels reports, per harness, how many distinct
-// configured model aliases were dropped by preflight filtering. A harness
-// with zero surviving models already produced a preflight-failed or
-// no-executable diagnostic above and is skipped here to avoid a duplicate,
-// contradictory line.
-func acpDiagnosticsReducedModels(before, after ACPCompiledCatalog) []string {
-	beforeCounts := acpDistinctModelCountsByHarness(before)
-	afterCounts := acpDistinctModelCountsByHarness(after)
-	harnesses := make([]string, 0, len(beforeCounts))
-	for harness := range beforeCounts {
-		harnesses = append(harnesses, string(harness))
-	}
-	sort.Strings(harnesses)
-	var diagnostics []string
-	for _, harnessName := range harnesses {
-		harness := loop.AgentHarnessName(harnessName)
-		beforeCount := beforeCounts[harness]
-		afterCount := afterCounts[harness]
-		if afterCount == 0 || afterCount >= beforeCount {
-			continue
-		}
-		diagnostics = append(diagnostics, fmt.Sprintf(
-			"acp: %s: %d configured model(s) not advertised by the adapter", harness, beforeCount-afterCount,
-		))
-	}
-	return diagnostics
-}
-
-func acpDistinctModelCountsByHarness(catalog ACPCompiledCatalog) map[loop.AgentHarnessName]int {
-	seen := make(map[loop.AgentHarnessName]map[loop.ModelAlias]struct{})
-	for _, entry := range catalog.entries {
-		if entry.AgentHarness == looprigRuntimeHarness {
-			continue
-		}
-		set, ok := seen[entry.AgentHarness]
-		if !ok {
-			set = make(map[loop.ModelAlias]struct{})
-			seen[entry.AgentHarness] = set
-		}
-		for _, option := range entry.Models {
-			set[option.Alias] = struct{}{}
-		}
-	}
-	counts := make(map[loop.AgentHarnessName]int, len(seen))
-	for harness, set := range seen {
-		counts[harness] = len(set)
-	}
-	return counts
-}
-
 type acpPreflightDecision struct {
 	gatewayReady       bool
 	gatewayAliases     map[loop.ModelAlias]struct{}
 	nativeReady        bool
 	nativeManagedReady bool
 	nativeAliases      map[loop.ModelAlias]struct{}
-	// gatewayAttempted and nativeAttempted record whether the catalog
-	// configured any model for this harness under that credential mode,
-	// regardless of whether the preflight probe ultimately succeeded. They
-	// back the preflight-failed diagnostic's "gateway"/"native"/"gateway or
-	// native" wording.
-	gatewayAttempted bool
-	nativeAttempted  bool
-}
-
-// acpHarnessPreflightOutcome is NewACPComposition's per-harness merge slot.
-// configured mirrors config.Catalog.HasProfile for that harness's profile;
-// diagnostic is set only by the fast, synchronous pre-checks (no executable
-// configured, or a configured executable that failed the runnable check).
-// needsPreflight and decision are populated only when the harness passed
-// those fast checks and therefore had a job dispatched to the concurrent
-// preflight phase.
-type acpHarnessPreflightOutcome struct {
-	configured     bool
-	diagnostic     string
-	needsPreflight bool
-	decision       acpPreflightDecision
 }
 
 type acpRuntimeModel struct {
@@ -373,6 +489,8 @@ type acpRuntimeModel struct {
 	option loop.RuntimeModelOption
 }
 
+// preflightACPProfile is retained for explicit diagnostic/test callers. It is
+// intentionally outside NewACPComposition's startup path.
 func preflightACPProfile(ctx context.Context, config ACPChildrenConfig, harness loop.AgentHarnessName, preflight func(context.Context, ACPExecutableProbe) ACPPreflightResult) acpPreflightDecision {
 	decision := acpPreflightDecision{
 		gatewayAliases: make(map[loop.ModelAlias]struct{}),
@@ -407,9 +525,6 @@ func preflightACPProfile(ctx context.Context, config ACPChildrenConfig, harness 
 			nativeModels = append(nativeModels, runtimeModel)
 		}
 	}
-
-	decision.gatewayAttempted = len(gatewayModels) > 0
-	decision.nativeAttempted = nativeManaged || len(nativeModels) > 0
 
 	// The gateway preflight and the native-managed preflight are each other's
 	// only concurrent writers here, and they write disjoint state: the
@@ -675,6 +790,9 @@ func firstACPGatewayResolved(catalog ACPCompiledCatalog, harness loop.AgentHarne
 	return loop.Resolved{}, false
 }
 
+// filterACPPreflightCatalog is retained for explicit diagnostic/test callers.
+// Production composition uses filterACPStaticCatalog and never applies live
+// adapter availability to the configured catalog.
 func filterACPPreflightCatalog(catalog ACPCompiledCatalog, decisions map[loop.AgentHarnessName]acpPreflightDecision) (ACPCompiledCatalog, error) {
 	// The ordinary Generic row is always retained and remains the sole
 	// product default. ACP entries were compiled non-default and are only
@@ -779,6 +897,40 @@ func filterACPPreflightCatalog(catalog ACPCompiledCatalog, decisions map[loop.Ag
 	return ACPCompiledCatalog{
 		RuntimeCatalog: catalogRuntime,
 		gatewayTargets: catalog.gatewayTargets,
+		nativeModels:   cloneACPNativeModelMappings(catalog.nativeModels),
+		profiles:       profiles,
+		entries:        cloneACPEntries(entries),
+	}, nil
+}
+
+// filterACPStaticCatalog removes only profiles that cannot be launched under
+// their configured executable path. It intentionally does not inspect an ACP
+// process, session, advertised models, login state, quota, or network: those
+// are runtime concerns and the configured catalog remains authoritative for a
+// statically runnable harness.
+func filterACPStaticCatalog(catalog ACPCompiledCatalog, runnable map[loop.AgentHarnessName]struct{}) (ACPCompiledCatalog, error) {
+	entries := make([]loop.RuntimeCatalogEntry, 0, len(catalog.entries))
+	for _, entry := range catalog.entries {
+		if entry.AgentHarness == looprigRuntimeHarness && entry.Profile == looprigRuntimeProfile {
+			entries = append(entries, cloneACPEntry(entry))
+			continue
+		}
+		if _, ok := runnable[entry.AgentHarness]; ok {
+			entries = append(entries, cloneACPEntry(entry))
+		}
+	}
+	runtimeCatalog, err := loop.NewRuntimeCatalog(entries)
+	if err != nil {
+		return ACPCompiledCatalog{}, err
+	}
+	profiles := make(map[loop.RuntimeProfileName]struct{}, len(entries))
+	for _, entry := range entries {
+		profiles[entry.Profile] = struct{}{}
+	}
+	return ACPCompiledCatalog{
+		RuntimeCatalog: runtimeCatalog,
+		gatewayTargets: catalog.gatewayTargets,
+		nativeModels:   cloneACPNativeModelMappings(catalog.nativeModels),
 		profiles:       profiles,
 		entries:        cloneACPEntries(entries),
 	}, nil
@@ -918,6 +1070,10 @@ func (f *acpChildFactory) configFor(ctx context.Context, cfg loop.BoundDefinitio
 		_ = ownedGateway.Close(context.Background())
 		return loop.Resolved{}, acpdriver.Config{}, nil, err
 	}
+	effort := ""
+	if resolved.Credential == loop.CredentialNativeAuth {
+		effort = string(resolved.Effort)
+	}
 	return resolved, acpdriver.Config{
 		Harness:         acpdriver.Harness(harness),
 		Executable:      f.config.Executables[harness],
@@ -925,6 +1081,7 @@ func (f *acpChildFactory) configFor(ctx context.Context, cfg loop.BoundDefinitio
 		Credential:      resolved.Credential,
 		Binding:         binding,
 		ModelAlias:      modelAlias,
+		Effort:          effort,
 		SmallModelAlias: smallModelAlias,
 		Posture:         posture,
 		AgentSessionID:  agentSessionID,
@@ -940,7 +1097,10 @@ func acpChildModelAliases(catalog ACPCompiledCatalog, agent identity.AgentName, 
 		if resolved.ModelAlias == "" {
 			return "", "", fmt.Errorf("coderig: native ACP model unavailable")
 		}
-		modelAlias := string(resolved.ModelAlias)
+		modelAlias, err := catalog.nativeModelID(harness, resolved.ModelAlias)
+		if err != nil {
+			return "", "", err
+		}
 		smallModelAlias := resolved.NativeSmallModel
 		if harness == "claude-code" && smallModelAlias == "" {
 			smallModelAlias = modelAlias
@@ -1060,7 +1220,7 @@ func dispatchACPBuilder(registry *foreign.BuilderRegistry) foreign.Builder {
 	return func(loopCtx context.Context, sessionID, loopID uuid.UUID, parent loop.Provenance, pub foreign.EventPublisher, cfg loop.BoundDefinition, idGen func() (uuid.UUID, error), fac *event.Factory) (loop.Backend, string, error) {
 		builder, _, err := registry.Builder(cfg.RuntimeProfile())
 		if err != nil {
-			return nil, "", err
+			return nil, "", boundedACPChildError(err)
 		}
 		return builder(loopCtx, sessionID, loopID, parent, pub, cfg, idGen, fac)
 	}
@@ -1070,7 +1230,7 @@ func dispatchACPRestoredBuilder(registry *foreign.BuilderRegistry) foreign.Resto
 	return func(loopCtx context.Context, sessionID, loopID uuid.UUID, parent loop.Provenance, pub foreign.EventPublisher, cfg loop.BoundDefinition, idGen func() (uuid.UUID, error), fac *event.Factory, seed foreign.RestoredForeign) (loop.Backend, error) {
 		_, builder, err := registry.Builder(cfg.RuntimeProfile())
 		if err != nil {
-			return nil, err
+			return nil, boundedACPChildError(err)
 		}
 		return builder(loopCtx, sessionID, loopID, parent, pub, cfg, idGen, fac, seed)
 	}

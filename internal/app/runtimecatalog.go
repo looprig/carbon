@@ -92,6 +92,7 @@ func CompileAgentRuntimeCatalog(input AgentRuntimeCatalogInput) (ACPCompiledCata
 	return ACPCompiledCatalog{
 		RuntimeCatalog: catalog,
 		gatewayTargets: raw.gatewayTargets,
+		nativeModels:   cloneACPNativeModelMappings(raw.nativeModels),
 		profiles:       profiles,
 		entries:        cloneACPEntries(entries),
 	}, nil

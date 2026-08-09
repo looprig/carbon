@@ -19,9 +19,15 @@ type secretFreeModelConfig struct {
 }
 
 type secretFreeNativeACPProfile struct {
-	Harness string   `json:"harness"`
-	Enabled bool     `json:"enabled"`
-	Models  []string `json:"models,omitempty"`
+	Harness string `json:"harness"`
+	Enabled bool   `json:"enabled"`
+	Models  any    `json:"models,omitempty"`
+}
+
+type secretFreeNativeACPModel struct {
+	Model         string   `json:"model"`
+	Efforts       []string `json:"efforts"`
+	DefaultEffort string   `json:"default_effort"`
 }
 
 type secretFreeModelTarget struct {
@@ -71,8 +77,7 @@ func secretFreeModelConfigJSON(config normalizedModelConfig) ([]byte, error) {
 		NativeACP:            make([]secretFreeNativeACPProfile, 0, len(config.NativeACP)),
 	}
 	for _, profile := range config.NativeACP {
-		models := append([]string(nil), profile.Models...)
-		sort.Strings(models)
+		models := secretFreeNativeACPModels(profile)
 		projection.NativeACP = append(projection.NativeACP, secretFreeNativeACPProfile{
 			Harness: profile.Harness, Enabled: profile.Enabled, Models: models,
 		})
@@ -112,6 +117,66 @@ func secretFreeModelConfigJSON(config normalizedModelConfig) ([]byte, error) {
 		return projection.Models[i].Alias < projection.Models[j].Alias
 	})
 	return json.Marshal(projection)
+}
+
+func secretFreeNativeACPModels(profile normalizedNativeACPProfile) any {
+	if profile.Models == nil {
+		return nil
+	}
+	if len(profile.ModelOptions) == 0 {
+		// Keep lower-level normalized profiles that carry only the historical
+		// model-ID projection stable as well.
+		models := append([]string(nil), profile.Models...)
+		sort.Strings(models)
+		return models
+	}
+
+	options := append([]normalizedNativeACPModel(nil), profile.ModelOptions...)
+	sort.Slice(options, func(i, j int) bool { return options[i].Model < options[j].Model })
+	allModelOnly := true
+	for _, option := range options {
+		if !nativeACPModelOnly(option) {
+			allModelOnly = false
+			break
+		}
+	}
+	if allModelOnly {
+		// A legacy string and a structured row with only neutral effort are
+		// semantically identical. Returning the historical string projection
+		// also preserves the exact pre-feature digest for legacy-only files.
+		models := make([]string, 0, len(options))
+		for _, option := range options {
+			models = append(models, option.Model)
+		}
+		return models
+	}
+
+	// Mixed profiles retain the semantic representation of each row instead of
+	// switching every legacy/neutral row to an object when one non-none row is
+	// configured. []any marshals the per-entry string/object union faithfully.
+	models := make([]any, 0, len(options))
+	for _, option := range options {
+		if nativeACPModelOnly(option) {
+			models = append(models, option.Model)
+			continue
+		}
+		efforts := append([]model.Effort(nil), option.Efforts...)
+		sort.Slice(efforts, func(i, j int) bool {
+			return modelConfigEffortRank(efforts[i]) < modelConfigEffortRank(efforts[j])
+		})
+		effortNames := make([]string, len(efforts))
+		for index, effort := range efforts {
+			effortNames[index] = modelConfigEffortName(effort)
+		}
+		models = append(models, secretFreeNativeACPModel{
+			Model: option.Model, Efforts: effortNames, DefaultEffort: modelConfigEffortName(option.DefaultEffort),
+		})
+	}
+	return models
+}
+
+func nativeACPModelOnly(option normalizedNativeACPModel) bool {
+	return option.DefaultEffort == model.EffortNone && len(option.Efforts) == 1 && option.Efforts[0] == model.EffortNone
 }
 
 func modelConfigEffortName(effort model.Effort) string {

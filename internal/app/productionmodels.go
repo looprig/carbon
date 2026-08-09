@@ -115,14 +115,31 @@ func compileProductionModels(config normalizedModelConfig, factory configuredCli
 		nativeACP = make(map[string]ACPNativeProfile, len(config.NativeACP))
 		for harness, profile := range config.NativeACP {
 			var models []loop.ModelAlias
-			if profile.Models != nil {
+			var modelOptions []ACPNativeModelOption
+			if profile.ModelOptions != nil {
+				modelOptions = make([]ACPNativeModelOption, len(profile.ModelOptions))
+				for i, option := range profile.ModelOptions {
+					modelOptions[i] = ACPNativeModelOption{
+						Alias:         loop.ModelAlias(option.Model),
+						Model:         option.Model,
+						Efforts:       append([]model.Effort(nil), option.Efforts...),
+						DefaultEffort: option.DefaultEffort,
+					}
+					models = append(models, modelOptions[i].Alias)
+				}
+			} else if profile.Models != nil {
+				// Keep lower-level callers that construct normalized profiles by
+				// hand compatible with the legacy model-only representation.
 				models = make([]loop.ModelAlias, len(profile.Models))
 				for i, alias := range profile.Models {
 					models[i] = loop.ModelAlias(alias)
 				}
 			}
 			nativeACP[harness] = ACPNativeProfile{
-				Harness: loop.AgentHarnessName(profile.Harness), Enabled: profile.Enabled, Models: models,
+				Harness:      loop.AgentHarnessName(profile.Harness),
+				Enabled:      profile.Enabled,
+				Models:       models,
+				ModelOptions: modelOptions,
 			}
 		}
 	}

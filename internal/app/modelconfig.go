@@ -42,14 +42,88 @@ type acpLauncherConfig struct {
 }
 
 type nativeACPProfileConfig struct {
-	Enabled bool      `json:"enabled"`
-	Models  *[]string `json:"models"`
+	Enabled bool                    `json:"enabled"`
+	Models  *[]nativeACPModelConfig `json:"models"`
 }
 
-// UnmarshalJSON keeps the wire representation strict enough to distinguish
-// an omitted models field (the harness-managed mode) from an explicit null,
-// which is not an array and therefore is invalid configuration.
+// nativeACPModelConfig is the compatibility union accepted by a native ACP
+// profile's models list. Legacy string entries retain the existing model-only
+// semantics; structured entries carry an explicit neutral effort allowlist.
+// Legacy is decode-only metadata and is not part of normalized configuration
+// identity: a legacy entry is equivalent to a structured entry with only
+// effort "none" and default "none".
+type nativeACPModelConfig struct {
+	Model         string
+	Efforts       []string
+	DefaultEffort string
+	Legacy        bool
+}
+
+// UnmarshalJSON accepts one legacy string or one strict structured object.
+// The explicit decoder EOF check keeps this union safe when it is used outside
+// the enclosing model-config decoder as well.
+func (c *nativeACPModelConfig) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return errors.New("native_acp model entry is empty")
+	}
+	if err := rejectDuplicateJSONKeys(trimmed); err != nil {
+		return errors.New("invalid native_acp model entry")
+	}
+
+	if trimmed[0] == '"' {
+		decoder := json.NewDecoder(bytes.NewReader(trimmed))
+		var modelID string
+		if err := decoder.Decode(&modelID); err != nil {
+			return errors.New("native_acp model entry must be a string or object")
+		}
+		if err := rejectTrailingJSON(decoder); err != nil {
+			return errors.New("native_acp model entry contains trailing JSON")
+		}
+		*c = nativeACPModelConfig{Model: modelID, Legacy: true}
+		return nil
+	}
+	if trimmed[0] != '{' {
+		return errors.New("native_acp model entry must be a string or object")
+	}
+
+	var wire struct {
+		Model         *string   `json:"model"`
+		Efforts       *[]string `json:"efforts"`
+		DefaultEffort *string   `json:"default_effort"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(trimmed))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&wire); err != nil {
+		return errors.New("invalid native_acp model entry")
+	}
+	if err := rejectTrailingJSON(decoder); err != nil {
+		return errors.New("native_acp model entry contains trailing JSON")
+	}
+	if wire.Model == nil {
+		return errors.New("native_acp structured model entry requires model")
+	}
+	if wire.Efforts == nil {
+		return errors.New("native_acp structured model entry requires efforts")
+	}
+	if wire.DefaultEffort == nil {
+		return errors.New("native_acp structured model entry requires default_effort")
+	}
+	*c = nativeACPModelConfig{
+		Model:         *wire.Model,
+		Efforts:       append([]string(nil), (*wire.Efforts)...),
+		DefaultEffort: *wire.DefaultEffort,
+	}
+	return nil
+}
+
+// UnmarshalJSON keeps the wire representation strict enough to preserve the
+// harness-managed mode for both an omitted models field and an explicit null;
+// any non-null models value must be an array.
 func (c *nativeACPProfileConfig) UnmarshalJSON(data []byte) error {
+	if err := rejectDuplicateJSONKeys(bytes.TrimSpace(data)); err != nil {
+		return errors.New("invalid native_acp profile")
+	}
 	var wire struct {
 		Enabled bool            `json:"enabled"`
 		Models  json.RawMessage `json:"models"`
@@ -57,20 +131,38 @@ func (c *nativeACPProfileConfig) UnmarshalJSON(data []byte) error {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&wire); err != nil {
-		return err
+		return errors.New("invalid native_acp profile")
+	}
+	if err := rejectTrailingJSON(decoder); err != nil {
+		return errors.New("native_acp profile contains trailing JSON")
 	}
 	*c = nativeACPProfileConfig{Enabled: wire.Enabled}
 	if len(wire.Models) == 0 {
 		return nil
 	}
 	if bytes.Equal(bytes.TrimSpace(wire.Models), []byte("null")) {
-		return errors.New("native_acp models must be an array")
+		// An explicit null has the same meaning as omission: leave Models nil so
+		// downstream compilation can preserve harness-managed selection.
+		return nil
 	}
-	var models []string
-	if err := json.Unmarshal(wire.Models, &models); err != nil {
-		return err
+	decoder = json.NewDecoder(bytes.NewReader(wire.Models))
+	decoder.DisallowUnknownFields()
+	var models []nativeACPModelConfig
+	if err := decoder.Decode(&models); err != nil {
+		return errors.New("native_acp models must be an array of strings or objects")
+	}
+	if err := rejectTrailingJSON(decoder); err != nil {
+		return errors.New("native_acp models contains trailing JSON")
 	}
 	c.Models = &models
+	return nil
+}
+
+func rejectTrailingJSON(decoder *json.Decoder) error {
+	var trailing json.RawMessage
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return errors.New("multiple JSON values")
+	}
 	return nil
 }
 
@@ -198,8 +290,8 @@ func safeModelConfigDecodeError(err error) error {
 // explicit null from an absent key — both leave PermissionReview nil with no
 // error. A lightweight raw-message probe, run before the real decode, is the
 // simplest way to see the wire bytes for this one key and catch the null
-// case explicitly, matching nativeACPProfileConfig's null-rejection
-// precedent for its own (nested) optional field.
+// case explicitly, matching nativeACPProfileConfig's explicit-null handling
+// for its own (nested) optional field.
 func rejectNullPermissionReview(data []byte) error {
 	var probe struct {
 		PermissionReview json.RawMessage `json:"permission_review"`

@@ -15,17 +15,19 @@ type Config struct {
 	// models.json, mcp.json, workspaces/<hash>/permissions.json, and the
 	// default session-store root (store/).
 	HomeDir string
-	// ACPChildren is the optional, already-preflighted delegated-child
-	// composition. Native primer operation remains available when it is nil or
-	// when its catalog has no executable profiles.
+	// ACPChildren is the optional delegated-child composition. Native primer
+	// operation remains available when it is nil or when its catalog has no
+	// statically runnable executable profiles.
 	ACPChildren *ACPComposition
 	// ACPDiagnostics are the bounded, secret-free ACP availability notices
-	// produced at composition time (dropped or reduced harnesses). They ride
-	// the same presentation channel as the permission-store diagnostics.
+	// produced by static composition checks (for example, a missing or
+	// non-runnable executable). They ride the same presentation channel as the
+	// permission-store diagnostics.
 	ACPDiagnostics []string
 	// RuntimeCatalog is the complete parent-scoped catalogue of selectable
 	// child runtimes. It remains available when ACP is disabled; ACPChildren
-	// contributes only executable foreign builders and preflighted ACP rows.
+	// contributes only executable foreign builders and statically admitted ACP
+	// rows.
 	RuntimeCatalog loop.RuntimeCatalog
 	// RuntimeSkills enables the untrusted, human-gated workspace skill source.
 	RuntimeSkills bool

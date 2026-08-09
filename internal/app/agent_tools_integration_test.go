@@ -5,14 +5,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/looprig/acp/protocol"
 	"github.com/looprig/coderig/internal/catalog/generic"
 	"github.com/looprig/core/content"
+	"github.com/looprig/core/uuid"
 	"github.com/looprig/harness/pkg/event"
+	"github.com/looprig/harness/pkg/foreign"
 	"github.com/looprig/harness/pkg/loop"
 	"github.com/looprig/inference"
 	model "github.com/looprig/inference/model"
@@ -240,6 +244,136 @@ func TestAgentToolsNoACPProductionSurfaceAndNativeSelection(t *testing.T) {
 	}
 }
 
+func TestAgentToolsNativeACPSchemaUsesConfiguredModelEfforts(t *testing.T) {
+	client := &managedScript{}
+	native := &recordingAgentRuntimeClient{}
+	compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
+		NativeACP: map[string]ACPNativeProfile{
+			"codex": {
+				Harness: "codex", Enabled: true,
+				ModelOptions: []ACPNativeModelOption{{
+					Alias: "native-model", Model: "native-model",
+					Efforts: []model.Effort{model.EffortMedium, model.EffortHigh}, DefaultEffort: model.EffortHigh,
+				}},
+			},
+		},
+		PrimerTarget: runtimeCatalogPrimer(),
+	})
+	if err != nil {
+		t.Fatalf("CompileAgentRuntimeCatalog() error = %v", err)
+	}
+	client.fn = func(_ context.Context, req inference.Request) ([]content.Chunk, error) {
+		start := findInferenceTool(t, req, "StartAgent")
+		var schema any
+		if err := json.Unmarshal(start.Schema, &schema); err != nil {
+			return nil, fmt.Errorf("decode StartAgent schema: %w", err)
+		}
+		efforts, ok := findNativeModelEfforts(schema, "native-model")
+		if !ok {
+			return nil, fmt.Errorf("StartAgent schema omitted native model effort branch: %s", start.Schema)
+		}
+		if !slices.Equal(efforts, []string{"medium", "high"}) {
+			return nil, fmt.Errorf("native model efforts = %v, want [medium high]", efforts)
+		}
+		return finalText("schema verified"), nil
+	}
+
+	agent := newTestAgent(t, agentRuntimeRouter(t, client, native), Config{RuntimeCatalog: compiled.RuntimeCatalog})
+	if got := runManagedTurn(t, agent, "inspect the native runtime schema"); got != "schema verified" {
+		t.Fatalf("schema test final = %q", got)
+	}
+}
+
+func TestAgentToolsNativeACPSchemaUsesFriendlyNativeAliases(t *testing.T) {
+	client := &managedScript{}
+	native := &recordingAgentRuntimeClient{}
+	compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
+		NativeACP: map[string]ACPNativeProfile{
+			"codex": {
+				Harness: "codex", Enabled: true,
+				ModelOptions: []ACPNativeModelOption{{
+					Alias: "friendly-codex", Model: "actual-codex",
+					Efforts: []model.Effort{model.EffortHigh}, DefaultEffort: model.EffortHigh,
+				}},
+			},
+			"claude-code": {
+				Harness: "claude-code", Enabled: true,
+				ModelOptions: []ACPNativeModelOption{{
+					Alias: "friendly-claude", Model: "actual-claude",
+					Efforts: []model.Effort{model.EffortHigh}, DefaultEffort: model.EffortHigh,
+				}},
+			},
+		},
+		PrimerTarget: runtimeCatalogPrimer(),
+	})
+	if err != nil {
+		t.Fatalf("CompileAgentRuntimeCatalog() error = %v", err)
+	}
+	client.fn = func(_ context.Context, req inference.Request) ([]content.Chunk, error) {
+		start := findInferenceTool(t, req, "StartAgent")
+		schema := string(start.Schema)
+		for _, alias := range []string{"friendly-codex", "friendly-claude"} {
+			if !strings.Contains(schema, alias) {
+				return nil, fmt.Errorf("StartAgent schema omitted friendly alias %q", alias)
+			}
+		}
+		for _, adapterID := range []string{"actual-codex", "actual-claude"} {
+			if strings.Contains(schema, adapterID) {
+				return nil, fmt.Errorf("StartAgent schema leaked adapter model ID %q", adapterID)
+			}
+		}
+		return finalText("schema verified"), nil
+	}
+
+	agent := newTestAgent(t, agentRuntimeRouter(t, client, native), Config{RuntimeCatalog: compiled.RuntimeCatalog})
+	if got := runManagedTurn(t, agent, "inspect friendly native aliases"); got != "schema verified" {
+		t.Fatalf("friendly alias schema test final = %q", got)
+	}
+}
+
+func findNativeModelEfforts(value any, alias string) ([]string, bool) {
+	object, ok := value.(map[string]any)
+	if !ok {
+		if list, ok := value.([]any); ok {
+			for _, item := range list {
+				if efforts, found := findNativeModelEfforts(item, alias); found {
+					return efforts, true
+				}
+			}
+		}
+		return nil, false
+	}
+	if properties, ok := object["properties"].(map[string]any); ok {
+		modelProperty, modelOK := properties["model"].(map[string]any)
+		effortProperty, effortOK := properties["effort"].(map[string]any)
+		modelMatches := modelProperty["const"] == alias
+		if values, ok := modelProperty["enum"].([]any); ok && len(values) == 1 && values[0] == alias {
+			modelMatches = true
+		}
+		if modelOK && effortOK && modelMatches {
+			values, ok := effortProperty["enum"].([]any)
+			if !ok {
+				return nil, false
+			}
+			efforts := make([]string, 0, len(values))
+			for _, value := range values {
+				text, ok := value.(string)
+				if !ok {
+					return nil, false
+				}
+				efforts = append(efforts, text)
+			}
+			return efforts, true
+		}
+	}
+	for _, child := range object {
+		if efforts, found := findNativeModelEfforts(child, alias); found {
+			return efforts, true
+		}
+	}
+	return nil, false
+}
+
 func TestAssembledStartAgentPlainPayloadUsesLoopRigNativeDefault(t *testing.T) {
 	client := &managedScript{}
 	native := &recordingAgentRuntimeClient{}
@@ -316,5 +450,80 @@ func TestAgentToolsRejectIncompatibleNativeModelEffort(t *testing.T) {
 	}
 	if !strings.Contains(result, "unknown_runtime") {
 		t.Fatalf("incompatible selection result = %q, want bounded unknown_runtime error", result)
+	}
+}
+
+func TestAssembledStartAgentACPFailureUsesSafeDetail(t *testing.T) {
+	const safeDetail = "ACP error -32000: usage limit reached; resets at 3:00 PM"
+	const googleAPIKey = "AIzaSyA-0123456789_AbCdEfGhIjKlMnOpQrStUv"
+	probe, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		if strings.Contains(err.Error(), "operation not permitted") || strings.Contains(err.Error(), "listen tcp") {
+			t.Skipf("loopback listeners unavailable in this sandbox: %v", err)
+		}
+		t.Fatalf("probe loopback listener: %v", err)
+	}
+	_ = probe.Close()
+	client := &managedScript{}
+	native := &recordingAgentRuntimeClient{}
+	compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
+		NativeACP: map[string]ACPNativeProfile{"codex": {
+			Harness: "codex", Enabled: true,
+			ModelOptions: []ACPNativeModelOption{{
+				Alias: "native-codex", Model: "native-codex",
+				Efforts: []model.Effort{model.EffortHigh}, DefaultEffort: model.EffortHigh,
+			}},
+		}},
+		PrimerTarget: runtimeCatalogPrimer(),
+	})
+	if err != nil {
+		t.Fatalf("CompileAgentRuntimeCatalog(): %v", err)
+	}
+	protocolCause := fmt.Errorf("stderr path=/private/acp token=secret")
+	protocolFailure := protocol.AuthRequired("usage limit reached; resets at 3:00 PM; credential "+googleAPIKey, protocolCause).WithData(map[string]string{
+		"path": "/private/acp", "url": "https://provider.invalid/token", "token": "secret",
+	})
+	composition := &ACPComposition{
+		Catalog: compiled,
+		Live: func(
+			context.Context,
+			uuid.UUID, uuid.UUID, loop.Provenance, foreign.EventPublisher, loop.BoundDefinition,
+			func() (uuid.UUID, error), *event.Factory,
+		) (loop.Backend, string, error) {
+			return nil, "", boundedACPChildError(protocolFailure)
+		},
+		Restored: func(
+			context.Context,
+			uuid.UUID, uuid.UUID, loop.Provenance, foreign.EventPublisher, loop.BoundDefinition,
+			func() (uuid.UUID, error), *event.Factory, foreign.RestoredForeign,
+		) (loop.Backend, error) {
+			return nil, boundedACPChildError(protocolFailure)
+		},
+	}
+	step := 0
+	client.fn = func(_ context.Context, req inference.Request) ([]content.Chunk, error) {
+		if !requestHasRole(req, generic.Name) {
+			return nil, fmt.Errorf("unexpected role in ACP failure integration request")
+		}
+		if step == 0 {
+			step++
+			return startAgentCall("acp-failure", `{"agent_type":"generic","instructions":"run ACP","agent_harness":"codex","model":"native-codex","effort":"high"}`), nil
+		}
+		got := lastToolText(req)
+		if strings.Contains(got, googleAPIKey) {
+			return nil, fmt.Errorf("StartAgent ACP failure result leaked bare credential")
+		}
+		wantPrefix := "error: agent failed: " + safeDetail
+		if !strings.HasPrefix(got, wantPrefix) || !strings.Contains(got, "[REDACTED]") {
+			return nil, fmt.Errorf("StartAgent ACP failure result did not preserve safe detail and redact credential")
+		}
+		return finalText("ACP failure formatted safely"), nil
+	}
+	agent := newTestAgent(t, agentRuntimeRouter(t, client, native), Config{
+		ACPChildren:    composition,
+		RuntimeCatalog: compiled.RuntimeCatalog,
+	})
+	if got := runManagedTurn(t, agent, "start the ACP child"); got != "ACP failure formatted safely" {
+		t.Fatalf("final = %q", got)
 	}
 }
