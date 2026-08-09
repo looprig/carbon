@@ -157,6 +157,30 @@ func TestProductionModelsFactoryReceivesExplicitCredentialReference(t *testing.T
 	}
 }
 
+func TestCompileProductionModelsWithContextPassesCallerContext(t *testing.T) {
+	type contextKey string
+	key := contextKey("session")
+	want := "open-context"
+	config := normalizedModelConfig{
+		PrimerDefault: "fixture-primer",
+		Models: []normalizedModelTarget{{
+			Alias: "fixture-primer",
+			Model: model.CustomModel("openai", model.APIFormatOpenAIResponses, "https://api.example.test/v1", "gpt-test", model.WithTools()),
+			Uses:  []string{"primer"}, Efforts: []model.Effort{model.EffortNone}, DefaultEffort: model.EffortNone,
+		}},
+	}
+	ctx := context.WithValue(context.Background(), key, want)
+	_, err := compileProductionModelsWithContext(ctx, config, func(got context.Context, _ model.Model, _ modelClientInput) (inference.Client, error) {
+		if got.Value(key) != want {
+			t.Fatalf("factory context value = %v, want %q", got.Value(key), want)
+		}
+		return &fakeLLM{}, nil
+	})
+	if err != nil {
+		t.Fatalf("compileProductionModelsWithContext: %v", err)
+	}
+}
+
 func TestProductionModelsInlineKeysPreserveRestoreRevisionAndRecompose(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "models.json")
 	makeConfig := func(key string) []byte {

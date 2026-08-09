@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"reflect"
@@ -12,6 +13,7 @@ import (
 )
 
 type configuredClientFactory func(model.Model, modelClientInput) (inference.Client, error)
+type configuredClientContextFactory func(context.Context, model.Model, modelClientInput) (inference.Client, error)
 
 type configuredClientCacheKey struct {
 	Target        runtimeModelKey
@@ -89,9 +91,19 @@ type productionModels struct {
 	// configurations, preserving their existing no-store behavior.
 	credentialRuntime *credentialRuntime
 	credentialRefs    []credentials.Reference
+	credentialLease   *credentialRegistryLease
 }
 
 func compileProductionModels(config normalizedModelConfig, factory configuredClientFactory) (productionModels, error) {
+	if factory == nil {
+		return compileProductionModelsWithContext(context.Background(), config, nil)
+	}
+	return compileProductionModelsWithContext(context.Background(), config, func(_ context.Context, selected model.Model, input modelClientInput) (inference.Client, error) {
+		return factory(selected, input)
+	})
+}
+
+func compileProductionModelsWithContext(ctx context.Context, config normalizedModelConfig, factory configuredClientContextFactory) (productionModels, error) {
 	if factory == nil {
 		return productionModels{}, modelConfigValidationError("configured model factory is unavailable")
 	}
@@ -119,7 +131,7 @@ func compileProductionModels(config normalizedModelConfig, factory configuredCli
 		}
 		client, ok := boundClients[cacheKey]
 		if !ok {
-			client, err = factory(target.Model, target.client)
+			client, err = factory(ctx, target.Model, target.client)
 			if err != nil {
 				return productionModels{}, &configuredClientConstructionError{Alias: target.Alias, Provider: string(target.Model.Provider), Cause: err}
 			}

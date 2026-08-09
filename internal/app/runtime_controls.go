@@ -32,6 +32,7 @@ type RuntimeAgent struct {
 	primerEfforts     []model.Effort
 	primerCandidates  []PrimerCandidate
 	credentialRuntime *credentialRuntime
+	credentialLease   *credentialRegistryLease
 	closeMu           sync.Mutex
 	closeDone         chan struct{}
 	closeErr          error
@@ -138,7 +139,13 @@ func (a *RuntimeAgent) Close(ctx context.Context) error {
 	// reverse dependency order required by the credential lifecycle.
 	if a.credentialRuntime != nil {
 		a.credentialRuntime.endSession()
-		if closeErr := a.credentialRuntime.Close(); closeErr != nil && err == nil {
+		closeErr := error(nil)
+		if a.credentialLease != nil {
+			closeErr = a.credentialLease.Release()
+		} else {
+			closeErr = a.credentialRuntime.Close()
+		}
+		if closeErr != nil && err == nil {
 			err = closeErr
 		}
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -227,7 +228,7 @@ func TestCredentialRuntimeMissingReferenceFailsBeforeClientConstruction(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = credentialClientFor(runtime, selected, modelClientInput{CredentialRef: ref})
+	_, err = credentialClientFor(context.Background(), runtime, selected, modelClientInput{CredentialRef: ref})
 	if err == nil {
 		t.Fatal("credentialClientFor(missing) error = nil")
 	}
@@ -400,6 +401,228 @@ func TestCredentialRuntimeConcurrentCloseIsIdempotent(t *testing.T) {
 		if err := <-results; err != nil {
 			t.Fatalf("concurrent runtime.Close: %v", err)
 		}
+	}
+}
+
+func TestCredentialRegistrySharesRuntimeAndExportedLogoutDrainsSession(t *testing.T) {
+	home := t.TempDir()
+	first, runtime, err := acquireCredentialRuntime(home)
+	if err != nil {
+		t.Fatalf("first acquire: %v", err)
+	}
+	second, sameRuntime, err := acquireCredentialRuntime(home)
+	if err != nil {
+		first.Release()
+		t.Fatalf("second acquire: %v", err)
+	}
+	if runtime != sameRuntime {
+		t.Fatal("registry returned different runtime for one canonical home")
+	}
+	ref, err := credentials.ParseReference("credential://openai/registry")
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected := credentialTestModel(llm.ProviderOpenAI, model.APIFormatOpenAIResponses, "gpt-test")
+	policy, err := llm.AuthPolicyForModel(selected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptor, err := policy.Accepted[0].Descriptor()
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedCredential(t, runtime, ref, descriptor, "sk-registry-secret")
+	if _, err := runtime.sourceFor(context.Background(), selected, ref); err != nil {
+		t.Fatalf("sourceFor: %v", err)
+	}
+	if err := runtime.beginSession(); err != nil {
+		t.Fatalf("beginSession: %v", err)
+	}
+	logoutDone := make(chan struct {
+		out CredentialLogoutOutcome
+		err error
+	}, 1)
+	go func() {
+		out, logoutErr := LogoutCredential(context.Background(), Config{HomeDir: home}, ref.String())
+		logoutDone <- struct {
+			out CredentialLogoutOutcome
+			err error
+		}{out: out, err: logoutErr}
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		runtime.mu.Lock()
+		blocked := runtime.blocked[ref]
+		runtime.mu.Unlock()
+		if blocked {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("exported logout did not publish its blocked state")
+		}
+	}
+	if err := runtime.beginSession(); !errors.Is(err, ErrCredentialLogoutBlocked) {
+		t.Fatalf("new composition during logout = %v, want logout-blocked", err)
+	}
+	if _, err := runtime.catalog.Get(context.Background(), ref); err != nil {
+		t.Fatalf("catalog record disappeared before active session drained: %v", err)
+	}
+	runtime.endSession()
+	select {
+	case result := <-logoutDone:
+		if result.err != nil {
+			t.Fatalf("exported logout: %v", result.err)
+		}
+		if !result.out.LocalCatalogDeleted || !result.out.LocalStateDeleted || result.out.RemoteRevocationAttempted {
+			t.Fatalf("logout outcome = %+v", result.out)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("exported logout did not complete after session drain")
+	}
+	if _, err := runtime.catalog.Get(context.Background(), ref); !errors.Is(err, credentials.ErrCatalogNotFound) {
+		t.Fatalf("catalog after logout = %v, want not-found", err)
+	}
+	if err := second.Release(); err != nil {
+		t.Fatalf("second release: %v", err)
+	}
+	if err := first.Release(); err != nil {
+		t.Fatalf("first release: %v", err)
+	}
+	closed, _ := runtime.lifecycleState()
+	if !closed {
+		t.Fatal("last registry release did not close the shared runtime")
+	}
+	third, freshRuntime, err := acquireCredentialRuntime(home)
+	if err != nil {
+		t.Fatalf("fresh acquire after close: %v", err)
+	}
+	if freshRuntime == runtime {
+		t.Fatal("registry reused a runtime after its last borrow released")
+	}
+	if err := third.Release(); err != nil {
+		t.Fatalf("fresh release: %v", err)
+	}
+}
+
+func TestExportedLogoutSharesActualProductionSessionLifecycle(t *testing.T) {
+	home := t.TempDir()
+	configJSON := strings.NewReplacer(
+		`"version": 2`, `"version": 3`,
+		`"provider": "lmstudio"`, `"provider": "openai"`,
+		`"api_format": "openai"`, `"api_format": "openai-responses"`,
+		`"base_url": "http://localhost:1234/v1"`, `"base_url": "https://api.openai.com/v1"`,
+		`"api_key": ""`, `"credential_ref": "credential://openai/production"`,
+	).Replace(validLMStudioModelConfig)
+	path, err := defaultModelConfigPath(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeModelConfigFixture(t, path, []byte(configJSON), 0o600)
+	seedLease, runtime, err := acquireCredentialRuntime(home)
+	if err != nil {
+		t.Fatalf("seed acquire: %v", err)
+	}
+	defer seedLease.Release()
+	decoded, err := decodeModelConfig([]byte(configJSON))
+	if err != nil {
+		t.Fatal(err)
+	}
+	normalized, err := normalizeModelConfig(decoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, err := llm.AuthPolicyForModel(normalized.Models[0].Model)
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptor, err := policy.Accepted[0].Descriptor()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, err := credentials.ParseReference("credential://openai/production")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedCredential(t, runtime, ref, descriptor, "sk-production-secret")
+	factory, err := NewSessionStoreFactory(filepath.Join(home, "store"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	agent, err := factory.Open(ctx, SessionSelector{}, Config{HomeDir: home})
+	if err != nil {
+		_ = factory.Close()
+		if strings.Contains(err.Error(), "operation not permitted") || strings.Contains(err.Error(), "listen tcp") {
+			t.Skipf("sandbox cannot open production session: %v", err)
+		}
+		t.Fatalf("production session Open: %v", err)
+	}
+	logoutDone := make(chan struct {
+		out CredentialLogoutOutcome
+		err error
+	}, 1)
+	go func() {
+		out, logoutErr := LogoutCredential(ctx, Config{HomeDir: home}, ref.String())
+		logoutDone <- struct {
+			out CredentialLogoutOutcome
+			err error
+		}{out: out, err: logoutErr}
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		runtime.mu.Lock()
+		blocked := runtime.blocked[ref]
+		runtime.mu.Unlock()
+		if blocked {
+			break
+		}
+		if time.Now().After(deadline) {
+			_ = agent.Close(context.Background())
+			_ = factory.Close()
+			t.Fatal("production logout did not block the active session")
+		}
+	}
+	if _, err := factory.Open(ctx, SessionSelector{}, Config{HomeDir: home}); !errors.Is(err, ErrCredentialLogoutBlocked) {
+		t.Fatalf("new production Open during logout = %v, want logout-blocked", err)
+	}
+	if _, err := runtime.catalog.Get(context.Background(), ref); err != nil {
+		t.Fatalf("credential deleted before production session drained: %v", err)
+	}
+	if err := agent.Close(context.Background()); err != nil {
+		t.Fatalf("production agent Close: %v", err)
+	}
+	select {
+	case result := <-logoutDone:
+		if result.err != nil {
+			t.Fatalf("production exported logout: %v", result.err)
+		}
+		if !result.out.LocalDeleted || result.out.RemoteRevocationAttempted {
+			t.Fatalf("production logout outcome = %+v", result.out)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("production logout did not finish after session close")
+	}
+	if err := factory.Close(); err != nil {
+		t.Fatalf("factory Close: %v", err)
+	}
+}
+
+func TestCredentialClientForHonorsCanceledContext(t *testing.T) {
+	runtime, err := newCredentialRuntime(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	ref, err := credentials.ParseReference("credential://openai/canceled")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = credentialClientFor(ctx, runtime, credentialTestModel(llm.ProviderOpenAI, model.APIFormatOpenAIResponses, "gpt-test"), modelClientInput{CredentialRef: ref})
+	if err == nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("credentialClientFor canceled context = %v, want context.Canceled", err)
 	}
 }
 

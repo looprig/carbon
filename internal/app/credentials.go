@@ -135,7 +135,11 @@ type CredentialSummary struct {
 // CredentialLogoutOutcome keeps local deletion and remote revocation as
 // separate facts.  RemoteRevoked remains false unless a sanctioned remote
 // revocation implementation explicitly reports success; the current API-key
-// source has no such operation.
+// source has no such operation. If LocalCatalogDeleted is true while
+// LocalStateDeleted is false, the catalog no longer points at the orphaned
+// local state: operators should preserve the outcome, inspect the bounded
+// state reference through the local store tooling, and reconcile that state
+// explicitly before retrying or declaring logout complete.
 type CredentialLogoutOutcome struct {
 	Reference                 string
 	Provider                  string
@@ -313,32 +317,136 @@ type credentialRuntime struct {
 	namespace secrets.Namespace
 	builder   credentials.Builder
 
-	sources    map[credentials.Reference]credentials.Source
-	refs       map[credentials.Reference]struct{}
-	active     map[credentials.Reference]int
-	blocked    map[credentials.Reference]bool
-	closing    bool
-	closed     bool
-	closeDone  chan struct{}
-	closeErr   error
-	activeN    int
-	activeDone chan struct{}
-	operations int
-	opDone     chan struct{}
+	sources      map[credentials.Reference]credentials.Source
+	refs         map[credentials.Reference]struct{}
+	active       map[credentials.Reference]int
+	blocked      map[credentials.Reference]bool
+	closing      bool
+	closed       bool
+	closeDone    chan struct{}
+	closeErr     error
+	activeN      int
+	activeDone   chan struct{}
+	operations   int
+	opDone       chan struct{}
+	registryDone chan struct{}
+}
+
+// credentialRegistry is process-scoped. One canonical home identifies one
+// local catalog/store pair, so model/session composition and lifecycle
+// commands borrow the same runtime and source map. It deliberately does not
+// coordinate across processes; cross-process drain remains an operator duty.
+type credentialRegistry struct {
+	mu      sync.Mutex
+	entries map[string]*credentialRegistryEntry
+}
+
+type credentialRegistryEntry struct {
+	home    string
+	runtime *credentialRuntime
+	borrows int
+	done    chan struct{}
+}
+
+type credentialRegistryLease struct {
+	registry *credentialRegistry
+	key      string
+	entry    *credentialRegistryEntry
+	once     sync.Once
+	err      error
+}
+
+var processCredentialRegistry = &credentialRegistry{entries: make(map[string]*credentialRegistryEntry)}
+
+func canonicalCredentialHome(home string) (string, error) {
+	if home == "" || !filepath.IsAbs(home) {
+		return "", &CredentialCompositionError{Reason: "credential home is unavailable"}
+	}
+	return filepath.Clean(home), nil
+}
+
+func (r *credentialRuntime) lifecycleState() (closed, closing bool) {
+	if r == nil {
+		return true, false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.closed, r.closing
+}
+
+func acquireCredentialRuntime(home string) (*credentialRegistryLease, *credentialRuntime, error) {
+	key, err := canonicalCredentialHome(home)
+	if err != nil {
+		return nil, nil, err
+	}
+	for {
+		processCredentialRegistry.mu.Lock()
+		entry := processCredentialRegistry.entries[key]
+		if entry == nil {
+			runtime, err := newCredentialRuntime(key)
+			if err != nil {
+				processCredentialRegistry.mu.Unlock()
+				return nil, nil, err
+			}
+			entry = &credentialRegistryEntry{home: key, runtime: runtime, borrows: 1, done: make(chan struct{})}
+			runtime.registryDone = entry.done
+			processCredentialRegistry.entries[key] = entry
+			processCredentialRegistry.mu.Unlock()
+			return &credentialRegistryLease{registry: processCredentialRegistry, key: key, entry: entry}, runtime, nil
+		}
+		closed, closing := entry.runtime.lifecycleState()
+		if !closed && !closing {
+			entry.borrows++
+			processCredentialRegistry.mu.Unlock()
+			return &credentialRegistryLease{registry: processCredentialRegistry, key: key, entry: entry}, entry.runtime, nil
+		}
+		if closing {
+			done := entry.done
+			processCredentialRegistry.mu.Unlock()
+			<-done
+			continue
+		}
+		delete(processCredentialRegistry.entries, key)
+		processCredentialRegistry.mu.Unlock()
+	}
+}
+
+func (l *credentialRegistryLease) Release() error {
+	if l == nil {
+		return nil
+	}
+	l.once.Do(func() {
+		l.registry.mu.Lock()
+		if l.entry.borrows > 0 {
+			l.entry.borrows--
+		}
+		last := l.entry.borrows == 0
+		l.registry.mu.Unlock()
+		if last {
+			l.err = l.entry.runtime.Close()
+			l.registry.mu.Lock()
+			if l.registry.entries[l.key] == l.entry {
+				delete(l.registry.entries, l.key)
+			}
+			l.registry.mu.Unlock()
+		}
+	})
+	return l.err
 }
 
 // newCredentialRuntime is intentionally explicit: the caller supplies the
 // already-resolved CodeRig home. No environment or user-home lookup occurs in
 // this constructor.
 func newCredentialRuntime(home string) (*credentialRuntime, error) {
-	if home == "" || !filepath.IsAbs(home) {
-		return nil, &CredentialCompositionError{Reason: "credential home is unavailable"}
+	canonical, err := canonicalCredentialHome(home)
+	if err != nil {
+		return nil, err
 	}
-	secretStore, err := secretslocal.New(filepath.Join(home, "credentials", "secrets"))
+	secretStore, err := secretslocal.New(filepath.Join(canonical, "credentials", "secrets"))
 	if err != nil {
 		return nil, &CredentialCompositionError{Reason: "open credential secret store"}
 	}
-	catalog, err := credentialcatalog.New(filepath.Join(home, "credentials", "catalog"))
+	catalog, err := credentialcatalog.New(filepath.Join(canonical, "credentials", "catalog"))
 	if err != nil {
 		_ = secretStore.Close()
 		return nil, &CredentialCompositionError{Reason: "open credential catalog"}
@@ -649,6 +757,10 @@ func (r *credentialRuntime) Close() error {
 	}
 	r.mu.Lock()
 	r.closeErr = first
+	if r.registryDone != nil {
+		close(r.registryDone)
+		r.registryDone = nil
+	}
 	close(done)
 	r.mu.Unlock()
 	return first
@@ -703,12 +815,6 @@ func (r *credentialRuntime) logout(ctx context.Context, ref credentials.Referenc
 	if err := ctx.Err(); err != nil {
 		return outcome, &CredentialLogoutError{Outcome: outcome, Canceled: true}
 	}
-	// Validate existence before publishing the blocked state. A typo or stale
-	// reference must not globally prevent otherwise unrelated new sessions.
-	record, catalogErr := r.catalog.Get(ctx, ref)
-	if catalogErr != nil {
-		return outcome, &CredentialLogoutError{Outcome: outcome, Catalog: true}
-	}
 	r.mu.Lock()
 	if r.closed || r.closing {
 		r.mu.Unlock()
@@ -743,6 +849,21 @@ func (r *credentialRuntime) logout(ctx context.Context, ref credentials.Referenc
 		}
 		r.mu.Lock()
 	}
+	// Publish the block before lookup/delete. This closes the race where a new
+	// composition could borrow the source while logout was resolving its record.
+	r.mu.Unlock()
+	record, catalogErr := r.catalog.Get(ctx, ref)
+	if catalogErr != nil {
+		// A missing reference never existed in this runtime, so release its
+		// transient block. Other failures remain fail-closed and keep the block.
+		if errors.Is(catalogErr, credentials.ErrCatalogNotFound) {
+			r.mu.Lock()
+			delete(r.blocked, ref)
+			r.mu.Unlock()
+		}
+		return outcome, &CredentialLogoutError{Outcome: outcome, Catalog: true}
+	}
+	r.mu.Lock()
 	source := r.sources[ref]
 	delete(r.sources, ref)
 	delete(r.refs, ref)
@@ -765,18 +886,18 @@ func (r *credentialRuntime) logout(ctx context.Context, ref credentials.Referenc
 	return outcome, nil
 }
 
-// ListCredentials opens a short-lived explicit catalog composition. It is
-// read-only with respect to provider authority and does not inspect values.
+// ListCredentials borrows the process-shared explicit catalog composition. It
+// is read-only with respect to provider authority and does not inspect values.
 func ListCredentials(ctx context.Context, cfg Config) ([]CredentialSummary, error) {
 	home, err := looprigHome(cfg)
 	if err != nil {
 		return nil, err
 	}
-	runtime, err := newCredentialRuntime(home)
+	lease, runtime, err := acquireCredentialRuntime(home)
 	if err != nil {
 		return nil, err
 	}
-	defer runtime.Close()
+	defer lease.Release()
 	return runtime.list(ctx)
 }
 
@@ -788,6 +909,15 @@ func LoginCredential(ctx context.Context, cfg Config, provider string) error {
 	if ctx == nil {
 		return credentials.ErrNilContext
 	}
+	home, err := looprigHome(cfg)
+	if err != nil {
+		return err
+	}
+	lease, _, err := acquireCredentialRuntime(home)
+	if err != nil {
+		return err
+	}
+	defer lease.Release()
 	provider = strings.ToLower(strings.TrimSpace(provider))
 	if err := ctx.Err(); err != nil {
 		return credentials.NewCanceledError(err)
@@ -813,23 +943,23 @@ func LogoutCredential(ctx context.Context, cfg Config, rawRef string) (Credentia
 	if err != nil {
 		return CredentialLogoutOutcome{}, err
 	}
-	runtime, err := newCredentialRuntime(home)
+	lease, runtime, err := acquireCredentialRuntime(home)
 	if err != nil {
 		return CredentialLogoutOutcome{Reference: ref.String(), Provider: ref.Provider()}, err
 	}
-	defer runtime.Close()
+	defer lease.Release()
 	return runtime.logout(ctx, ref)
 }
 
 // credentialClientFor is the production model factory hook used by
 // loadProductionModels. Static/legacy API keys retain auto.New's behavior;
 // reference-backed models use the canonical llm.auto.NewWithAuth path.
-func credentialClientFor(runtime *credentialRuntime, selected model.Model, input modelClientInput) (inference.Client, error) {
+func credentialClientFor(ctx context.Context, runtime *credentialRuntime, selected model.Model, input modelClientInput) (inference.Client, error) {
 	if input.hasCredentialRef() {
 		if runtime == nil {
 			return nil, &CredentialCompositionError{Reference: input.CredentialRef, Provider: string(selected.Provider), Reason: "credential lifecycle is unavailable", Cause: ErrCredentialLifecycleClosed}
 		}
-		source, err := runtime.sourceFor(context.Background(), selected, input.CredentialRef)
+		source, err := runtime.sourceFor(ctx, selected, input.CredentialRef)
 		if err != nil {
 			return nil, err
 		}

@@ -37,3 +37,11 @@ func TestModelRoutingClientHandlesNonComparableDuplicateClientsWithoutPanic(t *t
 		t.Fatal("newModelRoutingClient accepted duplicate non-comparable clients")
 	}
 }
+
+func TestNewModelRoutingClientRejectsTypedNilClient(t *testing.T) {
+	var typedNil *fakeLLM
+	selected := model.CustomModel("fixture", model.APIFormatOpenAI, "https://fixture.test/v1", "fixture")
+	if _, err := newModelRoutingClient([]modelBinding{{Model: selected, Client: typedNil}}); err == nil {
+		t.Fatal("newModelRoutingClient accepted typed-nil inference.Client")
+	}
+}

@@ -35,7 +35,7 @@ func newModelRoutingClient(bindings []modelBinding) (inference.Client, error) {
 	}
 	router := &modelRoutingClient{clients: make(map[runtimeModelKey]inference.Client, len(bindings))}
 	for _, binding := range bindings {
-		if binding.Client == nil || binding.Model.Name == "" {
+		if nilInferenceClient(binding.Client) || binding.Model.Name == "" {
 			return nil, errConfiguredRuntimeClientUnavailable
 		}
 		key := runtimeModelKeyFor(binding.Model)

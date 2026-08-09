@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"time"
 
 	"github.com/looprig/inference"
@@ -45,6 +46,10 @@ func newProductionClient(selected model.Model, input modelClientInput) (inferenc
 // absent file yields an empty configuration; callers that require a primer
 // reject it before session assembly. Unreadable or invalid files fail here.
 func loadProductionModels(home string) (productionModels, error) {
+	return loadProductionModelsWithContext(context.Background(), home)
+}
+
+func loadProductionModelsWithContext(ctx context.Context, home string) (productionModels, error) {
 	path, err := defaultModelConfigPath(home)
 	if err != nil {
 		return productionModels{}, err
@@ -69,19 +74,20 @@ func loadProductionModels(home string) (productionModels, error) {
 			return newProductionClient(selected, input)
 		})
 	}
-	runtime, err := newCredentialRuntime(home)
+	lease, runtime, err := acquireCredentialRuntime(home)
 	if err != nil {
 		return productionModels{}, err
 	}
-	configured, err := compileProductionModels(normalized, func(selected model.Model, input modelClientInput) (inference.Client, error) {
-		return credentialClientFor(runtime, selected, input)
+	configured, err := compileProductionModelsWithContext(ctx, normalized, func(ctx context.Context, selected model.Model, input modelClientInput) (inference.Client, error) {
+		return credentialClientFor(ctx, runtime, selected, input)
 	})
 	if err != nil {
-		_ = runtime.Close()
+		_ = lease.Release()
 		return productionModels{}, err
 	}
 	configured.credentialRuntime = runtime
 	configured.credentialRefs = runtime.refsSnapshot()
+	configured.credentialLease = lease
 	return configured, nil
 }
 

@@ -184,15 +184,22 @@ func genericDefinitionWithContextPolicy(client inference.Client, model model.Mod
 // New constructs the CodeRig headless from one models.json load and returns it
 // as a tui.Agent driven by the configured primer_default.
 func New(ctx context.Context, cfg Config) (tui.Agent, error) {
-	return newWithProductionModelsLoader(ctx, cfg, loadProductionModels, headlessStores)
+	return newWithProductionModelsContextLoader(ctx, cfg, loadProductionModelsWithContext, headlessStores)
 }
 
 // productionModelsLoader is loadProductionModels's shape: it takes the
 // already-resolved looprig home (looprigHome's result) so it never resolves
 // HOME itself.
 type productionModelsLoader func(home string) (productionModels, error)
+type productionModelsContextLoader func(context.Context, string) (productionModels, error)
 
 func newWithProductionModelsLoader(ctx context.Context, cfg Config, loader productionModelsLoader, storesProvider sessionStoresProvider) (*RuntimeAgent, error) {
+	return newWithProductionModelsContextLoader(ctx, cfg, func(_ context.Context, home string) (productionModels, error) {
+		return loader(home)
+	}, storesProvider)
+}
+
+func newWithProductionModelsContextLoader(ctx context.Context, cfg Config, loader productionModelsContextLoader, storesProvider sessionStoresProvider) (*RuntimeAgent, error) {
 	home, err := looprigHome(cfg)
 	if err != nil {
 		return nil, err
@@ -201,20 +208,29 @@ func newWithProductionModelsLoader(ctx context.Context, cfg Config, loader produ
 	// helper (permissions, MCP, credentials) so this process root is resolved
 	// exactly once.
 	cfg.HomeDir = home
-	configured, err := loader(home)
+	configured, err := loader(ctx, home)
 	if err != nil {
 		return nil, err
 	}
 	credentialRuntime := configured.credentialRuntime
+	credentialLease := configured.credentialLease
 	if credentialRuntime != nil {
 		if err := credentialRuntime.beginSession(); err != nil {
-			_ = credentialRuntime.Close()
+			if credentialLease != nil {
+				_ = credentialLease.Release()
+			} else {
+				_ = credentialRuntime.Close()
+			}
 			return nil, err
 		}
 		defer func() {
 			if credentialRuntime != nil {
 				credentialRuntime.endSession()
-				_ = credentialRuntime.Close()
+				if credentialLease != nil {
+					_ = credentialLease.Release()
+				} else {
+					_ = credentialRuntime.Close()
+				}
 			}
 		}()
 	}
@@ -250,7 +266,9 @@ func newWithProductionModelsLoader(ctx context.Context, cfg Config, loader produ
 	}
 	if credentialRuntime != nil {
 		agent.credentialRuntime = credentialRuntime
+		agent.credentialLease = credentialLease
 		credentialRuntime = nil
+		credentialLease = nil
 	}
 	return agent, nil
 }
