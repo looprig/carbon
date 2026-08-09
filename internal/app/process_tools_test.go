@@ -532,6 +532,17 @@ func TestProcessToolsSiblingLoopsCannotAccessEachOthersHandles(t *testing.T) {
 	set := mustUnconfinedExecutorSet(t, root)
 	resolver := newProcessRunnerResolver(set)
 	registry := &fakeSessionResourceRegistry{dir: t.TempDir()}
+	t.Cleanup(func() {
+		registry.mu.Lock()
+		resource := registry.resource
+		registry.mu.Unlock()
+		if resource == nil {
+			return
+		}
+		if err := resource.Shutdown(context.Background()); err != nil {
+			t.Errorf("shutdown session resource: %v", err)
+		}
+	})
 
 	sessionID, err := uuid.New()
 	if err != nil {
