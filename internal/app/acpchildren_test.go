@@ -938,6 +938,118 @@ func TestACPChildNativeModelOnlyRowsBuildThroughDriverWithoutLivePreflight(t *te
 	}
 }
 
+func TestACPChildBuilderLaunchFiltersHostileProviderEnvironment(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
+		NativeACP: map[string]ACPNativeProfile{
+			"codex": {Harness: "codex", Enabled: true, Models: []loop.ModelAlias{"native-codex"}},
+		},
+		PrimerTarget: runtimeCatalogPrimer(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace := t.TempDir()
+	composition, err := NewACPComposition(ACPChildrenConfig{
+		Catalog:       compiled,
+		AccessProfile: AccessReadOnly,
+		Executables:   map[loop.AgentHarnessName]string{"codex": executable},
+		WorkspaceRoot: workspace,
+		Env: []string{
+			"PATH=" + task33NativeCodexACPHelperPath,
+			"HOME=/private/login",
+			"XDG_CONFIG_HOME=/private/login/.config",
+			"OPENAI_API_KEY=sk-hostile",
+			"ANTHROPIC_API_KEY=anthropic-hostile",
+			"AWS_SECRET_ACCESS_KEY=aws-hostile",
+			"CLAUDE_CODE_OAUTH_TOKEN=oauth-hostile",
+			"PROVIDER_API_KEY=provider-hostile",
+			"PROVIDER_TOKEN=token-hostile",
+			"PROVIDER_SECRET=secret-hostile",
+		},
+		NativeEnvAllowlist: acpNativeAuthEnvAllowlist,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := composition.Catalog.RuntimeCatalog.ResolveWithExplicitSource(generic.Name, "codex", loop.RuntimeSourceNative, "native-codex", model.EffortNone, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bound := testACPChildBound(t, resolved)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	backend, _, err := composition.Live(ctx, mustUUID(t), mustUUID(t), loop.Provenance{}, acpPostureMatrixPublisher{}, bound, func() (uuid.UUID, error) { return uuid.New() }, event.NewFactory(func() (uuid.UUID, error) { return uuid.New() }, time.Now))
+	if err != nil {
+		t.Fatalf("native child builder leaked hostile provider environment: %v", err)
+	}
+	if backend == nil {
+		t.Fatal("native child builder returned nil backend")
+	}
+	cancel()
+	select {
+	case <-backend.DoneChan():
+	case <-time.After(5 * time.Second):
+		t.Fatal("native child backend did not close after cancellation")
+	}
+
+	t.Run("gateway", func(t *testing.T) {
+		compiled := testACPGatewayCatalog(t)
+		workspace := t.TempDir()
+		composition, err := NewACPComposition(ACPChildrenConfig{
+			Catalog:       compiled,
+			AccessProfile: AccessReadOnly,
+			Executables:   map[loop.AgentHarnessName]string{"codex": executable},
+			WorkspaceRoot: workspace,
+			Env: []string{
+				"PATH=" + task33ACPHelperPath,
+				"OPENAI_API_KEY=sk-hostile",
+				"ANTHROPIC_API_KEY=anthropic-hostile",
+				"AWS_SECRET_ACCESS_KEY=aws-hostile",
+				"CLAUDE_CODE_OAUTH_TOKEN=oauth-hostile",
+				"PROVIDER_API_KEY=provider-hostile",
+				"PROVIDER_TOKEN=token-hostile",
+				"PROVIDER_SECRET=secret-hostile",
+			},
+			GatewayEnvAllowlist: acpGatewayEnvAllowlist,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		resolved, err := composition.Catalog.RuntimeCatalog.ResolveWithExplicitSource(generic.Name, "codex", loop.RuntimeSourceGateway, "gpt-5.6-luna", model.EffortMax, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		probeGateway, err := NewACPGateway(context.Background(), composition.Catalog, resolved)
+		if err != nil {
+			if strings.Contains(err.Error(), "operation not permitted") || strings.Contains(err.Error(), "listen tcp") {
+				t.Skipf("sandbox cannot launch gateway child: %v", err)
+			}
+			t.Fatalf("gateway setup: %v", err)
+		}
+		_ = probeGateway.Close(context.Background())
+		bound := testACPChildBound(t, resolved)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		backend, _, err := composition.Live(ctx, mustUUID(t), mustUUID(t), loop.Provenance{}, acpPostureMatrixPublisher{}, bound, func() (uuid.UUID, error) { return uuid.New() }, event.NewFactory(func() (uuid.UUID, error) { return uuid.New() }, time.Now))
+		if err != nil {
+			t.Fatalf("gateway child builder leaked hostile provider environment: %v", err)
+		}
+		if backend == nil {
+			t.Fatal("gateway child builder returned nil backend")
+		}
+		cancel()
+		select {
+		case <-backend.DoneChan():
+		case <-time.After(5 * time.Second):
+			t.Fatal("gateway child backend did not close after cancellation")
+		}
+	})
+}
+
 func TestNewACPCompositionChecksExecutablePathsAndFiltersEnv(t *testing.T) {
 	executable, err := os.Executable()
 	if err != nil {
@@ -1061,6 +1173,29 @@ func TestACPChildEnvIsCredentialScoped(t *testing.T) {
 	}
 	if !containsEnv(gateway, "PATH=/usr/bin") || !containsEnv(gateway, "LANG=C") {
 		t.Fatalf("gateway env lost safe process configuration: %#v", gateway)
+	}
+}
+
+func TestACPChildEnvAlwaysRejectsProviderSecrets(t *testing.T) {
+	config := ACPChildrenConfig{
+		Env: []string{
+			"PATH=/bin", "LANG=C", "OPENAI_API_KEY=sk-test", "ANTHROPIC_TOKEN=secret",
+			"AWS_SECRET_ACCESS_KEY=secret", "CLAUDE_CODE_OAUTH_TOKEN=oauth", "USER=runner",
+		},
+		NativeEnvAllowlist:  []string{"PATH", "LANG", "OPENAI_API_KEY", "ANTHROPIC_TOKEN", "AWS_SECRET_ACCESS_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "USER"},
+		GatewayEnvAllowlist: []string{"PATH", "LANG", "OPENAI_API_KEY", "ANTHROPIC_TOKEN", "AWS_SECRET_ACCESS_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "USER"},
+	}
+	for _, mode := range []loop.CredentialMode{loop.CredentialNativeAuth, loop.CredentialGatewayBacked} {
+		env := config.envForCredential(mode)
+		joined := strings.Join(env, "\n")
+		for _, forbidden := range []string{"OPENAI_API_KEY", "ANTHROPIC_TOKEN", "AWS_SECRET_ACCESS_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "sk-test", "secret", "oauth"} {
+			if strings.Contains(joined, forbidden) {
+				t.Fatalf("%s env leaked %q: %v", mode, forbidden, env)
+			}
+		}
+		if !strings.Contains(joined, "PATH=/bin") || !strings.Contains(joined, "USER=runner") {
+			t.Fatalf("%s env lost safe mechanics: %v", mode, env)
+		}
 	}
 }
 

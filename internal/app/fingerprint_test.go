@@ -24,7 +24,6 @@ import (
 	"github.com/looprig/harness/pkg/rig"
 	"github.com/looprig/harness/pkg/sessionstore"
 	"github.com/looprig/inference"
-	"github.com/looprig/inference/auth"
 	model "github.com/looprig/inference/model"
 )
 
@@ -271,9 +270,9 @@ func TestSecretRedactionAcrossModelCatalogueGatewayFingerprintAndDurableEvents(t
 	capture("normalized digest", normalizedDigest)
 
 	factorySawSentinel := false
-	configured, err := loadProductionModelsFrom(modelPath, func(_ model.Model, key auth.APIKey) (inference.Client, error) {
-		factorySawSentinel = factorySawSentinel || string(key) == sentinel
-		return &fakeLLM{credential: string(key)}, nil
+	configured, err := loadProductionModelsFrom(modelPath, func(_ model.Model, input modelClientInput) (inference.Client, error) {
+		factorySawSentinel = factorySawSentinel || input.APIKey == sentinel
+		return &fakeLLM{credential: input.APIKey}, nil
 	})
 	if err != nil {
 		t.Fatalf("loadProductionModelsFrom: %v", err)
@@ -283,8 +282,8 @@ func TestSecretRedactionAcrossModelCatalogueGatewayFingerprintAndDurableEvents(t
 	}
 	capture("production model formats", fmt.Sprintf("%v|%+v|%#v", configured, configured, configured))
 
-	_, factoryErr := loadProductionModelsFrom(modelPath, func(_ model.Model, key auth.APIKey) (inference.Client, error) {
-		return nil, errors.New("fixture client factory rejected " + string(key))
+	_, factoryErr := loadProductionModelsFrom(modelPath, func(_ model.Model, input modelClientInput) (inference.Client, error) {
+		return nil, errors.New("fixture client factory rejected " + input.APIKey)
 	})
 	captureErrorFormats("client factory failure", factoryErr)
 

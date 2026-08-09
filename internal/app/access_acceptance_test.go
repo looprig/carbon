@@ -17,7 +17,6 @@ import (
 	"github.com/looprig/harness/pkg/loop"
 	"github.com/looprig/harness/pkg/tool"
 	"github.com/looprig/inference"
-	"github.com/looprig/inference/auth"
 	model "github.com/looprig/inference/model"
 	"github.com/looprig/sandbox"
 	"github.com/looprig/tools/permission"
@@ -474,7 +473,7 @@ func TestAcceptanceModelAndInteractivePermissionFilesRemainSeparated(t *testing.
 		t.Fatalf("permission file exists before model load: %v", err)
 	}
 
-	_, err = loadProductionModelsFrom(modelPath, func(model.Model, auth.APIKey) (inference.Client, error) {
+	_, err = loadProductionModelsFrom(modelPath, func(model.Model, modelClientInput) (inference.Client, error) {
 		return &fakeLLM{}, nil
 	})
 	if err != nil {

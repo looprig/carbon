@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/looprig/credentials"
 	model "github.com/looprig/inference/model"
+	"github.com/looprig/llm"
 )
 
 type secretFreeModelConfig struct {
@@ -42,6 +44,17 @@ type secretFreeModelTarget struct {
 	Capabilities  secretFreeModelCapabilities  `json:"capabilities"`
 	Efforts       []string                     `json:"efforts"`
 	DefaultEffort string                       `json:"default_effort"`
+	CredentialRef string                       `json:"credential_ref,omitempty"`
+	Auth          *secretFreeModelAuth         `json:"auth,omitempty"`
+}
+
+type secretFreeModelAuth struct {
+	Provider  string                 `json:"provider"`
+	Transport string                 `json:"transport"`
+	Issuer    string                 `json:"issuer"`
+	Audience  string                 `json:"audience"`
+	Scheme    credentials.Scheme     `json:"scheme"`
+	Usage     credentials.UsageClass `json:"usage"`
 }
 
 type secretFreeModelContextLimits struct {
@@ -68,9 +81,33 @@ func modelConfigDigest(config normalizedModelConfig) (string, error) {
 	return hex.EncodeToString(digest[:]), nil
 }
 
+// modelConfigDigestEligible reports whether the normalized catalogue may be
+// used as a stable identity by a caller that persists digest-selected
+// clients. Inline keys deliberately opt out: their values are never hashed,
+// so a key rotation must force fresh composition rather than reusing a client
+// selected by an old digest. The per-load alias binding cache is separate and
+// remains safe because it is scoped to one normalized input.
+func modelConfigDigestEligible(config normalizedModelConfig) bool {
+	for _, target := range config.Models {
+		if target.client.isInline() {
+			return false
+		}
+	}
+	return true
+}
+
+func normalizedModelConfigVersion(config normalizedModelConfig) int {
+	if config.Version == modelConfigVersion {
+		return modelConfigVersion
+	}
+	// A zero-value normalized config is an internal compatibility fixture and
+	// retains the historical v2 projection. Decoded files always carry 2 or 3.
+	return modelConfigVersionV2
+}
+
 func secretFreeModelConfigJSON(config normalizedModelConfig) ([]byte, error) {
 	projection := secretFreeModelConfig{
-		Version:              modelConfigVersion,
+		Version:              normalizedModelConfigVersion(config),
 		PrimerDefault:        config.PrimerDefault,
 		ClaudeCodeSmallModel: config.ClaudeCodeSmallModel,
 		Models:               make([]secretFreeModelTarget, 0, len(config.Models)),
@@ -96,7 +133,7 @@ func secretFreeModelConfigJSON(config normalizedModelConfig) ([]byte, error) {
 		for i, effort := range efforts {
 			effortNames[i] = modelConfigEffortName(effort)
 		}
-		projection.Models = append(projection.Models, secretFreeModelTarget{
+		secretTarget := secretFreeModelTarget{
 			Alias: target.Alias, Description: target.Description, Provider: string(target.Model.Provider), APIFormat: string(target.Model.APIFormat),
 			BaseURL: target.Model.BaseURL, Model: target.Model.Name,
 			ContextLimits: secretFreeModelContextLimits{
@@ -111,7 +148,26 @@ func secretFreeModelConfigJSON(config normalizedModelConfig) ([]byte, error) {
 				StructuredOutputWithTools: target.Model.Caps.StructuredOutputWithTools,
 			},
 			Efforts: effortNames, DefaultEffort: modelConfigEffortName(target.DefaultEffort),
-		})
+		}
+		if normalizedModelConfigVersion(config) == modelConfigVersionV3 {
+			if !target.client.CredentialRef.IsZero() {
+				secretTarget.CredentialRef = target.client.CredentialRef.String()
+			}
+			policy, err := llm.AuthPolicyForModel(target.Model)
+			if err != nil || len(policy.Accepted) != 1 {
+				if err == nil {
+					err = fmt.Errorf("provider auth policy must contain exactly one binding")
+				}
+				return nil, err
+			}
+			binding := policy.Accepted[0]
+			secretTarget.Auth = &secretFreeModelAuth{
+				Provider: string(target.Model.Provider), Transport: binding.Transport,
+				Issuer: binding.Issuer, Audience: binding.Audience,
+				Scheme: binding.Scheme, Usage: binding.Usage,
+			}
+		}
+		projection.Models = append(projection.Models, secretTarget)
 	}
 	sort.Slice(projection.Models, func(i, j int) bool {
 		return projection.Models[i].Alias < projection.Models[j].Alias

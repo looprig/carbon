@@ -375,41 +375,57 @@ type SessionSelector struct {
 // it. It holds the fsstore backend (closed once at teardown) and the store facades + listing
 // catalog over it. Read-only after construction.
 type SessionStoreFactory struct {
-	dataDir    string
-	fs         *fsstore.Store
-	stores     *sessionStores
-	loadModels productionModelsLoader
+	dataDir               string
+	fs                    *fsstore.Store
+	stores                *sessionStores
+	loadModels            productionModelsLoader
+	loadModelsWithContext productionModelsContextLoader
 	// buildClient is retained as an explicit-client compatibility seam for
 	// package tests. When set, Open bypasses models.json and production ACP
 	// composition exactly like openWithClient.
-	buildClient    func() (inference.Client, ModelFactory, error)
-	storeMu        sync.Mutex
-	closed         bool
-	mu             sync.Mutex
-	currentSession uuid.UUID
+	buildClient      func() (inference.Client, ModelFactory, error)
+	storeMu          sync.Mutex
+	closed           bool
+	credentialLeases map[*credentialRegistryLease]struct{}
+	mu               sync.Mutex
+	currentSession   uuid.UUID
 }
 
 // NewSessionStoreFactory returns a lazy production factory for the on-disk store rooted at
 // dataDir. The backend is opened by List, or by Open after production model configuration has
 // been loaded and validated, so configuration failures cannot open or mutate persistence.
 func NewSessionStoreFactory(dataDir string) (*SessionStoreFactory, error) {
-	return &SessionStoreFactory{dataDir: dataDir, loadModels: loadProductionModels}, nil
+	return &SessionStoreFactory{dataDir: dataDir, loadModels: loadProductionModels, loadModelsWithContext: loadProductionModelsWithContext}, nil
 }
 
 // Close releases the shared on-disk backend, once, at process teardown (after every session
 // opened from this factory has been Closed). It is idempotent.
 func (f *SessionStoreFactory) Close() error {
 	f.storeMu.Lock()
-	defer f.storeMu.Unlock()
 	if f.closed {
+		f.storeMu.Unlock()
 		return nil
 	}
 	f.closed = true
 	fs := f.fs
-	if fs == nil {
-		return nil
+	leases := make([]*credentialRegistryLease, 0, len(f.credentialLeases))
+	for lease := range f.credentialLeases {
+		leases = append(leases, lease)
 	}
-	return fs.Close()
+	f.storeMu.Unlock()
+
+	var first error
+	for _, lease := range leases {
+		if err := lease.Release(); err != nil && first == nil {
+			first = err
+		}
+	}
+	if fs != nil {
+		if err := fs.Close(); err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
 }
 
 func (f *SessionStoreFactory) ensureStoresLocked() (*sessionStores, error) {
@@ -526,6 +542,8 @@ func lastActivity(meta sessionstore.SessionMeta) time.Time {
 func (f *SessionStoreFactory) Open(ctx context.Context, sel SessionSelector, cfg Config) (*RuntimeAgent, error) {
 	var client inference.Client
 	var factory ModelFactory
+	var credentialLifecycle *credentialRuntime
+	var credentialLease *credentialRegistryLease
 	if f.buildClient != nil {
 		var err error
 		client, factory, err = f.buildClient()
@@ -537,12 +555,45 @@ func (f *SessionStoreFactory) Open(ctx context.Context, sel SessionSelector, cfg
 		if err != nil {
 			return nil, err
 		}
-		configured, err := f.loadModels(home)
+		cfg.HomeDir = home
+		var configured productionModels
+		if f.loadModelsWithContext != nil {
+			configured, err = f.loadModelsWithContext(ctx, home)
+		} else {
+			configured, err = f.loadModels(home)
+		}
 		if err != nil {
 			return nil, err
 		}
 		if configured.PrimerClient == nil || configured.PrimerModel.Name == "" {
+			if configured.credentialLease != nil {
+				_ = configured.credentialLease.Release()
+			} else if configured.credentialRuntime != nil {
+				_ = configured.credentialRuntime.Close()
+			}
 			return nil, &ModelConfigCapabilityError{}
+		}
+		credentialLifecycle = configured.credentialRuntime
+		credentialLease = configured.credentialLease
+		if credentialLifecycle != nil {
+			if err := credentialLifecycle.beginSession(); err != nil {
+				if credentialLease != nil {
+					_ = credentialLease.Release()
+				} else {
+					_ = credentialLifecycle.Close()
+				}
+				return nil, err
+			}
+			defer func() {
+				if credentialLifecycle != nil {
+					credentialLifecycle.endSession()
+					if credentialLease != nil {
+						_ = credentialLease.Release()
+					} else {
+						_ = credentialLifecycle.Close()
+					}
+				}
+			}()
 		}
 		client = configured.RuntimeClient
 		if client == nil {
@@ -572,6 +623,23 @@ func (f *SessionStoreFactory) Open(ctx context.Context, sel SessionSelector, cfg
 	agent, err := f.openWithClient(ctx, client, factory, sel, cfg)
 	if err != nil {
 		return nil, err
+	}
+	if credentialLifecycle != nil {
+		agent.credentialRuntime = credentialLifecycle
+		agent.credentialLease = credentialLease
+		credentialLifecycle = nil
+		credentialLease = nil
+		f.storeMu.Lock()
+		if f.closed {
+			f.storeMu.Unlock()
+			_ = agent.Close(ctx)
+			return nil, &StoreClosedError{}
+		}
+		if f.credentialLeases == nil {
+			f.credentialLeases = make(map[*credentialRegistryLease]struct{})
+		}
+		f.credentialLeases[agent.credentialLease] = struct{}{}
+		f.storeMu.Unlock()
 	}
 	f.mu.Lock()
 	f.currentSession = agent.SessionID()

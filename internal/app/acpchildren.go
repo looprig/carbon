@@ -1134,7 +1134,41 @@ func (c ACPChildrenConfig) envForCredential(credential loop.CredentialMode) []st
 		// to pass harness login locations to a gateway-backed child.
 		allowlist = intersectEnvAllowlists(allowlist, acpGatewayEnvAllowlist)
 	}
-	return filterACPEnv(c.Env, allowlist)
+	return filterACPProviderSecrets(filterACPEnv(c.Env, allowlist))
+}
+
+// filterACPProviderSecrets is a second, defense-in-depth boundary after the
+// explicit process-environment allowlists. A caller may supply a broad legacy
+// allowlist, but provider API keys/tokens/secrets must never reach either a
+// gateway-backed or native ACP child. Gateway children receive their
+// CodeRig-owned loopback bearer through the launch protocol, not this env.
+func filterACPProviderSecrets(env []string) []string {
+	filtered := make([]string, 0, len(env))
+	for _, assignment := range env {
+		name := assignment
+		if index := strings.IndexByte(assignment, '='); index >= 0 {
+			name = assignment[:index]
+		}
+		if isACPProviderSecretKey(name) {
+			continue
+		}
+		filtered = append(filtered, assignment)
+	}
+	return filtered
+}
+
+func isACPProviderSecretKey(name string) bool {
+	name = strings.ToUpper(strings.TrimSpace(name))
+	switch name {
+	case "AUTHORIZATION", "COOKIE", "API_KEY", "APIKEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "CREDENTIALS", "ACCESS_KEY", "ACCESS_KEY_ID", "SECRET_ACCESS_KEY", "SESSION_TOKEN", "OAUTH_TOKEN", "ACCESS_TOKEN", "PRIVATE_KEY", "KEY":
+		return true
+	}
+	for _, suffix := range []string{"_API_KEY", "_APIKEY", "_TOKEN", "_SECRET", "_PASSWORD", "_CREDENTIAL", "_CREDENTIALS", "_ACCESS_KEY", "_ACCESS_KEY_ID", "_SECRET_ACCESS_KEY", "_SESSION_TOKEN", "_OAUTH_TOKEN", "_ACCESS_TOKEN", "_PRIVATE_KEY", "_KEY"} {
+		if strings.HasSuffix(name, suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 func intersectEnvAllowlists(left, right []string) []string {

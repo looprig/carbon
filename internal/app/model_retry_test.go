@@ -22,7 +22,7 @@ func TestDefaultRetryPolicy_Valid(t *testing.T) {
 
 func TestNewProductionClient_Wrapped(t *testing.T) {
 	t.Parallel()
-	c, err := newProductionClient(testModel(), "test-key")
+	c, err := newProductionClient(testModel(), modelClientInput{APIKey: "test-key"})
 	if err != nil {
 		t.Fatal(err)
 	}

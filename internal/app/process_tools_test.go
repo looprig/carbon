@@ -6,6 +6,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/looprig/coderig/internal/catalog/generic"
 	"github.com/looprig/core/content"
@@ -532,6 +533,19 @@ func TestProcessToolsSiblingLoopsCannotAccessEachOthersHandles(t *testing.T) {
 	set := mustUnconfinedExecutorSet(t, root)
 	resolver := newProcessRunnerResolver(set)
 	registry := &fakeSessionResourceRegistry{dir: t.TempDir()}
+	t.Cleanup(func() {
+		registry.mu.Lock()
+		resource := registry.resource
+		registry.mu.Unlock()
+		if resource == nil {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := resource.Shutdown(ctx); err != nil {
+			t.Errorf("shutdown session resource: %v", err)
+		}
+	})
 
 	sessionID, err := uuid.New()
 	if err != nil {

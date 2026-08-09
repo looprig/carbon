@@ -1,19 +1,52 @@
 package app
 
 import (
+	"context"
 	"fmt"
+	"io"
+	"reflect"
 
+	"github.com/looprig/credentials"
 	"github.com/looprig/harness/pkg/loop"
 	"github.com/looprig/inference"
-	"github.com/looprig/inference/auth"
 	model "github.com/looprig/inference/model"
 )
 
-type configuredClientFactory func(model.Model, auth.APIKey) (inference.Client, error)
+type configuredClientFactory func(model.Model, modelClientInput) (inference.Client, error)
+type configuredClientContextFactory func(context.Context, model.Model, modelClientInput) (inference.Client, error)
 
 type configuredClientCacheKey struct {
-	Target runtimeModelKey
-	APIKey string
+	Target        runtimeModelKey
+	APIKey        string
+	CredentialRef credentials.Reference
+}
+
+// configuredClientConstructionError retains only a safe cause classification
+// for callers that need to distinguish a missing/mismatched credential ref.
+// Its Error text deliberately contains aliases/providers only; it never
+// reflects factory errors that might carry provider material.
+type configuredClientConstructionError struct {
+	Alias    string
+	Provider string
+	Cause    error
+}
+
+func (e *configuredClientConstructionError) Error() string {
+	if e == nil {
+		return "coderig: configured model client construction failed"
+	}
+	return fmt.Sprintf("coderig: construct configured model alias %q provider %q", e.Alias, e.Provider)
+}
+
+func (e *configuredClientConstructionError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
+}
+
+func (e *configuredClientConstructionError) Format(state fmt.State, _ rune) {
+	_, _ = io.WriteString(state, e.Error())
 }
 
 // PrimerCandidate is one models.json entry tagged primer-capable
@@ -41,6 +74,9 @@ type productionModels struct {
 	ACPLaunchers     map[string]string // harness -> configured executable path
 	ClaudeSmall      loop.ModelAlias
 	ConfigRev        string
+	// ConfigRev is durable restore identity. Inline-key clients separately
+	// opt out of cross-composition reuse because key bytes are not digest input.
+	ClientReuseEligible bool
 	// PermissionReviewEnabled, PermissionReviewModel, and PermissionReviewStrict
 	// mirror Config's own PermissionReviewEnabled/PermissionReviewModel/
 	// PermissionReviewStrictPolicy fields so production and assembly's
@@ -50,15 +86,35 @@ type productionModels struct {
 	PermissionReviewEnabled bool
 	PermissionReviewModel   model.Model
 	PermissionReviewStrict  bool
+	// credentialRuntime is owned by the RuntimeAgent produced from this
+	// composition. It is intentionally absent for legacy/static model
+	// configurations, preserving their existing no-store behavior.
+	credentialRuntime *credentialRuntime
+	credentialRefs    []credentials.Reference
+	credentialLease   *credentialRegistryLease
 }
 
 func compileProductionModels(config normalizedModelConfig, factory configuredClientFactory) (productionModels, error) {
+	if factory == nil {
+		return compileProductionModelsWithContext(context.Background(), config, nil)
+	}
+	return compileProductionModelsWithContext(context.Background(), config, func(_ context.Context, selected model.Model, input modelClientInput) (inference.Client, error) {
+		return factory(selected, input)
+	})
+}
+
+func compileProductionModelsWithContext(ctx context.Context, config normalizedModelConfig, factory configuredClientContextFactory) (productionModels, error) {
+	if factory == nil {
+		return productionModels{}, modelConfigValidationError("configured model factory is unavailable")
+	}
 	configRev, err := modelConfigDigest(config)
 	if err != nil {
 		return productionModels{}, err
 	}
 
 	clients := make(map[string]inference.Client, len(config.Models))
+	// This cache is deliberately scoped to one composition. It is not a
+	// cross-load client-reuse seam, so inline-key rotations still compose fresh.
 	boundClients := make(map[configuredClientCacheKey]inference.Client, len(config.Models))
 	delegateSources := make([]ACPGatewaySource, 0, len(config.Models))
 	primerCandidates := make([]PrimerCandidate, 0, len(config.Models))
@@ -66,12 +122,21 @@ func compileProductionModels(config normalizedModelConfig, factory configuredCli
 	models := make(map[string]model.Model, len(config.Models))
 	var primerEfforts []model.Effort
 	for _, target := range config.Models {
-		cacheKey := configuredClientCacheKey{Target: runtimeModelKeyFor(target.Model), APIKey: target.client.APIKey}
+		if !target.client.valid() {
+			return productionModels{}, modelConfigValidationError("configured model auth must contain at most one of api_key or credential_ref")
+		}
+		cacheKey := configuredClientCacheKey{
+			Target: runtimeModelKeyFor(target.Model), APIKey: target.client.APIKey,
+			CredentialRef: target.client.CredentialRef,
+		}
 		client, ok := boundClients[cacheKey]
 		if !ok {
-			client, err = factory(target.Model, auth.APIKey(target.client.APIKey))
+			client, err = factory(ctx, target.Model, target.client)
 			if err != nil {
-				return productionModels{}, fmt.Errorf("coderig: construct configured model alias %q provider %q", target.Alias, target.Model.Provider)
+				return productionModels{}, &configuredClientConstructionError{Alias: target.Alias, Provider: string(target.Model.Provider), Cause: err}
+			}
+			if nilInferenceClient(client) {
+				return productionModels{}, modelConfigValidationError("configured model factory returned no client")
 			}
 			boundClients[cacheKey] = client
 		}
@@ -173,10 +238,24 @@ func compileProductionModels(config normalizedModelConfig, factory configuredCli
 		ACPLaunchers:            acpLaunchers,
 		ClaudeSmall:             loop.ModelAlias(config.ClaudeCodeSmallModel),
 		ConfigRev:               configRev,
+		ClientReuseEligible:     modelConfigDigestEligible(config),
 		PermissionReviewEnabled: permissionReviewEnabled,
 		PermissionReviewModel:   permissionReviewModel,
 		PermissionReviewStrict:  permissionReviewStrict,
 	}, nil
+}
+
+func nilInferenceClient(client inference.Client) bool {
+	if client == nil {
+		return true
+	}
+	value := reflect.ValueOf(client)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
 }
 
 func configuredModelBindings(config normalizedModelConfig, clients map[string]inference.Client) []modelBinding {

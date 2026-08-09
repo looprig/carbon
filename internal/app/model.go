@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"time"
 
 	"github.com/looprig/inference"
@@ -28,8 +29,11 @@ var defaultRetryPolicy = retry.Policy{
 
 // newProductionClient builds the concrete provider client and decorates it
 // with the default retry schedule.
-func newProductionClient(selected model.Model, key auth.APIKey) (inference.Client, error) {
-	client, err := auto.New(selected, key)
+func newProductionClient(selected model.Model, input modelClientInput) (inference.Client, error) {
+	if input.hasCredentialRef() {
+		return nil, modelConfigValidationError("credential_ref requires the credential lifecycle composition")
+	}
+	client, err := auto.New(selected, auth.APIKey(input.APIKey))
 	if err != nil {
 		return nil, err
 	}
@@ -42,13 +46,58 @@ func newProductionClient(selected model.Model, key auth.APIKey) (inference.Clien
 // absent file yields an empty configuration; callers that require a primer
 // reject it before session assembly. Unreadable or invalid files fail here.
 func loadProductionModels(home string) (productionModels, error) {
+	return loadProductionModelsWithContext(context.Background(), home)
+}
+
+func loadProductionModelsWithContext(ctx context.Context, home string) (productionModels, error) {
 	path, err := defaultModelConfigPath(home)
 	if err != nil {
 		return productionModels{}, err
 	}
-	return loadProductionModelsFrom(path, func(selected model.Model, key auth.APIKey) (inference.Client, error) {
-		return newProductionClient(selected, key)
+	data, present, err := readModelConfigFile(path)
+	if err != nil {
+		return productionModels{}, err
+	}
+	if !present {
+		return productionModels{}, nil
+	}
+	decoded, err := decodeModelConfig(data)
+	if err != nil {
+		return productionModels{}, err
+	}
+	normalized, err := normalizeModelConfig(decoded)
+	if err != nil {
+		return productionModels{}, err
+	}
+	if !normalizedUsesCredentialRefs(normalized) {
+		return compileProductionModels(normalized, func(selected model.Model, input modelClientInput) (inference.Client, error) {
+			return newProductionClient(selected, input)
+		})
+	}
+	lease, runtime, err := acquireCredentialRuntime(home)
+	if err != nil {
+		return productionModels{}, err
+	}
+	configured, err := compileProductionModelsWithContext(ctx, normalized, func(ctx context.Context, selected model.Model, input modelClientInput) (inference.Client, error) {
+		return credentialClientFor(ctx, runtime, selected, input)
 	})
+	if err != nil {
+		_ = lease.Release()
+		return productionModels{}, err
+	}
+	configured.credentialRuntime = runtime
+	configured.credentialRefs = runtime.refsSnapshot()
+	configured.credentialLease = lease
+	return configured, nil
+}
+
+func normalizedUsesCredentialRefs(config normalizedModelConfig) bool {
+	for _, target := range config.Models {
+		if target.client.hasCredentialRef() {
+			return true
+		}
+	}
+	return false
 }
 
 func loadProductionModelsFrom(path string, factory configuredClientFactory) (productionModels, error) {

@@ -139,7 +139,7 @@ func preflightProductionACPExecutable(ctx context.Context, probe ACPExecutablePr
 		if probe.SharedProxy == nil || probe.SharedProxy.BaseURL == "" || probe.SharedProxy.Token == "" {
 			return ACPPreflightResult{}
 		}
-		command.Env = filterACPEnv(probe.Env, acpGatewayEnvAllowlist)
+		command.Env = filterACPProviderSecrets(filterACPEnv(probe.Env, acpGatewayEnvAllowlist))
 		managed, err = launch.Dial(probeCtx, launch.Config{
 			Harness:     connector,
 			SharedProxy: probe.SharedProxy,
@@ -166,7 +166,7 @@ func preflightProductionACPExecutable(ctx context.Context, probe ACPExecutablePr
 		if !ok {
 			return ACPPreflightResult{}
 		}
-		command.Env = filterACPEnv(probe.Env, acpNativeAuthEnvAllowlist)
+		command.Env = filterACPProviderSecrets(filterACPEnv(probe.Env, acpNativeAuthEnvAllowlist))
 		managed, err = launch.DialNative(probeCtx, launch.NativeConfig{
 			Harness: native,
 			Command: command,

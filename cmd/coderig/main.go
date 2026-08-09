@@ -46,9 +46,12 @@ const (
 // unconfined acknowledgement (--acknowledge-unconfined; required to select unconfined). There
 // is no positional agent name because CodeRig is one fixed Rig.
 type cliFlags struct {
-	list    bool
-	resume  uuid.UUID
-	dataDir string
+	list             bool
+	credentialList   bool
+	credentialLogin  string
+	credentialLogout string
+	resume           uuid.UUID
+	dataDir          string
 	// accessProfile is the session-fixed product access profile, validated at this
 	// boundary against exactly the three known names before the Rig is constructed.
 	accessProfile coderig.AccessProfile
@@ -82,14 +85,25 @@ func (e *FlagParseError) Unwrap() error { return e.Cause }
 // typed error rather than calling os.Exit, keeping main the single exit point and making
 // the parser unit-testable.
 func parseFlags(args []string) (cliFlags, error) {
+	args, commandErr := normalizeCredentialCommandArgs(args)
+	if commandErr != "" {
+		return cliFlags{}, &FlagParseError{Reason: commandErr}
+	}
 	fs := flag.NewFlagSet("coderig", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	var (
-		list          = fs.Bool("list", false, "list resumable sessions and exit")
-		resume        = fs.String("resume", "", "resume the session with this id")
-		dataDir       = fs.String("data-dir", "", "session store root (default ~/.looprig/store)")
-		accessProfile = fs.String("access-profile", string(coderig.DefaultAccessProfile), "session access profile: readonly|trusted|unconfined")
-		ackUnconfined = fs.Bool("acknowledge-unconfined", false, "acknowledge that --access-profile unconfined runs commands directly on the host with no OS confinement")
+		list                  = fs.Bool("list", false, "list resumable sessions and exit")
+		credentialList        = fs.Bool("credentials-list", false, "list configured credentials and exit")
+		credentialListAlias   = fs.Bool("list-credentials", false, "list configured credentials and exit")
+		credentialListAlias2  = fs.Bool("credential-list", false, "list configured credentials and exit")
+		credentialLogin       = fs.String("login", "", "explicitly start credential login for a provider")
+		credentialLoginAlias  = fs.String("credential-login", "", "explicitly start credential login for a provider")
+		credentialLogout      = fs.String("logout", "", "explicitly log out credential://provider/name")
+		credentialLogoutAlias = fs.String("credential-logout", "", "explicitly log out credential://provider/name")
+		resume                = fs.String("resume", "", "resume the session with this id")
+		dataDir               = fs.String("data-dir", "", "session store root (default ~/.looprig/store)")
+		accessProfile         = fs.String("access-profile", string(coderig.DefaultAccessProfile), "session access profile: readonly|trusted|unconfined")
+		ackUnconfined         = fs.Bool("acknowledge-unconfined", false, "acknowledge that --access-profile unconfined runs commands directly on the host with no OS confinement")
 	)
 	if err := fs.Parse(args); err != nil {
 		return cliFlags{}, &FlagParseError{Reason: "invalid flags", Cause: err}
@@ -116,7 +130,19 @@ func parseFlags(args []string) (cliFlags, error) {
 		return cliFlags{}, &FlagParseError{Reason: "--access-profile unconfined requires --acknowledge-unconfined (it runs commands directly on the host with no OS confinement)"}
 	}
 
-	out := cliFlags{list: *list, dataDir: strings.TrimSpace(*dataDir), accessProfile: profile, acknowledgeUnconfined: *ackUnconfined}
+	login := strings.TrimSpace(*credentialLogin)
+	if login == "" {
+		login = strings.TrimSpace(*credentialLoginAlias)
+	}
+	logout := strings.TrimSpace(*credentialLogout)
+	if logout == "" {
+		logout = strings.TrimSpace(*credentialLogoutAlias)
+	}
+	out := cliFlags{
+		list: *list, credentialList: *credentialList || *credentialListAlias || *credentialListAlias2,
+		credentialLogin: login, credentialLogout: logout,
+		dataDir: strings.TrimSpace(*dataDir), accessProfile: profile, acknowledgeUnconfined: *ackUnconfined,
+	}
 
 	// Detect whether --resume was explicitly given (vs left at its empty default): an
 	// explicit --resume with an empty/whitespace value is a malformed invocation, rejected
@@ -142,7 +168,81 @@ func parseFlags(args []string) (cliFlags, error) {
 	if out.list && !out.resume.IsZero() {
 		return cliFlags{}, &FlagParseError{Reason: "--list and --resume are mutually exclusive"}
 	}
+	var credentialLoginGiven, credentialLogoutGiven, credentialListGiven bool
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "login", "credential-login":
+			credentialLoginGiven = true
+		case "logout", "credential-logout":
+			credentialLogoutGiven = true
+		case "credentials-list", "list-credentials", "credential-list":
+			credentialListGiven = true
+		}
+	})
+	if credentialLoginGiven && out.credentialLogin == "" {
+		return cliFlags{}, &FlagParseError{Reason: "--login requires a provider"}
+	}
+	if credentialLogoutGiven && out.credentialLogout == "" {
+		return cliFlags{}, &FlagParseError{Reason: "--logout requires a credential reference"}
+	}
+	if (credentialListGiven || out.credentialList || out.credentialLogin != "" || out.credentialLogout != "") && !out.resume.IsZero() {
+		return cliFlags{}, &FlagParseError{Reason: "credential commands cannot be combined with --resume"}
+	}
+	commands := 0
+	if out.list {
+		commands++
+	}
+	if out.credentialList {
+		commands++
+	}
+	if out.credentialLogin != "" {
+		commands++
+	}
+	if out.credentialLogout != "" {
+		commands++
+	}
+	if commands > 1 {
+		return cliFlags{}, &FlagParseError{Reason: "credential and session commands are mutually exclusive"}
+	}
 	return out, nil
+}
+
+// normalizeCredentialCommandArgs accepts explicit subcommand spellings in
+// addition to the flag spelling. It is intentionally narrow: only
+// `credentials|credential list`, `login <provider>`, and `logout <reference>`
+// are recognized, so ordinary positional typos remain rejected below.
+func normalizeCredentialCommandArgs(args []string) ([]string, string) {
+	if len(args) == 0 {
+		return args, ""
+	}
+	if args[0] == "login" || args[0] == "logout" {
+		if len(args) < 2 || strings.TrimSpace(args[1]) == "" {
+			return nil, "credential " + args[0] + " requires an argument"
+		}
+		return append([]string{"--" + args[0], args[1]}, args[2:]...), ""
+	}
+	if args[0] != "credentials" && args[0] != "credential" {
+		return args, ""
+	}
+	if len(args) < 2 {
+		return nil, "credential command requires list, login, or logout"
+	}
+	switch args[1] {
+	case "list":
+		return append([]string{"--credentials-list"}, args[2:]...), ""
+	case "login":
+		if len(args) < 3 || strings.TrimSpace(args[2]) == "" {
+			return nil, "credential login requires a provider"
+		}
+		return append([]string{"--login", args[2]}, args[3:]...), ""
+	case "logout":
+		if len(args) < 3 || strings.TrimSpace(args[2]) == "" {
+			return nil, "credential logout requires a credential reference"
+		}
+		return append([]string{"--logout", args[2]}, args[3:]...), ""
+	default:
+		return nil, "unknown credential command " + strconv.Quote(args[1])
+	}
 }
 
 // listSessions prints the session list (id, status, last-active, title) to w, from the store's
@@ -176,6 +276,41 @@ func printSessions(w io.Writer, metas []sessionstore.SessionMeta) error {
 			m.SessionID, m.Status, m.LastActiveAt.Format(time.RFC3339), title)
 	}
 	return nil
+}
+
+func printCredentials(w io.Writer, summaries []coderig.CredentialSummary) error {
+	if len(summaries) == 0 {
+		fmt.Fprintln(w, "no credentials yet")
+		return nil
+	}
+	for _, summary := range summaries {
+		fmt.Fprintf(w, "%s  provider=%s  transport=%s  scheme=%s  usage=%s  status=%s\n",
+			summary.Reference, summary.Provider, summary.Transport, summary.Scheme, summary.Usage, summary.Status)
+	}
+	return nil
+}
+
+func printCredentialLogout(w io.Writer, outcome coderig.CredentialLogoutOutcome) error {
+	remote := "not-attempted"
+	if outcome.RemoteRevocationAttempted {
+		if outcome.RemoteRevoked {
+			remote = "revoked"
+		} else if outcome.RemoteRevocationError {
+			remote = "failed"
+		} else {
+			remote = "not-confirmed"
+		}
+	}
+	fmt.Fprintf(w, "%s  local_catalog=%s  local_state=%s  remote_revocation=%s\n",
+		outcome.Reference, boolStatus(outcome.LocalCatalogDeleted), boolStatus(outcome.LocalStateDeleted), remote)
+	return nil
+}
+
+func boolStatus(value bool) string {
+	if value {
+		return "deleted"
+	}
+	return "not-deleted"
 }
 
 // sessionOpen is the SessionStoreFactory.Open-shaped process composition seam. Production
@@ -231,28 +366,65 @@ func run(ctx context.Context, args []string, out, errOut io.Writer) int {
 		return exitUsage
 	}
 
-	// cfg carries the human-set construction modes; it is built once, here, so both the
-	// store-root resolution below and the later open thunk (openThunk) resolve through the
-	// SAME Config. There is no CLI flag for HomeDir (programmatic-only), so cfg.HomeDir is
-	// always empty today and this resolves identically to the ~/.looprig/store default.
+	// Resolve CodeRig's home exactly once for this process invocation. The
+	// resolved absolute value is carried in Config so credential, model, and
+	// session composition never repeat ambient home discovery.
 	cfg := coderig.Config{AccessProfile: flags.accessProfile}
+	home, herr := coderig.LooprigHome(cfg)
+	if herr != nil {
+		fmt.Fprintln(errOut, "home:", herr)
+		return exitFailed
+	}
+	cfg.HomeDir = home
 
 	// Resolve the store root: the explicit --data-dir, or the ~/.looprig/store default
-	// (relative to cfg's resolved home directory). A home directory that cannot be resolved
-	// fails loud rather than falling back to a surprising path.
+	// (relative to cfg's resolved home directory).
 	dataDir := flags.dataDir
 	if dataDir == "" {
-		home, herr := coderig.LooprigHome(cfg)
-		if herr != nil {
-			fmt.Fprintln(errOut, "persistence:", herr)
-			return exitFailed
-		}
 		dd, derr := coderig.DefaultDataDirIn(home)
 		if derr != nil {
 			fmt.Fprintln(errOut, "persistence:", derr)
 			return exitFailed
 		}
 		dataDir = dd
+	}
+
+	// Credential commands are explicit, short-lived catalog operations. They
+	// do not construct a session store or start the TUI, and login is gated by
+	// the provider registration policy before any browser/network path exists.
+	if flags.credentialList {
+		summaries, err := coderig.ListCredentials(ctx, cfg)
+		if err != nil {
+			fmt.Fprintln(errOut, "credentials list:", err)
+			return exitFailed
+		}
+		if err := printCredentials(out, summaries); err != nil {
+			fmt.Fprintln(errOut, "credentials list:", err)
+			return exitFailed
+		}
+		return exitOK
+	}
+	if flags.credentialLogin != "" {
+		if err := coderig.LoginCredential(ctx, cfg, flags.credentialLogin); err != nil {
+			fmt.Fprintln(errOut, "credentials login:", err)
+			return exitFailed
+		}
+		fmt.Fprintln(out, "credential login complete")
+		return exitOK
+	}
+	if flags.credentialLogout != "" {
+		outcome, err := coderig.LogoutCredential(ctx, cfg, flags.credentialLogout)
+		if outcome.Reference != "" {
+			if printErr := printCredentialLogout(out, outcome); printErr != nil {
+				fmt.Fprintln(errOut, "credentials logout:", printErr)
+				return exitFailed
+			}
+		}
+		if err != nil {
+			fmt.Fprintln(errOut, "credentials logout:", err)
+			return exitFailed
+		}
+		return exitOK
 	}
 
 	// Open the session-store factory: the process-level composition root that owns the single

@@ -99,6 +99,12 @@ type task33ACPHelperState struct {
 
 func runTask33ACPHelper() int {
 	helperPath := os.Getenv("PATH")
+	for _, key := range []string{"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "AWS_SECRET_ACCESS_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "PROVIDER_API_KEY", "PROVIDER_TOKEN", "PROVIDER_SECRET"} {
+		if os.Getenv(key) != "" {
+			fmt.Fprintf(os.Stderr, "task33 ACP helper: provider credential leaked through %s\n", key)
+			return 1
+		}
+	}
 	native := helperPath == task33NativeClaudeACPHelperPath || helperPath == task33NativeCodexACPHelperPath
 	state := &task33ACPHelperState{
 		harness: "codex",

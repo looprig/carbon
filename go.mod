@@ -2,6 +2,40 @@ module github.com/looprig/coderig
 
 go 1.26.4
 
+// Credential-backed model support is composed from unreleased sibling modules
+// during this repository's development migration and GOWORK=off checks. These
+// are monorepo-only directives; Task14/release tagging must replace them with
+// published pre-release versions before an external release is cut.
+replace github.com/looprig/credentials => ../credentials
+
+replace github.com/looprig/acp => ../acp
+
+replace github.com/looprig/classifiers => ../classifiers
+
+replace github.com/looprig/core => ../core
+
+replace github.com/looprig/fsstore => ../fsstore
+
+replace github.com/looprig/harness => ../harness
+
+replace github.com/looprig/mcp => ../mcp
+
+replace github.com/looprig/inference => ../inference
+
+replace github.com/looprig/llm => ../llm
+
+replace github.com/looprig/foreignloops => ../foreignloops
+
+replace github.com/looprig/sandbox => ../sandbox
+
+replace github.com/looprig/secrets => ../secrets
+
+replace github.com/looprig/storage => ../storage
+
+replace github.com/looprig/tools => ../tools
+
+replace github.com/looprig/tui => ../tui
+
 tool (
 	github.com/securego/gosec/v2/cmd/gosec
 	golang.org/x/vuln/cmd/govulncheck
@@ -12,6 +46,7 @@ require (
 	github.com/looprig/acp v0.1.1
 	github.com/looprig/classifiers v0.1.1
 	github.com/looprig/core v0.5.0
+	github.com/looprig/credentials v0.0.0
 	github.com/looprig/foreignloops v0.1.1
 	github.com/looprig/fsstore v0.3.0
 	github.com/looprig/harness v0.21.0
@@ -72,6 +107,7 @@ require (
 	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/invopop/jsonschema v0.14.0 // indirect
 	github.com/landlock-lsm/go-landlock v0.9.0 // indirect
+	github.com/looprig/secrets v0.0.0 // indirect
 	github.com/lucasb-eyer/go-colorful v1.4.1 // indirect
 	github.com/mattn/go-runewidth v0.0.27 // indirect
 	github.com/mdlayher/netlink v1.11.2 // indirect
