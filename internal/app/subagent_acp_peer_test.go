@@ -138,6 +138,9 @@ func runTask33ACPHelper() int {
 		if state.harness == "claude-code" {
 			state.session = "task33-claude-code-session"
 			state.mainModel = "sonnet-5@high"
+		} else if native {
+			state.session = "task33-codex-session"
+			state.mainModel = "native-codex"
 		} else {
 			state.session = "task33-codex-session"
 			state.mainModel = parseTask33Arg("model")
@@ -169,6 +172,19 @@ func runTask33ACPHelper() int {
 					{ID: "acceptEdits", Name: "Accept edits"},
 				},
 			}
+		} else if native {
+			category := protocol.SessionConfigOptionCategoryModel
+			response.ConfigOptions = []protocol.SessionConfigOption{{
+				Category: &category,
+				ID:       "model",
+				Name:     "Model",
+				Select: &protocol.SessionConfigSelect{
+					CurrentValue: protocol.SessionConfigValueID(mainModel),
+					Options: protocol.SessionConfigSelectOptions{Ungrouped: []protocol.SessionConfigSelectOption{{
+						Name: "Native Codex", Value: protocol.SessionConfigValueID(mainModel),
+					}}},
+				},
+			}}
 		}
 		return response, nil
 	})
@@ -179,6 +195,12 @@ func runTask33ACPHelper() int {
 		}
 		value := string(*request.ValueID)
 		state.mu.Lock()
+		if state.harness == "codex" {
+			state.mainModel = value
+			response := task33CodexConfigResponseLocked(state)
+			state.mu.Unlock()
+			return response, nil
+		}
 		if strings.Contains(value, "@") {
 			state.mainModel = value
 		} else {
@@ -269,6 +291,21 @@ func task33ClaudeConfigResponseLocked(state *task33ACPHelperState) protocol.SetS
 				{Name: "Sonnet", Value: "sonnet-5@high"},
 				{Name: "Sonnet small", Value: "sonnet-5"},
 			}},
+		},
+	}}}
+}
+
+func task33CodexConfigResponseLocked(state *task33ACPHelperState) protocol.SetSessionConfigOptionResponse {
+	category := protocol.SessionConfigOptionCategoryModel
+	return protocol.SetSessionConfigOptionResponse{ConfigOptions: []protocol.SessionConfigOption{{
+		Category: &category,
+		ID:       "model",
+		Name:     "Model",
+		Select: &protocol.SessionConfigSelect{
+			CurrentValue: protocol.SessionConfigValueID(state.mainModel),
+			Options: protocol.SessionConfigSelectOptions{Ungrouped: []protocol.SessionConfigSelectOption{{
+				Name: "Native Codex", Value: protocol.SessionConfigValueID(state.mainModel),
+			}}},
 		},
 	}}}
 }
