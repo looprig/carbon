@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"reflect"
 
 	"github.com/looprig/credentials"
 	"github.com/looprig/harness/pkg/loop"
@@ -54,9 +55,16 @@ type productionModels struct {
 }
 
 func compileProductionModels(config normalizedModelConfig, factory configuredClientFactory) (productionModels, error) {
-	configRev, err := modelConfigDigest(config)
-	if err != nil {
-		return productionModels{}, err
+	if factory == nil {
+		return productionModels{}, modelConfigValidationError("configured model factory is unavailable")
+	}
+	var configRev string
+	if modelConfigDigestEligible(config) {
+		var err error
+		configRev, err = modelConfigDigest(config)
+		if err != nil {
+			return productionModels{}, err
+		}
 	}
 
 	clients := make(map[string]inference.Client, len(config.Models))
@@ -66,6 +74,7 @@ func compileProductionModels(config normalizedModelConfig, factory configuredCli
 	primerCandidateTargets := make(map[runtimeModelKey]string, len(config.Models))
 	models := make(map[string]model.Model, len(config.Models))
 	var primerEfforts []model.Effort
+	var err error
 	for _, target := range config.Models {
 		if !target.client.valid() {
 			return productionModels{}, modelConfigValidationError("configured model auth must contain at most one of api_key or credential_ref")
@@ -79,6 +88,9 @@ func compileProductionModels(config normalizedModelConfig, factory configuredCli
 			client, err = factory(target.Model, target.client)
 			if err != nil {
 				return productionModels{}, fmt.Errorf("coderig: construct configured model alias %q provider %q", target.Alias, target.Model.Provider)
+			}
+			if nilInferenceClient(client) {
+				return productionModels{}, modelConfigValidationError("configured model factory returned no client")
 			}
 			boundClients[cacheKey] = client
 		}
@@ -184,6 +196,19 @@ func compileProductionModels(config normalizedModelConfig, factory configuredCli
 		PermissionReviewModel:   permissionReviewModel,
 		PermissionReviewStrict:  permissionReviewStrict,
 	}, nil
+}
+
+func nilInferenceClient(client inference.Client) bool {
+	if client == nil {
+		return true
+	}
+	value := reflect.ValueOf(client)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
 }
 
 func configuredModelBindings(config normalizedModelConfig, clients map[string]inference.Client) []modelBinding {

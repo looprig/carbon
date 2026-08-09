@@ -2,6 +2,39 @@ module github.com/looprig/coderig
 
 go 1.26.4
 
+// Credential-backed model support is composed from the sibling modules during
+// this repository's development migration. These replacements keep this
+// module independently resolvable when callers intentionally disable go.work.
+replace github.com/looprig/credentials => ../credentials
+
+replace github.com/looprig/acp => ../acp
+
+replace github.com/looprig/classifiers => ../classifiers
+
+replace github.com/looprig/core => ../core
+
+replace github.com/looprig/fsstore => ../fsstore
+
+replace github.com/looprig/harness => ../harness
+
+replace github.com/looprig/mcp => ../mcp
+
+replace github.com/looprig/inference => ../inference
+
+replace github.com/looprig/llm => ../llm
+
+replace github.com/looprig/foreignloops => ../foreignloops
+
+replace github.com/looprig/sandbox => ../sandbox
+
+replace github.com/looprig/secrets => ../secrets
+
+replace github.com/looprig/storage => ../storage
+
+replace github.com/looprig/tools => ../tools
+
+replace github.com/looprig/tui => ../tui
+
 tool (
 	github.com/securego/gosec/v2/cmd/gosec
 	golang.org/x/vuln/cmd/govulncheck
@@ -73,6 +106,7 @@ require (
 	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/invopop/jsonschema v0.14.0 // indirect
 	github.com/landlock-lsm/go-landlock v0.9.0 // indirect
+	github.com/looprig/secrets v0.0.0 // indirect
 	github.com/lucasb-eyer/go-colorful v1.4.1 // indirect
 	github.com/mattn/go-runewidth v0.0.27 // indirect
 	github.com/mdlayher/netlink v1.11.2 // indirect

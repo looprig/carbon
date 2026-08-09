@@ -147,6 +147,152 @@ func TestLoadV2ModelConfigDoesNotRewriteBytes(t *testing.T) {
 	}
 }
 
+func TestMigrateModelConfigV2ToV3IsExplicitDeterministicAndValidated(t *testing.T) {
+	const secret = "test-secret-do-not-log-migration"
+	input := strings.NewReplacer(
+		`"provider": "lmstudio"`, `"provider": "openai"`,
+		`"api_format": "openai"`, `"api_format": "openai-responses"`,
+		`"base_url": "http://localhost:1234/v1"`, `"base_url": "https://api.openai.com/v1"`,
+		`"api_key": ""`, `"api_key": "`+secret+`"`,
+	).Replace(validLMStudioModelConfig)
+
+	first, err := migrateModelConfigV2ToV3([]byte(input))
+	if err != nil {
+		t.Fatalf("migrateModelConfigV2ToV3() error = %v", err)
+	}
+	second, err := migrateModelConfigV2ToV3([]byte(input))
+	if err != nil {
+		t.Fatalf("second migrateModelConfigV2ToV3() error = %v", err)
+	}
+	if !bytes.Equal(first, second) {
+		t.Fatalf("migration output is nondeterministic: first=%q second=%q", first, second)
+	}
+	if !strings.Contains(string(first), `"version":3`) || !strings.Contains(string(first), secret) {
+		t.Fatalf("migration output = %s, want v3 and preserved inline key", first)
+	}
+	decoded, err := decodeModelConfig(first)
+	if err != nil {
+		t.Fatalf("decode migrated config: %v", err)
+	}
+	normalized, err := normalizeModelConfig(decoded)
+	if err != nil {
+		t.Fatalf("normalize migrated config: %v", err)
+	}
+	if normalized.Version != modelConfigVersionV3 || normalized.Models[0].client.APIKey != secret {
+		t.Fatalf("normalized migrated config = %#v, want v3 with inline key", normalized)
+	}
+
+	for name, invalid := range map[string]string{
+		"already v3":      strings.Replace(validLMStudioModelConfig, `"version": 2`, `"version": 3`, 1),
+		"unknown version": strings.Replace(validLMStudioModelConfig, `"version": 2`, `"version": 9`, 1),
+		"ambiguous auth":  strings.Replace(validLMStudioModelConfig, `"api_key": "",`, `"api_key": "", "credential_ref": "credential://openai/personal",`, 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := migrateModelConfigV2ToV3([]byte(invalid)); err == nil {
+				t.Fatal("migrateModelConfigV2ToV3() error = nil, want rejection")
+			} else if strings.Contains(err.Error(), secret) {
+				t.Fatalf("migration error exposed credential bytes: %v", err)
+			}
+		})
+	}
+}
+
+func TestWriteMigratedModelConfigV2ToV3IsAtomicOwnerOnlyAndExplicit(t *testing.T) {
+	const secret = "test-secret-do-not-log-writer"
+	input := strings.NewReplacer(
+		`"provider": "lmstudio"`, `"provider": "openai"`,
+		`"api_format": "openai"`, `"api_format": "openai-responses"`,
+		`"base_url": "http://localhost:1234/v1"`, `"base_url": "https://api.openai.com/v1"`,
+		`"api_key": ""`, `"api_key": "`+secret+`"`,
+	).Replace(validLMStudioModelConfig)
+	path := filepath.Join(t.TempDir(), "models.json")
+	writeModelConfigFixture(t, path, []byte(input), 0o600)
+	want, err := migrateModelConfigV2ToV3([]byte(input))
+	if err != nil {
+		t.Fatalf("migrateModelConfigV2ToV3() error = %v", err)
+	}
+
+	if err := writeMigratedModelConfigV2ToV3(path); err != nil {
+		t.Fatalf("writeMigratedModelConfigV2ToV3() error = %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read migrated config: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("written migration = %q, want %q", got, want)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat migrated config: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("migrated config permissions = %04o, want 0600", info.Mode().Perm())
+	}
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		t.Fatalf("read migration directory: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Name() != filepath.Base(path) {
+		t.Fatalf("migration directory entries = %#v, want only destination", entries)
+	}
+
+	beforeSecondWrite := append([]byte(nil), got...)
+	if err := writeMigratedModelConfigV2ToV3(path); err == nil {
+		t.Fatal("second writeMigratedModelConfigV2ToV3() error = nil, want already-v3 rejection")
+	}
+	afterSecondWrite, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read config after rejected migration: %v", err)
+	}
+	if !bytes.Equal(afterSecondWrite, beforeSecondWrite) {
+		t.Fatal("rejected already-v3 migration changed the destination")
+	}
+}
+
+func TestMigrateModelConfigV2ToV3EmitsNativeACPUnionWithoutInternalFields(t *testing.T) {
+	input := strings.Replace(
+		validLMStudioModelConfig,
+		"\n}",
+		",\n  \"native_acp\": {\"codex\": {\"enabled\": true, \"models\": [\"local\"]}}\n}",
+		1,
+	)
+	migrated, err := migrateModelConfigV2ToV3([]byte(input))
+	if err != nil {
+		t.Fatalf("migrateModelConfigV2ToV3(native_acp) error = %v", err)
+	}
+	if strings.Contains(string(migrated), `"Legacy"`) || strings.Contains(string(migrated), `"Model"`) {
+		t.Fatalf("migrated native ACP output exposed internal fields: %s", migrated)
+	}
+	decoded, err := decodeModelConfig(migrated)
+	if err != nil {
+		t.Fatalf("decode migrated native ACP config: %v", err)
+	}
+	if _, err := normalizeModelConfig(decoded); err != nil {
+		t.Fatalf("normalize migrated native ACP config: %v", err)
+	}
+}
+
+func TestWriteMigratedModelConfigV2ToV3RejectsInvalidInputWithoutChangingFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "models.json")
+	want := []byte(validLMStudioModelConfig)
+	writeModelConfigFixture(t, path, want, 0o600)
+	invalid := strings.Replace(validLMStudioModelConfig, `"version": 2`, `"version": 9`, 1)
+	if err := os.WriteFile(path, []byte(invalid), 0o600); err != nil {
+		t.Fatalf("write invalid fixture: %v", err)
+	}
+	if err := writeMigratedModelConfigV2ToV3(path); err == nil {
+		t.Fatal("writeMigratedModelConfigV2ToV3() error = nil, want invalid-version rejection")
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read invalid config after rejected migration: %v", err)
+	}
+	if !bytes.Equal(got, []byte(invalid)) {
+		t.Fatal("rejected invalid migration changed the destination")
+	}
+}
+
 func TestDecodeModelConfigRejectsRemovedDelegateDefaults(t *testing.T) {
 	// This wire value is a strict-rejection fixture for the removed field; it
 	// must not be accepted or migrated.

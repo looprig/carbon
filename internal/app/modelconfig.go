@@ -327,6 +327,31 @@ type modelConfigV3Wire struct {
 	ACPLaunchers         map[string]acpLauncherConfig      `json:"acp_launchers"`
 }
 
+// modelConfigV3OutputWire keeps decode-only native ACP union metadata out of
+// emitted JSON. nativeACPModelConfig.Legacy is an internal marker, not a v3
+// wire field; output uses either the legacy string form or the strict object
+// form accepted by nativeACPProfileConfig.UnmarshalJSON.
+type modelConfigV3OutputWire struct {
+	Version              int                                 `json:"version"`
+	PrimerDefault        string                              `json:"primer_default"`
+	ClaudeCodeSmallModel string                              `json:"claude_code_small_model"`
+	Models               []modelTargetConfigV3Wire           `json:"models"`
+	NativeACP            map[string]nativeACPProfileV3Output `json:"native_acp"`
+	PermissionReview     *permissionReviewConfig             `json:"permission_review,omitempty"`
+	ACPLaunchers         map[string]acpLauncherConfig        `json:"acp_launchers"`
+}
+
+type nativeACPProfileV3Output struct {
+	Enabled bool   `json:"enabled"`
+	Models  *[]any `json:"models,omitempty"`
+}
+
+type nativeACPModelV3Output struct {
+	Model         string   `json:"model"`
+	Efforts       []string `json:"efforts"`
+	DefaultEffort string   `json:"default_effort"`
+}
+
 type modelTargetConfigV2Wire struct {
 	Alias         string                   `json:"alias"`
 	Description   string                   `json:"description"`
@@ -350,8 +375,8 @@ type modelTargetConfigV3Wire struct {
 	BaseURL       string                   `json:"base_url"`
 	Model         string                   `json:"model"`
 	ContextLimits modelContextLimitsConfig `json:"context_limits"`
-	APIKey        json.RawMessage          `json:"api_key"`
-	CredentialRef json.RawMessage          `json:"credential_ref"`
+	APIKey        json.RawMessage          `json:"api_key,omitempty"`
+	CredentialRef json.RawMessage          `json:"credential_ref,omitempty"`
 	Uses          []string                 `json:"uses"`
 	Capabilities  modelCapabilitiesConfig  `json:"capabilities"`
 	Efforts       []string                 `json:"efforts"`
@@ -438,6 +463,179 @@ func decodeModelConfig(data []byte) (modelConfigFile, error) {
 	default:
 		return modelConfigFile{}, modelConfigFailure("decode", errors.New("version must be exactly 2 or 3"))
 	}
+}
+
+// migrateModelConfigV2ToV3 is the explicit, pure migration seam. Ordinary
+// model loading never calls it: v2 files remain readable and byte-stable until
+// an account/configuration operation explicitly requests migration.
+func migrateModelConfigV2ToV3(data []byte) ([]byte, error) {
+	if len(data) > maxModelConfigBytes {
+		return nil, modelConfigFailure("migrate", errors.New("source exceeds the model configuration size limit"))
+	}
+	decoded, err := decodeModelConfig(data)
+	if err != nil {
+		return nil, err
+	}
+	if decoded.Version != modelConfigVersionV2 {
+		return nil, modelConfigFailure("migrate", errors.New("source version must be exactly 2"))
+	}
+	normalized, err := normalizeModelConfig(decoded)
+	if err != nil {
+		return nil, err
+	}
+	normalized.Version = modelConfigVersionV3
+	return encodeModelConfigV3(normalized)
+}
+
+// encodeModelConfigV3 emits only the validated schema-v3 wire representation.
+// It accepts normalized input so credentials have already passed the schema's
+// auth checks; the encoder never hashes, logs, or includes a credential in an
+// error. The bound is enforced before callers can publish the bytes.
+func encodeModelConfigV3(config normalizedModelConfig) ([]byte, error) {
+	if config.Version != modelConfigVersionV3 {
+		return nil, modelConfigFailure("encode", errors.New("normalized configuration must be schema version 3"))
+	}
+	wire := modelConfigV3OutputWire{
+		Version:              modelConfigVersionV3,
+		PrimerDefault:        config.PrimerDefault,
+		ClaudeCodeSmallModel: config.ClaudeCodeSmallModel,
+		Models:               make([]modelTargetConfigV3Wire, 0, len(config.Models)),
+		NativeACP:            make(map[string]nativeACPProfileV3Output, len(config.NativeACP)),
+		ACPLaunchers:         make(map[string]acpLauncherConfig, len(config.ACPLaunchers)),
+	}
+	if config.PermissionReview != nil {
+		wire.PermissionReview = &permissionReviewConfig{
+			Model: config.PermissionReview.Model, Strict: config.PermissionReview.Strict,
+		}
+	}
+	for harness, launcher := range config.ACPLaunchers {
+		wire.ACPLaunchers[harness] = acpLauncherConfig{Executable: launcher.Executable}
+	}
+	if len(wire.ACPLaunchers) == 0 {
+		wire.ACPLaunchers = nil
+	}
+	for harness, profile := range config.NativeACP {
+		entry := nativeACPProfileV3Output{Enabled: profile.Enabled}
+		if profile.ModelOptions != nil {
+			options := make([]any, 0, len(profile.ModelOptions))
+			for _, option := range profile.ModelOptions {
+				efforts := make([]string, len(option.Efforts))
+				for i, effort := range option.Efforts {
+					efforts[i] = modelConfigEffortName(effort)
+				}
+				options = append(options, nativeACPModelV3Output{
+					Model: option.Model, Efforts: efforts,
+					DefaultEffort: modelConfigEffortName(option.DefaultEffort),
+				})
+			}
+			entry.Models = &options
+		} else if profile.Models != nil {
+			models := make([]any, len(profile.Models))
+			for i, modelID := range profile.Models {
+				models[i] = modelID
+			}
+			entry.Models = &models
+		}
+		wire.NativeACP[harness] = entry
+	}
+	if len(wire.NativeACP) == 0 {
+		wire.NativeACP = nil
+	}
+	for _, target := range config.Models {
+		if !target.client.valid() {
+			return nil, modelConfigFailure("encode", errors.New("normalized model auth contains both credential forms"))
+		}
+		row := modelTargetConfigV3Wire{
+			Alias: target.Alias, Description: target.Description,
+			Provider: string(target.Model.Provider), APIFormat: string(target.Model.APIFormat),
+			BaseURL: target.Model.BaseURL, Model: target.Model.Name,
+			ContextLimits: modelContextLimitsConfig{
+				WindowTokens:    target.Model.Limits.WindowTokens,
+				MaxInputTokens:  target.Model.Limits.MaxInputTokens,
+				MaxOutputTokens: target.Model.Limits.MaxOutputTokens,
+			},
+			Uses: append([]string(nil), target.Uses...),
+			Capabilities: modelCapabilitiesConfig{
+				Tools: target.Model.Caps.Tools, Thinking: target.Model.Caps.Thinking,
+				Images: target.Model.Caps.AcceptsImages, PromptCaching: target.Model.Caps.PromptCaching,
+				StructuredOutput:          target.Model.Caps.StructuredOutput,
+				StructuredOutputWithTools: target.Model.Caps.StructuredOutputWithTools,
+			},
+			Efforts: make([]string, len(target.Efforts)), DefaultEffort: modelConfigEffortName(target.DefaultEffort),
+		}
+		for i, effort := range target.Efforts {
+			row.Efforts[i] = modelConfigEffortName(effort)
+		}
+		if target.client.hasAPIKey() {
+			row.APIKey, _ = json.Marshal(target.client.APIKey)
+		} else if target.client.hasCredentialRef() {
+			row.CredentialRef, _ = json.Marshal(target.client.CredentialRef.String())
+		}
+		wire.Models = append(wire.Models, row)
+	}
+	data, err := json.Marshal(wire)
+	if err != nil {
+		return nil, modelConfigFailure("encode", errors.New("could not encode schema version 3"))
+	}
+	if len(data) > maxModelConfigBytes {
+		return nil, modelConfigFailure("encode", errors.New("encoded configuration exceeds the model configuration size limit"))
+	}
+	return data, nil
+}
+
+// writeMigratedModelConfigV2ToV3 performs the explicit migration publication.
+// It validates the existing owner-only v2 file first, writes a 0600 temporary
+// sibling, fsyncs it, and atomically renames it over the destination. It never
+// runs as part of read-only loadModelConfig paths.
+func writeMigratedModelConfigV2ToV3(path string) error {
+	data, present, err := readModelConfigFile(path)
+	if err != nil {
+		return err
+	}
+	if !present {
+		return modelConfigFailure("migrate", errors.New("model configuration is absent"))
+	}
+	migrated, err := migrateModelConfigV2ToV3(data)
+	if err != nil {
+		return err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return modelConfigFailure("migrate", errors.New("model configuration changed during migration"))
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
+		return modelConfigFailure("migrate", errors.New("model configuration is not an owner-only regular file"))
+	}
+	temp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".migration-*")
+	if err != nil {
+		return modelConfigFailure("migrate", errors.New("could not create migration temporary file"))
+	}
+	tempPath := temp.Name()
+	removeTemp := true
+	defer func() {
+		if removeTemp {
+			_ = os.Remove(tempPath)
+		}
+	}()
+	if written, err := temp.Write(migrated); err != nil || written != len(migrated) {
+		_ = temp.Close()
+		return modelConfigFailure("migrate", errors.New("could not write migrated model configuration"))
+	}
+	if err := temp.Sync(); err != nil {
+		_ = temp.Close()
+		return modelConfigFailure("migrate", errors.New("could not sync migrated model configuration"))
+	}
+	if err := temp.Close(); err != nil {
+		return modelConfigFailure("migrate", errors.New("could not close migrated model configuration"))
+	}
+	if err := os.Chmod(tempPath, info.Mode().Perm()); err != nil {
+		return modelConfigFailure("migrate", errors.New("could not set migration file permissions"))
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		return modelConfigFailure("migrate", errors.New("could not publish migrated model configuration"))
+	}
+	removeTemp = false
+	return nil
 }
 
 func safeModelConfigDecodeError(err error) error {

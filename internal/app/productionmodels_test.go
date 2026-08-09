@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -113,12 +115,8 @@ func TestProductionModelsConstructsCredentialBoundClients(t *testing.T) {
 	if got.ClaudeSmall != "fixture-local" {
 		t.Fatalf("ClaudeSmall = %q, want fixture-local", got.ClaudeSmall)
 	}
-	wantRev, err := modelConfigDigest(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.ConfigRev != wantRev {
-		t.Fatalf("ConfigRev = %q, want %q", got.ConfigRev, wantRev)
+	if got.ConfigRev != "" {
+		t.Fatalf("ConfigRev = %q, want empty for inline-key catalog", got.ConfigRev)
 	}
 	for _, formatted := range []string{fmt.Sprintf("%v", got), fmt.Sprintf("%+v", got), fmt.Sprintf("%#v", got)} {
 		if strings.Contains(formatted, primerKey) || strings.Contains(formatted, delegateKey) {
@@ -152,6 +150,115 @@ func TestProductionModelsFactoryReceivesExplicitCredentialReference(t *testing.T
 	}
 	if gotAuth.APIKey != "" || gotAuth.CredentialRef != ref {
 		t.Fatalf("factory auth input = %#v, want only credential reference", gotAuth)
+	}
+}
+
+func TestProductionModelsInlineKeysSuppressStableRevisionAndRecompose(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "models.json")
+	makeConfig := func(key string) []byte {
+		return []byte(strings.NewReplacer(
+			`"provider": "lmstudio"`, `"provider": "openai"`,
+			`"api_format": "openai"`, `"api_format": "openai-responses"`,
+			`"base_url": "http://localhost:1234/v1"`, `"base_url": "https://api.openai.com/v1"`,
+			`"api_key": ""`, `"api_key": "`+key+`"`,
+		).Replace(validLMStudioModelConfig))
+	}
+	if err := os.WriteFile(path, makeConfig("test-secret-inline-one"), 0o600); err != nil {
+		t.Fatalf("write first inline-key config: %v", err)
+	}
+	calls := 0
+	factory := func(_ model.Model, input modelClientInput) (inference.Client, error) {
+		calls++
+		return &fakeLLM{credential: input.APIKey}, nil
+	}
+	first, err := loadProductionModelsFrom(path, factory)
+	if err != nil {
+		t.Fatalf("load first inline-key config: %v", err)
+	}
+	if first.ConfigRev != "" {
+		t.Fatalf("first inline-key ConfigRev = %q, want empty ineligible revision", first.ConfigRev)
+	}
+	if err := os.WriteFile(path, makeConfig("test-secret-inline-two"), 0o600); err != nil {
+		t.Fatalf("write second inline-key config: %v", err)
+	}
+	second, err := loadProductionModelsFrom(path, factory)
+	if err != nil {
+		t.Fatalf("load second inline-key config: %v", err)
+	}
+	if second.ConfigRev != "" {
+		t.Fatalf("second inline-key ConfigRev = %q, want empty ineligible revision", second.ConfigRev)
+	}
+	if calls != 2 {
+		t.Fatalf("inline-key factory calls = %d, want fresh composition for both loads", calls)
+	}
+}
+
+func TestProductionModelsCredentialReferencesRetainStableSafeRevision(t *testing.T) {
+	ref, err := credentials.ParseReference("credential://openai/personal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := normalizedModelConfig{
+		Version:       modelConfigVersionV3,
+		PrimerDefault: "fixture-primer",
+		Models: []normalizedModelTarget{{
+			Alias: "fixture-primer",
+			Model: model.CustomModel("openai", model.APIFormatOpenAIResponses, "https://api.openai.com/v1", "gpt-5", model.WithTools()),
+			Uses:  []string{"primer"}, Efforts: []model.Effort{model.EffortNone}, DefaultEffort: model.EffortNone,
+			client: modelClientInput{CredentialRef: ref},
+		}},
+	}
+	factory := func(model.Model, modelClientInput) (inference.Client, error) { return &fakeLLM{}, nil }
+	first, err := compileProductionModels(config, factory)
+	if err != nil {
+		t.Fatalf("compile first reference config: %v", err)
+	}
+	second, err := compileProductionModels(config, factory)
+	if err != nil {
+		t.Fatalf("compile second reference config: %v", err)
+	}
+	if first.ConfigRev == "" || first.ConfigRev != second.ConfigRev {
+		t.Fatalf("reference ConfigRevs = %q and %q, want stable non-empty revision", first.ConfigRev, second.ConfigRev)
+	}
+	if strings.Contains(first.ConfigRev, ref.String()) {
+		t.Fatalf("ConfigRev exposed credential reference: %q", first.ConfigRev)
+	}
+}
+
+func TestCompileProductionModelsRejectsNilFactoryAndClients(t *testing.T) {
+	config := normalizedModelConfig{
+		PrimerDefault: "fixture-primer",
+		Models: []normalizedModelTarget{{
+			Alias: "fixture-primer",
+			Model: model.CustomModel("lmstudio", model.APIFormatOpenAI, "http://localhost:1234/v1", "fixture", model.WithTools()),
+			Uses:  []string{"primer"}, Efforts: []model.Effort{model.EffortNone}, DefaultEffort: model.EffortNone,
+		}},
+	}
+	tests := []struct {
+		name    string
+		factory configuredClientFactory
+	}{
+		{name: "nil factory", factory: nil},
+		{name: "nil client", factory: func(model.Model, modelClientInput) (inference.Client, error) { return nil, nil }},
+		{name: "typed nil client", factory: func(model.Model, modelClientInput) (inference.Client, error) {
+			var client *fakeLLM
+			return client, nil
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := compileProductionModels(config, tt.factory)
+			if err == nil {
+				t.Fatal("compileProductionModels() error = nil, want typed boundary rejection")
+			}
+			var configErr *ModelConfigError
+			if !errors.As(err, &configErr) {
+				t.Fatalf("compileProductionModels() error = %T %v, want *ModelConfigError", err, err)
+			}
+			if strings.Contains(err.Error(), "test-secret") {
+				t.Fatalf("factory boundary error exposed credential material: %v", err)
+			}
+		})
 	}
 }
 
