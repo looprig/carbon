@@ -159,6 +159,8 @@ type CredentialLogoutError struct {
 	Catalog  bool
 	State    bool
 	Canceled bool
+	Warning  bool
+	cause    error
 }
 
 func (e *CredentialLogoutError) Error() string {
@@ -167,6 +169,9 @@ func (e *CredentialLogoutError) Error() string {
 	}
 	if e.Canceled {
 		return "coderig: credential logout canceled"
+	}
+	if e.Warning {
+		return "coderig: credential logout completed with local durability warning"
 	}
 	if e.Catalog && e.State {
 		return "coderig: credential logout could not delete local catalog and state"
@@ -181,10 +186,16 @@ func (e *CredentialLogoutError) Error() string {
 }
 
 func (e *CredentialLogoutError) Unwrap() error {
-	if e != nil && e.Canceled {
+	if e == nil {
+		return nil
+	}
+	if e.Canceled {
+		if e.cause != nil {
+			return errors.Join(context.Canceled, e.cause)
+		}
 		return context.Canceled
 	}
-	return nil
+	return e.cause
 }
 
 func (e *CredentialLogoutError) Format(state fmt.State, _ rune) {
@@ -345,6 +356,7 @@ type credentialRegistryEntry struct {
 	home    string
 	runtime *credentialRuntime
 	borrows int
+	closing bool
 	done    chan struct{}
 }
 
@@ -394,6 +406,12 @@ func acquireCredentialRuntime(home string) (*credentialRegistryLease, *credentia
 			processCredentialRegistry.mu.Unlock()
 			return &credentialRegistryLease{registry: processCredentialRegistry, key: key, entry: entry}, runtime, nil
 		}
+		if entry.closing {
+			done := entry.done
+			processCredentialRegistry.mu.Unlock()
+			<-done
+			continue
+		}
 		closed, closing := entry.runtime.lifecycleState()
 		if !closed && !closing {
 			entry.borrows++
@@ -420,7 +438,14 @@ func (l *credentialRegistryLease) Release() error {
 		if l.entry.borrows > 0 {
 			l.entry.borrows--
 		}
-		last := l.entry.borrows == 0
+		last := l.entry.borrows == 0 && !l.entry.closing
+		if last {
+			// Publish the closing state while still holding the registry lock.
+			// An acquirer that observes this entry must wait for runtime.Close
+			// and retry, rather than borrowing a runtime whose final lease is
+			// already being released.
+			l.entry.closing = true
+		}
 		l.registry.mu.Unlock()
 		if last {
 			l.err = l.entry.runtime.Close()
@@ -872,18 +897,58 @@ func (r *credentialRuntime) logout(ctx context.Context, ref credentials.Referenc
 		_ = source.Close()
 	}
 
-	if err := r.catalog.Delete(ctx, ref); err != nil && !errors.Is(err, credentials.ErrCatalogNotFound) {
-		return outcome, &CredentialLogoutError{Outcome: outcome, Catalog: true}
-	}
-	outcome.LocalCatalogDeleted = true
+	// StatePublisher re-reads the current catalog record, validates the state
+	// namespace, resolves its current version, removes the catalog entry, and
+	// CAS-deletes exactly that resolved version. This preserves the split local
+	// outcome when state is missing or changes after resolution.
+	deleteErr := (credentials.StatePublisher{
+		Catalog:   r.catalog,
+		Store:     r.store,
+		Namespace: r.namespace,
+	}).Delete(ctx, record)
+	return credentialLogoutDeleteOutcome(outcome, deleteErr)
+}
 
-	deleted, stateErr := r.store.Delete(ctx, record.State, secrets.UnconditionalDelete())
-	if stateErr != nil {
-		return outcome, &CredentialLogoutError{Outcome: outcome, State: true}
+func credentialLogoutDeleteOutcome(outcome CredentialLogoutOutcome, deleteErr error) (CredentialLogoutOutcome, error) {
+	if deleteErr == nil {
+		outcome.LocalCatalogDeleted = true
+		outcome.LocalStateDeleted = true
+		outcome.LocalDeleted = true
+		return outcome, nil
 	}
-	outcome.LocalStateDeleted = deleted.Status == secrets.DeleteStatusDeleted || deleted.Status == secrets.DeleteStatusAbsent
-	outcome.LocalDeleted = outcome.LocalCatalogDeleted && outcome.LocalStateDeleted
-	return outcome, nil
+	if errors.Is(deleteErr, credentials.ErrCanceled) || errors.Is(deleteErr, context.Canceled) || errors.Is(deleteErr, context.DeadlineExceeded) {
+		return outcome, &CredentialLogoutError{Outcome: outcome, Canceled: true, cause: deleteErr}
+	}
+
+	// StatePublisher exposes a state-deletion error only after catalog removal
+	// has become visible. Visible durability warnings likewise report both
+	// mutations as completed, while retaining a typed warning for callers.
+	catalogDeleted := errors.Is(deleteErr, credentials.ErrStateDeleteFailed) ||
+		errors.Is(deleteErr, credentials.ErrStateDurabilityUnknown) ||
+		errors.Is(deleteErr, credentials.ErrCatalogDurabilityUnknown)
+	stateDeleted := errors.Is(deleteErr, credentials.ErrStateDurabilityUnknown) ||
+		errors.Is(deleteErr, credentials.ErrCatalogDurabilityUnknown)
+	outcome.LocalCatalogDeleted = catalogDeleted
+	outcome.LocalStateDeleted = stateDeleted
+	outcome.LocalDeleted = catalogDeleted && stateDeleted
+
+	stateFailure := errors.Is(deleteErr, credentials.ErrStateDeleteFailed) ||
+		errors.Is(deleteErr, credentials.ErrStateNamespace) ||
+		errors.Is(deleteErr, credentials.ErrStateUnavailable) ||
+		errors.Is(deleteErr, credentials.ErrBuilderDependency) ||
+		errors.Is(deleteErr, secrets.ErrNotFound) ||
+		errors.Is(deleteErr, secrets.ErrConflict) ||
+		errors.Is(deleteErr, secrets.ErrInsecurePath) ||
+		errors.Is(deleteErr, secrets.ErrUnavailable)
+	catalogFailure := !catalogDeleted && !stateFailure
+	warning := stateDeleted && catalogDeleted
+	return outcome, &CredentialLogoutError{
+		Outcome: outcome,
+		Catalog: catalogFailure,
+		State:   stateFailure && !stateDeleted,
+		Warning: warning,
+		cause:   deleteErr,
+	}
 }
 
 // ListCredentials borrows the process-shared explicit catalog composition. It

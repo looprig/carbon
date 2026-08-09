@@ -10,11 +10,13 @@ import (
 	"time"
 
 	"github.com/looprig/credentials"
+	credentialcatalog "github.com/looprig/credentials/catalog"
 	"github.com/looprig/inference/model"
 	"github.com/looprig/llm"
 	anthropicsubscription "github.com/looprig/llm/providers/anthropic/subscription"
 	openaisubscription "github.com/looprig/llm/providers/openai/subscription"
 	"github.com/looprig/secrets"
+	secretslocal "github.com/looprig/secrets/local"
 )
 
 func credentialTestModel(provider llm.Provider, format model.APIFormat, name string) model.Model {
@@ -501,6 +503,301 @@ func TestCredentialRegistrySharesRuntimeAndExportedLogoutDrainsSession(t *testin
 	}
 	if err := third.Release(); err != nil {
 		t.Fatalf("fresh release: %v", err)
+	}
+}
+
+func TestCredentialRegistryLastReleaseWaitsForFreshRuntime(t *testing.T) {
+	home := t.TempDir()
+	lease, runtime, err := acquireCredentialRuntime(home)
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	if err := runtime.beginSession(); err != nil {
+		_ = lease.Release()
+		t.Fatalf("beginSession: %v", err)
+	}
+	defer runtime.endSession()
+
+	releaseDone := make(chan error, 1)
+	go func() { releaseDone <- lease.Release() }()
+
+	// The active session keeps runtime.Close paused after the registry has
+	// marked the last entry closing. This gives the competing acquire a
+	// deterministic point at which it must wait for the fresh runtime.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		processCredentialRegistry.mu.Lock()
+		entry := processCredentialRegistry.entries[home]
+		closing := false
+		if entry != nil {
+			closing = entry.closing
+		}
+		processCredentialRegistry.mu.Unlock()
+		if closing {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("last release did not mark its registry entry closing")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	acquireDone := make(chan struct {
+		lease   *credentialRegistryLease
+		runtime *credentialRuntime
+		err     error
+	}, 1)
+	go func() {
+		freshLease, freshRuntime, acquireErr := acquireCredentialRuntime(home)
+		acquireDone <- struct {
+			lease   *credentialRegistryLease
+			runtime *credentialRuntime
+			err     error
+		}{lease: freshLease, runtime: freshRuntime, err: acquireErr}
+	}()
+	select {
+	case result := <-acquireDone:
+		if result.lease != nil {
+			_ = result.lease.Release()
+		}
+		t.Fatalf("acquire completed while last runtime was closing: runtime=%p err=%v", result.runtime, result.err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	runtime.endSession()
+	select {
+	case err := <-releaseDone:
+		if err != nil {
+			t.Fatalf("last release: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("last release did not finish after session drain")
+	}
+	select {
+	case result := <-acquireDone:
+		if result.err != nil {
+			t.Fatalf("fresh acquire: %v", result.err)
+		}
+		if result.runtime == runtime {
+			_ = result.lease.Release()
+			t.Fatal("acquire reused runtime after its last borrow closed")
+		}
+		if closed, closing := result.runtime.lifecycleState(); closed || closing {
+			_ = result.lease.Release()
+			t.Fatalf("fresh acquire returned unusable runtime: closed=%v closing=%v", closed, closing)
+		}
+		if err := result.lease.Release(); err != nil {
+			t.Fatalf("fresh release: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("acquire did not resume after runtime close")
+	}
+}
+
+func TestCredentialLogoutRejectsStateOutsideCredentialNamespace(t *testing.T) {
+	runtime, err := newCredentialRuntime(t.TempDir())
+	if err != nil {
+		t.Fatalf("newCredentialRuntime: %v", err)
+	}
+	defer runtime.Close()
+	ref, err := credentials.ParseReference("credential://openai/namespace-mismatch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptor := credentialTestDescriptor(t)
+	state, err := secrets.NewReference("local", "other/namespace-mismatch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	record, err := credentials.NewRecord(ref, descriptor, state, now, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.catalog.Create(context.Background(), record); err != nil {
+		t.Fatalf("catalog.Create: %v", err)
+	}
+
+	outcome, logoutErr := runtime.logout(context.Background(), ref)
+	if logoutErr == nil {
+		t.Fatal("logout error = nil, want state namespace failure")
+	}
+	if outcome.LocalCatalogDeleted || outcome.LocalStateDeleted || outcome.LocalDeleted {
+		t.Fatalf("logout outcome = %+v, want no deletion before namespace validation", outcome)
+	}
+	var bounded *CredentialLogoutError
+	if !errors.As(logoutErr, &bounded) || !bounded.State {
+		t.Fatalf("logout error = %T %v, want bounded state failure", logoutErr, logoutErr)
+	}
+	if !errors.Is(logoutErr, credentials.ErrStateNamespace) {
+		t.Fatalf("logout error = %v, want ErrStateNamespace", logoutErr)
+	}
+	if _, err := runtime.catalog.Get(context.Background(), ref); err != nil {
+		t.Fatalf("catalog record after namespace rejection = %v, want retained", err)
+	}
+}
+
+func TestCredentialLogoutReportsMissingStateWithoutClaimingDeletion(t *testing.T) {
+	runtime, err := newCredentialRuntime(t.TempDir())
+	if err != nil {
+		t.Fatalf("newCredentialRuntime: %v", err)
+	}
+	defer runtime.Close()
+	ref, err := credentials.ParseReference("credential://openai/missing-state")
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptor := credentialTestDescriptor(t)
+	state, err := secrets.NewReference("local", "credentials/openai/missing-state")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	record, err := credentials.NewRecord(ref, descriptor, state, now, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.catalog.Create(context.Background(), record); err != nil {
+		t.Fatalf("catalog.Create: %v", err)
+	}
+
+	outcome, logoutErr := runtime.logout(context.Background(), ref)
+	if logoutErr == nil {
+		t.Fatal("logout error = nil, want incomplete state deletion")
+	}
+	if !outcome.LocalCatalogDeleted || outcome.LocalStateDeleted || outcome.LocalDeleted {
+		t.Fatalf("logout outcome = %+v, want catalog deleted and state incomplete", outcome)
+	}
+	var bounded *CredentialLogoutError
+	if !errors.As(logoutErr, &bounded) || !bounded.State {
+		t.Fatalf("logout error = %T %v, want bounded state failure", logoutErr, logoutErr)
+	}
+	if !errors.Is(logoutErr, secrets.ErrNotFound) {
+		t.Fatalf("logout error = %v, want secrets.ErrNotFound", logoutErr)
+	}
+	if _, err := runtime.catalog.Get(context.Background(), ref); !errors.Is(err, credentials.ErrCatalogNotFound) {
+		t.Fatalf("catalog after missing-state logout = %v, want not-found", err)
+	}
+}
+
+func TestCredentialLogoutCASProtectsStateChangedAfterResolve(t *testing.T) {
+	home := t.TempDir()
+	stateRoot := filepath.Join(home, "state")
+	catalogRoot := filepath.Join(home, "catalog")
+	mutator, err := secretslocal.New(stateRoot)
+	if err != nil {
+		t.Fatalf("mutator store: %v", err)
+	}
+	defer mutator.Close()
+	var stateRef secrets.Reference
+	catalog, err := credentialcatalog.NewWithOptions(catalogRoot, credentialcatalog.Options{Hooks: credentialcatalog.Hooks{
+		BeforeUnlink: func() error {
+			value, valueErr := secrets.New([]byte("rotated-state"))
+			if valueErr != nil {
+				return valueErr
+			}
+			_, putErr := mutator.Put(context.Background(), stateRef, value, secrets.UnconditionalPut())
+			return putErr
+		},
+	}})
+	if err != nil {
+		t.Fatalf("hooked catalog: %v", err)
+	}
+	runtime := newCredentialRuntimeWithStores(t, catalog, mustSecretStore(t, stateRoot))
+	defer runtime.Close()
+	ref, err := credentials.ParseReference("credential://openai/changed-state")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateRef, err = secrets.NewReference("local", "credentials/openai/changed-state")
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptor := credentialTestDescriptor(t)
+	state, err := secrets.New([]byte("initial-state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial, err := runtime.store.Put(context.Background(), stateRef, state, secrets.UnconditionalPut())
+	if err != nil {
+		t.Fatalf("initial state: %v", err)
+	}
+	now := time.Now().UTC()
+	record, err := credentials.NewRecord(ref, descriptor, stateRef, now, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.catalog.Create(context.Background(), record); err != nil {
+		t.Fatalf("catalog.Create: %v", err)
+	}
+
+	outcome, logoutErr := runtime.logout(context.Background(), ref)
+	if logoutErr == nil {
+		t.Fatal("logout error = nil, want CAS conflict")
+	}
+	if !outcome.LocalCatalogDeleted || outcome.LocalStateDeleted || outcome.LocalDeleted {
+		t.Fatalf("logout outcome = %+v, want catalog deleted and changed state retained", outcome)
+	}
+	var bounded *CredentialLogoutError
+	if !errors.As(logoutErr, &bounded) || !bounded.State {
+		t.Fatalf("logout error = %T %v, want bounded state failure", logoutErr, logoutErr)
+	}
+	if !errors.Is(logoutErr, secrets.ErrConflict) {
+		t.Fatalf("logout error = %v, want secrets.ErrConflict", logoutErr)
+	}
+	current, err := runtime.store.Resolve(context.Background(), stateRef)
+	if err != nil {
+		t.Fatalf("state after CAS conflict: %v", err)
+	}
+	if current.Version == initial.Version || string(current.Value.Bytes()) != "rotated-state" {
+		t.Fatalf("state after CAS conflict = version %v value %q, want rotated state", current.Version, current.Value.Bytes())
+	}
+}
+
+func credentialTestDescriptor(t *testing.T) credentials.Descriptor {
+	t.Helper()
+	policy, err := llm.AuthPolicyForModel(credentialTestModel(llm.ProviderOpenAI, model.APIFormatOpenAIResponses, "gpt-test"))
+	if err != nil {
+		t.Fatalf("auth policy: %v", err)
+	}
+	descriptor, err := policy.Accepted[0].Descriptor()
+	if err != nil {
+		t.Fatalf("descriptor: %v", err)
+	}
+	return descriptor
+}
+
+func mustSecretStore(t *testing.T, root string) *secretslocal.Store {
+	t.Helper()
+	store, err := secretslocal.New(root)
+	if err != nil {
+		t.Fatalf("secret store: %v", err)
+	}
+	return store
+}
+
+func newCredentialRuntimeWithStores(t *testing.T, catalog *credentialcatalog.Local, store *secretslocal.Store) *credentialRuntime {
+	t.Helper()
+	namespace, err := secrets.NewNamespace("local", "credentials")
+	if err != nil {
+		t.Fatalf("credential namespace: %v", err)
+	}
+	closed := func() chan struct{} {
+		done := make(chan struct{})
+		close(done)
+		return done
+	}
+	return &credentialRuntime{
+		store: store, catalog: catalog, namespace: namespace,
+		sources:    make(map[credentials.Reference]credentials.Source),
+		refs:       make(map[credentials.Reference]struct{}),
+		active:     make(map[credentials.Reference]int),
+		blocked:    make(map[credentials.Reference]bool),
+		activeDone: closed(), opDone: closed(),
+		builder: credentials.Builder{
+			Catalog: catalog, Store: store, StateNamespace: namespace,
+			Providers: credentials.NewProviderFactories(nil),
+		},
 	}
 }
 
