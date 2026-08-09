@@ -9,8 +9,10 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/looprig/acp/launch"
 	"github.com/looprig/acp/protocol"
@@ -475,6 +477,203 @@ func TestAgentRuntimeChoicesEndToEnd(t *testing.T) {
 		t.Fatalf("tool result contains secret/path/URL-looking data: %q", toolResult)
 	}
 	assertTask33DurableEvents(t, replayACPEvents(t, stores.session, agent.SessionID()), claude)
+}
+
+func TestNativeCodexStartAgentSelectsModelAndEffortOverWire(t *testing.T) {
+	parent := &managedScript{}
+	compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
+		NativeACP: map[string]ACPNativeProfile{"codex": {
+			Harness: "codex", Enabled: true,
+			ModelOptions: []ACPNativeModelOption{{
+				Alias: "friendly-luna", Model: "gpt-5.6-luna",
+				Efforts: []model.Effort{model.EffortHigh, model.EffortMax}, DefaultEffort: model.EffortMax,
+			}},
+		}},
+		PrimerTarget: runtimeCatalogPrimer(),
+	})
+	if err != nil {
+		t.Fatalf("CompileAgentRuntimeCatalog() error = %v", err)
+	}
+	workspace := t.TempDir()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable() error = %v", err)
+	}
+	composition, err := NewACPComposition(ACPChildrenConfig{
+		Catalog:            compiled,
+		Executables:        map[loop.AgentHarnessName]string{"codex": executable},
+		WorkspaceRoot:      workspace,
+		Env:                []string{"PATH=" + task33NativeCodexACPHelperPath},
+		NativeEnvAllowlist: []string{"PATH"},
+	})
+	if err != nil {
+		t.Fatalf("NewACPComposition() error = %v", err)
+	}
+
+	step := 0
+	parent.fn = func(_ context.Context, req inference.Request) ([]content.Chunk, error) {
+		if !requestHasRole(req, generic.Name) {
+			return nil, fmt.Errorf("unexpected role in native Codex StartAgent request")
+		}
+		switch step {
+		case 0:
+			step++
+			start := findInferenceTool(t, req, "StartAgent")
+			schema := string(start.Schema)
+			if !strings.Contains(schema, "friendly-luna") {
+				return nil, fmt.Errorf("StartAgent schema omitted friendly native alias")
+			}
+			if strings.Contains(schema, "gpt-5.6-luna") {
+				return nil, fmt.Errorf("StartAgent schema leaked adapter model ID")
+			}
+			return startAgentCall("task33-native-codex-start", `{"agent_type":"generic","instructions":"check it","agent_harness":"codex","model":"friendly-luna","effort":"max"}`), nil
+		case 1:
+			if !strings.Contains(lastToolText(req), `"response":"task33 native codex answer"`) {
+				return nil, fmt.Errorf("native Codex StartAgent did not return the expected response")
+			}
+			return finalText("native Codex selection complete"), nil
+		default:
+			return nil, fmt.Errorf("unexpected native Codex parent step %d", step)
+		}
+	}
+
+	access, cfg := headlessTestAccess(t, Config{ACPChildren: composition, RuntimeCatalog: compiled.RuntimeCatalog}, workspace)
+	definition, err := genericTestDefinition(parent, testModel(), cfg, access)
+	if err != nil {
+		t.Fatalf("genericTestDefinition() error = %v", err)
+	}
+	stores, err := openTestStores(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registration, err := newConversationHustleRegistration()
+	if err != nil {
+		t.Fatal(err)
+	}
+	assembly, err := buildRigWithRegistrationAndACP(
+		definition, stores, workspace, cfg, false,
+		rig.DelegationLimits{Depth: delegationSpawnDepth, Quota: delegationSpawnQuota},
+		registration, permissionReviewRegistration{}, composition,
+	)
+	if err != nil {
+		t.Fatalf("buildRigWithRegistrationAndACP() error = %v", err)
+	}
+	controller, err := assembly.NewSession(context.Background())
+	if err != nil {
+		t.Fatalf("NewSession() error = %v", err)
+	}
+	agent, err := newSessionAdapter(context.Background(), controller, stores.session, false)
+	if err != nil {
+		t.Fatalf("newSessionAdapter() error = %v", err)
+	}
+	t.Cleanup(func() { _ = agent.Close(context.Background()) })
+	if got := runManagedTurn(t, agent, "run the native Codex child"); got != "native Codex selection complete" {
+		t.Fatalf("native Codex parent final = %q", got)
+	}
+
+	state, err := os.ReadFile(filepath.Join(workspace, task33NativeCodexStateReceipt))
+	if err != nil {
+		t.Fatalf("read native Codex peer state: %v", err)
+	}
+	if got, want := string(state), "model=gpt-5.6-luna\neffort=max\ncalls=model=gpt-5.6-luna,reasoning_effort=max\n"; got != want {
+		t.Fatalf("native Codex peer state = %q, want %q", got, want)
+	}
+
+	sessionID := agent.SessionID()
+	if err := agent.Close(context.Background()); err != nil {
+		t.Fatalf("native Codex initial Close() error = %v", err)
+	}
+	receiptPath := filepath.Join(workspace, task33NativeCodexStateReceipt)
+	if err := os.Remove(receiptPath); err != nil {
+		t.Fatalf("remove fresh native Codex peer state: %v", err)
+	}
+	if _, err := os.Stat(receiptPath); !os.IsNotExist(err) {
+		t.Fatalf("fresh native Codex peer state after removal: err = %v, want not exist", err)
+	}
+	restoredController, err := assembly.RestoreSession(context.Background(), sessionID)
+	if err != nil {
+		t.Fatalf("native Codex RestoreSession() error = %v", err)
+	}
+	restored, err := newSessionAdapter(context.Background(), restoredController, stores.session, true)
+	if err != nil {
+		t.Fatalf("native Codex restored adapter error = %v", err)
+	}
+	t.Cleanup(func() { _ = restored.Close(context.Background()) })
+	restoredState, err := os.ReadFile(receiptPath)
+	if err != nil {
+		t.Fatalf("read restored native Codex peer state: %v", err)
+	}
+	if got, want := string(restoredState), "model=gpt-5.6-luna\neffort=max\ncalls=model=gpt-5.6-luna,reasoning_effort=max\n"; got != want {
+		t.Fatalf("restored native Codex peer state = %q, want %q", got, want)
+	}
+}
+
+func TestNativeCodexUnavailableEffortFailsLazilyWithoutInvalidWireCall(t *testing.T) {
+	compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
+		NativeACP: map[string]ACPNativeProfile{"codex": {
+			Harness: "codex", Enabled: true,
+			ModelOptions: []ACPNativeModelOption{{
+				Alias: "friendly-terra", Model: "gpt-5.6-terra",
+				Efforts: []model.Effort{model.EffortMax}, DefaultEffort: model.EffortMax,
+			}},
+		}},
+		PrimerTarget: runtimeCatalogPrimer(),
+	})
+	if err != nil {
+		t.Fatalf("CompileAgentRuntimeCatalog() error = %v", err)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable() error = %v", err)
+	}
+	workspace := t.TempDir()
+	preflightCalls := 0
+	composition, err := NewACPComposition(ACPChildrenConfig{
+		Catalog:            compiled,
+		Executables:        map[loop.AgentHarnessName]string{"codex": executable},
+		WorkspaceRoot:      workspace,
+		Env:                []string{"PATH=" + task33NativeCodexACPHelperPath},
+		NativeEnvAllowlist: []string{"PATH"},
+		executablePreflight: func(context.Context, ACPExecutableProbe) ACPPreflightResult {
+			preflightCalls++
+			return ACPPreflightResult{Ready: true}
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewACPComposition() error = %v", err)
+	}
+	if preflightCalls != 0 {
+		t.Fatalf("native selection preflight calls = %d, want zero", preflightCalls)
+	}
+	resolved, err := composition.Catalog.RuntimeCatalog.ResolveWithExplicitSource(
+		generic.Name, "codex", loop.RuntimeSourceNative, "friendly-terra", model.EffortMax, true,
+	)
+	if err != nil {
+		t.Fatalf("ResolveWithExplicitSource() error = %v", err)
+	}
+	bound := testACPChildBound(t, resolved)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	backend, _, err := composition.Live(
+		ctx, mustUUID(t), mustUUID(t), loop.Provenance{}, acpPostureMatrixPublisher{}, bound,
+		func() (uuid.UUID, error) { return uuid.New() },
+		event.NewFactory(func() (uuid.UUID, error) { return uuid.New() }, time.Now),
+	)
+	if err == nil {
+		_ = backend
+		t.Fatal("native Codex unavailable effort selection succeeded")
+	}
+	statePath := filepath.Join(workspace, task33NativeCodexStateReceipt)
+	if _, statErr := os.Stat(statePath); !os.IsNotExist(statErr) {
+		t.Fatalf("native Codex final state receipt after unavailable effort: err = %v, want not exist", statErr)
+	}
+	state, err := os.ReadFile(filepath.Join(workspace, task33NativeCodexCallsReceipt))
+	if err != nil {
+		t.Fatalf("read native Codex wire calls after bounded failure: %v", err)
+	}
+	if got, want := string(state), "calls=model=gpt-5.6-terra\n"; got != want {
+		t.Fatalf("native Codex wire calls after unavailable effort = %q, want %q", got, want)
+	}
 }
 
 var task33SensitivePayloadPattern = regexp.MustCompile(`(?i)(https?://|(?:^|[\s"'])/[^\s"']*|[A-Za-z]:[\\/]|secret|token|api[_-]?key)`)

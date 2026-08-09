@@ -23,6 +23,8 @@ const (
 	taskACPPostureHelperPath        = "task-acp-posture-helper"
 	acpPostureReceiptName           = "acp-posture.receipt"
 	acpPostureWriteName             = "acp-posture-write.txt"
+	task33NativeCodexStateReceipt   = "task33-codex-state.receipt"
+	task33NativeCodexCallsReceipt   = "task33-codex-wire-calls.receipt"
 )
 
 // testIsolatedHome is the process-wide temporary directory TestMain
@@ -81,16 +83,18 @@ func runPackageTestsWithIsolatedHome(m *testing.M) int {
 }
 
 type task33ACPHelperState struct {
-	mu         sync.Mutex
-	harness    string
-	workspace  string
-	session    protocol.SessionID
-	baseURL    string
-	token      string
-	mainModel  string
-	smallModel string
-	cancel     chan struct{}
-	cancelOnce sync.Once
+	mu          sync.Mutex
+	harness     string
+	workspace   string
+	session     protocol.SessionID
+	baseURL     string
+	token       string
+	model       string
+	effort      string
+	smallModel  string
+	configCalls []string
+	cancel      chan struct{}
+	cancelOnce  sync.Once
 }
 
 func runTask33ACPHelper() int {
@@ -100,6 +104,8 @@ func runTask33ACPHelper() int {
 		harness: "codex",
 		baseURL: strings.TrimSuffix(parseTask33Arg("model_providers.looprig.base_url"), "/v1"),
 		token:   os.Getenv("LOOPRIG_PROXY_TOKEN"),
+		model:   "native-codex",
+		effort:  "none",
 		cancel:  make(chan struct{}),
 	}
 	if helperPath == task33NativeClaudeACPHelperPath {
@@ -137,13 +143,19 @@ func runTask33ACPHelper() int {
 		state.workspace = request.Cwd
 		if state.harness == "claude-code" {
 			state.session = "task33-claude-code-session"
-			state.mainModel = "sonnet-5@high"
+			state.model = "sonnet-5@high"
+		} else if native {
+			state.session = "task33-codex-session"
+			state.model = "native-codex"
+			state.effort = "none"
 		} else {
 			state.session = "task33-codex-session"
-			state.mainModel = parseTask33Arg("model")
+			state.model = parseTask33Arg("model")
+			state.effort = ""
 		}
 		session := state.session
-		mainModel := state.mainModel
+		modelAlias := state.model
+		effort := state.effort
 		harness := state.harness
 		state.mu.Unlock()
 
@@ -155,7 +167,7 @@ func runTask33ACPHelper() int {
 				ID:       "model",
 				Name:     "Model",
 				Select: &protocol.SessionConfigSelect{
-					CurrentValue: protocol.SessionConfigValueID(mainModel),
+					CurrentValue: protocol.SessionConfigValueID(modelAlias),
 					Options: protocol.SessionConfigSelectOptions{Ungrouped: []protocol.SessionConfigSelectOption{
 						{Name: "Sonnet", Value: "sonnet-5@high"},
 						{Name: "Sonnet small", Value: "sonnet-5"},
@@ -169,8 +181,26 @@ func runTask33ACPHelper() int {
 					{ID: "acceptEdits", Name: "Accept edits"},
 				},
 			}
+		} else if native {
+			response.ConfigOptions = task33CodexConfigOptions(modelAlias, effort)
 		}
 		return response, nil
+	})
+	conn.Handle(string(protocol.MethodSessionLoad), func(_ context.Context, _ string, params json.RawMessage) (any, error) {
+		var request protocol.LoadSessionRequest
+		if err := json.Unmarshal(params, &request); err != nil {
+			return nil, protocol.InvalidParams("task33 session/load", nil)
+		}
+		state.mu.Lock()
+		state.workspace = request.Cwd
+		state.session = request.SessionID
+		if state.harness == "codex" && native {
+			response := protocol.LoadSessionResponse{ConfigOptions: task33CodexConfigOptions(state.model, state.effort)}
+			state.mu.Unlock()
+			return response, nil
+		}
+		state.mu.Unlock()
+		return protocol.LoadSessionResponse{}, nil
 	})
 	conn.Handle(string(protocol.MethodSessionSetConfigOption), func(_ context.Context, _ string, params json.RawMessage) (any, error) {
 		var request protocol.SetSessionConfigOptionRequest
@@ -179,8 +209,48 @@ func runTask33ACPHelper() int {
 		}
 		value := string(*request.ValueID)
 		state.mu.Lock()
+		if state.harness == "codex" && native {
+			if !task33ApplyCodexConfigLocked(state, request.ConfigID, value) {
+				workspace := state.workspace
+				configCalls := append([]string(nil), state.configCalls...)
+				state.mu.Unlock()
+				if len(configCalls) > 0 {
+					_ = writeTask33CodexCallsReceipt(workspace, configCalls)
+				}
+				return nil, protocol.InvalidParams("task33 session/set_config_option", nil)
+			}
+			response := task33CodexConfigResponseLocked(state)
+			workspace := state.workspace
+			modelAlias := state.model
+			effort := state.effort
+			configCalls := append([]string(nil), state.configCalls...)
+			state.mu.Unlock()
+			if len(configCalls) == 1 {
+				if err := writeTask33CodexCallsReceipt(workspace, configCalls); err != nil {
+					return nil, err
+				}
+			} else if len(configCalls) == 2 {
+				if err := writeTask33CodexStateReceipt(workspace, modelAlias, effort, configCalls); err != nil {
+					return nil, err
+				}
+			}
+			return response, nil
+		}
+		if state.harness == "codex" {
+			if request.ConfigID != "model" {
+				state.mu.Unlock()
+				return nil, protocol.InvalidParams("task33 session/set_config_option", nil)
+			}
+			state.model = value
+			state.mu.Unlock()
+			return protocol.SetSessionConfigOptionResponse{}, nil
+		}
+		if request.ConfigID != "model" || !task33ConfigValueAdvertised(task33ClaudeConfigOptions(state.model), request.ConfigID, value) {
+			state.mu.Unlock()
+			return nil, protocol.InvalidParams("task33 session/set_config_option", nil)
+		}
 		if strings.Contains(value, "@") {
-			state.mainModel = value
+			state.model = value
 		} else {
 			state.smallModel = value
 			workspace := state.workspace
@@ -205,7 +275,7 @@ func runTask33ACPHelper() int {
 		state.mu.Lock()
 		harness := state.harness
 		session := state.session
-		modelAlias := state.mainModel
+		modelAlias := state.model
 		workspace := state.workspace
 		baseURL := state.baseURL
 		token := state.token
@@ -213,14 +283,27 @@ func runTask33ACPHelper() int {
 		if modelAlias == "" {
 			return nil, protocol.InvalidParams("task33 session/prompt model", nil)
 		}
-		if err := task33HelperGatewayRequest(ctx, harness, baseURL, token, modelAlias, task33PromptText(request)); err != nil {
-			return nil, err
+		if !native {
+			if err := task33HelperGatewayRequest(ctx, harness, baseURL, token, modelAlias, task33PromptText(request)); err != nil {
+				return nil, err
+			}
 		}
 		if harness == "claude-code" {
 			if err := peer.SessionUpdate(ctx, protocol.SessionNotification{
 				SessionID: session,
 				Update: protocol.SessionUpdate{AgentMessageChunk: &protocol.ContentChunk{
 					Content: protocol.ContentBlock{Text: &protocol.TextContent{Text: "task33 claude answer"}},
+				}},
+			}); err != nil {
+				return nil, err
+			}
+			return protocol.PromptResponse{StopReason: protocol.StopReasonEndTurn}, nil
+		}
+		if native {
+			if err := peer.SessionUpdate(ctx, protocol.SessionNotification{
+				SessionID: session,
+				Update: protocol.SessionUpdate{AgentMessageChunk: &protocol.ContentChunk{
+					Content: protocol.ContentBlock{Text: &protocol.TextContent{Text: "task33 native codex answer"}},
 				}},
 			}); err != nil {
 				return nil, err
@@ -258,19 +341,141 @@ func task33ClaudeConfigResponse(state *task33ACPHelperState) protocol.SetSession
 }
 
 func task33ClaudeConfigResponseLocked(state *task33ACPHelperState) protocol.SetSessionConfigOptionResponse {
+	return protocol.SetSessionConfigOptionResponse{ConfigOptions: task33ClaudeConfigOptions(state.model)}
+}
+
+func task33ClaudeConfigOptions(modelAlias string) []protocol.SessionConfigOption {
 	category := protocol.SessionConfigOptionCategoryModel
-	return protocol.SetSessionConfigOptionResponse{ConfigOptions: []protocol.SessionConfigOption{{
+	return []protocol.SessionConfigOption{{
 		Category: &category,
 		ID:       "model",
 		Name:     "Model",
 		Select: &protocol.SessionConfigSelect{
-			CurrentValue: protocol.SessionConfigValueID(state.mainModel),
+			CurrentValue: protocol.SessionConfigValueID(modelAlias),
 			Options: protocol.SessionConfigSelectOptions{Ungrouped: []protocol.SessionConfigSelectOption{
 				{Name: "Sonnet", Value: "sonnet-5@high"},
 				{Name: "Sonnet small", Value: "sonnet-5"},
 			}},
 		},
-	}}}
+	}}
+}
+
+func task33CodexConfigResponseLocked(state *task33ACPHelperState) protocol.SetSessionConfigOptionResponse {
+	return protocol.SetSessionConfigOptionResponse{ConfigOptions: task33CodexConfigOptions(state.model, state.effort)}
+}
+
+func task33CodexConfigOptions(modelAlias, effort string) []protocol.SessionConfigOption {
+	category := protocol.SessionConfigOptionCategoryModel
+	thoughtCategory := protocol.SessionConfigOptionCategoryThoughtLevel
+	effortOptions := task33EffortOptions(task33CodexEffortsForModel(modelAlias))
+	currentEffort := effort
+	if !containsTask33String(task33CodexEffortsForModel(modelAlias), currentEffort) && len(effortOptions) != 0 {
+		currentEffort = string(effortOptions[0].Value)
+	}
+	return []protocol.SessionConfigOption{{
+		Category: &category,
+		ID:       "model",
+		Name:     "Model",
+		Select: &protocol.SessionConfigSelect{
+			CurrentValue: protocol.SessionConfigValueID(modelAlias),
+			Options: protocol.SessionConfigSelectOptions{Ungrouped: []protocol.SessionConfigSelectOption{
+				{Name: "Native Codex", Value: "native-codex"},
+				{Name: "Luna", Value: "gpt-5.6-luna"},
+				{Name: "Terra", Value: "gpt-5.6-terra"},
+			}},
+		},
+	}, {
+		Category: &thoughtCategory,
+		ID:       "reasoning_effort",
+		Name:     "Reasoning effort",
+		Select: &protocol.SessionConfigSelect{
+			CurrentValue: protocol.SessionConfigValueID(currentEffort),
+			Options:      protocol.SessionConfigSelectOptions{Ungrouped: effortOptions},
+		},
+	}}
+}
+
+func task33ApplyCodexConfigLocked(state *task33ACPHelperState, configID protocol.SessionConfigID, value string) bool {
+	if !task33ConfigValueAdvertised(task33CodexConfigOptions(state.model, state.effort), configID, value) {
+		return false
+	}
+	switch configID {
+	case "model":
+		state.model = value
+	case "reasoning_effort":
+		state.effort = value
+	default:
+		return false
+	}
+	state.configCalls = append(state.configCalls, string(configID)+"="+value)
+	return true
+}
+
+func task33CodexEffortsForModel(modelAlias string) []string {
+	switch modelAlias {
+	case "gpt-5.6-luna":
+		return []string{"high", "max"}
+	case "gpt-5.6-terra":
+		return []string{"none", "low"}
+	default:
+		return []string{"none"}
+	}
+}
+
+func task33EffortOptions(efforts []string) []protocol.SessionConfigSelectOption {
+	options := make([]protocol.SessionConfigSelectOption, 0, len(efforts))
+	for _, effort := range efforts {
+		options = append(options, protocol.SessionConfigSelectOption{
+			Name: effort, Value: protocol.SessionConfigValueID(effort),
+		})
+	}
+	return options
+}
+
+func task33ConfigValueAdvertised(options []protocol.SessionConfigOption, configID protocol.SessionConfigID, value string) bool {
+	for _, option := range options {
+		if option.ID != configID || option.Select == nil {
+			continue
+		}
+		for _, selected := range option.Select.Options.Ungrouped {
+			if string(selected.Value) == value {
+				return true
+			}
+		}
+		for _, group := range option.Select.Options.Grouped {
+			for _, selected := range group.Options {
+				if string(selected.Value) == value {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func containsTask33String(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func writeTask33CodexStateReceipt(workspace, modelAlias, effort string, configCalls []string) error {
+	if workspace == "" {
+		return fmt.Errorf("task33 helper: empty workspace for Codex state receipt")
+	}
+	payload := "model=" + modelAlias + "\neffort=" + effort + "\ncalls=" + strings.Join(configCalls, ",") + "\n"
+	return os.WriteFile(filepath.Join(workspace, task33NativeCodexStateReceipt), []byte(payload), 0o600)
+}
+
+func writeTask33CodexCallsReceipt(workspace string, configCalls []string) error {
+	if workspace == "" {
+		return fmt.Errorf("task33 helper: empty workspace for Codex calls receipt")
+	}
+	payload := "calls=" + strings.Join(configCalls, ",") + "\n"
+	return os.WriteFile(filepath.Join(workspace, task33NativeCodexCallsReceipt), []byte(payload), 0o600)
 }
 
 func task33HelperGatewayRequest(ctx context.Context, harness, baseURL, token, modelAlias, prompt string) error {
