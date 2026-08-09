@@ -2,7 +2,10 @@ package app
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,17 +27,12 @@ func TestDecodeModelConfigErrorBoundsCompleteMessage(t *testing.T) {
 	if len(err.operation) > maxModelConfigErrorOperationBytes {
 		t.Errorf("stored operation length = %d, want <= %d", len(err.operation), maxModelConfigErrorOperationBytes)
 	}
-	unwrapped := errors.Unwrap(err)
-	if unwrapped == nil {
-		t.Fatal("errors.Unwrap(ModelConfigError) = nil, want bounded cause")
-	}
-	if len(unwrapped.Error()) > maxModelConfigErrorCauseBytes {
-		t.Errorf("stored cause length = %d, want <= %d", len(unwrapped.Error()), maxModelConfigErrorCauseBytes)
+	if unwrapped := errors.Unwrap(err); unwrapped != nil {
+		t.Fatalf("errors.Unwrap(ModelConfigError) = %v, want nil for raw-cause safety", unwrapped)
 	}
 	for name, value := range map[string]string{
-		"rendered error":  err.Error(),
-		"operation":       err.operation,
-		"unwrapped cause": unwrapped.Error(),
+		"rendered error": err.Error(),
+		"operation":      err.operation,
 	} {
 		if strings.Contains(value, secret) {
 			t.Errorf("%s exposed API-key sentinel", name)
@@ -43,6 +41,44 @@ func TestDecodeModelConfigErrorBoundsCompleteMessage(t *testing.T) {
 	var target *ModelConfigError
 	if !errors.As(err, &target) {
 		t.Fatalf("errors.As(%T) = false, want true", err)
+	}
+}
+
+type secretBearingModelConfigCause struct{}
+
+func (secretBearingModelConfigCause) Error() string {
+	return "secret-bearing nested cause: test-secret-nested-cause"
+}
+
+func (secretBearingModelConfigCause) Unwrap() error { return errModelConfigMigrationConcurrent }
+
+func TestModelConfigMigrationErrorClosesRawCauseChain(t *testing.T) {
+	const secret = "test-secret-nested-cause"
+	raw := secretBearingModelConfigCause{}
+	err := modelConfigMigrationFailure(fmt.Errorf("migration detail: %s: %w", secret, raw))
+
+	if errors.Unwrap(err) != nil {
+		t.Fatal("migration error exposes an unwrap chain")
+	}
+	if !errors.Is(err, errModelConfigMigrationConcurrent) {
+		t.Fatal("migration error lost safe concurrent-modification classification")
+	}
+	var extracted secretBearingModelConfigCause
+	if errors.As(err, &extracted) {
+		t.Fatal("errors.As reached the secret-bearing raw cause")
+	}
+
+	var logBuffer bytes.Buffer
+	slog.New(slog.NewJSONHandler(&logBuffer, nil)).Error("migration", "error", err)
+	encoded, marshalErr := json.Marshal(struct {
+		Error error `json:"error"`
+	}{err})
+	if marshalErr != nil {
+		t.Fatalf("json.Marshal(ModelConfigError) error = %v", marshalErr)
+	}
+	formatted := fmt.Sprintf("%v|%+v|%#v|%s|%s", err, err, err, logBuffer.String(), encoded)
+	if strings.Contains(formatted, secret) {
+		t.Fatalf("secret-bearing cause escaped through formatting or structured logging: %s", formatted)
 	}
 }
 

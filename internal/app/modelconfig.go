@@ -401,31 +401,40 @@ type modelCapabilitiesConfig struct {
 
 // ModelConfigError reports a failure to locate or read CodeRig's global model
 // configuration.
+type modelConfigErrorKind uint8
+
+const (
+	modelConfigErrorKindNone modelConfigErrorKind = iota
+	modelConfigErrorKindMigrationConcurrent
+	modelConfigErrorKindMigrationDurability
+)
+
 type ModelConfigError struct {
 	operation string
-	cause     error
+	causeText string
+	kind      modelConfigErrorKind
 }
 
 func (e *ModelConfigError) Error() string {
 	operation := boundedModelConfigText(e.operation, maxModelConfigErrorOperationBytes)
 	message := "coderig: model configuration " + operation + " failed"
-	if e.cause == nil {
+	if e.causeText == "" {
 		return boundedModelConfigText(message, maxModelConfigErrorBytes)
 	}
-	message += ": " + boundedModelConfigText(e.cause.Error(), maxModelConfigErrorCauseBytes)
+	message += ": " + boundedModelConfigText(e.causeText, maxModelConfigErrorCauseBytes)
 	return boundedModelConfigText(message, maxModelConfigErrorBytes)
 }
 
-func (e *ModelConfigError) Unwrap() error { return e.cause }
-
-type boundedModelConfigCause struct {
-	message string
-	cause   error
+func (e *ModelConfigError) Is(target error) bool {
+	switch e.kind {
+	case modelConfigErrorKindMigrationConcurrent:
+		return target == errModelConfigMigrationConcurrent
+	case modelConfigErrorKindMigrationDurability:
+		return target == errModelConfigMigrationDurability
+	default:
+		return false
+	}
 }
-
-func (e *boundedModelConfigCause) Error() string { return e.message }
-
-func (e *boundedModelConfigCause) Unwrap() error { return e.cause }
 
 func decodeModelConfig(data []byte) (modelConfigFile, error) {
 	var config modelConfigFile
@@ -606,6 +615,10 @@ type modelConfigMigrationHooks struct {
 }
 
 func writeMigratedModelConfigV2ToV3(path string) error {
+	// The per-process lock serializes cooperating writers, and the migration
+	// CAS checks bytes plus file identity immediately before publication work.
+	// A non-cooperating edit after that check and before rename is outside the
+	// portable guarantee; no platform-specific compare-and-swap is assumed.
 	return writeMigratedModelConfigV2ToV3WithHooks(path, modelConfigMigrationHooks{})
 }
 
@@ -750,19 +763,31 @@ func rejectNullPermissionReview(data []byte) error {
 
 func modelConfigFailure(operation string, cause error) *ModelConfigError {
 	message := "unknown error"
-	boundedCause := error(errors.New(message))
 	if cause != nil {
 		message = boundedModelConfigText(cause.Error(), maxModelConfigErrorCauseBytes)
-		boundedCause = &boundedModelConfigCause{message: message, cause: cause}
 	}
 	return &ModelConfigError{
 		operation: boundedModelConfigText(operation, maxModelConfigErrorOperationBytes),
-		cause:     boundedCause,
+		causeText: message,
 	}
 }
 
 func modelConfigMigrationFailure(cause error) *ModelConfigError {
-	return modelConfigFailure("migrate", cause)
+	kind := modelConfigErrorKindNone
+	switch {
+	case errors.Is(cause, errModelConfigMigrationConcurrent):
+		kind = modelConfigErrorKindMigrationConcurrent
+	case errors.Is(cause, errModelConfigMigrationDurability):
+		kind = modelConfigErrorKindMigrationDurability
+	}
+	message := "migration failed"
+	switch kind {
+	case modelConfigErrorKindMigrationConcurrent:
+		message = "migration concurrent modification"
+	case modelConfigErrorKindMigrationDurability:
+		message = "migration durability failure"
+	}
+	return &ModelConfigError{operation: "migrate", causeText: message, kind: kind}
 }
 
 func boundedModelConfigText(value string, limit int) string {
