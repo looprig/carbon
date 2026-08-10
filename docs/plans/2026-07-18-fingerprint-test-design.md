@@ -14,13 +14,13 @@ Change the test's whole-struct comparison from Go's `!=` operator to
 including future fields and the new map, while matching the comparison pattern
 already used by Harness for map-containing values.
 
-Run `go mod tidy` to reconcile carbon's direct inference requirement with the
+Run `go mod tidy` to reconcile coderig's direct inference requirement with the
 newer pseudo-version already selected by its local Harness and LLM dependencies.
 The expected metadata change is limited to the `github.com/looprig/inference`
 version in `go.mod`; no `go.sum` change is expected.
 
 The full-suite verification also exposed pre-existing TUI interface drift in
-`cmd/carbon`'s `orderingAgent` test double. Add the required `RespondGate`
+`cmd/coderig`'s `orderingAgent` test double. Add the required `RespondGate`
 method as a no-op, matching the double's existing role as a compile-time
 contract stub. This is test-only compatibility work and does not alter runtime
 gate handling.

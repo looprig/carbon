@@ -4,34 +4,34 @@
 
 **Goal:** Make `native_acp.models` an authoritative model-and-effort allowlist applied lazily by `StartAgent`, and return bounded ACP wire error code/message details to the parent agent.
 
-**Architecture:** Carbon extends its strict version-2 configuration with structured native model entries and compiles their efforts directly into Harness's existing runtime catalogue. ACP launch owns adapter-specific model/effort application; foreignloops projects only ACP JSON-RPC code/message into a model-facing terminal error; Harness preserves that explicitly safe detail in foreground and background delegation results. Carbon stops opening ACP sessions at startup to validate configured model availability.
+**Architecture:** CodeRig extends its strict version-2 configuration with structured native model entries and compiles their efforts directly into Harness's existing runtime catalogue. ACP launch owns adapter-specific model/effort application; foreignloops projects only ACP JSON-RPC code/message into a model-facing terminal error; Harness preserves that explicitly safe detail in foreground and background delegation results. CodeRig stops opening ACP sessions at startup to validate configured model availability.
 
-**Tech Stack:** Go 1.26.4, strict `encoding/json`, ACP JSON-RPC/client/launch packages, foreignloops ACP driver/backend, Harness runtime catalogue and delegation tools, Carbon composition, existing vendored sibling modules.
+**Tech Stack:** Go 1.26.4, strict `encoding/json`, ACP JSON-RPC/client/launch packages, foreignloops ACP driver/backend, Harness runtime catalogue and delegation tools, CodeRig composition, existing vendored sibling modules.
 
 ---
 
 ## Baseline
 
-Worktrees live under `/Users/ipotter/code/looprig/.worktrees/native-acp-model-effort/` with one worktree each for `acp`, `foreignloops`, `harness`, and `carbon`. The local `go.work` binds those four worktrees and the unchanged Core/Eval/Inference/Storage siblings.
+Worktrees live under `/Users/ipotter/code/looprig/.worktrees/native-acp-model-effort/` with one worktree each for `acp`, `foreignloops`, `harness`, and `coderig`. The local `go.work` binds those four worktrees and the unchanged Core/Eval/Inference/Storage siblings.
 
 Baseline evidence on 2026-08-08:
 
 - `acp`: `go test ./...` passed.
 - `harness`: `go test ./...` passed.
 - `foreignloops`: the full parallel baseline timed out in the existing empty-environment Claude/Codex process tests; each failing test passed immediately in isolation.
-- `carbon`: the full baseline hit a `TempDir` cleanup race in `TestProcessToolsSiblingLoopsCannotAccessEachOthersHandles`; the test passed immediately in isolation.
+- `coderig`: the full baseline hit a `TempDir` cleanup race in `TestProcessToolsSiblingLoopsCannotAccessEachOthersHandles`; the test passed immediately in isolation.
 
 Use `GOCACHE=/private/tmp/native-acp-model-effort-gocache` for all commands. Run required final suites with `-race` per each module's contributor instructions.
 
-### Task 1: Extend Carbon's strict native ACP configuration
+### Task 1: Extend CodeRig's strict native ACP configuration
 
 **Files:**
 
-- Modify: `carbon/internal/app/modelconfig.go`
-- Modify: `carbon/internal/app/modelconfig_normalize.go`
-- Modify: `carbon/internal/app/modelconfig_digest.go`
-- Modify: `carbon/internal/app/modelconfig_native_test.go`
-- Modify: `carbon/internal/app/modelconfig_digest_test.go`
+- Modify: `coderig/internal/app/modelconfig.go`
+- Modify: `coderig/internal/app/modelconfig_normalize.go`
+- Modify: `coderig/internal/app/modelconfig_digest.go`
+- Modify: `coderig/internal/app/modelconfig_native_test.go`
+- Modify: `coderig/internal/app/modelconfig_digest_test.go`
 
 **Step 1: Write failing decode and normalization tests**
 
@@ -86,7 +86,7 @@ Do not expose credentials or raw file content through errors.
 
 Run the focused command from Step 2. Expected: PASS.
 
-**Step 5: Commit Carbon schema changes**
+**Step 5: Commit CodeRig schema changes**
 
 ```bash
 git add internal/app/modelconfig.go internal/app/modelconfig_normalize.go internal/app/modelconfig_digest.go internal/app/modelconfig_native_test.go internal/app/modelconfig_digest_test.go
@@ -97,13 +97,13 @@ git commit -m "feat: configure native ACP model efforts"
 
 **Files:**
 
-- Modify: `carbon/internal/app/productionmodels.go`
-- Modify: `carbon/internal/app/acpcatalog.go`
-- Modify: `carbon/internal/app/acpproduction.go`
-- Modify: `carbon/internal/app/acpchildren.go`
-- Modify: `carbon/internal/app/acpnative_phase3_test.go`
-- Modify: `carbon/internal/app/acpchildren_test.go`
-- Modify: `carbon/internal/app/agent_tools_integration_test.go`
+- Modify: `coderig/internal/app/productionmodels.go`
+- Modify: `coderig/internal/app/acpcatalog.go`
+- Modify: `coderig/internal/app/acpproduction.go`
+- Modify: `coderig/internal/app/acpchildren.go`
+- Modify: `coderig/internal/app/acpnative_phase3_test.go`
+- Modify: `coderig/internal/app/acpchildren_test.go`
+- Modify: `coderig/internal/app/agent_tools_integration_test.go`
 
 **Step 1: Write failing catalogue and no-preflight tests**
 
@@ -130,7 +130,7 @@ Expected: native options still expose only `EffortNone`, and composition invokes
 
 Change `ACPNativeProfile.Models` from aliases alone to typed native model choices carrying alias, efforts, and default. Build runtime options from those values instead of hard-coding `EffortNone`.
 
-Split static ACP composition from live child launch. Do not invoke `preflightProductionACPExecutable` or filter configured runtime rows based on session/model availability during Carbon startup. Preserve executable resolution and clean-path/runnable checks without starting an ACP process. Keep the preflight helpers only if gateway construction tests or another explicit diagnostic API still owns them; otherwise remove dead production plumbing and update comments.
+Split static ACP composition from live child launch. Do not invoke `preflightProductionACPExecutable` or filter configured runtime rows based on session/model availability during CodeRig startup. Preserve executable resolution and clean-path/runnable checks without starting an ACP process. Keep the preflight helpers only if gateway construction tests or another explicit diagnostic API still owns them; otherwise remove dead production plumbing and update comments.
 
 **Step 4: Run tests and verify GREEN**
 
@@ -144,7 +144,7 @@ go test ./internal/app -run 'TestModelConfig|TestProductionModels|TestACP|TestAg
 
 Expected: PASS.
 
-**Step 5: Commit Carbon catalogue changes**
+**Step 5: Commit CodeRig catalogue changes**
 
 ```bash
 git add internal/app/productionmodels.go internal/app/acpcatalog.go internal/app/acpproduction.go internal/app/acpchildren.go internal/app/*_test.go
@@ -387,17 +387,17 @@ git add internal/sessionruntime/delegation.go internal/sessionruntime/delegation
 git commit -m "feat: return safe delegate failure details"
 ```
 
-### Task 7: Integrate lazy runtime errors in Carbon
+### Task 7: Integrate lazy runtime errors in CodeRig
 
 **Files:**
 
-- Modify: `carbon/internal/app/acpchildren.go`
-- Modify: `carbon/internal/app/acpchildren_test.go`
-- Modify: `carbon/internal/app/agent_tools_integration_test.go`
+- Modify: `coderig/internal/app/acpchildren.go`
+- Modify: `coderig/internal/app/acpchildren_test.go`
+- Modify: `coderig/internal/app/agent_tools_integration_test.go`
 
 **Step 1: Write failing child-construction tests**
 
-Inject ACP JSON-RPC errors during native child construction and assert Carbon's model-facing error contains only bounded code/message. Assert arbitrary internal errors still collapse to `carbon: ACP child unavailable`, and cancellation/deadline identity remains intact.
+Inject ACP JSON-RPC errors during native child construction and assert CodeRig's model-facing error contains only bounded code/message. Assert arbitrary internal errors still collapse to `coderig: ACP child unavailable`, and cancellation/deadline identity remains intact.
 
 Also assert the selected `loop.Resolved.Effort` reaches `acpdriver.Config.Effort` for both Codex and Claude.
 
@@ -411,7 +411,7 @@ go test ./internal/app -run 'TestBoundedACPChildError|TestACPChild.*Effort|TestA
 
 Expected: `boundedACPChildError` discards protocol code/message and child config omits effort.
 
-**Step 3: Implement Carbon's product boundary**
+**Step 3: Implement CodeRig's product boundary**
 
 Thread resolved effort into `acpdriver.Config`. Replace the single sentinel-only boundary with a typed model-facing error only when the cause is an ACP wire error; copy only bounded code/message. Keep fixed errors for all other causes.
 
@@ -425,7 +425,7 @@ go test ./internal/app -run 'TestACP|TestAgentTools' -count=1
 
 Expected: PASS.
 
-**Step 5: Commit Carbon integration changes**
+**Step 5: Commit CodeRig integration changes**
 
 ```bash
 git add internal/app/acpchildren.go internal/app/acpchildren_test.go internal/app/agent_tools_integration_test.go
@@ -436,10 +436,10 @@ git commit -m "feat: surface safe ACP child errors"
 
 **Files:**
 
-- Modify: `carbon/CLAUDE.md`
-- Modify: `carbon/CONTRIBUTING.md`
+- Modify: `coderig/CLAUDE.md`
+- Modify: `coderig/CONTRIBUTING.md`
 - Modify generated vendor trees only through each module's `make vendor`
-- Modify outside repository after approval: `~/.looprig/carbon/models.json`
+- Modify outside repository after approval: `~/.looprig/coderig/models.json`
 
 **Step 1: Update current documentation**
 
@@ -452,7 +452,7 @@ Run the owning module's documented `make vendor` flow after source tests are gre
 1. ACP.
 2. Harness.
 3. foreignloops with updated ACP/Harness.
-4. Carbon with updated ACP/foreignloops/Harness.
+4. CodeRig with updated ACP/foreignloops/Harness.
 
 Inspect every vendor diff and reject unrelated version churn or embedded VCS metadata.
 
@@ -471,7 +471,7 @@ git commit -m "chore: refresh vendored looprig modules"
 
 **Step 5: Update the operator-managed config safely**
 
-Use a secret-preserving JSON transformation against `~/.looprig/carbon/models.json`; never print API keys. Set `acp_launchers.claude-code.executable` to the installed `claude-agent-acp` path and install exactly the approved structured entries:
+Use a secret-preserving JSON transformation against `~/.looprig/coderig/models.json`; never print API keys. Set `acp_launchers.claude-code.executable` to the installed `claude-agent-acp` path and install exactly the approved structured entries:
 
 ```json
 "codex": [
@@ -511,7 +511,7 @@ Run each command from its owning worktree.
 go test -race ./...
 ```
 
-Run separately in ACP, foreignloops, Harness, and Carbon to avoid the baseline process-test timing flakes caused by four concurrent suites.
+Run separately in ACP, foreignloops, Harness, and CodeRig to avoid the baseline process-test timing flakes caused by four concurrent suites.
 
 **Step 3: Build and inspect**
 
@@ -525,11 +525,11 @@ Run in every affected worktree and inspect all diffs/commits.
 
 **Step 4: Verify the real config without exposing secrets**
 
-Run a projection that prints only `version`, `native_acp`, and `acp_launchers`, validate mode `0600`, and start Carbon far enough to prove startup performs no ACP session/model validation.
+Run a projection that prints only `version`, `native_acp`, and `acp_launchers`, validate mode `0600`, and start CodeRig far enough to prove startup performs no ACP session/model validation.
 
 **Step 5: Exercise lazy selections**
 
-Launch one configured Codex pair and one configured Claude pair through the assembled `StartAgent` path. Confirm either successful execution or a parent-visible bounded ACP code/message. Confirm an unavailable selection fails at `StartAgent`, not Carbon startup, and does not disclose ACP data/stderr/internal causes.
+Launch one configured Codex pair and one configured Claude pair through the assembled `StartAgent` path. Confirm either successful execution or a parent-visible bounded ACP code/message. Confirm an unavailable selection fails at `StartAgent`, not CodeRig startup, and does not disclose ACP data/stderr/internal causes.
 
 **Step 6: Review requirements line by line**
 

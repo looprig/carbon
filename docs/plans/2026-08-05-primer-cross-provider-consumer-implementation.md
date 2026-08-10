@@ -2,19 +2,19 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Make Carbon's primer loop declare every `PrimerCandidates` transport to harness (via the new `loop.WithContextTransports`), so `SetModel` can live-switch between providers (e.g. lmstudio ↔ chutes) instead of rejecting the switch.
+**Goal:** Make CodeRig's primer loop declare every `PrimerCandidates` transport to harness (via the new `loop.WithContextTransports`), so `SetModel` can live-switch between providers (e.g. lmstudio ↔ chutes) instead of rejecting the switch.
 
-**Architecture:** A new pure function `primerContextTransports` derives one `loop.ContextTransport` per distinct (Provider, APIFormat, BaseURL) in the roster, reusing the existing `inferenceCapabilityForModel`. `conversationContextPolicy` carries that set and installs it via `loop.WithContextTransports` alongside its existing options. `swarmDefinitions` (Carbon's one shared construction path for New/Restore/headless/interactive) passes `cfg.PrimerCandidates` through. `SetModel`'s now-obsolete cross-transport-rejection machinery is deleted.
+**Architecture:** A new pure function `primerContextTransports` derives one `loop.ContextTransport` per distinct (Provider, APIFormat, BaseURL) in the roster, reusing the existing `inferenceCapabilityForModel`. `conversationContextPolicy` carries that set and installs it via `loop.WithContextTransports` alongside its existing options. `swarmDefinitions` (CodeRig's one shared construction path for New/Restore/headless/interactive) passes `cfg.PrimerCandidates` through. `SetModel`'s now-obsolete cross-transport-rejection machinery is deleted.
 
-**Tech Stack:** Go, harness `pkg/loop` (local, unreleased `main` — see prerequisite below), table-driven tests per `carbon/CLAUDE.md`.
+**Tech Stack:** Go, harness `pkg/loop` (local, unreleased `main` — see prerequisite below), table-driven tests per `coderig/CLAUDE.md`.
 
 ---
 
 ## Prerequisite: local harness resolution (read before Task 0)
 
-`carbon`'s `go.mod` pins `github.com/looprig/harness v0.19.0` (module-cache resolved), which predates the cross-provider-switching work — it still has `loop.ContextTransportBindingError`, not the new `loop.ContextTransportNotDeclaredError`/`loop.WithContextTransports`/`loop.ContextTransport`. Harness's `main` has all 12 tasks merged locally (commit `70932c57`) but is **not tagged or pushed** (`repositories.mk` still pins `harness|...|v0.19.0`).
+`coderig`'s `go.mod` pins `github.com/looprig/harness v0.19.0` (module-cache resolved), which predates the cross-provider-switching work — it still has `loop.ContextTransportBindingError`, not the new `loop.ContextTransportNotDeclaredError`/`loop.WithContextTransports`/`loop.ContextTransport`. Harness's `main` has all 12 tasks merged locally (commit `70932c57`) but is **not tagged or pushed** (`repositories.mk` still pins `harness|...|v0.19.0`).
 
-This worktree (`carbon/.worktrees/primer-model-picker`) already has a gitignored, **uncommitted** `go.work` file at its root:
+This worktree (`coderig/.worktrees/primer-model-picker`) already has a gitignored, **uncommitted** `go.work` file at its root:
 
 ```
 go 1.26.4
@@ -24,14 +24,14 @@ use .
 replace github.com/looprig/harness => ../../../harness
 ```
 
-This resolves `github.com/looprig/harness` to the local `~/code/looprig/harness` checkout (currently on `main`) for every command run from inside this directory, without touching the shared root `~/code/looprig/go.work` or `go.mod`, and without a premature release tag — consistent with `carbon/CLAUDE.md`'s "Use the root go.work workspace instead" guidance, scoped to this nested worktree. **Do not `git add` this file** — it's already gitignored (`go.work` / `go.work.sum` are in `.gitignore`). Every `go build`/`go test`/`go vet` command in this plan runs with **no `GOWORK=off`** (the opposite of earlier tasks in this plan) so this local workspace file is picked up. Confirm before Task 0:
+This resolves `github.com/looprig/harness` to the local `~/code/looprig/harness` checkout (currently on `main`) for every command run from inside this directory, without touching the shared root `~/code/looprig/go.work` or `go.mod`, and without a premature release tag — consistent with `coderig/CLAUDE.md`'s "Use the root go.work workspace instead" guidance, scoped to this nested worktree. **Do not `git add` this file** — it's already gitignored (`go.work` / `go.work.sum` are in `.gitignore`). Every `go build`/`go test`/`go vet` command in this plan runs with **no `GOWORK=off`** (the opposite of earlier tasks in this plan) so this local workspace file is picked up. Confirm before Task 0:
 
 ```bash
-cd ~/code/looprig/carbon/.worktrees/primer-model-picker
+cd ~/code/looprig/coderig/.worktrees/primer-model-picker
 go env GOWORK   # must print this worktree's go.work path, not empty and not the root one
 ```
 
-**This is temporary developer-local scaffolding**, not a substitute for the real release step. The actual harness version bump in `carbon/go.mod` (removing the need for this file) is explicit release/adoption work — out of scope for this plan, tracked as follow-up once harness is tagged and pushed.
+**This is temporary developer-local scaffolding**, not a substitute for the real release step. The actual harness version bump in `coderig/go.mod` (removing the need for this file) is explicit release/adoption work — out of scope for this plan, tracked as follow-up once harness is tagged and pushed.
 
 ---
 
@@ -46,7 +46,7 @@ This is a prerequisite compile fix, not new behavior — harness's H1.2 task ren
 **Step 1: Confirm the break**
 
 ```bash
-cd ~/code/looprig/carbon/.worktrees/primer-model-picker
+cd ~/code/looprig/coderig/.worktrees/primer-model-picker
 go vet ./... 2>&1
 ```
 
@@ -625,7 +625,7 @@ git commit -m "feat: support any models.json-configured provider's inference cap
 
 **Discovered while running Task 2's verification**, not part of the original design: `TestPersistedOpenRoutesNativeAgentThroughRuntimeClientAcrossRestore` fails on restore with harness's `RestoreTransportMismatchError`. This is a real regression from adopting harness's new `main` (not caused by Tasks 0-2's own changes — confirmed present before Task 2's wiring too), but this plan's scope now covers closing it. See the design doc's "Addendum (2026-08-06)" section (`docs/plans/2026-08-05-primer-cross-provider-consumer-design.md`) for the full diagnosis, including "Revision 2" — a second, independent bug a second-opinion review found in the first draft of this task, described below.
 
-Carbon's native (in-process, `RuntimeClient`-routed) delegate loops — spawned via `StartAgent` against a `configuredDelegateDefault`/`ACPGatewaySource` entry (models.json's gateway-backed delegate catalog, distinct from `uses:["primer"]`) — are ordinary harness `loop.Definition` instances, subject to the same declared-transport restore check as the three primer roles. Their models were never part of `PrimerCandidates`, so their transports were never declared. `NativeACP` delegates are unaffected (separate harness's own login state, never bind to a Carbon-owned `loop.Definition` — see `carbon/CLAUDE.md`) and stay out of scope.
+CodeRig's native (in-process, `RuntimeClient`-routed) delegate loops — spawned via `StartAgent` against a `configuredDelegateDefault`/`ACPGatewaySource` entry (models.json's gateway-backed delegate catalog, distinct from `uses:["primer"]`) — are ordinary harness `loop.Definition` instances, subject to the same declared-transport restore check as the three primer roles. Their models were never part of `PrimerCandidates`, so their transports were never declared. `NativeACP` delegates are unaffected (separate harness's own login state, never bind to a CodeRig-owned `loop.Definition` — see `coderig/CLAUDE.md`) and stay out of scope.
 
 **Base-transport membership.** Harness's `validateContextDefinition` (`pkg/loop/definition.go`) requires a non-empty declared `ContextTransport` set to contain a member matching the loop's own base `WithInference` model, with `Capability` exactly equal to `WithInferenceCapability`, or `Define()` itself rejects with `DefinitionInvalidContextTransport` — this is a *build-time* check, not restore-only. The failing test's shape (empty `PrimerCandidates`, one delegate) has no guaranteed base-model membership if the merged set is built from candidates+delegates alone. Fix: the merge function takes the base model as an explicit first parameter and always seeds it first.
 
@@ -781,7 +781,7 @@ func contextTransportsForModels(models []model.Model) ([]loop.ContextTransport, 
 // and every configured gateway-backed delegate model's transport (native,
 // in-process, RuntimeClient-routed StartAgent delegates — NOT NativeACP,
 // which runs via a separate harness's own login state and never binds to a
-// Carbon-owned loop.Definition). base is always seeded first so harness's
+// CodeRig-owned loop.Definition). base is always seeded first so harness's
 // build-time base-transport-membership requirement
 // (pkg/loop/definition.go's validateContextDefinition: a non-empty declared
 // set must contain a member matching the loop's own WithInference model,
@@ -823,7 +823,7 @@ In `internal/app/config.go`, add a field next to `PrimerCandidates`:
 	// these transports alongside PrimerCandidates' so a session with an
 	// active or prior delegate on a different transport than the primer can
 	// still restore. NativeACP delegates are not included: they never bind
-	// to a Carbon-owned loop.Definition.
+	// to a CodeRig-owned loop.Definition.
 	DelegateModels []model.Model
 ```
 
@@ -960,7 +960,7 @@ with:
 
 ```go
 	if err := controller.Change(ctx, changes...); err != nil {
-		return fmt.Errorf("carbon: switch to model %q: %w", id, err)
+		return fmt.Errorf("coderig: switch to model %q: %w", id, err)
 	}
 	return nil
 ```
@@ -1154,7 +1154,7 @@ git commit -m "test: prove a cross-provider SetModel switch survives session res
 **Step 1: Run the full test suite with race detection**
 
 ```bash
-cd ~/code/looprig/carbon/.worktrees/primer-model-picker
+cd ~/code/looprig/coderig/.worktrees/primer-model-picker
 gofmt -l .   # must print nothing
 go vet ./...
 go test -race ./... 2>&1 | tail -80
@@ -1168,11 +1168,11 @@ Expected: zero `gofmt` output, clean vet, all tests pass (including `-race`).
 make secure 2>&1 | tail -100
 ```
 
-This runs `gofmt` check, `go vet`, staticcheck, gosec, `go mod verify`, govulncheck — per `carbon/CLAUDE.md`. Note: `go mod verify` may complain about the worktree's local `go.work` harness replace (an expected, temporary artifact of the prerequisite section above, not a real vendoring problem) — if so, verify manually that the *only* discrepancy is the harness replace, and record that clearly rather than silently ignoring a `make secure` failure.
+This runs `gofmt` check, `go vet`, staticcheck, gosec, `go mod verify`, govulncheck — per `coderig/CLAUDE.md`. Note: `go mod verify` may complain about the worktree's local `go.work` harness replace (an expected, temporary artifact of the prerequisite section above, not a real vendoring problem) — if so, verify manually that the *only* discrepancy is the harness replace, and record that clearly rather than silently ignoring a `make secure` failure.
 
 **Step 2b: Run the integration suite**
 
-Added per a second-opinion review: `carbon/CLAUDE.md` explicitly requires `make test-integration` "before any release touching permission review, restore, or access-profile behavior" — this branch touches restore behavior directly (Task 2.5's whole point). Not run by `make test`/CI by default, so it must be run explicitly here.
+Added per a second-opinion review: `coderig/CLAUDE.md` explicitly requires `make test-integration` "before any release touching permission review, restore, or access-profile behavior" — this branch touches restore behavior directly (Task 2.5's whole point). Not run by `make test`/CI by default, so it must be run explicitly here.
 
 ```bash
 make test-integration 2>&1 | tail -100
@@ -1191,6 +1191,6 @@ Confirm no stray edits to `go.work`/`go.work.sum` (gitignored, but double-check 
 
 **Step 4: Report status**
 
-Summarize: which tests are new, which were deleted/rewritten and why, confirmation that `TestSetModelSwitchesAcrossProviders` and `TestSetModelSwitchesAcrossAllConfiguredTransports` pass, and the explicit note that `carbon/go.mod`'s harness version bump (removing the need for the worktree-local `go.work`) is deferred release/adoption work, not part of this task.
+Summarize: which tests are new, which were deleted/rewritten and why, confirmation that `TestSetModelSwitchesAcrossProviders` and `TestSetModelSwitchesAcrossAllConfiguredTransports` pass, and the explicit note that `coderig/go.mod`'s harness version bump (removing the need for the worktree-local `go.work`) is deferred release/adoption work, not part of this task.
 
 **Step 5: No commit** (verification-only task; if Steps 1-2 required fixes, those are separate commits made during this task, not folded into this step).

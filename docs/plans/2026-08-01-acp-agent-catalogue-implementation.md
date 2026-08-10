@@ -2,17 +2,17 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Replace Carbon's frozen production model rows and fixed credential environment variables with one securely loaded machine-wide `~/.looprig/models.json`, while preserving the existing three-agent roster, permission-based native sandbox, source-aware ACP gateway/native isolation, durability, and TUI behavior.
+**Goal:** Replace CodeRig's frozen production model rows and fixed credential environment variables with one securely loaded machine-wide `~/.looprig/models.json`, while preserving the existing three-agent roster, permission-based native sandbox, source-aware ACP gateway/native isolation, durability, and TUI behavior.
 
-**Architecture:** Carbon reads and validates the global file once at the process-composition boundary, converts it into secret-free model descriptors plus credential-bound provider clients, and compiles the existing immutable primer and source-aware ACP runtime dependencies. Raw API keys never leave the loader/compiler. Native permission files remain per-workspace under `~/.looprig/workspaces/<hash>/permissions.json`; gateway and native ACP children remain non-interactive and posture-only, with separate proxy and harness-login environments.
+**Architecture:** CodeRig reads and validates the global file once at the process-composition boundary, converts it into secret-free model descriptors plus credential-bound provider clients, and compiles the existing immutable primer and source-aware ACP runtime dependencies. Raw API keys never leave the loader/compiler. Native permission files remain per-workspace under `~/.looprig/workspaces/<hash>/permissions.json`; gateway and native ACP children remain non-interactive and posture-only, with separate proxy and harness-login environments.
 
-**Tech Stack:** Go 1.26.x, standard-library `encoding/json`, `io`, and `os`, root `go.work`, Carbon `internal/app`, Inference model/gateway, LLM provider validation/client factory, Harness runtime catalogue, ACP launch/driver, Tools permission store, Sandbox profiles.
+**Tech Stack:** Go 1.26.x, standard-library `encoding/json`, `io`, and `os`, root `go.work`, CodeRig `internal/app`, Inference model/gateway, LLM provider validation/client factory, Harness runtime catalogue, ACP launch/driver, Tools permission store, Sandbox profiles.
 
 ---
 
 ## Scope and Non-Goals
 
-This is a delta plan from the current Carbon `main` checkout. The following are
+This is a delta plan from the current CodeRig `main` checkout. The following are
 already implemented and must not be rebuilt:
 
 - the `planner`, `builder`, and `reviewer` roster;
@@ -58,7 +58,7 @@ pseudo-versions.
 
 Before every task:
 
-1. Run `git status --short` in Carbon and every module the task touches.
+1. Run `git status --short` in CodeRig and every module the task touches.
 2. Preserve all pre-existing user changes.
 3. Add only task-owned files to a checkpoint commit.
 4. Never print, log, or place a real `api_key` in a test fixture. Use obvious
@@ -107,17 +107,17 @@ Do not add aliases for the old fixed model names. The file is authoritative.
 **Files:**
 
 - Verify: `/Users/ipotter/code/looprig/go.work`
-- Verify: `carbon/internal/app/acpcatalog.go`
-- Verify: `carbon/internal/app/acpproduction.go`
-- Verify: `carbon/internal/app/model.go`
-- Verify: `carbon/internal/app/permissions.go`
+- Verify: `coderig/internal/app/acpcatalog.go`
+- Verify: `coderig/internal/app/acpproduction.go`
+- Verify: `coderig/internal/app/model.go`
+- Verify: `coderig/internal/app/permissions.go`
 
 **Step 1: Record repository state**
 
 Run:
 
 ```bash
-cd /Users/ipotter/code/looprig/carbon
+cd /Users/ipotter/code/looprig/coderig
 git status --short
 git log --oneline -5
 cd /Users/ipotter/code/looprig
@@ -132,7 +132,7 @@ clean, stash, reset, or rewrite unrelated work.
 Run:
 
 ```bash
-cd /Users/ipotter/code/looprig/carbon
+cd /Users/ipotter/code/looprig/coderig
 rg -n 'frozenACPGatewayDefinitions|ANTHROPIC_API_KEY|OPENAI_API_KEY|defaultModel =|CLAUDE_CODE_ACP_NATIVE_MODELS|CODEX_ACP_NATIVE_MODELS' internal/app
 ```
 
@@ -159,8 +159,8 @@ No commit for this task.
 
 **Files:**
 
-- Create: `carbon/internal/app/modelconfig.go`
-- Create: `carbon/internal/app/modelconfig_test.go`
+- Create: `coderig/internal/app/modelconfig.go`
+- Create: `coderig/internal/app/modelconfig_test.go`
 
 **Step 1: Write path-resolution tests**
 
@@ -191,7 +191,7 @@ Expected: compile failure because the helper does not exist.
 **Step 3: Implement path resolution**
 
 Use `os.UserHomeDir()` and `filepath.Join(home, ".looprig", "models.json")`.
-Wrap home lookup failure in a typed Carbon configuration error. Do not read
+Wrap home lookup failure in a typed CodeRig configuration error. Do not read
 `HOME` directly, expand `~`, or fall back to the current directory.
 
 **Step 4: Write secure-open tests**
@@ -255,8 +255,8 @@ git commit -m "feat(app): securely load global model configuration"
 
 **Files:**
 
-- Modify: `carbon/internal/app/modelconfig.go`
-- Modify: `carbon/internal/app/modelconfig_test.go`
+- Modify: `coderig/internal/app/modelconfig.go`
+- Modify: `coderig/internal/app/modelconfig_test.go`
 
 **Step 1: Add private wire types**
 
@@ -334,7 +334,7 @@ Use one valid fixture and mutate one field per table row. Require rejection of:
 - use other than `primer` or `delegate`;
 - no models;
 - missing or non-primer `primer_default`;
-- missing tools capability for any used Carbon model;
+- missing tools capability for any used CodeRig model;
 - empty, duplicate, invalid, `xhigh`, or `ultra` efforts;
 - default effort absent from the effort list;
 - non-`none` effort without thinking capability;
@@ -396,10 +396,10 @@ Expected test result: PASS.
 
 **Files:**
 
-- Create: `carbon/internal/app/productionmodels.go`
-- Create: `carbon/internal/app/productionmodels_test.go`
-- Modify: `carbon/internal/app/acpcatalog.go`
-- Modify: `carbon/internal/app/acpcatalog_test.go`
+- Create: `coderig/internal/app/productionmodels.go`
+- Create: `coderig/internal/app/productionmodels_test.go`
+- Modify: `coderig/internal/app/acpcatalog.go`
+- Modify: `coderig/internal/app/acpcatalog_test.go`
 
 **Step 1: Define the one-way compilation result**
 
@@ -503,15 +503,15 @@ git commit -m "feat(app): compile configured model targets"
 
 **Files:**
 
-- Modify: `carbon/internal/app/config.go`
-- Modify: `carbon/internal/app/model.go`
-- Modify: `carbon/internal/app/model_test.go`
-- Modify: `carbon/internal/app/acpproduction.go`
-- Modify: `carbon/internal/app/acpproduction_test.go`
-- Modify: `carbon/internal/app/persistence.go`
-- Modify: `carbon/internal/app/persistence_test.go`
-- Modify: `carbon/internal/app/swarm.go`
-- Modify: `carbon/internal/app/swarm_test.go`
+- Modify: `coderig/internal/app/config.go`
+- Modify: `coderig/internal/app/model.go`
+- Modify: `coderig/internal/app/model_test.go`
+- Modify: `coderig/internal/app/acpproduction.go`
+- Modify: `coderig/internal/app/acpproduction_test.go`
+- Modify: `coderig/internal/app/persistence.go`
+- Modify: `coderig/internal/app/persistence_test.go`
+- Modify: `coderig/internal/app/swarm.go`
+- Modify: `coderig/internal/app/swarm_test.go`
 
 **Step 1: Add a single process-composition loader**
 
@@ -604,14 +604,14 @@ git commit -m "feat(app): load production models from global config"
 
 **Files:**
 
-- Modify: `carbon/internal/app/access_acceptance_test.go`
-- Modify: `carbon/internal/app/acpchildren_test.go`
-- Modify: `carbon/internal/app/acpchildren_task31_test.go`
-- Modify: `carbon/internal/app/subagent_e2e_test.go`
-- Modify: `carbon/internal/app/fingerprint_test.go`
-- Modify: `carbon/internal/app/dependency_test.go`
-- Modify only if a defect is found: `carbon/internal/app/permissions.go`
-- Modify only if a defect is found: `carbon/internal/app/toolsets.go`
+- Modify: `coderig/internal/app/access_acceptance_test.go`
+- Modify: `coderig/internal/app/acpchildren_test.go`
+- Modify: `coderig/internal/app/acpchildren_task31_test.go`
+- Modify: `coderig/internal/app/subagent_e2e_test.go`
+- Modify: `coderig/internal/app/fingerprint_test.go`
+- Modify: `coderig/internal/app/dependency_test.go`
+- Modify only if a defect is found: `coderig/internal/app/permissions.go`
+- Modify only if a defect is found: `coderig/internal/app/toolsets.go`
 
 **Step 1: Pin filesystem separation**
 
@@ -689,11 +689,11 @@ test exposed a real defect and the minimal fix belongs there.
 
 **Files:**
 
-- Modify: `carbon/CLAUDE.md`
-- Modify: `carbon/CONTRIBUTING.md`
-- Modify: current Carbon user documentation that describes Kimi, fixed ACP
+- Modify: `coderig/CLAUDE.md`
+- Modify: `coderig/CONTRIBUTING.md`
+- Modify: current CodeRig user documentation that describes Kimi, fixed ACP
   aliases, or credential environment variables
-- Modify: `carbon/.gitignore` only if documentation tooling creates local test
+- Modify: `coderig/.gitignore` only if documentation tooling creates local test
   fixtures inside the repository (production config is outside it and needs no
   ignore rule)
 
@@ -744,7 +744,7 @@ testing arbitrary configured data; prefer neutral fixture aliases.
 ```bash
 gofmt -w internal/app/modelconfig.go internal/app/modelconfig_test.go internal/app/productionmodels.go internal/app/productionmodels_test.go
 git diff --check
-go test -race ./internal/app ./cmd/carbon
+go test -race ./internal/app ./cmd/coderig
 ```
 
 Expected: all commands exit 0.
@@ -767,10 +767,10 @@ files without discarding them.
 
 **Files:** None unless verification exposes a defect.
 
-**Step 1: Run Carbon quality gates**
+**Step 1: Run CodeRig quality gates**
 
 ```bash
-cd /Users/ipotter/code/looprig/carbon
+cd /Users/ipotter/code/looprig/coderig
 make test
 make lint
 make secure
@@ -789,13 +789,13 @@ go test -race ./...
 ```
 
 If implementation changes another module, run `go test -race ./...` from that
-module too. Do not infer success from Carbon tests alone.
+module too. Do not infer success from CodeRig tests alone.
 
 **Step 3: Manual no-auth primer acceptance**
 
 Create a temporary owner-only `~/.looprig/models.json` using a locally running
 LM Studio exact served model ID and `uses` containing `primer`. Back up any
-pre-existing user file without printing it. Start Carbon and verify all three
+pre-existing user file without printing it. Start CodeRig and verify all three
 primers open, builder is active, and planner/reviewer remain read-only.
 
 This step is destructive to local configuration if performed carelessly. Use a

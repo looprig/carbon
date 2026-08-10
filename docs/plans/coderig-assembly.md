@@ -1,26 +1,26 @@
-# Carbon Assembly Specification
+# CodeRig Assembly Specification
 
 ## Purpose
 
-Carbon is the reference coding Rig built with looprig. It should contain coding behavior and product choices, while reusable runtime machinery lives in the appropriate modules.
+CodeRig is the reference coding Rig built with looprig. It should contain coding behavior and product choices, while reusable runtime machinery lives in the appropriate modules.
 
 ## Name
 
-Rename the repository, module, command, binary, and live product references from SWE or Carbon to Carbon:
+Rename the repository, module, command, binary, and live product references from SWE or CodeRig to CodeRig:
 
 ```text
-folder:  swe -> carbon
-module:  github.com/looprig/carbon -> github.com/looprig/carbon
-command: cmd/carbon -> cmd/carbon
-binary:  bin/carbon -> bin/carbon
-remote:  git@github.com:looprig/swe.git -> git@github.com:looprig/carbon.git
+folder:  swe -> coderig
+module:  github.com/looprig/coderig -> github.com/looprig/coderig
+command: cmd/coderig -> cmd/coderig
+binary:  bin/coderig -> bin/coderig
+remote:  git@github.com:looprig/swe.git -> git@github.com:looprig/coderig.git
 ```
 
 No source or session compatibility layer is required.
 
 ## Product-owned behavior
 
-Carbon owns:
+CodeRig owns:
 
 - operator and reviewer prompts
 - which tools each Loop receives
@@ -33,7 +33,7 @@ Carbon owns:
 
 ## Reusable behavior moved out
 
-Carbon does not own:
+CodeRig does not own:
 
 - the `SessionController` to `tui.Agent` adapter
 - generic tool definition wrappers
@@ -45,7 +45,7 @@ Carbon does not own:
 
 ## Loops and Rig assembly
 
-Carbon defines its Loops explicitly, then assembles one Rig from them.
+CodeRig defines its Loops explicitly, then assembles one Rig from them.
 
 ```go
 operator, err := operatorLoop(deps)
@@ -67,11 +67,11 @@ Delete `ModelCatalog`, its resolver, and the economy, standard, and premium voca
 
 Each Loop declares purposeful modes such as `build`, `review`, or `quick`, using `loop.WithModes`. A mode may change the model, reasoning effort, instructions, tools, or tool limits. Reasoning strength uses `model.Effort`.
 
-The base model remains an explicit Carbon configuration dependency. There is no unused premium tier and no economy tier that is validated but not selected.
+The base model remains an explicit CodeRig configuration dependency. There is no unused premium tier and no economy tier that is validated but not selected.
 
 ## One construction path
 
-Carbon has one session-opening function with injected storage and an explicit selector:
+CodeRig has one session-opening function with injected storage and an explicit selector:
 
 ```go
 type OpenConfig struct {
@@ -91,7 +91,7 @@ Production injects fsstore-backed stores. Tests inject memstore-backed stores. N
 Production resolves egress routing in the parent before opening the session. A
 direct route still goes through sandbox's local target-enforcement proxy. When
 standard `HTTP_PROXY` or `HTTPS_PROXY` configuration selects an organization
-proxy, Carbon constructs a chained route: the sandboxed command connects only
+proxy, CodeRig constructs a chained route: the sandboxed command connects only
 to loopback, and sandbox forwards approved targets through that upstream. The
 parent may deliberately translate validated `NO_PROXY` entries into explicit
 direct routes, but the child never inherits them as a bypass. Upstream
@@ -108,11 +108,11 @@ If a public headless helper remains, it is a small wrapper that supplies memstor
 
 ## Access profiles
 
-Carbon directly constructs its `ReadOnly`, `Trusted`, and `Unconfined` access
+CodeRig directly constructs its `ReadOnly`, `Trusted`, and `Unconfined` access
 profiles from the standalone `sandbox.Profile` API. The profile names and their
 combinations are product behavior; reusable modules provide no named presets.
 
-There is no policy translation layer and Carbon does not depend on
+There is no policy translation layer and CodeRig does not depend on
 `github.com/looprig/confinement`. The dependency direction is:
 
 ```text
@@ -120,7 +120,7 @@ sandbox                         harness/pkg/gate
   Profile + OS enforcement       structural evaluation + prompt routing
        ^                                      ^
        | effective profile source + issuer   |
-       +--------------- Carbon --------------+
+       +--------------- CodeRig --------------+
                               |  product access source
                               +-- prepared tools / MCP
 ```
@@ -134,7 +134,7 @@ type AccessSource interface {
 }
 ```
 
-`*sandbox.Profile` satisfies that interface without importing harness. Carbon
+`*sandbox.Profile` satisfies that interface without importing harness. CodeRig
 includes a compile-time assertion at its composition boundary:
 
 ```go
@@ -155,7 +155,7 @@ const (
 // The CLI defaults to AccessReadOnly. AccessUnconfined requires a separate
 // explicit acknowledgement before Open is called.
 
-func carbonProfile(name AccessProfile, workspace string) (*sandbox.Profile, error) {
+func coderigProfile(name AccessProfile, workspace string) (*sandbox.Profile, error) {
     profile := sandbox.ProfileConfig{
         WorkspaceRoot: workspace,
         Home:          sandbox.IsolatedHome,
@@ -188,18 +188,18 @@ func carbonProfile(name AccessProfile, workspace string) (*sandbox.Profile, erro
         profile.Isolation = sandbox.Unconfined
         profile.AckUnconfined = true
     default:
-        return nil, fmt.Errorf("carbon: unknown access profile %q", name)
+        return nil, fmt.Errorf("coderig: unknown access profile %q", name)
     }
 
     return sandbox.NewProfile(profile)
 }
 ```
 
-Carbon's initial automatic Bash-family catalog is exactly `git log`,
+CodeRig's initial automatic Bash-family catalog is exactly `git log`,
 `git status`, `git diff`, `git show`, and `git push`. Any catalog change updates
 the product policy revision and durable configuration fingerprint. External MCP
 tools emit `tool.invoke`; skill loads emit `context.load`; both are `Gated` by
-the Carbon-owned product access source and remain separate from sandbox command
+the CodeRig-owned product access source and remain separate from sandbox command
 authority.
 
 The reviewer is restricted independently of the selected product profile:
@@ -245,7 +245,7 @@ func buildRole(
     approver gate.Approver, // optional: nil for headless
 ) (_ loopTools, err error) {
     // ExecutorSet is sandbox-owned and keyed by an opaque string. It does not
-    // know about harness bindings; Carbon supplies the session scratch root
+    // know about harness bindings; CodeRig supplies the session scratch root
     // here and the Loop ID at binding time.
     executors, err := sandbox.NewExecutorSet(
         profile,
@@ -340,7 +340,7 @@ per-key executor memoization and derives a separate isolated HOME beneath the
 provided session scratch root. Its key is an opaque string, so it has no harness
 dependency. `Profile.Fingerprint`, `Restrict`, `NewExecutorSet`,
 `WithScratchRoot`, `WithMaxExecutors`, `ExecutorSet.For`, and
-`ExecutorSet.Close` are required API—not placeholders for Carbon-local
+`ExecutorSet.Close` are required API—not placeholders for CodeRig-local
 wrappers. The session assembly owns each set and closes it with the session.
 The returned `loopTools` owns the set through its `closer` field; its `Close`
 path invokes that closer exactly once.
@@ -377,4 +377,4 @@ Apply the same correction to CLI and harness guidance where the current absolute
 
 ## Historical documents
 
-Existing plans that describe SWE remain historical records. Update live code, READMEs, package comments, examples, and current website content. Do not rewrite old plan documents as if Carbon existed when they were written.
+Existing plans that describe SWE remain historical records. Update live code, READMEs, package comments, examples, and current website content. Do not rewrite old plan documents as if CodeRig existed when they were written.

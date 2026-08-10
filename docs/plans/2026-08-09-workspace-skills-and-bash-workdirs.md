@@ -2,9 +2,9 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Remove Carbon's embedded `code-style` skill, make gated workspace skills unconditional, and safely accept absolute in-workspace Bash working directories.
+**Goal:** Remove CodeRig's embedded `code-style` skill, make gated workspace skills unconditional, and safely accept absolute in-workspace Bash working directories.
 
-**Architecture:** Bash will normalize absolute workdirs to workspace-relative input before passing them through the existing symlink-aware containment primitive; filesystem access declarations remain unchanged. Carbon will always construct a workspace-aware Skill tool backed by an empty embedded allow-set, remove the embedded catalog and launch switch, and fingerprint the fixed enabled posture truthfully.
+**Architecture:** Bash will normalize absolute workdirs to workspace-relative input before passing them through the existing symlink-aware containment primitive; filesystem access declarations remain unchanged. CodeRig will always construct a workspace-aware Skill tool backed by an empty embedded allow-set, remove the embedded catalog and launch switch, and fingerprint the fixed enabled posture truthfully.
 
 **Tech Stack:** Go 1.26, standard library `path/filepath`, LoopRig tools/harness/sandbox contracts, table-driven unit and integration tests.
 
@@ -69,10 +69,10 @@ GOWORK=<task-go-work> GOCACHE=/private/tmp/looprig-tools-workdir-gocache go test
 
 Expected: PASS.
 
-### Task 3: Specify unconditional workspace skills in Carbon
+### Task 3: Specify unconditional workspace skills in CodeRig
 
 **Files:**
-- Modify: `cmd/carbon/main_test.go`
+- Modify: `cmd/coderig/main_test.go`
 - Modify: `internal/app/skills_wiring_test.go`
 - Modify: `internal/app/runtime_skills_test.go`
 - Modify: `internal/app/runtime_skills_integration_test.go`
@@ -85,7 +85,7 @@ Delete `wantRuntimeSkills` assertions, assert zero flags still produce the norma
 
 **Step 2: Change skill wiring expectations**
 
-Assert Carbon's effective system prompt has no `<available_skills>` block and no `code-style`, while `skillDefinitionFor` is always non-nil, requires a workspace, and builds `Skill`.
+Assert Generic's effective system prompt has no `<available_skills>` block and no `code-style`, while `skillDefinitionFor` is always non-nil, requires a workspace, and builds `Skill`.
 
 **Step 3: Change fingerprint expectations**
 
@@ -100,7 +100,7 @@ Run the workspace-skill integration with `Config{}` on both new and restored ses
 Run:
 
 ```bash
-GOWORK=<task-go-work> GOCACHE=/private/tmp/looprig-carbon-workdir-gocache go test -race ./cmd/carbon ./internal/app -run 'TestParseFlags|TestCarbon.*Skill|TestAgentFingerprintFields|TestCompactionWiring'
+GOWORK=<task-go-work> GOCACHE=/private/tmp/looprig-coderig-workdir-gocache go test -race ./cmd/coderig ./internal/app -run 'TestParseFlags|TestGeneric.*Skill|TestAgentFingerprintFields|TestCompactionWiring'
 ```
 
 Expected: FAIL against the current optional flag/config and embedded catalog.
@@ -115,7 +115,7 @@ Expected: FAIL against the current optional flag/config and embedded catalog.
 - Modify: `internal/app/assembly.go`
 - Modify: `internal/app/config.go`
 - Modify: `internal/app/persistence.go`
-- Modify: `cmd/carbon/main.go`
+- Modify: `cmd/coderig/main.go`
 - Modify: `CLAUDE.md`
 
 **Step 1: Remove embedded skill composition**
@@ -132,7 +132,7 @@ Set `rig.ConfigFingerprintFields.RuntimeSkills` to `true` in `agentFingerprintFi
 
 **Step 4: Update current contributor documentation**
 
-State that Carbon always has the human-gated workspace Skill tool and ships no embedded skill catalog. Historical design plans remain historical.
+State that Generic always has the human-gated workspace Skill tool and ships no embedded skill catalog. Historical design plans remain historical.
 
 **Step 5: Format and verify GREEN**
 
@@ -153,12 +153,12 @@ GOWORK=<task-go-work> GOCACHE=/private/tmp/looprig-tools-workdir-gocache go test
 
 Expected: PASS.
 
-**Step 2: Verify Carbon unit suite**
+**Step 2: Verify CodeRig unit suite**
 
 Run:
 
 ```bash
-GOWORK=<task-go-work> GOCACHE=/private/tmp/looprig-carbon-workdir-gocache go test -race ./...
+GOWORK=<task-go-work> GOCACHE=/private/tmp/looprig-coderig-workdir-gocache go test -race ./...
 ```
 
 Expected: PASS.
@@ -168,7 +168,7 @@ Expected: PASS.
 Run:
 
 ```bash
-GOWORK=<task-go-work> GOCACHE=/private/tmp/looprig-carbon-workdir-gocache go test -tags integration -race ./internal/app -run TestRuntimeSkillsWorkspaceLoadGatedEndToEnd
+GOWORK=<task-go-work> GOCACHE=/private/tmp/looprig-coderig-workdir-gocache go test -tags integration -race ./internal/app -run TestRuntimeSkillsWorkspaceLoadGatedEndToEnd
 ```
 
 Expected: PASS with a real combined human gate.

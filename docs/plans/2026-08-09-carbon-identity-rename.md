@@ -896,6 +896,9 @@ values are byte-level compatibility contracts), the preserved
 `CODERIG_COLLAB_ENDPOINT`/`CODERIG_COLLAB_TOKEN` environment names (the MCP
 wire contract), and the retired-module string in `tools/dependency_test.go`
 (a regression guard that must continue to reject the former import path).
+The immutable published MCP `v0.6.0` tag may retain non-runtime CodeRig
+comments; its active checkout is reviewed, but the tag is not rewritten and no
+unplanned `v0.6.1` is created solely for comment changes.
 Historical plans outside the active Carbon design and implementation record,
 and the archived `zarchive/` tree, are reviewed as documents but are not
 runtime identity surfaces.

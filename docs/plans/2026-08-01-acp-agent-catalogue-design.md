@@ -1,4 +1,4 @@
-# Carbon ACP Agent Catalogue and Three-Agent Roster Design
+# CodeRig ACP Agent Catalogue and Three-Agent Roster Design
 
 **Date:** 2026-08-01
 
@@ -12,18 +12,18 @@
 > `harness/docs/plans/2026-08-03-agent-collaboration-tools-design.md` and the
 > cross-repository implementation plan in
 > `docs/plans/2026-08-03-agent-collaboration-tools-implementation.md`. This
-> document remains the historical reference for Carbon's ACP catalogue and
+> document remains the historical reference for CodeRig's ACP catalogue and
 > credential-bound composition decisions.
 
 ## Goal
 
-Carbon has exactly three named agents—`planner`, `builder`, and `reviewer`—and
+CodeRig has exactly three named agents—`planner`, `builder`, and `reviewer`—and
 starts every session with `builder` active. All three are native primer Loops and
 legal delegated roles. The existing TUI loop footer remains the agent switcher.
 
 Delegated children run through ACP using Claude Code or Codex. Gateway-backed
 and native-auth availability is machine configuration, not a compiled Go table.
-Carbon loads it once from:
+CodeRig loads it once from:
 
 ```text
 ~/.looprig/models.json
@@ -31,7 +31,7 @@ Carbon loads it once from:
 
 The file may contain API keys in this iteration. OAuth and login discovery are
 deferred; a native profile uses the harness login state already available to
-the launched process. Carbon validates the file, binds credentials directly
+the launched process. CodeRig validates the file, binds credentials directly
 to provider clients, discards them from all public and durable projections, and
 compiles one immutable, secret-free runtime catalogue.
 
@@ -46,7 +46,7 @@ not redesign Task/Todo or the permission system.
 
 ## Decisions
 
-- The fixed role roster and role policies remain in Carbon source.
+- The fixed role roster and role policies remain in CodeRig source.
 - Model rows, provider targets, credentials, effort choices, and model defaults
   come from `~/.looprig/models.json`; no production model row is hard-coded.
 - Model configuration is machine-wide and shared by all workspaces for the same
@@ -56,9 +56,9 @@ not redesign Task/Todo or the permission system.
   they receive explicit schema and client-construction support. Native ACP
   profiles use existing Claude Code or Codex login state and do not add a
   provider-key or model-selection environment variable.
-- A missing `models.json` is valid: Carbon has no configured gateway models and
+- A missing `models.json` is valid: CodeRig has no configured gateway models and
   reports a bounded capability error when no usable primer/default exists.
-- A present but malformed or insecure `models.json` fails startup. Carbon never
+- A present but malformed or insecure `models.json` fails startup. CodeRig never
   partially accepts a malformed file.
 - All three native primers use one configured `primer_default` in this release.
   The schema marks other models as primer-capable for future selection, but the
@@ -75,7 +75,7 @@ not redesign Task/Todo or the permission system.
   native defaults must set `source: "native"`. Native aliases are preflighted
   independently, so one unavailable alias does not remove other ready aliases.
 - ACP children remain posture-only in this release. They do not consult or
-  modify Carbon's interactive permission file. A role/harness combination is
+  modify CodeRig's interactive permission file. A role/harness combination is
   admitted only if the connector can enforce its non-interactive posture.
 - Provider identity, endpoint, exact model ID, and credentials are private
   routing data. The Subagent surface exposes only harness, alias, and effort.
@@ -86,7 +86,7 @@ not redesign Task/Todo or the permission system.
 
 | Owner | Responsibility |
 |---|---|
-| Carbon | Role roster and prompts, global model-config schema and loader, client construction, defaults, access profiles, and catalogue compilation |
+| CodeRig | Role roster and prompts, global model-config schema and loader, client construction, defaults, access profiles, and catalogue compilation |
 | Harness | Parent-scoped Subagent selection, child lifecycle, durability, quotas, and protocol-neutral builder registry |
 | `foreignloops/driver/acp` | Adapt ACP sessions to the foreign Loop backend contract |
 | `acp/launch` | Launch/configure Claude Code or Codex and apply its role posture |
@@ -95,7 +95,7 @@ not redesign Task/Todo or the permission system.
 | TUI | Loop focus, primer switching, runtime controls, and permission diagnostics |
 
 Harness must not read `models.json`, import ACP, or know provider configuration.
-ACP packages must not own Carbon roles or credentials. Carbon loads the file at
+ACP packages must not own CodeRig roles or credentials. CodeRig loads the file at
 its process-composition boundary and compiles the existing Harness runtime
 catalogue plus fixed gateway targets from the same normalized input.
 
@@ -103,10 +103,10 @@ catalogue plus fixed gateway targets from the same normalized input.
 
 `~/.looprig/models.json` is user-owned machine configuration. It is deliberately
 outside every repository so it cannot be committed accidentally or exposed as
-ordinary workspace content. Carbon resolves the home directory with
+ordinary workspace content. CodeRig resolves the home directory with
 `os.UserHomeDir`; it never interprets `~` itself.
 
-When the file exists, Carbon requires:
+When the file exists, CodeRig requires:
 
 - a regular file, not a directory, device, or named pipe;
 - no symbolic link at the final path;
@@ -116,7 +116,7 @@ When the file exists, Carbon requires:
 - UTF-8 JSON with exactly one top-level value and no trailing data;
 - schema version `1` and no unknown fields.
 
-Carbon only reads this file. It does not create, rewrite, chmod, or migrate it.
+CodeRig only reads this file. It does not create, rewrite, chmod, or migrate it.
 Those actions require a separate explicit configuration command in the future.
 
 The existing permission file remains:
@@ -196,7 +196,7 @@ Each model row has these rules:
 - `api_key`: required exactly when the provider requires API-key auth.
 - `uses`: non-empty unique subset of `primer` and `delegate`.
 - `capabilities`: conservative user assertions. `tools` must be true for every
-  Carbon primer or delegate. Thinking must be true if any non-`none` effort is
+  CodeRig primer or delegate. Thinking must be true if any non-`none` effort is
   advertised.
 - `efforts`: non-empty, unique, valid neutral efforts. Unsupported `xhigh` and
   `ultra` are rejected rather than clamped.
@@ -221,7 +221,7 @@ are primers and delegates, and `builder` is initially active.
 
 Native Loop enforcement uses the current direct sandbox profile, executor set,
 Harness gate, and Tools permission store. Planner and reviewer use the
-intersection with Carbon's read-only profile under every selected user access
+intersection with CodeRig's read-only profile under every selected user access
 profile. This design does not replace these current permission-based features.
 
 The model file never grants authority. Changing a model, provider, or API key
@@ -288,9 +288,9 @@ the session restore fail.
 
 Claude Code requires a configured `claude_code_small_model`. That alias must be
 delegate-capable and gateway-compatible whenever a Claude Code gateway profile
-is advertised. Carbon materializes it alongside the selected main target.
+is advertised. CodeRig materializes it alongside the selected main target.
 
-ACP permissions remain non-interactive and posture-only. Carbon maps planner,
+ACP permissions remain non-interactive and posture-only. CodeRig maps planner,
 builder, and reviewer to the connector's known sandbox/approval posture and
 registers `session/request_permission` to deny requests outside that posture.
 ACP children neither read nor persist `permissions.json`. Full parity with
@@ -327,7 +327,7 @@ does, because it changes whether a route is executable.
 - Unsupported provider credential mechanism: reject that configuration with a
   typed unsupported-auth error.
 - Missing required API key: reject the row/file; never advertise it.
-- No usable `primer_default`: fail Carbon session construction before opening
+- No usable `primer_default`: fail CodeRig session construction before opening
   persistence or starting a Loop.
 - Missing ACP executable/preflight failure: omit only the affected source or
   explicit alias; native primers remain usable. An absent or disabled native

@@ -1,8 +1,8 @@
-# Carbon Access Profile Specification
+# CodeRig Access Profile Specification
 
 ## Purpose
 
-Carbon selects command authority through consumer-defined access profiles.
+CodeRig selects command authority through consumer-defined access profiles.
 The standalone `sandbox` module provides the profile vocabulary, validation,
 and OS enforcement. The generic harness gate evaluates the three access states,
 combines unmet requirements into one approval, and routes the response without
@@ -21,7 +21,7 @@ The model has two independent concerns:
 
 The reusable `sandbox` module owns the profile because the profile describes
 the authority the OS boundary must enforce. `sandbox` must remain usable by a
-consumer that does not use harness, its gate package, tools, TUI, or Carbon.
+consumer that does not use harness, its gate package, tools, TUI, or CodeRig.
 
 ```go
 type Access uint8
@@ -120,7 +120,7 @@ validated again, including the unconfined consistency rules.
 
 `ExecutorSet` belongs in sandbox because executor isolation, grant-key
 separation, and scratch-HOME lifecycle are enforcement concerns. It accepts only
-an opaque key and sandbox options; Carbon uses a Loop ID string, while a
+an opaque key and sandbox options; CodeRig uses a Loop ID string, while a
 standalone consumer may use any stable unique key. Every key gets an independent
 executor, grant identity, and owner-only scratch HOME beneath the validated
 scratch root. `WithScratchRoot` and `WithMaxExecutors` are required;
@@ -175,21 +175,21 @@ const (
 )
 ```
 
-This is the same structural pattern as `GuaranteeBits() uint64`: Carbon can
+This is the same structural pattern as `GuaranteeBits() uint64`: CodeRig can
 pass a `*sandbox.Profile` directly as the source in bindings for the four
 sandbox kinds. Gate
 rejects an unsupported ABI version before evaluating a request. An access-source
 error or unknown access value is reported as a configuration error and fails
-closed. Contract tests in `sandbox`, harness, and Carbon pin the version,
+closed. Contract tests in `sandbox`, harness, and CodeRig pin the version,
 numeric meanings, and normalized capability identifiers so independent modules
 cannot drift silently.
 
 Gate accepts an explicit set of `AccessBinding` values rather than assuming one
 source owns every possible requirement kind. Construction rejects duplicate or
 missing kind bindings. This lets a standalone gate consumer add product-owned
-kinds without extending `sandbox.Profile`. Carbon binds `command.execute`,
+kinds without extending `sandbox.Profile`. CodeRig binds `command.execute`,
 `filesystem.read`, `filesystem.write`, and `network` to the effective profile;
-it binds `tool.invoke` and `context.load` to a small Carbon-owned immutable
+it binds `tool.invoke` and `context.load` to a small CodeRig-owned immutable
 source. `tool.invoke` is scoped to a stable external-tool identity and is
 `Gated`; `context.load` is scoped to a canonical skill identity and is
 `Gated`. Built-in pure tools may omit `tool.invoke`, while MCP and other
@@ -390,7 +390,7 @@ Every shell segment separated by `&&`, `||`, `;`, `|`, `|&`, `&`, a newline, or
 a subshell boundary is prepared and matched independently. A wildcard never
 crosses one of those boundaries, so `Bash(git log:*)` cannot authorize
 `git log; rm -rf output`. Parsing a simple command is necessary but not
-sufficient for automatic proposal. Carbon automatically proposes a family only
+sufficient for automatic proposal. CodeRig automatically proposes a family only
 when its literal command/subcommand prefix appears in a small, explicit
 product-owned eligibility catalog. Unknown commands fail closed to an exact
 proposal. Shells, interpreters, `find`, `xargs`, `env`, package/task runners,
@@ -398,7 +398,7 @@ and other prefixes that can evaluate code or select another executable are not
 eligible. This positive catalog is used instead of a denylist so an unknown
 execution wrapper cannot become family-approved automatically.
 
-Carbon's v1 automatic-family catalog is exactly `git log`, `git status`,
+CodeRig's v1 automatic-family catalog is exactly `git log`, `git status`,
 `git diff`, `git show`, and `git push`. Catalog changes are product policy
 changes and update the policy revision included in the durable configuration
 fingerprint. Although `git push` may receive reusable command access, its
@@ -512,7 +512,7 @@ The concrete encoding must preserve these rules:
   exact displayed, validated allow candidates to the single workspace file;
 - grants are never persisted—only their normalized capability descriptions are;
   and
-- workspace rules are not bound to a selected Carbon profile or a live sandbox
+- workspace rules are not bound to a selected CodeRig profile or a live sandbox
   executor revision.
 
 `Approve always for this workspace` means that a compatible normalized rule may
@@ -522,7 +522,7 @@ version or different enforcement class does not match. Short-lived sandbox
 grants, unlike permission rules, bind to the exact profile fingerprint, command,
 working directory, executor, guarantees, and expiry.
 
-There is one optional permission file per run. Carbon's interactive default is:
+There is one optional permission file per run. CodeRig's interactive default is:
 
 ```text
 ~/.looprig/workspaces/<sha256(canonical-workspace)>/permissions.json
@@ -533,7 +533,7 @@ and is the sole destination for `Approve always for this workspace`. The
 implementation removes implicit reads from `~/.looprig/approvals.json` and does
 not maintain an in-memory session-rule layer.
 
-Interactive updates are safe across concurrent Carbon processes. The store
+Interactive updates are safe across concurrent CodeRig processes. The store
 locks per workspace, re-reads and merges under the lock, writes an owner-only
 temporary file, fsyncs it, atomically renames it, and fsyncs the directory.
 Loading and writing reject symlinks, unexpected owners, group/world permissions,
@@ -746,12 +746,12 @@ profile unless workspace read/write, host read/write, and network are all
 the executor can still require `command.start.v1` before the process starts.
 `IsolatedHome` may still
 redirect caches, but it is not a secrecy boundary for an unconfined process.
-Carbon must show an explicit warning before selecting unconfined execution. An
+CodeRig must show an explicit warning before selecting unconfined execution. An
 approval of an ordinary gated operation never implies unconfined execution.
 
-## Carbon profiles
+## CodeRig profiles
 
-Carbon defines exactly three product profiles from the reusable API:
+CodeRig defines exactly three product profiles from the reusable API:
 
 | Capability | ReadOnly | Trusted | Unconfined |
 |---|---|---|---|
@@ -766,26 +766,26 @@ Carbon defines exactly three product profiles from the reusable API:
 | Confinement | `Sandboxed` | `Sandboxed` | `Unconfined` |
 | Explicit acknowledgement | No | No | Yes |
 
-These names and combinations live in Carbon, not in `sandbox`, harness, or
-`tools`. Carbon uses direct construction rather than a generic profile
+These names and combinations live in CodeRig, not in `sandbox`, harness, or
+`tools`. CodeRig uses direct construction rather than a generic profile
 registry. Other consumers may create entirely different combinations.
 
 ## Profile selection and persistence
 
-Carbon accepts only its three known profile names. It validates the selected
+CodeRig accepts only its three known profile names. It validates the selected
 name before constructing the Rig. The command default is `ReadOnly`.
 `Unconfined` additionally requires an explicit acknowledgement flag. New and
 restored sessions use the same profile construction path.
 
-The selected profile is fixed for the lifetime of a session. Carbon chooses it
+The selected profile is fixed for the lifetime of a session. CodeRig chooses it
 before constructing the Rig, the TUI displays it but does not change it, and a
 different profile requires opening a new session. There is no live access-level
 command, atomic profile swap, or in-flight authority migration.
 
-Carbon applies product-owned role restrictions before assembly. The operator
+CodeRig applies product-owned role restrictions before assembly. The operator
 uses the selected profile. The reviewer uses `sandbox.Restrict(selected,
 reviewerCeiling)`, where `reviewerCeiling` is a locally defined sandboxed,
-read-only profile. Carbon passes the same effective profile pointer to that
+read-only profile. CodeRig passes the same effective profile pointer to that
 role's gate and executors. The reviewer therefore remains read-only even when
 the selected product profile is Trusted or Unconfined.
 
@@ -809,8 +809,8 @@ repository, and updates two publication repositories:
 | `tools` | Move validation into preparation, emit typed capabilities including explicit Bash deltas, implement safe token-aware `Bash(...:*)` parsing/matching and catalog-aware persistence candidates/diagnostics, implement the single hardened permission file, and share network evaluation across Bash, Fetch and WebSearch. |
 | `mcp` | Replace the old `PermissionPrompter`/approval-scope adapter with preparation that emits a stable `tool.invoke` requirement for each external MCP tool, then refresh its Harness dependency and vendor tree. |
 | `tui` | Render one combined capability prompt with exactly the three actions, surface permission-file security diagnostics, and display the session-fixed consumer profile name without ordinal access controls. |
-| `carbon` | Define the three product profiles, reviewer ceiling, and automatic-family eligibility catalog; pass the same immutable effective profile directly to each role's gate and sandbox executors; select the workspace permission file; accept an explicit read-only file for headless runs; update fingerprints/restore/CLI behavior; and test the complete assembly. |
-| `confinement` | Remove from Carbon and retire in the same feature. Its policy translation, mode/posture mapping, and gated unsandboxed fallback disappear rather than moving into another bridge. |
+| `coderig` | Define the three product profiles, reviewer ceiling, and automatic-family eligibility catalog; pass the same immutable effective profile directly to each role's gate and sandbox executors; select the workspace permission file; accept an explicit read-only file for headless runs; update fingerprints/restore/CLI behavior; and test the complete assembly. |
+| `confinement` | Remove from CodeRig and retire in the same feature. Its policy translation, mode/posture mapping, and gated unsandboxed fallback disappear rather than moving into another bridge. |
 | `.github` profile docs and `www` | Replace public mode, security-limit, and confinement examples with the final profile/gate APIs, then update the website's profile-docs submodule pointer. These publication repositories use the same feature-branch name as the code repositories. |
 
 `core`, `inference`, `storage`, and `fsstore` require no behavior changes unless
@@ -929,7 +929,7 @@ enforcement-class mismatch, reuse across profiles with `Deny` still winning,
 absence of user/session layers, headless explicit-file loading, headless no-match
 denial, startup failure for an invalid configured file, and no live reload.
 
-Carbon must test the exact normalized value of all three profiles, CLI
+CodeRig must test the exact normalized value of all three profiles, CLI
 selection, absence of in-session switching, new and restored session assembly,
 fingerprint drift, and the rule that the reviewer remains sandboxed and
 read-only under every selected profile.

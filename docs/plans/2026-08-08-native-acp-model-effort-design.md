@@ -6,11 +6,11 @@
 
 ## Goal
 
-Let Carbon operators constrain each native ACP harness to an explicit set of
-model and effort combinations in `~/.looprig/carbon/models.json`. When no
+Let CodeRig operators constrain each native ACP harness to an explicit set of
+model and effort combinations in `~/.looprig/coderig/models.json`. When no
 model list is configured, the ACP harness remains free to use any model and
 effort available to its existing login. Configured choices are attempted only
-when `StartAgent` selects them; Carbon does not launch ACP sessions at startup
+when `StartAgent` selects them; CodeRig does not launch ACP sessions at startup
 to validate model availability.
 
 When an ACP launch or prompt fails, the parent agent receives the bounded ACP
@@ -24,7 +24,7 @@ model context.
 `native_acp.<harness>.models` continues to distinguish omission from an
 explicit allowlist:
 
-- Omitted `models` means harness-managed selection. Carbon passes no model or
+- Omitted `models` means harness-managed selection. CodeRig passes no model or
   effort selector.
 - Present `models` is a non-empty strict allowlist. `StartAgent` may select only
   a configured model and one of that model's configured efforts.
@@ -91,7 +91,7 @@ model identifier, admitted efforts, and default effort. The Harness runtime
 catalogue already models these fields, so the normalized values flow directly
 into `StartAgent`'s generated `model` and `effort` branches.
 
-The configured catalogue is authoritative. Carbon does not intersect it with
+The configured catalogue is authoritative. CodeRig does not intersect it with
 an adapter-advertised model list during startup and does not remove choices
 because of transient login, quota, network, or provider state. Static parsing,
 identifier validation, executable resolution, and access-policy construction
@@ -121,7 +121,7 @@ leaks into `models.json` or the model-facing `StartAgent` contract.
 
 ## Lazy Failure and Error Boundary
 
-No ACP session is opened at Carbon startup solely to prove a configured model
+No ACP session is opened at CodeRig startup solely to prove a configured model
 or effort. The selected pair is validated by the real child launch. A rejected
 pair, exhausted quota, authentication problem, or other ACP failure returns to
 the parent agent instead of causing blind retries behind a generic error.
@@ -140,7 +140,7 @@ audit summaries or ordinary logs.
 
 ## Ownership
 
-- Carbon owns the `models.json` extension, normalized native allowlist,
+- CodeRig owns the `models.json` extension, normalized native allowlist,
   catalogue assembly, removal of model-availability startup preflight, and
   product error policy.
 - `acp/launch` owns applying Codex and Claude model/effort selectors.
@@ -158,7 +158,7 @@ Tests are written first and cover:
 - invalid, duplicate, empty, and mismatched effort configurations;
 - secret-free digest changes for model/effort allowlist changes;
 - runtime catalogue and generated `StartAgent` model/effort choices;
-- absence of ACP session/model preflight during Carbon startup;
+- absence of ACP session/model preflight during CodeRig startup;
 - Codex model plus reasoning-effort launch configuration;
 - Claude model then effort config-option selection;
 - lazy rejection of unsupported selections;
@@ -167,6 +167,6 @@ Tests are written first and cover:
 - foreground/background delegation failure results and restore identity.
 
 Production verification includes focused module tests, full affected-module
-test suites with race detection where supported, Carbon build/lint checks,
-configuration decode, and an actual Carbon startup followed by selected native
+test suites with race detection where supported, CodeRig build/lint checks,
+configuration decode, and an actual CodeRig startup followed by selected native
 ACP launches.

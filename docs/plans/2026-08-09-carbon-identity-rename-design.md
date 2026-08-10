@@ -242,6 +242,12 @@ CodeRig `v0.18.1` uses MCP `v0.5.0` and the executable
 This keeps the final CodeRig release reproducible while allowing Carbon to have
 no old executable fallback.
 
+MCP `v0.6.0` is immutable once published. The active MCP checkout carries
+the reviewed Carbon documentation follow-up, but the already-published tag's
+non-runtime source comments cannot be rewritten in place. Those historical tag
+contents are outside the active-tree stale-reference gate; do not invent an
+unplanned `v0.6.1` solely to rewrite comments.
+
 ## Workspace and Ecosystem Updates
 
 Update active workspace metadata from `coderig` to `carbon`, including:

@@ -2,11 +2,11 @@
 
 > **For Codex:** REQUIRED SUB-SKILL: Use superpowers:test-driven-development to implement this plan task-by-task.
 
-**Goal:** Move Carbon's shared prompt identity from application assembly into the internal prompt catalog without changing prompt bytes or runtime behavior.
+**Goal:** Move CodeRig's shared prompt identity from application assembly into the internal prompt catalog without changing prompt bytes or runtime behavior.
 
 **Architecture:** `internal/catalog` owns static identity and role prompt content. `internal/app` imports that content and remains responsible only for composing the final Loop system prompts.
 
-**Tech Stack:** Go 1.26, standard library XML testing, existing Carbon catalog and app packages.
+**Tech Stack:** Go 1.26, standard library XML testing, existing CodeRig catalog and app packages.
 
 ---
 

@@ -2,7 +2,7 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Restore carbon test compilation without weakening the fingerprint-field assertion.
+**Goal:** Restore coderig test compilation without weakening the fingerprint-field assertion.
 
 **Architecture:** Keep the test's whole-value comparison, but use deep equality because the Harness-owned value now contains a map. Reconcile the module graph with the dependency version already required by sibling modules.
 
@@ -50,7 +50,7 @@ Expected: PASS.
 ### Task 2: Repair the command test double
 
 **Files:**
-- Modify: `cmd/carbon/main_test.go`
+- Modify: `cmd/coderig/main_test.go`
 
 **Step 1: Verify the failing command test build**
 
@@ -67,11 +67,11 @@ method to `orderingAgent`.
 
 **Step 3: Verify the command package**
 
-Run: `GOWORK=off go test -race ./cmd/carbon`
+Run: `GOWORK=off go test -race ./cmd/coderig`
 
 Expected: PASS.
 
-### Task 3: Verify carbon
+### Task 3: Verify coderig
 
 **Step 1: Run full verification**
 
@@ -86,5 +86,5 @@ Expected: PASS.
 Run: `git diff --check && git diff --stat && git status --short`
 
 Expected: only `go.mod`, `internal/app/fingerprint_test.go`, and
-`cmd/carbon/main_test.go` are modified, plus these approved planning
+`cmd/coderig/main_test.go` are modified, plus these approved planning
 documents.
