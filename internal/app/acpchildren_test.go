@@ -417,7 +417,7 @@ func TestBoundedACPChildErrorKeepsCancellationAndDeadlineIdentity(t *testing.T) 
 	}
 }
 
-func TestBoundedACPChildErrorKeepsArbitraryFailuresCarbon(t *testing.T) {
+func TestBoundedACPChildErrorKeepsArbitraryFailures(t *testing.T) {
 	t.Parallel()
 	got := boundedACPChildError(errors.New("internal path=/private/acp token=secret"))
 	if got != errACPChildUnavailable {

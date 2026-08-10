@@ -30,6 +30,8 @@ import (
 // notice (passed through runtime.Banner).
 const bannerName = "Carbon"
 
+const dataDirUsage = "session store root (default ~/.looprig/carbon/store)"
+
 // Process exit codes main returns via os.Exit. exitOK / exitRuntime mirror the runtime's
 // codes; exitUsage is the boundary-failure code for a malformed invocation or a
 // persistence/list failure (distinct from a TUI run error, which runtime.Run owns).
@@ -101,7 +103,7 @@ func parseFlags(args []string) (cliFlags, error) {
 		credentialLogout      = fs.String("logout", "", "explicitly log out credential://provider/name")
 		credentialLogoutAlias = fs.String("credential-logout", "", "explicitly log out credential://provider/name")
 		resume                = fs.String("resume", "", "resume the session with this id")
-		dataDir               = fs.String("data-dir", "", "session store root (default ~/.looprig/store)")
+		dataDir               = fs.String("data-dir", "", dataDirUsage)
 		accessProfile         = fs.String("access-profile", string(carbon.DefaultAccessProfile), "session access profile: readonly|trusted|unconfined")
 		ackUnconfined         = fs.Bool("acknowledge-unconfined", false, "acknowledge that --access-profile unconfined runs commands directly on the host with no OS confinement")
 	)

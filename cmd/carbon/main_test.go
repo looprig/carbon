@@ -274,6 +274,15 @@ func TestParseFlags(t *testing.T) {
 	}
 }
 
+func TestDataDirUsageNamesCarbonStore(t *testing.T) {
+	if !strings.Contains(dataDirUsage, "~/.looprig/carbon/store") {
+		t.Fatalf("dataDirUsage = %q, want Carbon store path", dataDirUsage)
+	}
+	if strings.Contains(dataDirUsage, "~/.looprig/store") {
+		t.Fatalf("dataDirUsage = %q, retains legacy store path", dataDirUsage)
+	}
+}
+
 func TestParseCredentialFlagsAndRejectMixedCommands(t *testing.T) {
 	flags, err := parseFlags([]string{"--credentials-list"})
 	if err != nil {
