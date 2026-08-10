@@ -875,12 +875,12 @@ Run from the workspace root:
 
 ```bash
 rg -n -i --hidden \
-	--glob '!**/.git/**' \
-	--glob '!**/.worktrees/**' \
-	--glob '!**/vendor/**' \
-	--glob '!**/docs/plans/**' \
-	--glob '!zarchive/**' \
-	--glob '!go.work.sum' \
+  --glob '!**/.git/**' \
+  --glob '!**/.worktrees/**' \
+  --glob '!**/vendor/**' \
+  --glob '!**/docs/plans/**' \
+  --glob '!zarchive/**' \
+  --glob '!go.work.sum' \
   'coderig|code[ _-]?rig|github\.com/looprig/coderig|\.looprig/coderig'
 ```
 
