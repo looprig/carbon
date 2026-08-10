@@ -13,8 +13,8 @@ require (
 	github.com/looprig/classifiers v0.1.2
 	github.com/looprig/core v0.5.0
 	github.com/looprig/credentials v0.1.0
-	github.com/looprig/foreignloops v0.2.0
-	github.com/looprig/fsstore v0.3.1
+	github.com/looprig/foreignloops v0.2.1
+	github.com/looprig/fsstore v0.3.2
 	github.com/looprig/harness v0.22.0
 	github.com/looprig/inference v0.9.0
 	github.com/looprig/llm v0.13.1
