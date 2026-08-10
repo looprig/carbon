@@ -25,7 +25,7 @@ install: build
 
 # Run the TUI directly. Optional .env values are launcher settings (for example,
 # ACP executable path overrides), never provider credentials; models and inline
-# keys belong only in the owner-only ~/.looprig/models.json.
+# keys belong only in the owner-only ~/.looprig/carbon/models.json.
 run:
 	set -a; [ -f .env ] && . ./.env; set +a; go run ./cmd/carbon
 
