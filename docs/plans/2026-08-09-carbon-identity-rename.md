@@ -1018,8 +1018,10 @@ git -C /Users/ipotter/code/looprig/carbon tag --sort=-v:refname | head -20
 
 Expected: `feat/carbon-v010-rebased` is a descendant of corrected CodeRig
 `v0.18.1`, the rename commits are reviewed, and the active Carbon worktree is
-clean except for no untracked files. The old baseline `main` ref remains
-preserved until the explicit promotion below.
+clean except for the pre-existing untracked `docs/superpowers/` files that the
+execution rules require preserving; no other untracked files are permitted.
+The old baseline `main` ref remains preserved until the explicit promotion
+below.
 
 **Step 2: Promote the reviewed Carbon tip to `main`, then push without tags**
 
