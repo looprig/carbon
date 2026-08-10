@@ -824,15 +824,17 @@ focused collaboration tests, and commit as
 
 **Step 1: Update workspace and repository registry**
 
-Change the `go.work` member to `./carbon`. Replace the `repositories.mk` CodeRig
-entry with:
+Change the `go.work` member to `./carbon`. Put Carbon in
+`PENDING_REPOSITORIES` with the planned tag until the final remote proof
+passes; do not manage a nonexistent Carbon release from `REPOSITORIES`.
+Replace the `repositories.mk` CodeRig entry with:
 
 ```text
 "carbon|git@github.com:looprig/carbon.git|v0.1.0"
 ```
 
-Keep it pending or use the exact planned tag only until Carbon `v0.1.0` is
-published; repository verification must not run against a nonexistent tag.
+Move the entry into `REPOSITORIES` only after Carbon `v0.1.0` is published;
+repository verification must not run against a nonexistent tag.
 
 **Step 2: Update executable product references with `sed`**
 
@@ -882,11 +884,15 @@ Run from the workspace root:
 
 ```bash
 rg -n -i --hidden \
+  --no-ignore \
   --glob '!**/.git/**' \
   --glob '!**/.worktrees/**' \
   --glob '!**/vendor/**' \
   --glob '!**/docs/plans/**' \
   --glob '!zarchive/**' \
+  --glob '!**/.astro/**' \
+  --glob '!**/dist/**' \
+  --glob '!**/node_modules/**' \
   --glob '!go.work.sum' \
   'coderig|code[ _-]?rig|github\.com/looprig/coderig|\.looprig/coderig'
 ```
@@ -907,8 +913,9 @@ The Carbon MCP configuration test at
 `generic` role rejection fixture; it proves that the retired role is rejected
 and is not an active product identity.
 Historical plans outside the active Carbon design and implementation record,
-and the archived `zarchive/` tree, are reviewed as documents but are not
-runtime identity surfaces.
+the archived `zarchive/` tree, and generated website `.astro`, `dist`, and
+`node_modules` trees are reviewed as artifacts but are not runtime identity
+surfaces.
 
 **Step 2: Audit Generic product-agent remnants**
 
