@@ -18,7 +18,7 @@ require (
 	github.com/looprig/harness v0.22.0
 	github.com/looprig/inference v0.9.0
 	github.com/looprig/llm v0.13.1
-	github.com/looprig/mcp v0.5.0
+	github.com/looprig/mcp v0.6.0
 	github.com/looprig/sandbox v0.7.0
 	github.com/looprig/secrets v0.1.0
 	github.com/looprig/storage v0.3.1
