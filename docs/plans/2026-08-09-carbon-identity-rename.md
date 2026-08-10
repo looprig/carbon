@@ -878,7 +878,15 @@ rg -n -i --hidden \
 ```
 
 Expected: no first-party active-tree results. Classify every result rather than
-blindly excluding it.
+blindly excluding it. The reviewed exclusions are the two rename-plan files
+themselves (their former/current mapping is normative), historical reusable
+Harness fingerprint vectors and the v1 replay fixture (their serialized
+values are byte-level compatibility contracts), the preserved
+`CODERIG_COLLAB_ENDPOINT`/`CODERIG_COLLAB_TOKEN` environment names (the MCP
+wire contract), and the retired-module string in `tools/dependency_test.go`
+(a regression guard that must continue to reject the former import path).
+Historical plans outside the active Carbon design and implementation record
+are reviewed as documents, but are not runtime identity surfaces.
 
 **Step 2: Audit Generic product-agent remnants**
 

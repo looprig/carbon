@@ -109,10 +109,10 @@ model; `FAKE_EXAMPLE_KEY_DO_NOT_USE` is deliberately unusable:
 ```json
 {
   "version": 2,
-  "primer_default": "local-generic",
+  "primer_default": "local-carbon",
   "models": [
     {
-      "alias": "local-generic",
+      "alias": "local-carbon",
       "description": "Fast local model for the Carbon coding agent.",
       "provider": "lmstudio",
       "api_format": "openai",
@@ -132,7 +132,7 @@ model; `FAKE_EXAMPLE_KEY_DO_NOT_USE` is deliberately unusable:
       "default_effort": "none"
     },
     {
-      "alias": "remote-generic",
+      "alias": "remote-carbon",
       "description": "Reliable hosted model for explicit Carbon delegation.",
       "provider": "openai",
       "api_format": "openai-responses",
