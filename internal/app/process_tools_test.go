@@ -622,7 +622,7 @@ func TestProcessToolsSiblingLoopsCannotAccessEachOthersHandles(t *testing.T) {
 }
 
 // TestProcessToolsForeignEngineRosterRejectsProcessEnabledTools
-// proves Coderig's process-enabled roster never actually reaches a foreign
+// proves Carbon's process-enabled roster never actually reaches a foreign
 // (ACP) engine loop: Harness's OWN, already-reviewed protection
 // (internal/sessionruntime's validateProcessServiceEngines /
 // processBindingFor, mapped to *rig.LifecycleError{Kind:
@@ -633,7 +633,7 @@ func TestProcessToolsSiblingLoopsCannotAccessEachOthersHandles(t *testing.T) {
 // This is the SAME rejection mechanism harness's own reviewed test,
 // TestForeignLoopRejectsProcessServices (internal/sessionruntime), exercises
 // via the identical loop.WithEngine construction; this test additionally
-// proves CODERIG's real roster composition (not a stand-in) triggers it.
+// proves Carbon's real roster composition (not a stand-in) triggers it.
 func TestProcessToolsForeignEngineRosterRejectsProcessEnabledTools(t *testing.T) {
 	root := t.TempDir()
 	set := mustExecutorSet(t, root)

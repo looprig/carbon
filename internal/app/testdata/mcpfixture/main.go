@@ -6,7 +6,7 @@
 // sibling mcp module already depends on that SDK and already tests MCP
 // protocol conformance against it (see mcp/internal/mcptest), and adding it
 // to carbon as well was explicitly declined (carbon's CLAUDE.md requires
-// approval before any new third-party dependency, even test-only). Coderig's
+// approval before any new third-party dependency, even test-only). Carbon's
 // own integration test exists to prove ITS assembly/gating/env-baseline/
 // degradation behavior against a REAL subprocess and REAL newline-delimited
 // JSON-RPC framing -- not MCP protocol correctness, which is out of scope
@@ -58,7 +58,7 @@ import (
 // test sets it in ITS OWN process (t.Setenv) and asserts it does NOT reach
 // this child. The literal is duplicated (not imported) in the test file:
 // this is a separate `package main`, not an importable package.
-const echoUnlistedEnvVar = "CODERIG_MCP_FIXTURE_UNLISTED_TEST_VAR"
+const echoUnlistedEnvVar = "CARBON_MCP_FIXTURE_UNLISTED_TEST_VAR"
 
 // fallbackProtocolVersion is used only if a request's own protocolVersion is
 // somehow empty (should not happen against the real client; defensive).
@@ -201,7 +201,7 @@ func handleToolsList() rpcOut {
 			map[string]any{
 				"name": "echo",
 				"description": "Echoes back the given text, plus this process's own PATH " +
-					"and CODERIG_MCP_FIXTURE_UNLISTED_TEST_VAR environment values, " +
+					"and CARBON_MCP_FIXTURE_UNLISTED_TEST_VAR environment values, " +
 					"for carbon's env-baseline integration test.",
 				"inputSchema": map[string]any{
 					"type": "object",

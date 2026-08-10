@@ -15,7 +15,7 @@
 Record the baseline:
 
 ```bash
-cd /Users/ipotter/code/looprig/coderig
+cd /Users/ipotter/code/looprig/carbon
 git status --short
 go test ./internal/app/... -race -count=1 2>&1 | tail -20
 ```
@@ -928,7 +928,7 @@ This task has no new test to write — it re-runs the existing suite plus one ma
 **Step 1: Full package test with -race**
 
 ```bash
-cd /Users/ipotter/code/looprig/coderig
+cd /Users/ipotter/code/looprig/carbon
 go test ./... -race -count=1
 ```
 

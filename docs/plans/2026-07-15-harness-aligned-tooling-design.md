@@ -2,7 +2,7 @@
 
 ## Scope
 
-Align `tui`, `confinement`, and `coderig` with the quality and security checks
+Align `tui`, `confinement`, and `carbon` with the quality and security checks
 used by `harness` before committing their current extraction and restructuring
 work.
 
@@ -22,7 +22,7 @@ through each module's `go.mod` and `go.sum`. They are development dependencies,
 not runtime dependencies.
 
 Dependency distribution remains repository-specific. `tui` keeps its committed
-vendor tree because it already promises offline, auditable builds. `coderig` and
+vendor tree because it already promises offline, auditable builds. `carbon` and
 `confinement` continue using normal Go module resolution instead of gaining
 large vendor trees solely for tooling parity.
 
@@ -39,7 +39,7 @@ Before committing:
 - `tui`: vendor integrity, secure checks, race tests, and a trimmed CGO-free
   build;
 - `confinement`: secure checks and race tests;
-- `coderig`: secure checks, race tests, and its trimmed CGO-free binary build.
+- `carbon`: secure checks, race tests, and its trimmed CGO-free binary build.
 
 Each repository is committed separately so its history remains independently
 versionable.

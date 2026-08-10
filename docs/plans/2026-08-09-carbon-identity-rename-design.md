@@ -5,33 +5,33 @@
 
 ## Goal
 
-Publish CodeRig `v0.18.0` as a standalone consumable release, then make a
-greenfield breaking rename of the complete product identity from CodeRig's
-Generic agent to Carbon. Carbon begins a new release line at `v0.1.0` in the
+Publish Carbon `v0.18.0` as a standalone consumable release, then make a
+greenfield breaking rename of the complete product identity from Carbon's
+Carbon agent to Carbon. Carbon begins a new release line at `v0.1.0` in the
 new `github.com/looprig/carbon` repository.
 
 The rename includes source, module and import paths, commands, binaries,
 durable identities, product state paths, companion executables, tests,
 documentation, workspace metadata, and Git remotes. There is no compatibility
 layer, alias, state migration, old-session restore, deprecated MCP role, or
-fallback to a CodeRig path.
+fallback to a Carbon path.
 
 ## Principles
 
-1. CodeRig `v0.18.0` is a real release, not an archival tag. Its module must
+1. Carbon `v0.18.0` is a real release, not an archival tag. Its module must
    resolve, build, and test with `GOWORK=off` and no local sibling `replace`
    directives.
 2. Publish dependencies before dependents. Every version written into a
    downstream `go.mod` must already exist remotely.
-3. Preserve Git provenance. The Carbon repository receives CodeRig's commit
+3. Preserve Git provenance. The Carbon repository receives Carbon's commit
    ancestry plus one or more explicit rename commits, but it does not receive
-   CodeRig's old release tags.
+   Carbon's old release tags.
 4. Treat Carbon as a new product identity. Old configuration, state, sessions,
    roles, commands, and binaries are intentionally unsupported.
 5. Replace product-specific uses of `generic`; do not replace the ordinary
    English or Go-language meaning of "generic" in reusable modules.
 6. Never rewrite existing user work blindly. In particular, review and preserve
-   the current uncommitted LLM round-tripper changes and CodeRig's untracked
+   the current uncommitted LLM round-tripper changes and Carbon's untracked
    `docs/superpowers/` files.
 
 ## Release Train
@@ -58,7 +58,7 @@ workspace repository.
 ### Credential-aware inference releases
 
 The current development versions of Inference and LLM consume the new modules
-and expose APIs used by current CodeRig. Release them in this order:
+and expose APIs used by current Carbon. Release them in this order:
 
 | Module | Release | Required dependency adoption |
 |---|---|---|
@@ -79,14 +79,14 @@ discard or overwrite them.
 
 ### Runtime and presentation releases
 
-Current CodeRig consumes APIs and behavior newer than several existing tags.
+Current Carbon consumes APIs and behavior newer than several existing tags.
 Publish these reviewed heads after their prerequisites:
 
 | Module | Release | Reason |
 |---|---|---|
 | ACP | `v0.2.0` | Model/effort selection and ordered steering APIs |
 | Harness | `v0.22.0` | Durable foreign collaboration and scoped broker services |
-| MCP | `v0.5.0` | CodeRig collaboration MCP server and proxy |
+| MCP | `v0.5.0` | Carbon collaboration MCP server and proxy |
 | Foreignloops | `v0.2.0` | ACP selection, steering, and scoped foreign services |
 | Tools | `v0.9.0` | Contained absolute Bash working directories |
 | TUI | `v0.14.0` | Current runtime presentation and StartAgent behavior |
@@ -106,9 +106,9 @@ Classifiers, Core, Eval, FSStore, Sandbox, Storage, and other unchanged
 dependencies use their latest already-published compatible tags. Do not cut a
 new release merely to make every repository version number advance.
 
-### Final CodeRig release
+### Final Carbon release
 
-Update `coderig/go.mod` to the published release train. Remove every local
+Update `carbon/go.mod` to the published release train. Remove every local
 `replace github.com/looprig/... => ../...` directive. Reconcile `go.sum` using
 `GOWORK=off`.
 
@@ -125,20 +125,20 @@ The release gates are:
 After all gates pass:
 
 1. Commit the release dependency adoption.
-2. Push CodeRig `main` to `git@github.com:looprig/coderig.git` without force.
+2. Push Carbon `main` to `git@github.com:looprig/carbon.git` without force.
 3. Create annotated tag `v0.18.0` on the verified commit.
 4. Push only `v0.18.0`.
 5. Verify remote `main`, the peeled annotated tag, and an independent module
    fetch/build.
 
 No Carbon runtime, package, command, or product-identity implementation changes
-may enter CodeRig `v0.18.0`. The approved Carbon design and implementation plan
+may enter Carbon `v0.18.0`. The approved Carbon design and implementation plan
 are release documentation and may be present in that tag.
 
 ## Git Transition
 
-After the remote CodeRig release is verified, rename the local product
-worktree from `coderig/` to `carbon/`. Preserve its `.git` directory and commit
+After the remote Carbon release is verified, rename the local product
+worktree from `carbon/` to `carbon/`. Preserve its `.git` directory and commit
 history. Repair linked worktree metadata with `git worktree repair` and verify
 every registered worktree before continuing.
 
@@ -148,9 +148,9 @@ Change the product repository's `origin` to:
 git@github.com:looprig/carbon.git
 ```
 
-The old CodeRig repository remains the immutable home of CodeRig `v0.18.0`.
+The old Carbon repository remains the immutable home of Carbon `v0.18.0`.
 Carbon receives the shared commit ancestry through its `main` branch, followed
-by explicit Carbon rename commits. Do not push CodeRig tags to Carbon. Push
+by explicit Carbon rename commits. Do not push Carbon tags to Carbon. Push
 Carbon `main` and Carbon's annotated `v0.1.0` tag only after the complete rename
 and standalone verification pass.
 
@@ -164,21 +164,21 @@ Carbon has one agent, also named Carbon. The canonical mappings are:
 
 | Surface | Old | New |
 |---|---|---|
-| Product display name | `CodeRig` | `Carbon` |
-| Product token | `coderig` | `carbon` |
-| Go module | `github.com/looprig/coderig` | `github.com/looprig/carbon` |
-| Command | `cmd/coderig` | `cmd/carbon` |
-| Binary | `coderig` | `carbon` |
+| Product display name | `Carbon` | `Carbon` |
+| Product token | `carbon` | `carbon` |
+| Go module | `github.com/looprig/carbon` | `github.com/looprig/carbon` |
+| Command | `cmd/carbon` | `cmd/carbon` |
+| Binary | `carbon` | `carbon` |
 | Agent package | `internal/catalog/generic` | `internal/catalog/carbon` |
 | Agent name | `generic` | `carbon` |
-| Agent display/persona | `Generic` | `Carbon` |
-| Durable agent kind | `coderig:generic` | `carbon:carbon` |
-| Product home | `~/.looprig/coderig` | `~/.looprig/carbon` |
+| Agent display/persona | `Carbon` | `Carbon` |
+| Durable agent kind | `carbon:generic` | `carbon:carbon` |
+| Product home | `~/.looprig/carbon` | `~/.looprig/carbon` |
 | MCP role | `generic` | `carbon` |
-| Collaboration helper | `coderig-collab-mcp` | `carbon-collab-mcp` |
-| Error prefix | `coderig:` | `carbon:` |
-| Access digest domain | `coderig-access-*` | `carbon-access-*` |
-| Policy domains | `coderig-*` | `carbon-*` |
+| Collaboration helper | `carbon-collab-mcp` | `carbon-collab-mcp` |
+| Error prefix | `carbon:` | `carbon:` |
+| Access digest domain | `carbon-access-*` | `carbon-access-*` |
+| Policy domains | `carbon-*` | `carbon-*` |
 
 The system prompt becomes `<identity product="Carbon">` and says "You are
 Carbon". Delegation is Carbon-to-Carbon. Runtime catalogue entries, MCP
@@ -193,26 +193,26 @@ before shorter tokens so a broad substitution cannot destroy a later match.
 
 The ordered mechanical set includes:
 
-1. `github.com/looprig/coderig` to `github.com/looprig/carbon`.
-2. `coderig-collab-mcp` to `carbon-collab-mcp`.
-3. `coderig:generic` to `carbon:carbon`.
-4. `coderig-access:generic` to `carbon-access:carbon`.
-5. `~/.looprig/coderig` to `~/.looprig/carbon`.
-6. `/coderig/`, `cmd/coderig`, and `bin/coderig` path forms to Carbon forms.
-7. Remaining product `CodeRig` to `Carbon`.
-8. Remaining product token `coderig` to `carbon`.
-9. Product-agent `Generic` and `generic` to `Carbon` and `carbon` only in
+1. `github.com/looprig/carbon` to `github.com/looprig/carbon`.
+2. `carbon-collab-mcp` to `carbon-collab-mcp`.
+3. `carbon:generic` to `carbon:carbon`.
+4. `carbon-access:generic` to `carbon-access:carbon`.
+5. `~/.looprig/carbon` to `~/.looprig/carbon`.
+6. `/carbon/`, `cmd/carbon`, and `bin/carbon` path forms to Carbon forms.
+7. Remaining product `Carbon` to `Carbon`.
+8. Remaining product token `carbon` to `carbon`.
+9. Product-agent `Carbon` and `generic` to `Carbon` and `carbon` only in
    product-specific contexts.
 
 Then rename directories and Go identifiers, including:
 
-- `cmd/coderig` to `cmd/carbon`;
+- `cmd/carbon` to `cmd/carbon`;
 - `internal/catalog/generic` to `internal/catalog/carbon`;
-- the MCP module's `cmd/coderig-collab-mcp` to
+- the MCP module's `cmd/carbon-collab-mcp` to
   `cmd/carbon-collab-mcp`;
 - `genericDefinition` and related product-local identifiers to Carbon forms;
-- product-local aliases such as `coderig` to `carbon`;
-- filenames whose names encode CodeRig where they remain active.
+- product-local aliases such as `carbon` to `carbon`;
+- filenames whose names encode Carbon where they remain active.
 
 Bulk replacement may use a reviewed `sed` script or equivalent mechanical
 rewriter. Every candidate file list and post-rewrite diff must be reviewed.
@@ -222,8 +222,8 @@ generic.
 
 ## Companion MCP Release
 
-CodeRig `v0.18.0` uses MCP `v0.5.0` and the executable
-`coderig-collab-mcp`. Carbon requires a second MCP release:
+Carbon `v0.18.0` uses MCP `v0.5.0` and the executable
+`carbon-collab-mcp`. Carbon requires a second MCP release:
 
 1. Rename the command directory and process diagnostics to
    `carbon-collab-mcp`.
@@ -234,12 +234,12 @@ CodeRig `v0.18.0` uses MCP `v0.5.0` and the executable
 5. Publish MCP `v0.6.0`.
 6. Make Carbon require MCP `v0.6.0`.
 
-This keeps the final CodeRig release reproducible while allowing Carbon to have
+This keeps the final Carbon release reproducible while allowing Carbon to have
 no old executable fallback.
 
 ## Workspace and Ecosystem Updates
 
-Update active workspace metadata from `coderig` to `carbon`, including:
+Update active workspace metadata from `carbon` to `carbon`, including:
 
 - root `go.work`;
 - root `repositories.mk`;
@@ -265,14 +265,14 @@ tests, and documentation are in scope.
 ## State and Compatibility
 
 Carbon reads and writes only `~/.looprig/carbon`. It does not inspect, copy,
-rename, merge, or warn about `~/.looprig/coderig`.
+rename, merge, or warn about `~/.looprig/carbon`.
 
 Carbon accepts only MCP role `carbon`. An absent roles field means Carbon.
-`generic`, CodeRig role names, and former topology names fail strict validation.
+`generic`, Carbon role names, and former topology names fail strict validation.
 
-Carbon does not install a `coderig` command, command alias, symlink, environment
+Carbon does not install a `carbon` command, command alias, symlink, environment
 fallback, module forwarding package, deprecated flag, or compatibility
-configuration field. Old CodeRig sessions are not listed and cannot be resumed
+configuration field. Old Carbon sessions are not listed and cannot be resumed
 through Carbon.
 
 ## Testing
@@ -288,7 +288,7 @@ change focused tests to demand:
 - Carbon CLI/banner/error output;
 - Carbon collaboration helper discovery;
 - Carbon module and dependency-boundary paths;
-- absence of CodeRig fallbacks.
+- absence of Carbon fallbacks.
 
 Mechanical documentation rewrites do not require artificial failing unit tests,
 but they require stale-reference checks and diff review.
@@ -310,7 +310,7 @@ verified.
   dependent.
 - Never move or recreate an existing tag. Fix forward with a new patch tag when
   a published tag is wrong.
-- Never force-push CodeRig, Carbon, or a dependency release branch.
+- Never force-push Carbon, Carbon, or a dependency release branch.
 - If linked worktree repair cannot prove every registered worktree, stop before
   changing the product remote.
 
@@ -319,25 +319,25 @@ verified.
 1. Secrets `v0.1.0` and Credentials `v0.1.0` exist remotely and resolve without
    local replacements.
 2. Every required release-train tag exists remotely in dependency order.
-3. CodeRig `v0.18.0` contains no local sibling replacements and independently
+3. Carbon `v0.18.0` contains no local sibling replacements and independently
    builds/tests from remote modules.
-4. CodeRig remote `main` and `v0.18.0` point to the verified final CodeRig
+4. Carbon remote `main` and `v0.18.0` point to the verified final Carbon
    commit.
 5. Carbon's module, command, binary, prompt, loop, state, durable identity, MCP
    role, companion process, docs, and Git remote use Carbon naming.
-6. Carbon contains no compatibility or migration path for CodeRig or Generic.
+6. Carbon contains no compatibility or migration path for Carbon or Carbon.
 7. MCP `v0.6.0` provides `carbon-collab-mcp`, and Carbon consumes that release.
 8. Carbon independently passes its complete release gates with `GOWORK=off`.
-9. Carbon remote receives `main` and annotated `v0.1.0`, but no CodeRig tags.
-10. First-party active-tree searches find no stale CodeRig product identity or
-    Generic product-agent identity outside explicitly documented exclusions.
+9. Carbon remote receives `main` and annotated `v0.1.0`, but no Carbon tags.
+10. First-party active-tree searches find no stale Carbon product identity or
+    Carbon product-agent identity outside explicitly documented exclusions.
 
 ## Non-goals
 
-- Migrating CodeRig configuration, credentials, permissions, or sessions.
-- Preserving a CodeRig command or Go module alias.
+- Migrating Carbon configuration, credentials, permissions, or sessions.
+- Preserving a Carbon command or Go module alias.
 - Rewriting existing Git objects or commit messages.
-- Pushing old CodeRig tags to Carbon.
+- Pushing old Carbon tags to Carbon.
 - Renaming generic concepts in reusable libraries.
 - Introducing a multi-agent registry or changing Carbon's single-agent
   topology.

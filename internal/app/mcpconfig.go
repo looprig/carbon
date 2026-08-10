@@ -287,7 +287,7 @@ func normalizeMCPServerRoles(name string, roles []string) ([]string, error) {
 		field := fmt.Sprintf("roles[%d]", i)
 		if role != string(carbon.Name) {
 			return nil, mcpConfigFailure(name, field, fmt.Errorf(
-				"unknown role %q, want generic", role))
+				"unknown role %q, want carbon", role))
 		}
 		if _, duplicate := seen[role]; duplicate {
 			return nil, mcpConfigFailure(name, field, fmt.Errorf(

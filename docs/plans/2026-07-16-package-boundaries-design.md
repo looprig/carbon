@@ -1,20 +1,20 @@
-# CodeRig Package Boundaries
+# Carbon Package Boundaries
 
 ## Goal
 
-Turn the CodeRig module root from an application-wide catch-all package into explicit internal packages without changing product behavior.
+Turn the Carbon module root from an application-wide catch-all package into explicit internal packages without changing product behavior.
 
 ## Package layout
 
-- `internal/app` owns CodeRig's cohesive application assembly: configuration, model setup, tool selection, compaction, persistence, session lifecycle, runtime context, and the command-facing API.
+- `internal/app` owns Carbon's cohesive application assembly: configuration, model setup, tool selection, compaction, persistence, session lifecycle, runtime context, and the command-facing API.
 - `internal/catalog` owns the operator and reviewer identities and prompts.
-- `cmd/coderig` owns flags, terminal process behavior, and command output.
+- `cmd/carbon` owns flags, terminal process behavior, and command output.
 
-The module root contains no Go package. CodeRig has no supported external Go consumers, so implementation packages remain under `internal`.
+The module root contains no Go package. Carbon has no supported external Go consumers, so implementation packages remain under `internal`.
 
 ## Dependency direction
 
-`cmd/coderig` depends on `internal/app`. The app package depends on the internal prompt catalog and reusable looprig modules. The catalog does not depend on application assembly.
+`cmd/carbon` depends on `internal/app`. The app package depends on the internal prompt catalog and reusable looprig modules. The catalog does not depend on application assembly.
 
 The application remains one package because its current files share one composition graph and extensively test unexported invariants together. Further splits should happen only when a stable one-way ownership boundary appears, not by adding interfaces solely to create folders.
 

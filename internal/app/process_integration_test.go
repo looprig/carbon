@@ -21,7 +21,7 @@ import (
 
 // process_integration_test.go is Task 28's headline end-to-end acceptance
 // suite: it drives Bash/ProcessOutput/ProcessInput/ProcessStop through REAL
-// Coderig composition (openWithClient -> openRuntimeAgent -> buildRig ->
+// Carbon composition (openWithClient -> openRuntimeAgent -> buildRig ->
 // harness Rig/session) and REAL Sandbox execution (Config{AccessProfile:
 // AccessUnconfined}, the one profile that can actually spawn a supervised
 // background process on this Darwin machine today -- see toolsets.go's

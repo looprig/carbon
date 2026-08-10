@@ -64,7 +64,7 @@ func TestMCPDefinitionsStdioHappyPath(t *testing.T) {
 
 	loopID := mcpTestLoopID(t)
 	if !binding.Visibility.Permits(loopID, "carbon") {
-		t.Errorf("binding.Visibility.Permits(_, generic) = false, want true (roles empty -> generic)")
+		t.Errorf("binding.Visibility.Permits(_, carbon) = false, want true (roles empty -> carbon)")
 	}
 	// Removed names and an unknown name are rejection fixtures; only Carbon
 	// visibility is accepted.
@@ -104,7 +104,7 @@ func TestMCPDefinitionsVisibilityDefaultsToCarbonWhenEmpty(t *testing.T) {
 	binding := bindings[0]
 	loopID := mcpTestLoopID(t)
 	if !binding.Visibility.Permits(loopID, "carbon") {
-		t.Errorf("empty roles: Permits(_, generic) = false, want true")
+		t.Errorf("empty roles: Permits(_, carbon) = false, want true")
 	}
 	// Legacy role names remain explicit hidden-visibility fixtures.
 	for _, role := range []string{"planner", "builder", "reviewer"} {
@@ -129,12 +129,12 @@ func TestMCPDefinitionsVisibilityHonorsExplicitCarbonRole(t *testing.T) {
 	binding := bindings[0]
 	loopID := mcpTestLoopID(t)
 	if !binding.Visibility.Permits(loopID, "carbon") {
-		t.Errorf("explicit roles: Permits(_, generic) = false, want true")
+		t.Errorf("explicit roles: Permits(_, carbon) = false, want true")
 	}
 	// Legacy role names remain explicit hidden-visibility fixtures.
 	for _, role := range []string{"planner", "builder", "reviewer"} {
 		if binding.Visibility.Permits(loopID, role) {
-			t.Errorf("explicit roles [generic]: Permits(_, %q) = true, want false", role)
+			t.Errorf("explicit roles [carbon]: Permits(_, %q) = true, want false", role)
 		}
 	}
 }

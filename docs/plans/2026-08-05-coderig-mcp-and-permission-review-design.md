@@ -1,19 +1,19 @@
-# CodeRig: MCP servers via mcp.json, configurable home, and permission-review enablement
+# Carbon: MCP servers via mcp.json, configurable home, and permission-review enablement
 
 Date: 2026-08-05
 Status: Approved design (revised after independent code-verified review, same day), not yet implemented
-Scope: coderig only. No harness, mcp, or classifiers module changes are required.
+Scope: carbon only. No harness, mcp, or classifiers module changes are required.
 
 ## Summary
 
-Three additions to CodeRig's composition boundary:
+Three additions to Carbon's composition boundary:
 
 1. **MCP servers** configured in an operator-managed `<home>/mcp.json` (exact
    Claude Code `mcpServers` schema plus one looprig extension field), assembled
    through the existing `github.com/looprig/mcp` module (`pkg/harness` Manager,
    Bindings, Adopter, transports).
 2. **`Config.HomeDir`** — the `~/.looprig` base directory becomes a field on
-   CodeRig's Go `Config`. No CLI flag, no environment variable.
+   Carbon's Go `Config`. No CLI flag, no environment variable.
 3. **Permission-classifier enablement** via an optional top-level
    `permission_review` section in `models.json`; presence enables review.
 
@@ -26,7 +26,7 @@ Verified integration facts this design rests on:
 - The mcp module's tool adapter already carries the gate identity
   `mcp:<binding>:<raw-tool>` under the `tool.invoke` capability
   (`mcp/pkg/harness/tools.go` `ToolInvokeIdentity`), which is the same
-  capability kind CodeRig's product access source already binds
+  capability kind Carbon's product access source already binds
   (`capabilityToolInvoke` in `internal/app/access.go`).
 - Transport factories exist for all three transports:
   `transport/stdio.New`, `transport/streamablehttp.New`, `transport/sse.New`,
@@ -57,7 +57,7 @@ Verified integration facts this design rests on:
   `mcp.json`. (A committed per-repo MCP config is a supply-chain surface —
   cloning a malicious repo must not add servers; deferred, see Out of scope.)
 - Home configurability is **`Config.HomeDir` only** — programmatic, on
-  CodeRig's `Config`. No flag, no env var. Empty means `~/.looprig`.
+  Carbon's `Config`. No flag, no env var. Empty means `~/.looprig`.
 - Permission review is enabled by the **presence of a `permission_review`
   section in `models.json`** — operator-managed, machine-wide, no CLI flag.
 
@@ -107,7 +107,7 @@ rejection matching `modelconfig.go`):
 
 File hygiene mirrors `models.json` exactly (headers and env may carry
 credentials): ≤ 1 MiB, regular file, no symlink, owner-only `0600` on Unix,
-read once at the composition boundary, never written by CodeRig. An **absent
+read once at the composition boundary, never written by Carbon. An **absent
 file disables the feature** — zero MCP assembly, byte-for-byte identical rig
 to today. A present-but-invalid file fails session construction (fail closed,
 consistent with `models.json` handling).
@@ -159,11 +159,11 @@ restore, interactive, and headless paths, like `sessionAccess`):
    role share its name and inherit its visibility.
 3. **Manager.** One `mcpharness.NewManager(bindings, deps)` per session.
    `Deps`: `SessionID` left zero (fingerprint-first ordering, see 1.4);
-   `Gates` = a coderig-owned late-binding `GateOpener` (below); `Events` =
+   `Gates` = a carbon-owned late-binding `GateOpener` (below); `Events` =
    the session event publisher; `Reporter` wired to surface notices
    (collisions, adoption failures) as session notices; `Sampling` omitted
    (v1 never spends model budget on server-initiated sampling).
-   - *GateOpener.* No existing coderig object satisfies it. Interactive
+   - *GateOpener.* No existing carbon object satisfies it. Interactive
      sessions use a small adapter over `session.GateHost` (obtained by
      asserting the controller after `rig.NewSession`); because the Manager is
      constructed before the session exists, the adapter is late-binding — it
@@ -222,7 +222,7 @@ seam's no-external-capabilities value, so today's sessions restore unchanged.
 - Invalid or insecure `mcp.json` → session construction fails with a typed,
   secret-free error. This includes a stdio `command` that does not resolve on
   `$PATH`: `transport/stdio.New` calls `exec.LookPath` at construction and
-  treats a missing command as `FailureInvalidConfig`, and CodeRig keeps that
+  treats a missing command as `FailureInvalidConfig`, and Carbon keeps that
   fail-closed posture (a typo'd command is a config error, same as a bad
   `models.json` alias — not a degraded server). Rejected alternative:
   catching construction errors and synthesizing a failed-optional binding
@@ -242,7 +242,7 @@ New field on `Config` (`internal/app/config.go`):
 
 ```go
 // HomeDir overrides the looprig base directory (default ~/.looprig).
-// It relocates everything CodeRig itself reads or writes under that root:
+// It relocates everything Carbon itself reads or writes under that root:
 // models.json, mcp.json, workspaces/<hash>/permissions.json, and the
 // default session-store root (store/).
 HomeDir string
@@ -255,7 +255,7 @@ HomeDir string
   hardcoded resolutions: `modelconfig.go:300` (models.json),
   `permissions.go:63` (workspaces subtree), `persistence.go:53`
   (`DefaultDataDir`, `~/.looprig/store`), and the new mcp loader. An
-  explicitly configured data dir (the existing seam `cmd/coderig` uses) still
+  explicitly configured data dir (the existing seam `cmd/carbon` uses) still
   wins over the HomeDir-derived default.
 - Out of scope: tui's `looprig.log` and natsstore's jetstream directory keep
   their own resolution (natsstore is already XDG-aware). No cross-module
@@ -317,7 +317,7 @@ valid v2; no version bump):
   does this) — both a dedicated uses-less model and a reused primer/delegate
   model are supported.
 - **Composition with programmatic Config** (Config is built before the loader
-  runs — `cmd/coderig/main.go` constructs Config, then `Open` loads
+  runs — `cmd/carbon/main.go` constructs Config, then `Open` loads
   models.json and mutates it, the loader's existing pattern): the loader only
   ever **enables**. If `Config.PermissionReviewEnabled` is already true
   programmatically, the loader leaves all three fields untouched
@@ -367,11 +367,11 @@ valid v2; no version bump):
   nil.
 - Relocating tui `looprig.log` / natsstore jetstream under `HomeDir`.
 - In-session reconfiguration of MCP servers (the mcp module supports it; no
-  CodeRig surface for it in v1).
+  Carbon surface for it in v1).
 - CLI flags for any of the above.
 - The exported library construction path (`New()`/`newWithClient`) does not
   compose MCP — only `SessionStoreFactory.Open` → `openRuntimeAgent` does,
-  and `cmd/coderig` exclusively uses that path. This is a real, pre-existing
+  and `cmd/carbon` exclusively uses that path. This is a real, pre-existing
   gap (not introduced by this plan); it is flagged in code comments
   (`runtime_controls.go`, `swarm.go`) but has no dedicated fix here because
-  nothing in `cmd/coderig` exercises `New()`/`newWithClient` today.
+  nothing in `cmd/carbon` exercises `New()`/`newWithClient` today.

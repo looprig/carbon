@@ -24,7 +24,7 @@ func TestCompileACPRuntimeEntriesProducesNonDefaultCarbonRows(t *testing.T) {
 	}
 	for _, entry := range raw.entries {
 		if entry.AgentType != carbon.Name || entry.Default {
-			t.Fatalf("raw ACP entry = %#v, want generic non-default row", entry)
+			t.Fatalf("raw ACP entry = %#v, want Carbon non-default row", entry)
 		}
 	}
 }
@@ -61,7 +61,7 @@ func TestCompileAgentRuntimeCatalogUsesConfiguredTargetsAndDeterministicDefault(
 	defaults := 0
 	for _, entry := range entries {
 		if entry.AgentType != carbon.Name {
-			t.Fatalf("entry agent type = %q, want generic", entry.AgentType)
+			t.Fatalf("entry agent type = %q, want carbon", entry.AgentType)
 		}
 		if entry.Default {
 			defaults++
@@ -92,10 +92,10 @@ func TestCompileAgentRuntimeCatalogUsesConfiguredTargetsAndDeterministicDefault(
 	}
 	resolved, err := compiled.RuntimeCatalog.Resolve(carbon.Name, "", "", model.EffortNone)
 	if err != nil {
-		t.Fatalf("Resolve(generic default) error = %v", err)
+		t.Fatalf("Resolve(carbon default) error = %v", err)
 	}
 	if resolved.AgentHarness != looprigRuntimeHarness || resolved.Profile != looprigRuntimeProfile {
-		t.Errorf("Resolve(generic default) = %#v, want looprig/native", resolved)
+		t.Errorf("Resolve(carbon default) = %#v, want looprig/native", resolved)
 	}
 	for _, oldAlias := range []loop.ModelAlias{"fable-5", "sonnet-5", "opus-5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"} {
 		if _, err := compiled.RuntimeCatalog.Resolve(carbon.Name, "codex", oldAlias, model.EffortMedium); err == nil {

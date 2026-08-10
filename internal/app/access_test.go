@@ -67,11 +67,11 @@ func TestParseAccessProfile(t *testing.T) {
 	}
 }
 
-// TestCoderigProfileExactValues asserts every profile's four sandbox access
+// TestCarbonProfileExactValues asserts every profile's four sandbox access
 // fields against the spec table AND pins the complete normalization (HOME,
 // isolation, acknowledgement, guarantees) via fingerprint equality with an
 // independently spelled reference profile.
-func TestCoderigProfileExactValues(t *testing.T) {
+func TestCarbonProfileExactValues(t *testing.T) {
 	t.Parallel()
 	ws := canonicalTempDir(t)
 	const (
@@ -171,8 +171,8 @@ func TestUnconfinedRequiresAck(t *testing.T) {
 	}
 }
 
-// TestCoderigProfileRejectsUnknown fails closed on a name outside the three.
-func TestCoderigProfileRejectsUnknown(t *testing.T) {
+// TestCarbonProfileRejectsUnknown fails closed on a name outside the three.
+func TestCarbonProfileRejectsUnknown(t *testing.T) {
 	t.Parallel()
 	ws := canonicalTempDir(t)
 	if _, err := carbonProfile(AccessProfile("write"), ws); err == nil {

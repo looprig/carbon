@@ -50,9 +50,9 @@ jobs:
 
   # Linux: the same supervised-process integration suite, on the platform
   # Sandbox's own real containment backends (Landlock/seccomp/cgroups) cover
-  # separately in the sandbox module's own CI. Coderig's own suite here
+  # separately in the sandbox module's own CI. Carbon's own suite here
   # proves the composed Bash-to-Tools-to-Harness-to-Sandbox path end to end
-  # through Coderig's own composition, same as the macOS job.
+  # through Carbon's own composition, same as the macOS job.
   test-linux:
     runs-on: ubuntu-latest
     steps:
@@ -162,9 +162,9 @@ jobs:
   # ../sandbox/.github/workflows/ci.yml's own windows-elevated job for the
   # idiom this mirrors (elevated token requirement, needs: windows-restricted
   # ordering, "skip is failure" JSON-parsed result). Unlike sandbox's own
-  # elevated job, Coderig owns no broker install/state lifecycle of its own
+  # elevated job, Carbon owns no broker install/state lifecycle of its own
   # to verify or clean up here -- that is the sandbox module's own CI
-  # responsibility in its own repository; this job only proves Coderig's
+  # responsibility in its own repository; this job only proves Carbon's
   # composed supervised-process path against whatever elevated broker
   # environment the runner labels already provide.
   windows-elevated:

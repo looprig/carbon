@@ -2,11 +2,11 @@
 
 > **For Codex:** REQUIRED SUB-SKILL: Use superpowers:test-driven-development to implement this plan task-by-task.
 
-**Goal:** Show the current session UUID in every TUI startup banner and remove the startup greeting feature from TUI and CodeRig.
+**Goal:** Show the current session UUID in every TUI startup banner and remove the startup greeting feature from TUI and Carbon.
 
-**Architecture:** Session identity becomes part of TUI's required `Agent` contract because every rendered agent is a session and every startup notice must show its ID. The banner reads the current agent directly, so new, resumed, and `/clear` replacement sessions always render the correct UUID. Greeting fields and the second startup notice are deleted at their TUI source, then CodeRig's flag, config, builder, and tests are removed.
+**Architecture:** Session identity becomes part of TUI's required `Agent` contract because every rendered agent is a session and every startup notice must show its ID. The banner reads the current agent directly, so new, resumed, and `/clear` replacement sessions always render the correct UUID. Greeting fields and the second startup notice are deleted at their TUI source, then Carbon's flag, config, builder, and tests are removed.
 
-**Tech Stack:** Go 1.26, Bubble Tea v2, looprig TUI, CodeRig.
+**Tech Stack:** Go 1.26, Bubble Tea v2, looprig TUI, Carbon.
 
 ---
 
@@ -37,16 +37,16 @@
 4. Delete `Greeting` from both banner types and delete second-notice rendering.
 5. Run focused TUI tests, then `go test -race ./...`.
 
-### Task 3: Remove CodeRig greeting behavior
+### Task 3: Remove Carbon greeting behavior
 
 **Files:**
 - Delete: `internal/app/greeting.go`
 - Delete: `internal/app/greeting_test.go`
 - Modify: `internal/app/config.go`
 - Modify: `internal/app/agents.go`
-- Modify: `cmd/coderig/main.go`
-- Modify: `cmd/coderig/main_test.go`
-- Modify: `docs/specs/coderig-assembly.md`
+- Modify: `cmd/carbon/main.go`
+- Modify: `cmd/carbon/main_test.go`
+- Modify: `docs/specs/carbon-assembly.md`
 
 1. Change the CLI test so `--greeting` is rejected as an unknown flag.
 2. Remove the greeting flag/configuration and banner wiring.
@@ -56,8 +56,8 @@
 
 ### Task 4: Verify scope
 
-1. Run `git diff --check` in TUI and CodeRig.
-2. Confirm no live non-vendor greeting API remains in TUI or CodeRig.
-3. Confirm unrelated CodeRig `runtime_controls` edits and the catalog-identity move remain intact.
+1. Run `git diff --check` in TUI and Carbon.
+2. Confirm no live non-vendor greeting API remains in TUI or Carbon.
+3. Confirm unrelated Carbon `runtime_controls` edits and the catalog-identity move remain intact.
 
 No commit is included because repository instructions require explicit user authorization before committing.

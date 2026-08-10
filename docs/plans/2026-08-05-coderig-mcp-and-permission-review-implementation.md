@@ -1,10 +1,10 @@
-# CodeRig MCP + HomeDir + Permission-Review Enablement Implementation Plan
+# Carbon MCP + HomeDir + Permission-Review Enablement Implementation Plan
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Wire MCP servers from `<home>/mcp.json` into CodeRig via the existing `github.com/looprig/mcp` module, make the `~/.looprig` root configurable via `Config.HomeDir`, and enable the permission classifier via a `permission_review` section in `models.json`.
+**Goal:** Wire MCP servers from `<home>/mcp.json` into Carbon via the existing `github.com/looprig/mcp` module, make the `~/.looprig` root configurable via `Config.HomeDir`, and enable the permission classifier via a `permission_review` section in `models.json`.
 
-**Architecture:** All changes live in `coderig/internal/app` (plus one line in `cmd/coderig`). Design doc: `docs/plans/2026-08-05-coderig-mcp-and-permission-review-design.md` — read it fully before starting; every decision below is justified there. No harness/mcp/classifiers module changes.
+**Architecture:** All changes live in `carbon/internal/app` (plus one line in `cmd/carbon`). Design doc: `docs/plans/2026-08-05-carbon-mcp-and-permission-review-design.md` — read it fully before starting; every decision below is justified there. No harness/mcp/classifiers module changes.
 
 **Tech Stack:** Go, `github.com/looprig/mcp` (`pkg/harness` as import alias `mcpharness`, `pkg/client`, `pkg/transport/{stdio,streamablehttp,sse}`), harness `pkg/rig` fingerprint seam, table-driven tests, `//go:build integration` for process-spawning tests.
 
@@ -13,7 +13,7 @@
 - `gofmt` changed files; `go test -race ./...` (package-scoped is fine per task) before each commit; `make secure` before the final commit of each phase.
 - Commits: conventional style, **no Co-Authored-By trailer**.
 - Never put header/env/credential values in error messages, digests, or logs.
-- Run everything from `/Users/ipotter/code/looprig/coderig`; the root `go.work` resolves sibling modules — do NOT add replace directives or pin sibling versions in `go.mod`. You WILL need to `go get github.com/looprig/mcp@latest`-style add the dependency to `go.mod` (Task 10); with `go.work` present use `go mod tidy` and accept the workspace resolution.
+- Run everything from `/Users/ipotter/code/looprig/carbon`; the root `go.work` resolves sibling modules — do NOT add replace directives or pin sibling versions in `go.mod`. You WILL need to `go get github.com/looprig/mcp@latest`-style add the dependency to `go.mod` (Task 10); with `go.work` present use `go mod tidy` and accept the workspace resolution.
 
 ---
 
@@ -67,13 +67,13 @@ func TestLooprigHome(t *testing.T) {
 func looprigHome(cfg Config) (string, error) {
 	if cfg.HomeDir != "" {
 		if !filepath.IsAbs(cfg.HomeDir) {
-			return "", fmt.Errorf("coderig: HomeDir must be absolute, got %q", cfg.HomeDir)
+			return "", fmt.Errorf("carbon: HomeDir must be absolute, got %q", cfg.HomeDir)
 		}
 		return cfg.HomeDir, nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", fmt.Errorf("coderig: resolve home directory: %w", err)
+		return "", fmt.Errorf("carbon: resolve home directory: %w", err)
 	}
 	return filepath.Join(home, ".looprig"), nil
 }
@@ -87,10 +87,10 @@ func looprigHome(cfg Config) (string, error) {
 - Modify: `internal/app/modelconfig.go` (~line 296-305, the function joining `home, ".looprig", "models.json"`)
 - Modify: `internal/app/permissions.go` (~line 60-70, the workspaces path builder)
 - Modify: `internal/app/persistence.go` (~line 51-58, `DefaultDataDir`)
-- Modify: `cmd/coderig/main.go` (~line 242, the `DefaultDataDir` call site)
+- Modify: `cmd/carbon/main.go` (~line 242, the `DefaultDataDir` call site)
 - Tests: extend the existing tests for each file (`modelconfig_test.go`, `permissions` tests, persistence tests) with a `HomeDir`-override case.
 
-**Approach:** each of the three path builders currently calls `os.UserHomeDir()` directly. Change their signatures to accept the resolved home (a `string`), and have callers resolve once via `looprigHome(cfg)`. `DefaultDataDir()` is exported and called from `cmd/coderig/main.go`: add `DefaultDataDirIn(home string) (string, error)` and make `DefaultDataDir()` delegate with the default home (keeps the exported API compatible); `cmd/coderig` switches to resolving through the Config it already builds. Trace every caller of the three functions (grep) and thread the home value from the nearest place that has a `Config`. Where a caller has no Config (none expected — verify), stop and reconsider rather than plumbing globals.
+**Approach:** each of the three path builders currently calls `os.UserHomeDir()` directly. Change their signatures to accept the resolved home (a `string`), and have callers resolve once via `looprigHome(cfg)`. `DefaultDataDir()` is exported and called from `cmd/carbon/main.go`: add `DefaultDataDirIn(home string) (string, error)` and make `DefaultDataDir()` delegate with the default home (keeps the exported API compatible); `cmd/carbon` switches to resolving through the Config it already builds. Trace every caller of the three functions (grep) and thread the home value from the nearest place that has a `Config`. Where a caller has no Config (none expected — verify), stop and reconsider rather than plumbing globals.
 
 **Steps:** failing test per file (e.g. models.json read from `Config{HomeDir: t.TempDir()}`), verify fail, implement, verify pass (`go test ./internal/app/ ./cmd/... -race`), then:
 `git commit -m "feat(app): resolve models.json, permissions, and store root through HomeDir"`
@@ -307,7 +307,7 @@ Reporter: small adapter publishing `mcpharness.Notice` strings through the sessi
 **Files:**
 - Modify: `internal/app/swarm.go` (`openRuntimeAgent`, ~line 368) and/or `internal/app/persistence.go` (`openWithClient` path) — put construction where `sessionAccess` is built and closed; follow its ownership discipline exactly.
 - Modify: `internal/app/agents.go` / the `RuntimeAgent` struct — it gains the Manager/Adopter closers.
-- Modify: `coderig/go.mod` — add `github.com/looprig/mcp` (workspace-resolved; `go mod tidy`).
+- Modify: `carbon/go.mod` — add `github.com/looprig/mcp` (workspace-resolved; `go mod tidy`).
 - Test: `internal/app/mcp_integration_test.go` (see Task 12 for the live test; this task's tests are wiring-shaped with a fake).
 
 **Order inside open (design §1.2.4, verified against the code):**
@@ -340,10 +340,10 @@ _ = adopter.Install(ctx, primerLoopID, primerLoopName)      // best-effort initi
 ### Task 11: fingerprint via ExternalCapabilityRev
 
 **Files:**
-- Modify: wherever CodeRig fills `rig.ConfigFingerprintFields` / calls `rig.Define`-equivalents (`internal/app/persistence.go` — find `NativePermissionPolicyRev` usage ~line 119-123 and the fingerprint-fields construction near it).
+- Modify: wherever Carbon fills `rig.ConfigFingerprintFields` / calls `rig.Define`-equivalents (`internal/app/persistence.go` — find `NativePermissionPolicyRev` usage ~line 119-123 and the fingerprint-fields construction near it).
 - Test: extend `internal/app/persistence` fingerprint/restore tests (find the existing restore-drift tests, e.g. around `AllowConfigMismatch`).
 
-Set `ExternalCapabilityRev: mgr.ConfigDigest()` when a Manager exists; when none, leave the field at its zero value (the seam's no-external-capabilities default — confirm zero is what a no-MCP fingerprint used until now, which it is, since CodeRig never set it).
+Set `ExternalCapabilityRev: mgr.ConfigDigest()` when a Manager exists; when none, leave the field at its zero value (the seam's no-external-capabilities default — confirm zero is what a no-MCP fingerprint used until now, which it is, since Carbon never set it).
 
 **Tests:** digest present → restore with a changed mcp.json (server added / URL changed / roles changed) is rejected; `AllowConfigMismatch` escapes; header-value change does NOT change the digest (construct two Managers differing only in header values, compare `ConfigDigest()` — if the mcp module's digest ignores values this passes; if it does NOT, stop and reread `identity.go:278` before asserting); absent-file sessions restore across the change.
 

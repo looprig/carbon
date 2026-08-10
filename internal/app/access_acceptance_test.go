@@ -94,7 +94,7 @@ func observeGate(t *testing.T, ctx context.Context, g loop.AccessGate, req tool.
 // proves host access is DENIED under ReadOnly (the OS-enforcement counterpart —
 // real-HOME/root denial and /dev/null usability — is proven by the sandbox/tests
 // modules on macOS Seatbelt and Linux namespaces/Landlock). IsolatedHome vs
-// RealHome policy is pinned at profile construction by TestCoderigProfileExactValues.
+// RealHome policy is pinned at profile construction by TestCarbonProfileExactValues.
 func TestAcceptanceProfileGateBehavior(t *testing.T) {
 	root := canonicalTempDir(t)
 

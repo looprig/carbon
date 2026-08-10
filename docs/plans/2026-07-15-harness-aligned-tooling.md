@@ -2,23 +2,23 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Give `tui`, `confinement`, and `coderig` consistent, self-contained Go quality and security checks before committing their current changes.
+**Goal:** Give `tui`, `confinement`, and `carbon` consistent, self-contained Go quality and security checks before committing their current changes.
 
-**Architecture:** Reuse the `harness` Makefile and Go tool-declaration pattern while preserving each repository's existing dependency distribution policy. `tui` remains vendored; `confinement` and `coderig` remain ordinary Go modules.
+**Architecture:** Reuse the `harness` Makefile and Go tool-declaration pattern while preserving each repository's existing dependency distribution policy. `tui` remains vendored; `confinement` and `carbon` remain ordinary Go modules.
 
 **Tech Stack:** Go 1.26.4, Make, `go vet`, Staticcheck, Gosec, Govulncheck, and Go race tests.
 
 ---
 
-### Task 1: Align CodeRig tooling
+### Task 1: Align Carbon tooling
 
 **Files:**
 
-- Modify: `coderig/go.mod`
-- Modify: `coderig/go.sum`
-- Modify: `coderig/Makefile`
-- Modify: `coderig/AGENTS.md`
-- Modify: `coderig/CLAUDE.md`
+- Modify: `carbon/go.mod`
+- Modify: `carbon/go.sum`
+- Modify: `carbon/Makefile`
+- Modify: `carbon/AGENTS.md`
+- Modify: `carbon/CLAUDE.md`
 
 1. Declare the three approved Go analysis tools.
 2. Add `staticcheck`, `gosec`, module verification, vulnerability scanning, and
@@ -59,6 +59,6 @@
 ### Task 4: Commit independently
 
 1. Review each repository's complete staged diff.
-2. Commit `tui`, `confinement`, and `coderig` separately with repository-specific
+2. Commit `tui`, `confinement`, and `carbon` separately with repository-specific
    messages.
 3. Confirm each repository is clean and record each commit ID.

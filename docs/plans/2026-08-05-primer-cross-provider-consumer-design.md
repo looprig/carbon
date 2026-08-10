@@ -9,7 +9,7 @@ capability) via `pkg/loop.WithContextTransports(...ContextTransport)`, and a
 live `ChangeLoopInference`/`SetMode` can move between any declared transport,
 not just the loop's original one.
 
-CodeRig's own primer-model-picker plan (Tasks 1-4 done) already built
+Carbon's own primer-model-picker plan (Tasks 1-4 done) already built
 `productionModels.PrimerCandidates`/`Config.PrimerCandidates` (every
 `~/.looprig/models.json` entry tagged `uses:["primer"]`) and
 `RuntimeAgent.SetModel`, but the loop is still constructed with exactly one
@@ -117,7 +117,7 @@ func (p conversationContextPolicy) options() []loop.Option {
 ```
 
 `swarmDefinitions` already has `cfg.PrimerCandidates` in scope (threaded since
-coderig's own Task 2) — its call becomes
+carbon's own Task 2) — its call becomes
 `newConversationContextPolicy(model, cfg.PrimerCandidates)`, no new plumbing.
 
 All three loops (planner/builder/reviewer) get the same declared transport
@@ -128,12 +128,12 @@ harmless, not a new authority surface.
 
 ### Restore is free
 
-`swarmDefinitions` is coderig's one shared construction path for both New and
-Restore sessions (per `coderig/CLAUDE.md`'s "New, restore, headless, and
+`swarmDefinitions` is carbon's one shared construction path for both New and
+Restore sessions (per `carbon/CLAUDE.md`'s "New, restore, headless, and
 interactive construction share one Open path"). This change lives entirely
 inside that shared path, so restore picks it up automatically. Harness's own
 `NewRestoredWithRuntime`/`RestoreTransportMismatchError` own the actual
-restore-time fold and validation — nothing coderig-side needs to change for
+restore-time fold and validation — nothing carbon-side needs to change for
 restore specifically.
 
 ### `runtime_controls.go` gets simpler
@@ -152,7 +152,7 @@ longer describes a real, expected outcome.
 
 ### CLAUDE.md
 
-Folded into coderig's existing (paused) Task 7 — "Update coderig/CLAUDE.md
+Folded into carbon's existing (paused) Task 7 — "Update carbon/CLAUDE.md
 architecture rule" — not new scope. Add one clause noting the primer's
 admitted transport set derives from `uses:["primer"]`-tagged models in
 `models.json`, alongside the existing primer-picker carve-out language.
@@ -173,7 +173,7 @@ restore with harness's `RestoreTransportMismatchError` — a regression from
 adopting harness's new `main`, not caused by this plan's own Tasks 1-3, but
 one this plan's scope needs to close before the branch's test suite is clean.
 
-CodeRig's native (in-process, `RuntimeClient`-routed) delegate loops —
+Carbon's native (in-process, `RuntimeClient`-routed) delegate loops —
 spawned via `StartAgent` against a `configuredDelegateDefault`/
 `ACPGatewaySource` entry (models.json's gateway-backed delegate catalog,
 distinct from `uses:["primer"]`) — are ordinary harness `loop.Definition`
@@ -183,8 +183,8 @@ their transports were never declared, and restoring a session with a prior
 delegate on a foreign transport now hard-fails.
 
 `NativeACP` delegates are unaffected and stay out of scope: they run via a
-separate harness's own login state (see `coderig/CLAUDE.md`, "Model
-catalogue and credentials"), never bind to a CodeRig-owned
+separate harness's own login state (see `carbon/CLAUDE.md`, "Model
+catalogue and credentials"), never bind to a Carbon-owned
 `loop.Definition`, and so never participate in this check.
 
 Fix, revised after an independent second-opinion review found two further

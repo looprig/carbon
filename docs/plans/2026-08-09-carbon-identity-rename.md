@@ -2,9 +2,9 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Publish a standalone CodeRig `v0.18.0`, rename the complete product and sole agent identity to Carbon, and publish Carbon `v0.1.0` without compatibility or migration code.
+**Goal:** Publish a standalone Carbon `v0.18.0`, rename the complete product and sole agent identity to Carbon, and publish Carbon `v0.1.0` without compatibility or migration code.
 
-**Architecture:** Release every unpublished dependency in dependency order, then prove CodeRig resolves with `GOWORK=off` and no local replacements before tagging it. Preserve that Git ancestry while changing the local worktree, module, command, agent, state, MCP helper, ecosystem references, and remote to Carbon; publish a Carbon-specific MCP release before the final standalone Carbon release.
+**Architecture:** Release every unpublished dependency in dependency order, then prove Carbon resolves with `GOWORK=off` and no local replacements before tagging it. Preserve that Git ancestry while changing the local worktree, module, command, agent, state, MCP helper, ecosystem references, and remote to Carbon; publish a Carbon-specific MCP release before the final standalone Carbon release.
 
 **Tech Stack:** Go 1.26.4+, Git annotated tags and worktrees, GitHub SSH remotes, GNU/BSD `sed`, `rg`, repository Makefiles, Go race/integration/security/cross-build gates.
 
@@ -21,7 +21,7 @@
 - Push a dependency tag before writing it into a downstream `go.mod`.
 - Use separate task-specific `GOCACHE` and `GOMODCACHE` directories under
   `/private/tmp` for standalone release proofs.
-- Preserve CodeRig's existing untracked `docs/superpowers/` files. They move
+- Preserve Carbon's existing untracked `docs/superpowers/` files. They move
   with the product worktree and are added only during the reviewed Carbon docs
   sweep.
 - Preserve and review the existing LLM changes in
@@ -32,7 +32,7 @@
 ### Task 1: Record and verify the release baseline
 
 **Files:**
-- Verify: `/Users/ipotter/code/looprig/coderig/`
+- Verify: `/Users/ipotter/code/looprig/carbon/`
 - Verify: `/Users/ipotter/code/looprig/{secrets,credentials,inference,llm,acp,harness,mcp,foreignloops,tools,tui}/`
 - Verify: `/Users/ipotter/code/looprig/repositories.mk`
 
@@ -41,7 +41,7 @@
 Run from `/Users/ipotter/code/looprig`:
 
 ```bash
-for repo in coderig inference llm acp harness mcp foreignloops tools tui; do
+for repo in carbon inference llm acp harness mcp foreignloops tools tui; do
   git -C "$repo" status --short --branch
   git -C "$repo" rev-parse HEAD
   git -C "$repo" remote -v
@@ -79,7 +79,7 @@ mcp/v0.5.0
 foreignloops/v0.2.0
 tools/v0.9.0
 tui/v0.14.0
-coderig/v0.18.0
+carbon/v0.18.0
 mcp/v0.6.0
 carbon/v0.1.0
 ```
@@ -89,7 +89,7 @@ replace it.
 
 **Step 4: Record the approved design commits**
 
-Run in `coderig/`:
+Run in `carbon/`:
 
 ```bash
 git log -2 --oneline
@@ -432,7 +432,7 @@ and verify.
 **Files:**
 - Modify: `/Users/ipotter/code/looprig/mcp/go.mod`
 - Modify: `/Users/ipotter/code/looprig/mcp/go.sum`
-- Test: `mcp/cmd/coderig-collab-mcp/**/*_test.go`
+- Test: `mcp/cmd/carbon-collab-mcp/**/*_test.go`
 - Test: `mcp/pkg/collab/**/*_test.go`
 - Test: `mcp/pkg/server/**/*_test.go`
 
@@ -441,15 +441,15 @@ and verify.
 Require Harness `v0.22.0`, Inference `v0.9.0`, and Core `v0.5.0`. Tidy with
 `GOWORK=off`.
 
-**Step 2: Verify the final CodeRig helper**
+**Step 2: Verify the final Carbon helper**
 
 Run:
 
 ```bash
-GOWORK=off GOCACHE=/private/tmp/mcp-v050-gocache go test -race ./pkg/collab ./pkg/server ./cmd/coderig-collab-mcp -count=1
+GOWORK=off GOCACHE=/private/tmp/mcp-v050-gocache go test -race ./pkg/collab ./pkg/server ./cmd/carbon-collab-mcp -count=1
 ```
 
-Expected: PASS and the executable is still named `coderig-collab-mcp`.
+Expected: PASS and the executable is still named `carbon-collab-mcp`.
 
 **Step 3: Run full release gates, commit, and publish**
 
@@ -489,20 +489,20 @@ release suite, commit, push, and publish annotated `v0.14.0`.
 **Step 4: Verify all runtime release refs**
 
 Use `git ls-remote` for every branch and annotated tag from Tasks 6-9. Do not
-start CodeRig adoption until all expected refs match the tested commits.
+start Carbon adoption until all expected refs match the tested commits.
 
-### Task 10: Make CodeRig standalone and publish `v0.18.0`
+### Task 10: Make Carbon standalone and publish `v0.18.0`
 
 **Files:**
-- Modify: `/Users/ipotter/code/looprig/coderig/go.mod`
-- Modify: `/Users/ipotter/code/looprig/coderig/go.sum`
-- Verify: `coderig/docs/plans/2026-08-09-carbon-identity-rename-design.md`
-- Verify: `coderig/docs/plans/2026-08-09-carbon-identity-rename.md`
+- Modify: `/Users/ipotter/code/looprig/carbon/go.mod`
+- Modify: `/Users/ipotter/code/looprig/carbon/go.sum`
+- Verify: `carbon/docs/plans/2026-08-09-carbon-identity-rename-design.md`
+- Verify: `carbon/docs/plans/2026-08-09-carbon-identity-rename.md`
 
 **Step 1: Remove every local replacement**
 
 Run one `go mod edit -dropreplace` command for each Looprig replacement in
-`coderig/go.mod`. Then set these requirements:
+`carbon/go.mod`. Then set these requirements:
 
 ```text
 github.com/looprig/acp v0.2.0
@@ -530,8 +530,8 @@ Run:
 
 ```bash
 test -z "$(rg '^replace github.com/looprig/' go.mod || true)"
-GOWORK=off GOMODCACHE=/private/tmp/coderig-v0180-modcache GOCACHE=/private/tmp/coderig-v0180-gocache go mod verify
-GOWORK=off GOMODCACHE=/private/tmp/coderig-v0180-modcache GOCACHE=/private/tmp/coderig-v0180-gocache go test -race -count=1 ./...
+GOWORK=off GOMODCACHE=/private/tmp/carbon-v0180-modcache GOCACHE=/private/tmp/carbon-v0180-gocache go mod verify
+GOWORK=off GOMODCACHE=/private/tmp/carbon-v0180-modcache GOCACHE=/private/tmp/carbon-v0180-gocache go test -race -count=1 ./...
 ```
 
 Expected: no replacement output and all tests pass from remote modules.
@@ -541,8 +541,8 @@ Expected: no replacement output and all tests pass from remote modules.
 Run:
 
 ```bash
-GOWORK=off GOCACHE=/private/tmp/coderig-v0180-gocache go test -tags integration -race -count=1 ./...
-GOWORK=off GOCACHE=/private/tmp/coderig-v0180-gocache make secure
+GOWORK=off GOCACHE=/private/tmp/carbon-v0180-gocache go test -tags integration -race -count=1 ./...
+GOWORK=off GOCACHE=/private/tmp/carbon-v0180-gocache make secure
 CGO_ENABLED=0 GOWORK=off go build -trimpath ./...
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOWORK=off go build -trimpath ./...
 CGO_ENABLED=0 GOOS=windows GOARCH=amd64 GOWORK=off go build -trimpath ./...
@@ -559,7 +559,7 @@ Run:
 ```bash
 git add go.mod go.sum
 git diff --cached --check
-git commit -m "build(coderig): prepare v0.18.0 release"
+git commit -m "build(carbon): prepare v0.18.0 release"
 ```
 
 Do not add `docs/superpowers/`.
@@ -568,13 +568,13 @@ Do not add `docs/superpowers/`.
 
 Repeat Steps 2-3. Record the verified commit ID.
 
-**Step 6: Push CodeRig and publish `v0.18.0`**
+**Step 6: Push Carbon and publish `v0.18.0`**
 
 Run:
 
 ```bash
 git push origin main
-git tag -a v0.18.0 -m "coderig v0.18.0"
+git tag -a v0.18.0 -m "carbon v0.18.0"
 git push origin v0.18.0
 git ls-remote origin refs/heads/main refs/tags/v0.18.0 'refs/tags/v0.18.0^{}'
 ```
@@ -584,7 +584,7 @@ Expected: branch and peeled tag match the verified release commit.
 **Step 7: Prove remote-only consumption**
 
 In a fresh `/private/tmp` directory outside the workspace, run a remote module
-download/build or `go install github.com/looprig/coderig/cmd/coderig@v0.18.0`
+download/build or `go install github.com/looprig/carbon/cmd/carbon@v0.18.0`
 with fresh module/build caches.
 
 Expected: success without any sibling checkout.
@@ -592,12 +592,12 @@ Expected: success without any sibling checkout.
 ### Task 11: Establish failing Carbon identity tests
 
 **Files:**
-- Rename/test: `coderig/internal/catalog/generic/generic_test.go`
-- Modify: `coderig/internal/app/fingerprint_test.go`
-- Modify: `coderig/internal/app/home_test.go`
-- Modify: `coderig/internal/app/mcpconfig_test.go`
-- Modify: `coderig/internal/app/collabmcp_test.go`
-- Modify: `coderig/cmd/coderig/main_test.go`
+- Rename/test: `carbon/internal/catalog/generic/generic_test.go`
+- Modify: `carbon/internal/app/fingerprint_test.go`
+- Modify: `carbon/internal/app/home_test.go`
+- Modify: `carbon/internal/app/mcpconfig_test.go`
+- Modify: `carbon/internal/app/collabmcp_test.go`
+- Modify: `carbon/cmd/carbon/main_test.go`
 
 **Step 1: Change product identity expectations before production code**
 
@@ -621,7 +621,7 @@ Change fingerprint expectations to `carbon:carbon`, home expectations to
 
 Run the relevant existing package tests without changing production code.
 
-Expected: failures explicitly show old CodeRig/Generic values.
+Expected: failures explicitly show old Carbon/Carbon values.
 
 **Step 3: Commit test intent only**
 
@@ -631,23 +631,23 @@ Commit the failing test changes as:
 test: specify Carbon product identity
 ```
 
-Do not push this commit to the CodeRig remote.
+Do not push this commit to the Carbon remote.
 
 ### Task 12: Move the worktree and change the Git remote
 
 **Files/directories:**
-- Rename: `/Users/ipotter/code/looprig/coderig/` to `/Users/ipotter/code/looprig/carbon/`
+- Rename: `/Users/ipotter/code/looprig/carbon/` to `/Users/ipotter/code/looprig/carbon/`
 - Modify Git config: `carbon/.git/config`
 - Modify: `/Users/ipotter/code/looprig/go.work`
 
 **Step 1: Record linked worktrees**
 
-Run `git -C coderig worktree list --porcelain` and save the output in task
+Run `git -C carbon worktree list --porcelain` and save the output in task
 notes. Verify each non-prunable path before moving.
 
 **Step 2: Move the product worktree**
 
-From `/Users/ipotter/code/looprig`, rename `coderig` to `carbon`. Do not copy,
+From `/Users/ipotter/code/looprig`, rename `carbon` to `carbon`. Do not copy,
 delete, or reinitialize `.git`.
 
 **Step 3: Repair and verify worktrees**
@@ -671,13 +671,13 @@ Expected: both fetch and push URLs name Carbon.
 
 **Step 5: Point the workspace at Carbon**
 
-Change `./coderig` to `./carbon` in root `go.work`. Run `go work sync` only
+Change `./carbon` to `./carbon` in root `go.work`. Run `go work sync` only
 after the Carbon module declaration changes in Task 13.
 
 ### Task 13: Apply the mechanical Carbon rename
 
 **Files/directories:**
-- Rename: `carbon/cmd/coderig/` to `carbon/cmd/carbon/`
+- Rename: `carbon/cmd/carbon/` to `carbon/cmd/carbon/`
 - Rename: `carbon/internal/catalog/generic/` to `carbon/internal/catalog/carbon/`
 - Modify: all first-party files under `carbon/` returned by the reviewed searches
 - Modify: `carbon/go.mod`
@@ -687,8 +687,8 @@ after the Carbon module declaration changes in Task 13.
 Run in `carbon/`:
 
 ```bash
-rg -l --hidden --glob '!**/.git/**' --glob '!**/.worktrees/**' --glob '!vendor/**' 'github\.com/looprig/coderig|coderig-collab-mcp|coderig:generic|coderig-access:generic|\.looprig/coderig|CodeRig|coderig' . | sort
-rg -l --hidden --glob '!**/.git/**' --glob '!**/.worktrees/**' --glob '!vendor/**' '\bGeneric\b|"generic"|generic\.Name|generic\.SystemPrompt|internal/catalog/generic' . | sort
+rg -l --hidden --glob '!**/.git/**' --glob '!**/.worktrees/**' --glob '!vendor/**' 'github\.com/looprig/carbon|carbon-collab-mcp|carbon:generic|carbon-access:generic|\.looprig/carbon|Carbon|carbon' . | sort
+rg -l --hidden --glob '!**/.git/**' --glob '!**/.worktrees/**' --glob '!vendor/**' '\bCarbon\b|"generic"|generic\.Name|generic\.SystemPrompt|internal/catalog/generic' . | sort
 ```
 
 Review and retain these lists in task output.
@@ -699,15 +699,15 @@ Apply case-sensitive replacements, in this order, only to the reviewed
 first-party candidate files:
 
 ```text
-github.com/looprig/coderig       -> github.com/looprig/carbon
-coderig-collab-mcp               -> carbon-collab-mcp
-coderig-access:generic           -> carbon-access:carbon
-coderig:generic                  -> carbon:carbon
-~/.looprig/coderig               -> ~/.looprig/carbon
-cmd/coderig                      -> cmd/carbon
-bin/coderig                      -> bin/carbon
-CodeRig                          -> Carbon
-coderig                          -> carbon
+github.com/looprig/carbon       -> github.com/looprig/carbon
+carbon-collab-mcp               -> carbon-collab-mcp
+carbon-access:generic           -> carbon-access:carbon
+carbon:generic                  -> carbon:carbon
+~/.looprig/carbon               -> ~/.looprig/carbon
+cmd/carbon                      -> cmd/carbon
+bin/carbon                      -> bin/carbon
+Carbon                          -> Carbon
+carbon                          -> carbon
 ```
 
 Use BSD-compatible `sed -i ''` on macOS. Do not run a global lowercase
@@ -723,7 +723,7 @@ and imports from `generic` to `carbon`.
 Within `carbon/`, replace product uses of:
 
 ```text
-Generic                 -> Carbon
+Carbon                 -> Carbon
 generic.Name            -> carbon.Name
 generic.Description     -> carbon.Description
 generic.SystemPrompt    -> carbon.SystemPrompt
@@ -751,13 +751,13 @@ Expected: PASS.
 Review `git diff --stat`, `git diff --check`, and every rename. Commit as:
 
 ```text
-refactor: rename CodeRig and Generic to Carbon
+refactor: rename Carbon and Carbon to Carbon
 ```
 
 ### Task 14: Rename and release the Carbon collaboration helper as MCP `v0.6.0`
 
 **Files/directories:**
-- Rename: `mcp/cmd/coderig-collab-mcp/` to `mcp/cmd/carbon-collab-mcp/`
+- Rename: `mcp/cmd/carbon-collab-mcp/` to `mcp/cmd/carbon-collab-mcp/`
 - Modify: `mcp/pkg/server/server.go`
 - Modify: `mcp/pkg/server/server_test.go`
 - Modify: `mcp/pkg/collab/protocol.go`
@@ -767,11 +767,11 @@ refactor: rename CodeRig and Generic to Carbon
 
 Run the test changes from Task 11 against unchanged MCP production code.
 
-Expected: failures name `coderig-collab-mcp`.
+Expected: failures name `carbon-collab-mcp`.
 
 **Step 2: Rename the command and literals**
 
-Use targeted `sed` replacement from `coderig-collab-mcp` to
+Use targeted `sed` replacement from `carbon-collab-mcp` to
 `carbon-collab-mcp`, rename the directory, and update its command comment and
 stderr prefix. Do not change endpoint/token environment variable contracts.
 
@@ -786,7 +786,7 @@ GOWORK=off go test -race ./... -count=1
 
 Then run MCP integration, security, and cross-build gates.
 
-Expected: PASS and no first-party `coderig-collab-mcp` occurrence remains.
+Expected: PASS and no first-party `carbon-collab-mcp` occurrence remains.
 
 **Step 4: Commit and publish MCP `v0.6.0`**
 
@@ -813,13 +813,13 @@ focused collaboration tests, and commit as
 - Modify: `/Users/ipotter/code/looprig/www/looprig/docs/consumers/packages.md`
 - Modify: `/Users/ipotter/code/looprig/www/looprig/profile/README.md`
 - Modify: `/Users/ipotter/code/looprig/.github/profile/README.md`
-- Modify: first-party files returned by the approved CodeRig-name search in
+- Modify: first-party files returned by the approved Carbon-name search in
   `acp`, `classifiers`, `foreignloops`, `harness`, `inference`, `mcp`,
   `sandbox`, `tests`, `tools`, `tui`, and `www`
 
 **Step 1: Update workspace and repository registry**
 
-Change the `go.work` member to `./carbon`. Replace the `repositories.mk` CodeRig
+Change the `go.work` member to `./carbon`. Replace the `repositories.mk` Carbon
 entry with:
 
 ```text
@@ -831,7 +831,7 @@ published; repository verification must not run against a nonexistent tag.
 
 **Step 2: Update executable product references with `sed`**
 
-Across the reviewed first-party file list, replace CodeRig product names,
+Across the reviewed first-party file list, replace Carbon product names,
 module URLs, paths, examples, and commands with Carbon forms. In reusable
 modules, prefer neutral "product composition root" wording when the reference
 is not truly Carbon-specific.
@@ -864,7 +864,7 @@ commits local unless the user separately authorizes their remote push.
 - Verify: `/Users/ipotter/code/looprig/carbon/`
 - Verify: first-party active workspace repositories
 
-**Step 1: Prove CodeRig tokens are absent**
+**Step 1: Prove Carbon tokens are absent**
 
 Run from the workspace root:
 
@@ -874,18 +874,18 @@ rg -n -i --hidden \
   --glob '!**/.worktrees/**' \
   --glob '!**/vendor/**' \
   --glob '!go.work.sum' \
-  'coderig|code[ _-]?rig|github\.com/looprig/coderig|\.looprig/coderig'
+  'carbon|code[ _-]?rig|github\.com/looprig/carbon|\.looprig/carbon'
 ```
 
 Expected: no first-party active-tree results. Classify every result rather than
 blindly excluding it.
 
-**Step 2: Audit Generic product-agent remnants**
+**Step 2: Audit Carbon product-agent remnants**
 
 Run targeted searches in Carbon:
 
 ```bash
-rg -n --hidden --glob '!**/.git/**' --glob '!**/.worktrees/**' --glob '!vendor/**' '\bGeneric\b|"generic"|generic\.Name|internal/catalog/generic' carbon
+rg -n --hidden --glob '!**/.git/**' --glob '!**/.worktrees/**' --glob '!vendor/**' '\bCarbon\b|"generic"|generic\.Name|internal/catalog/generic' carbon
 ```
 
 Expected: no product-agent result. Ordinary generic terminology and
@@ -897,7 +897,7 @@ Run:
 
 ```bash
 test -d carbon
-test ! -e coderig
+test ! -e carbon
 git -C carbon remote -v
 git -C carbon worktree list --porcelain
 ```
@@ -970,7 +970,7 @@ git tag --sort=-v:refname | head -20
 ```
 
 Expected: the rename commits are reviewed, the worktree is clean except for no
-untracked files, and local CodeRig tags exist only locally.
+untracked files, and local Carbon tags exist only locally.
 
 **Step 2: Push Carbon main without tags**
 
@@ -994,11 +994,11 @@ git ls-remote origin refs/heads/main refs/tags/v0.1.0 'refs/tags/v0.1.0^{}'
 
 Expected: Carbon remote `main` and the peeled tag match the verified commit.
 
-**Step 4: Prove no CodeRig tags were pushed**
+**Step 4: Prove no Carbon tags were pushed**
 
 Run `git ls-remote --tags origin`.
 
-Expected: Carbon remote contains `v0.1.0` and no CodeRig release tags.
+Expected: Carbon remote contains `v0.1.0` and no Carbon release tags.
 
 **Step 5: Prove remote installation**
 
@@ -1021,7 +1021,7 @@ root metadata.
 Report:
 
 - every published module tag and verified commit;
-- CodeRig `v0.18.0` remote proof;
+- Carbon `v0.18.0` remote proof;
 - MCP `v0.5.0` and `v0.6.0` boundary;
 - Carbon `v0.1.0` remote proof;
 - exact default, race, integration, security, and cross-build results;

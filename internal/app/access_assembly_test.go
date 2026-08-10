@@ -26,20 +26,20 @@ func TestSessionAccessUsesOneCarbonExecutorSet(t *testing.T) {
 		t.Fatal("session access policy revision is empty")
 	}
 
-	first, err := access.set.For("generic-loop")
+	first, err := access.set.For("carbon-loop")
 	if err != nil {
-		t.Fatalf("set.For(generic-loop): %v", err)
+		t.Fatalf("set.For(carbon-loop): %v", err)
 	}
-	second, err := access.set.For("generic-loop")
+	second, err := access.set.For("carbon-loop")
 	if err != nil {
-		t.Fatalf("set.For(generic-loop) repeat: %v", err)
+		t.Fatalf("set.For(carbon-loop) repeat: %v", err)
 	}
 	if second != first {
 		t.Fatal("repeated Carbon loop ID did not memoize to the same executor")
 	}
-	other, err := access.set.For("generic-child-loop")
+	other, err := access.set.For("carbon-child-loop")
 	if err != nil {
-		t.Fatalf("set.For(generic-child-loop): %v", err)
+		t.Fatalf("set.For(carbon-child-loop): %v", err)
 	}
 	if other == first {
 		t.Fatal("different Carbon loop IDs resolved to the same executor")

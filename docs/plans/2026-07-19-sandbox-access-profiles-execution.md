@@ -6,14 +6,14 @@
 
 **Goal:** Replace the mode, posture, security-limit, and layered-permission
 system with consumer-defined access profiles, one generic combined gate,
-prepared capability requests, OS-enforced per-spawn grants, and CodeRig-owned
+prepared capability requests, OS-enforced per-spawn grants, and Carbon-owned
 product profiles.
 
 **Architecture:** `sandbox` stays standalone and owns immutable profiles,
 executors, grants, enforcement guarantees, and the local egress proxy. Harness
 owns dependency-free access evaluation and gate routing. Tools own preparation,
 normalization, permission rules, and the workspace file. MCP and TUI consume the
-new Harness contracts. CodeRig directly assembles the modules and owns product
+new Harness contracts. Carbon directly assembles the modules and owns product
 policy. The confinement bridge is retired.
 
 **Technology:** Go, macOS Seatbelt, Linux namespaces/Landlock/nftables,
@@ -49,7 +49,7 @@ Govulncheck, and Astro for published documentation.
 | `tools` | `/Users/ipotter/code/looprig/tools` | `main` | Tool preparation and workspace rules |
 | `mcp` | `/Users/ipotter/code/looprig/mcp` | `main` | External-tool preparation consumer |
 | `tui` | `/Users/ipotter/code/looprig/tui` | `main` | Combined approval presentation |
-| `coderig` | `/Users/ipotter/code/looprig/coderig` | `main` | Product policy and direct assembly |
+| `carbon` | `/Users/ipotter/code/looprig/carbon` | `main` | Product policy and direct assembly |
 | `confinement` | `/Users/ipotter/code/looprig/confinement` | `main` | Retired bridge |
 | `tests` | `/Users/ipotter/code/looprig/tests` | `main` | Cross-module and platform integration coverage |
 | `profile` | `/Users/ipotter/code/looprig/www/looprig` | current pinned submodule commit | Public `.github` profile docs |
@@ -135,8 +135,8 @@ git -C /Users/ipotter/code/looprig/mcp worktree add \
   -b "$feature_branch" "$integration_root/mcp" main
 git -C /Users/ipotter/code/looprig/tui worktree add \
   -b "$feature_branch" "$integration_root/tui" main
-git -C /Users/ipotter/code/looprig/coderig worktree add \
-  -b "$feature_branch" "$integration_root/coderig" main
+git -C /Users/ipotter/code/looprig/carbon worktree add \
+  -b "$feature_branch" "$integration_root/carbon" main
 git -C /Users/ipotter/code/looprig/confinement worktree add \
   -b "$feature_branch" "$integration_root/confinement" main
 git -C /Users/ipotter/code/looprig/www/looprig worktree add \
@@ -152,9 +152,9 @@ does not exist. Never use a recursive delete to repair this workspace.
 
 **Files:**
 
-- Transfer to `coderig/docs/specs/access-profiles.md`
-- Transfer to `coderig/docs/specs/coderig-assembly.md`
-- Transfer to `coderig/docs/plans/2026-07-19-consumer-defined-sandbox-access-design.md`
+- Transfer to `carbon/docs/specs/access-profiles.md`
+- Transfer to `carbon/docs/specs/carbon-assembly.md`
+- Transfer to `carbon/docs/plans/2026-07-19-consumer-defined-sandbox-access-design.md`
 - Transfer this execution plan
 - Preserve for Phase 1: `sandbox/README.md`, `sandbox/SPEC.md`
 
@@ -165,7 +165,7 @@ true.
 
 The contract review must explicitly pin:
 
-- access bindings for sandbox kinds plus CodeRig-owned `tool.invoke` and
+- access bindings for sandbox kinds plus Carbon-owned `tool.invoke` and
   `context.load` kinds;
 - the post-approval structural grant issuer and typed v1 enforcement classes;
 - grant binding to execution, command, canonical cwd, executor, profile, route,
@@ -173,7 +173,7 @@ The contract review must explicitly pin:
 - a distinct read-boundary guarantee and no production null fallback;
 - no legacy secret globs, workspace carveouts, or implicit mode policy;
 - required executor scratch root, positive limit, ownership, and cleanup;
-- `ReadOnly` as CodeRig's default and explicit Unconfined acknowledgement;
+- `ReadOnly` as Carbon's default and explicit Unconfined acknowledgement;
 - the exact v1 family catalog: `git log`, `git status`, `git diff`, `git show`,
   and `git push`;
 - macOS target proxy support in v1 and honest Linux failure/broad fallback;
@@ -191,7 +191,7 @@ cd "$integration_root/harness" && GOWORK=off go test -race ./...
 cd "$integration_root/tools" && GOWORK=off go test -race ./...
 cd "$integration_root/mcp" && GOWORK=off go test -race ./...
 cd "$integration_root/tui" && GOWORK=off go test -race ./...
-cd "$integration_root/coderig" && GOWORK=off go test -race ./...
+cd "$integration_root/carbon" && GOWORK=off go test -race ./...
 cd "$integration_root/confinement" && GOWORK=off go test -race ./...
 cd "$integration_root/www" && npm run build
 ```
@@ -202,7 +202,7 @@ implementation. Do not fold unrelated repairs into this feature.
 ### Phase 0 boundary
 
 Run the aggregated spec review, then the documentation/code-quality review.
-After approval, commit only the reconciled CodeRig planning/spec files with:
+After approval, commit only the reconciled Carbon planning/spec files with:
 
 ```text
 docs: freeze sandbox access profile hard-cut contract
@@ -320,7 +320,7 @@ GOWORK=off go test -race ./...
 GOWORK=off go test -race . \
   -run 'Test(AcceptanceMatrixDarwin|Seatbelt.*(Read|Proxy|Network|Grant))'
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOWORK=off \
-  go test -c -o /tmp/coderig-sandbox-linux.test .
+  go test -c -o /tmp/carbon-sandbox-linux.test .
 GOWORK=off go vet ./...
 GOWORK=off go mod verify
 git diff --check
@@ -507,7 +507,7 @@ expansion, substitutions, ambiguous quoting, unsupported syntax, unknown
 prefixes, shells, interpreters, `find`, `xargs`, `env`, and package/task
 runners. Never use normalized `strings.HasPrefix`.
 
-Allow automatic families only through the injected CodeRig catalog. Load a
+Allow automatic families only through the injected Carbon catalog. Load a
 valid manual out-of-catalog allow family with a diagnostic; deny families need
 no warning. Reject every wildcard/family record that carries a filesystem or
 network delta.
@@ -616,7 +616,7 @@ access trays, access metadata queries, `SecurityLimitChanged` folding,
 Add synchronous session presentation metadata for workspace, fixed profile, and
 permission diagnostics. Capture it at screen construction and session handoff
 so diagnostics appear before a gate. Keep the first banner exactly as the
-existing CodeRig identity/session banner; display the fixed profile in session
+existing Carbon identity/session banner; display the fixed profile in session
 metadata/footer, not as a mutable control.
 
 ```bash
@@ -633,23 +633,23 @@ Run one spec review across both MCP and TUI deltas, then one code-quality review
 Verify the TUI never reconstructs rules and MCP never maps external invocation
 to `command.execute`.
 
-## Phase 5: Assemble CodeRig directly and retire Confinement
+## Phase 5: Assemble Carbon directly and retire Confinement
 
-### Task 5.1: Add CodeRig product access, family, permission, and route policy
+### Task 5.1: Add Carbon product access, family, permission, and route policy
 
 **Files:**
 
-- Add `coderig/internal/app/access.go`, `access_test.go`
-- Add `coderig/internal/app/egress.go`, `egress_test.go`
-- Add `coderig/internal/app/permissions.go`, `permissions_test.go`
-- Modify `coderig/internal/app/config.go`, `persistence.go`, fingerprint tests
-- Modify `coderig/cmd/coderig/main.go`, `main_test.go`
+- Add `carbon/internal/app/access.go`, `access_test.go`
+- Add `carbon/internal/app/egress.go`, `egress_test.go`
+- Add `carbon/internal/app/permissions.go`, `permissions_test.go`
+- Modify `carbon/internal/app/config.go`, `persistence.go`, fingerprint tests
+- Modify `carbon/cmd/carbon/main.go`, `main_test.go`
 
 Define the three exact profiles, `ReadOnly` default, explicit unconfined
 acknowledgement, reviewer ceiling, product `tool.invoke`/`context.load` source,
 and exact family catalog. Compute the default permissions path as
 `~/.looprig/workspaces/<sha256(canonical-workspace)>/permissions.json` only in
-interactive CodeRig assembly. Headless accepts an explicit read-only path and
+interactive Carbon assembly. Headless accepts an explicit read-only path and
 never searches HOME.
 
 Capture HTTP/HTTPS proxy configuration in the parent, retain credentials only
@@ -664,16 +664,16 @@ and mutable security-limit configuration.
 
 **Files:**
 
-- Rewrite `coderig/internal/app/toolsets.go`, `swarm.go`,
+- Rewrite `carbon/internal/app/toolsets.go`, `swarm.go`,
   `runtime_controls.go`, `session_browser.go`
 - Add/adapt acceptance, managed delegation, new/restore, failure cleanup, and
   lifecycle tests
-- Modify `coderig/go.mod`, `go.sum`, dependency tests, and `CLAUDE.md`
+- Modify `carbon/go.mod`, `go.sum`, dependency tests, and `CLAUDE.md`
 
 Construct one `sandbox.ExecutorSet` per role authority, key executors by Loop ID,
 and pass the same effective profile pointer to the role's four sandbox access
 bindings and executor set. Bind the executor structurally as the grant issuer.
-Pass the CodeRig product source for `tool.invoke` and `context.load`. The
+Pass the Carbon product source for `tool.invoke` and `context.load`. The
 reviewer always uses `sandbox.Restrict(selected, reviewerCeiling)`.
 
 Collapse new, restore, headless, and interactive construction onto one `Open`
@@ -698,21 +698,21 @@ rejects restore.
   boundary
 
 Do not move translation, posture mapping, dynamic clamping, or gated
-unsandboxed fallback into CodeRig under another name. Retiring repository
+unsandboxed fallback into Carbon under another name. Retiring repository
 contents is in scope; changing the remote repository's archive setting is not.
 
 ### Task 5.4: Verify product behavior
 
 ```bash
-cd "$integration_root/coderig"
-GOWORK=off go test -race ./internal/app ./cmd/coderig
+cd "$integration_root/carbon"
+GOWORK=off go test -race ./internal/app ./cmd/carbon
 GOWORK=off go test -race ./...
 GOWORK=off go test -tags integration -race ./...
 GOWORK=off make build
 GOWORK=off make secure
 ```
 
-Run CodeRig acceptance tests for all three profiles, reviewer restriction,
+Run Carbon acceptance tests for all three profiles, reviewer restriction,
 isolated HOME, `/dev/null`, root/home denial, exact and family approvals,
 Git-over-HTTPS target reuse, Git-over-SSH broad fallback, organization proxy
 failure, headless files, new/restore parity, banner/session ID preservation, and
@@ -720,7 +720,7 @@ clean executor shutdown.
 
 ### Phase 5 boundary
 
-Run spec review across CodeRig and the retired Confinement delta, then
+Run spec review across Carbon and the retired Confinement delta, then
 code-quality review. The review must reject local bridge wrappers that merely
 rename Sandbox/Harness APIs and any lingering mutable access control.
 
@@ -792,7 +792,7 @@ cd "$integration_root/harness" && GOWORK=off go test -race ./... && GOWORK=off m
 cd "$integration_root/tools" && GOWORK=off go test -race ./... && GOWORK=off make secure
 cd "$integration_root/mcp" && GOWORK=off go test -race ./... && GOWORK=off make secure
 cd "$integration_root/tui" && GOWORK=off go test -race ./... && GOWORK=off make secure
-cd "$integration_root/coderig" && GOWORK=off make build && GOWORK=off make test && GOWORK=off make secure
+cd "$integration_root/carbon" && GOWORK=off make build && GOWORK=off make test && GOWORK=off make secure
 cd "$integration_root/tests" && GOWORK=off make check
 cd "$integration_root/www" && npm run build
 ```

@@ -43,7 +43,7 @@ import (
 // of a different module, so it is not importable here regardless. Adding the
 // go-sdk to carbon itself as a new test-only dependency was explicitly
 // declined (carbon's CLAUDE.md requires approval before any new third-party
-// dependency). Coderig's own integration surface is its assembly/gating/
+// dependency). Carbon's own integration surface is its assembly/gating/
 // env-baseline/degradation behavior, not MCP protocol conformance -- that is
 // the mcp module's job, already covered by its own test suite -- so a
 // minimal, purpose-built fixture speaking only the wire surface these
@@ -69,7 +69,7 @@ const mcpFixtureBuildTimeout = 3 * time.Minute
 // necessity; TestMCPLiveStdioChildEnvBaseline is what keeps the two honest
 // (a name mismatch would make that test's "must NOT be visible" assertion
 // vacuously true instead of a real proof).
-const mcpFixtureUnlistedEnvVar = "CODERIG_MCP_FIXTURE_UNLISTED_TEST_VAR"
+const mcpFixtureUnlistedEnvVar = "CARBON_MCP_FIXTURE_UNLISTED_TEST_VAR"
 
 // buildMCPFixture compiles testdata/mcpfixture and returns the path to the
 // binary, t.TempDir()-scoped so it is removed at test end and never races

@@ -1,11 +1,11 @@
-# CodeRig contributor instructions
+# Carbon contributor instructions
 
-CodeRig is the reference coding Rig built from looprig modules. This repository owns coding behavior and product assembly. Reusable runtime, presentation, tools, sandbox, storage, and inference machinery belongs in the module that defines that abstraction.
+Carbon is the reference coding Rig built from looprig modules. This repository owns coding behavior and product assembly. Reusable runtime, presentation, tools, sandbox, storage, and inference machinery belongs in the module that defines that abstraction.
 
 ## Architecture
 
-- `internal/app/assembly.go` assembles one fixed `generic` loop definition from
-  `internal/catalog/generic`. Generic is the sole primer and may self-delegate
+- `internal/app/assembly.go` assembles one fixed `carbon` loop definition from
+  `internal/catalog/carbon`. Carbon is the sole primer and may self-delegate
   through the managed delegation path; there is no multi-agent product
   topology.
 - `internal/app/access.go` owns the three named sandbox access profiles, one
@@ -13,20 +13,20 @@ CodeRig is the reference coding Rig built from looprig modules. This repository 
   session-level access-config digest. `internal/app/egress.go` resolves the
   parent proxy environment into one validated session egress route.
 - `internal/app/toolsets.go` builds one `sandbox.ExecutorSet`, one combined
-  `harness/pkg/gate` gate, and Generic's complete CodeRig tool roster per
+  `harness/pkg/gate` gate, and Carbon's complete Carbon tool roster per
   session. The set resolves a distinct executor (separate grants and scratch
   HOME) for each Loop ID. The roster is ReadFile, WriteFile, EditFile, Bash,
   ProcessOutput, ProcessInput, ProcessStop, WebSearch, Fetch, Task, AskUser,
   and Skill. Skill always exposes the untrusted, human-gated workspace `.skills/`
-  source; CodeRig ships no embedded skills. CodeRig has no dedicated Glob or
+  source; Carbon ships no embedded skills. Carbon has no dedicated Glob or
   Grep tools because Bash handles search and discovery. There is no
   policy-translation or compatibility bridge.
-- `cmd/coderig` imports the private `internal/app` composition boundary. The
+- `cmd/carbon` imports the private `internal/app` composition boundary. The
   module root has no Go package.
 - `github.com/looprig/tools` provides standard tools; `github.com/looprig/sandbox`
   provides profiles, executors, grants, and the egress proxy; and
   `github.com/looprig/harness/pkg/gate` provides dependency-free access
-  evaluation and prompt routing. CodeRig wires these directly.
+  evaluation and prompt routing. Carbon wires these directly.
 - `github.com/looprig/tui/sessionadapter` adapts a session controller to the
   TUI. The composition-root `RuntimeAgent` also implements
   `tui.SessionPresenter`, supplying the session's fixed profile name, workspace
@@ -36,35 +36,35 @@ CodeRig is the reference coding Rig built from looprig modules. This repository 
   one `openRuntimeAgent` path; interactive and headless differ only in the
   permission store and gate evaluator. The runtime agent owns the executor-set
   closer: partial-construction failure closes what it built, and shutdown closes
-  the set exactly once. A changed profile, Generic access policy, or egress
+  the set exactly once. A changed profile, Carbon access policy, or egress
   identity/guarantee changes the durable access digest and rejects a restore.
 
 Do not add an open-ended agent registry or compatibility bridge. The only
-CodeRig agent identity and prompt are Generic's. The primer model picker is
+Carbon agent identity and prompt are Carbon's. The primer model picker is
 bounded by `models.json` entries tagged `primer`; `delegate_defaults` is not a
 supported field. Ordinary delegation resolves to the in-process `looprig/native`
 runtime by default. Codex and Claude Code are explicit optional ACP alternatives
-for Generic, not additional CodeRig identities. Do not reintroduce a security
+for Carbon, not additional Carbon identities. Do not reintroduce a security
 limit ordinal or any in-session authority-mutation surface.
 
 ## Model catalogue and credentials
 
-- All fixed `~/.looprig/coderig/...` paths in this file (`models.json`, `mcp.json`, `workspaces/<hash>/permissions.json`, the default session-store root) are relative to the resolved CodeRig home: `Config.HomeDir` when set (must be absolute, used exactly as given; validated once at construction, fail closed otherwise), else `~/.looprig/coderig`. One resolver (`internal/app/home.go`'s `looprigHome`) is the single place this is computed; there is no CLI flag or environment variable for it. This directory is CodeRig-specific — harness's sessionstore/workspacestore have no notion of "which product" is calling them, so a different looprig-platform agent product gets its own home, never this one (a prior product, `swe`, shared the bare `~/.looprig` directory before being retired; CodeRig does not repeat that).
-- Generic's identity and prompt remain fixed in code. Production model data is
+- All fixed `~/.looprig/carbon/...` paths in this file (`models.json`, `mcp.json`, `workspaces/<hash>/permissions.json`, the default session-store root) are relative to the resolved Carbon home: `Config.HomeDir` when set (must be absolute, used exactly as given; validated once at construction, fail closed otherwise), else `~/.looprig/carbon`. One resolver (`internal/app/home.go`'s `looprigHome`) is the single place this is computed; there is no CLI flag or environment variable for it. This directory is Carbon-specific — harness's sessionstore/workspacestore have no notion of "which product" is calling them, so a different looprig-platform agent product gets its own home, never this one (a prior product, `swe`, shared the bare `~/.looprig` directory before being retired; Carbon does not repeat that).
+- Carbon's identity and prompt remain fixed in code. Production model data is
   external configuration, loaded once at the composition boundary from
-  `~/.looprig/coderig/models.json`. The file has no `delegate_defaults` field;
+  `~/.looprig/carbon/models.json`. The file has no `delegate_defaults` field;
   ordinary runtime selection is in-process `looprig/native`, while explicit
   Codex and Claude Code ACP alternatives are optional. It may also carry an
   optional top-level `permission_review` section that enables classifier-based
   automatic permission review; see "Permission review" below for what it does
   and does not override.
-- The model catalogue is operator-managed and read-only to CodeRig: the loader never creates, rewrites, or changes the mode of the file. On Unix, the file must be owner-only (`0600`), must be a regular file, and must not be a symlink.
+- The model catalogue is operator-managed and read-only to Carbon: the loader never creates, rewrites, or changes the mode of the file. On Unix, the file must be owner-only (`0600`), must be a regular file, and must not be a symlink.
 - Inline API keys are permitted only in this machine-wide-per-product file because it is outside repositories and owner-only. Never put provider keys in `.env`, provider-key environment variables, command-line arguments, logs, fingerprints, permission files, or child environments.
-- Native permission persistence is separate and remains per workspace at `~/.looprig/coderig/workspaces/<sha256(canonical-workspace)>/permissions.json`. The global model catalogue is not a permission store.
-- ACP children may be gateway-backed or native-auth and receive posture metadata only. Gateway children use the loopback proxy; native children use the selected harness's existing login state. Neither receives provider API keys or a native `permissions.json`; CodeRig owns sandbox and permission enforcement.
+- Native permission persistence is separate and remains per workspace at `~/.looprig/carbon/workspaces/<sha256(canonical-workspace)>/permissions.json`. The global model catalogue is not a permission store.
+- ACP children may be gateway-backed or native-auth and receive posture metadata only. Gateway children use the loopback proxy; native children use the selected harness's existing login state. Neither receives provider API keys or a native `permissions.json`; Carbon owns sandbox and permission enforcement.
 - `native_acp` is optional. An absent or disabled profile contributes no native
   runtime. An enabled profile's `models` may be omitted or explicitly `null` to
-  leave selection to the harness; CodeRig passes no model or effort selector in
+  leave selection to the harness; Carbon passes no model or effort selector in
   that mode. A configured non-empty list is a strict allowlist. Its preferred
   structured entries are `{ "model": "<id>", "efforts": ["<effort>"],
   "default_effort": "<effort>" }`; `default_effort` must be one of the listed
@@ -74,7 +74,7 @@ limit ordinal or any in-session authority-mutation surface.
   non-`none` structured entries carry their exact model/effort selector.
 - Native model/effort support and runtime adapter/session availability are
   validated lazily when a selected child starts and the adapter advertises its
-  runtime choices. CodeRig performs static decode/normalization and executable
+  runtime choices. Carbon performs static decode/normalization and executable
   path checks only; it does not open a live ACP session during startup.
 - ACP launch and prompt failures propagate only the bounded ACP protocol error
   code/message to the parent. Paths, stderr, environment details, raw error
@@ -85,22 +85,22 @@ limit ordinal or any in-session authority-mutation surface.
 
 ## Permission review
 
-CodeRig can optionally enable classifier-based automatic permission review
+Carbon can optionally enable classifier-based automatic permission review
 (`internal/app/permission_review.go`, design doc
 `docs/plans/2026-07-27-permission-classifier-hustle-design.md` in the
 `harness` repository §19-20). It composes exactly one
-`github.com/looprig/classifiers/pkg/commandsafety` classifier over CodeRig's
+`github.com/looprig/classifiers/pkg/commandsafety` classifier over Carbon's
 shared inference client and registers it with `harness/pkg/rig` via
 `rig.WithPermissionClassifiers`; harness/pkg/gate and pkg/hustle own the
 actual review mechanism and neutral domain (see that module's own
-`pkg/gate/README.md#permission-review` for the full story). CodeRig never
+`pkg/gate/README.md#permission-review` for the full story). Carbon never
 duplicates ceiling-comparison/eligibility logic locally.
 
 - **Enable/disable** — `Config.PermissionReviewEnabled` (default `false`, so
   a zero `Config` never auto-approves anything). There is no CLI flag for it
-  today, but there are two seams: a caller embedding `coderig.Config` can set
+  today, but there are two seams: a caller embedding `carbon.Config` can set
   the field directly, and an operator can add a `permission_review` section
-  to `~/.looprig/coderig/models.json` (`{"model": "<alias>", "strict": <bool>}`) —
+  to `~/.looprig/carbon/models.json` (`{"model": "<alias>", "strict": <bool>}`) —
   presence alone enables it, and `model` must name a configured alias with
   both `tools` and `structured_output_with_tools` capabilities or the
   catalogue fails closed with a typed `*ModelConfigError`. The programmatic
@@ -121,26 +121,26 @@ duplicates ceiling-comparison/eligibility logic locally.
   composition paths get it automatically.
 - **Model capability requirements** — `Config.PermissionReviewModel` is
   required whenever `PermissionReviewEnabled` is true (rejected at
-  construction with `*PermissionReviewConfigError` otherwise). CodeRig never
-  reuses Generic's current model for this; the classifier needs an
+  construction with `*PermissionReviewConfigError` otherwise). Carbon never
+  reuses Carbon's current model for this; the classifier needs an
   explicitly named model that supports tool use and structured output
   together (`commandsafety.New` enforces this and fails construction if the
   named model doesn't qualify).
-- **Evidence boundaries** — `permission_review_evidence.go` builds CodeRig's
+- **Evidence boundaries** — `permission_review_evidence.go` builds Carbon's
   own `gate.EvidenceAccessEvaluator`/`gate.EvidenceContainmentVerifier`,
   bound to the session's selected `AccessProfile` as the one trusted
   security ceiling (`evidenceCeilingFor`), and passes
   `commandsafety.RequiredEvidenceKinds()` — never a hand-copied list — as the
   allowlist. All three install together via `rig.WithPermissionReviewEvidence`.
 - **Human fallback** — every non-`allowed` classifier outcome (including any
-  construction or capability error) leaves CodeRig's ordinary interactive or
+  construction or capability error) leaves Carbon's ordinary interactive or
   headless permission gate exactly as open as it is with review disabled.
   Permission review can only ever narrow to one auto-approval; it cannot
   deny, persist a rule, or widen the selected access profile.
-- **Audit/privacy** — CodeRig adds no permission-review-specific logging or
+- **Audit/privacy** — Carbon adds no permission-review-specific logging or
   audit path of its own; the durable trail is entirely harness's internal,
   secret-free `PermissionReviewStarted`/`PermissionReviewCompleted` events.
-  Never log secrets or raw command/evidence content in CodeRig's own code
+  Never log secrets or raw command/evidence content in Carbon's own code
   paths that touch this feature, matching the existing "Security" rules
   above.
 - **Policy tuning** — `Config.PermissionReviewStrictPolicy` selects between
@@ -157,7 +157,7 @@ duplicates ceiling-comparison/eligibility logic locally.
   the caller opts in via `SessionSelector.AllowConfigMismatch` on that
   specific resume (`internal/app/persistence.go`'s `buildRigWithRegistration`
   then passes Harness's blanket `rig.WithAllowConfigMismatch()`) — the same
-  existing mechanism CodeRig already uses for every other rejected-drift
+  existing mechanism Carbon already uses for every other rejected-drift
   case, not a new permission-review-specific path. Enabled→disabled and
   same-configuration restores are unaffected.
 
@@ -167,14 +167,14 @@ before any release touching permission review.
 
 ## MCP servers
 
-CodeRig can optionally compose MCP servers from an operator-managed
+Carbon can optionally compose MCP servers from an operator-managed
 `<home>/mcp.json` (design doc
-`docs/plans/2026-08-05-coderig-mcp-and-permission-review-design.md` Part 1).
+`docs/plans/2026-08-05-carbon-mcp-and-permission-review-design.md` Part 1).
 Loading and validation live in `internal/app/mcpconfig.go`; assembly
 (transports, bindings, the Manager, adoption, and lifecycle) lives in
 `internal/app/mcp.go` and is composed inside `openRuntimeAgent`
 (`internal/app/assembly.go`), so new, restore, interactive, and headless
-sessions all get it the same way. CodeRig wires
+sessions all get it the same way. Carbon wires
 `github.com/looprig/mcp`'s `pkg/harness` Manager/Bindings/Adopter and its
 transport factories directly; it adds no policy-translation layer of its
 own.
@@ -195,13 +195,13 @@ own.
   may carry credentials the same way models.json's inline `api_key` fields
   do: ≤ 1 MiB, regular file, no symlink, owner-only `0600` on Unix, read
   once at the composition boundary, never created, rewritten, or
-  mode-changed by CodeRig. An absent file disables the feature entirely —
+  mode-changed by Carbon. An absent file disables the feature entirely —
   zero MCP assembly, a byte-for-byte identical rig to one with no `mcp.json`
   at all.
-- **Generic visibility extension** — `roles` is optional and accepts only
-  `"generic"`. Empty or absent means Generic. A binding's visibility selects
+- **Carbon visibility extension** — `roles` is optional and accepts only
+  `"carbon"`. Empty or absent means Carbon. A binding's visibility selects
   by loop **name**, not loop ID, since bindings are built before the session
-  mints loop IDs; a self-delegated Generic loop inherits the same visibility.
+  mints loop IDs; a self-delegated Carbon loop inherits the same visibility.
   Unknown names are a config error.
 - **Fail-closed posture — two different failure modes, not one** — an
   invalid or insecure `mcp.json`, including a stdio `command` that does not
@@ -235,7 +235,7 @@ own.
   (`internal/app/persistence.go`'s `agentFingerprintFields`) before
   `rig.NewSession`. The digest is secret-free by the mcp module's own
   contract — binding name, transport kind, redacted origin, capability/
-  filter/limits/compat digests, and Generic-visibility digest, never a header
+  filter/limits/compat digests, and Carbon-visibility digest, never a header
   or env **value** — so changing the server set, a URL, or role visibility
   is now correctly a **rejected drift** on restore by default, the same
   pattern as the "Restore behavior" bullet above: escaping it requires the
@@ -252,18 +252,18 @@ own.
 - **Security** — treat `mcp.json` exactly like `models.json`: headers and
   env values may carry credentials and must never be logged, placed in an
   error message, or allowed to reach the fingerprint. The file is
-  operator-managed and read-only to CodeRig — same posture, same file
-  hygiene, same secret-bearing-file treatment as `~/.looprig/coderig/models.json`
+  operator-managed and read-only to Carbon — same posture, same file
+  hygiene, same secret-bearing-file treatment as `~/.looprig/carbon/models.json`
   (see "Security" below).
 - **Known gap** — the exported library construction path (`New()`/
   `newWithClient`) does not compose MCP; only `SessionStoreFactory.Open` →
-  `openRuntimeAgent` does, and `cmd/coderig` exclusively uses that path.
+  `openRuntimeAgent` does, and `cmd/carbon` exclusively uses that path.
   This is a real, pre-existing gap flagged in code comments
   (`runtime_controls.go`, `assembly.go`), not something this feature closes.
 
 ## Collaboration MessageAgent support
 
-CodeRig exposes only the existing `MessageAgent` operation to foreign ACP
+Carbon exposes only the existing `MessageAgent` operation to foreign ACP
 children through the per-loop collaboration MCP server. The support matrix is:
 
 | Runtime | MessageAgent support |
@@ -273,13 +273,13 @@ children through the per-loop collaboration MCP server. The support matrix is:
 | Current Codex ACP | Queued fallback |
 | Future adapters | Require advertised host-owned idle fallback before steering is enabled |
 
-The exact Claude ACP version is intentional. CodeRig does not probe unknown ACP
+The exact Claude ACP version is intentional. Carbon does not probe unknown ACP
 methods or infer safe idle behavior: a future adapter must advertise both
 steering and a host-owned idle fallback before it can be enabled.
 
 ## Placement
 
-Keep behavior here when it is specific to a coding Rig, such as Generic's
+Keep behavior here when it is specific to a coding Rig, such as Carbon's
 prompt and tool roster, coding modes, model defaults, and product flags.
 
 Move behavior to its owning module when it is reusable across products. Examples include session adapters, standard tool implementations, sandbox profile/executor/grant enforcement, gate evaluation, persistence mechanics, and generic Loop or Rig lifecycle behavior.
@@ -293,7 +293,7 @@ Prefer direct assembly over local wrappers that only rename another module's API
 - Treat `Bash` as intentionally shell-based. Permission checks and OS confinement are its boundaries.
 - Validate CLI input before constructing the Rig.
 - Never log secrets or place them in audit summaries. Upstream proxy credentials live only inside the sandbox egress route and never enter the fingerprint, permission file, logs, or child environment.
-- Treat `~/.looprig/coderig/models.json` as a secret-bearing owner-only file. Never copy its inline API keys into a repository, `.env`, shell command, fingerprint, permission file, log, or ACP child environment.
+- Treat `~/.looprig/carbon/models.json` as a secret-bearing owner-only file. Never copy its inline API keys into a repository, `.env`, shell command, fingerprint, permission file, log, or ACP child environment.
 - Fail closed when access, permission, identity, or durable policy state is uncertain.
 
 ## Code and tests
@@ -326,7 +326,7 @@ live permission-review end-to-end tests. It is not run by `make test` or CI
 by default; run it before any release touching permission review, restore,
 or access-profile behavior.
 
-The binary and command are both named `coderig`.
+The binary and command are both named `carbon`.
 
 ## Dependencies
 

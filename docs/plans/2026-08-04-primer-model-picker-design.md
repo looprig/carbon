@@ -4,7 +4,7 @@
 
 `~/.looprig/models.json` can list multiple `uses: ["primer", ...]`-capable
 models (e.g. the local LM Studio deepseek model alongside Chutes-hosted Kimi
-K3 and GLM 5.2), but CodeRig's `/model` TUI command only ever shows one row:
+K3 and GLM 5.2), but Carbon's `/model` TUI command only ever shows one row:
 the loop's currently active model. There is no way to switch the primer loop
 to a different configured model at runtime — `primer_default` picks exactly
 one model at config-load time and that choice is frozen for the session.
@@ -20,13 +20,13 @@ one model at config-load time and that choice is frozen for the session.
   already generic: they accept any secret-free `model.Model` descriptor and
   apply it at the next turn boundary via `command.ChangeLoopInference`. There
   is no primer-specific restriction at this layer.
-- The only place the picker is narrowed to one row is CodeRig's presentation
+- The only place the picker is narrowed to one row is Carbon's presentation
   glue: `RuntimeAgent.LoopRuntimeOptions` (`internal/app/runtime_controls.go`)
   hardcodes `options.Models` to a single entry equal to the current model, and
   `RuntimeAgent.SetModel` rejects any requested ID that isn't already active.
 
 So switching the primer to another configured model is mechanically already
-supported end-to-end; the gap is entirely in what CodeRig chooses to expose.
+supported end-to-end; the gap is entirely in what Carbon chooses to expose.
 
 ## Design
 
@@ -95,7 +95,7 @@ Order follows `config.Models` order (deterministic, no re-sorting).
 - `SetEffort`'s admission check (`containsPrimerEffort`) keys off the
   currently selected candidate's efforts, not a frozen startup list.
 
-### `coderig/CLAUDE.md`
+### `carbon/CLAUDE.md`
 
 The existing line — "Do not add a generic agent registry or model tier
 catalog. The roster is a small fixed set of Loop definitions. Runtime

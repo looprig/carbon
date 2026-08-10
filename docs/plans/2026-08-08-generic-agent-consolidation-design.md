@@ -1,32 +1,32 @@
-# Generic Agent Consolidation Design
+# Carbon Agent Consolidation Design
 
 **Date:** 2026-08-08
 
 ## Goal
 
-Replace CodeRig's planner, builder, and reviewer roster with one general-purpose
-agent named `generic`. The same definition is the primer and the only legal
+Replace Carbon's planner, builder, and reviewer roster with one general-purpose
+agent named `carbon`. The same definition is the primer and the only legal
 delegation target. This is a greenfield breaking change: no compatibility layer,
 legacy role mapping, configuration migration, or old-session support is needed.
 
-The change must reduce code as well as product concepts. CodeRig should assemble
+The change must reduce code as well as product concepts. Carbon should assemble
 one agent directly instead of retaining roster abstractions built for three roles.
 
 ## Architecture
 
-Create one `internal/catalog/generic` package containing the immutable name,
+Create one `internal/catalog/carbon` package containing the immutable name,
 description, and unified coding prompt. Delete the planner, builder, and reviewer
 catalog packages.
 
 Delete the `leafBuiltin` abstraction, roster constructors, and
 `swarmDefinitions` family. Construct one `loop.Definition` directly through a
-small `genericDefinition` function and pass it to Harness as CodeRig's sole loop
+small `carbonDefinition` function and pass it to Harness as Carbon's sole loop
 and primer. Rename remaining swarm-oriented identifiers when their names no
 longer describe the single-agent product.
 
-The generic definition may delegate only to `generic`. Preserve Harness's
-managed-delegation tools and CodeRig's existing depth and quota limits. Plain
-delegation requires only `agent_type: "generic"`; it uses CodeRig's in-process
+The generic definition may delegate only to `carbon`. Preserve Harness's
+managed-delegation tools and Carbon's existing depth and quota limits. Plain
+delegation requires only `agent_type: "carbon"`; it uses Carbon's in-process
 runtime by default. `codex` and `claude-code` remain explicit optional ACP
 runtimes.
 
@@ -36,8 +36,8 @@ The unified prompt combines the useful operating principles of modern coding
 agents without copying provider-specific prompt text or branding:
 
 ```xml
-<identity product="CodeRig">
-  <persona>You are Generic, a general-purpose software-engineering agent. Work like a trusted coding partner: direct, technically rigorous, curious, and focused on finishing the user's actual task.</persona>
+<identity product="Carbon">
+  <persona>You are Carbon, a general-purpose software-engineering agent. Work like a trusted coding partner: direct, technically rigorous, curious, and focused on finishing the user's actual task.</persona>
 
   <intent>
     <item>For requests to answer, explain, review, diagnose, or plan, inspect the relevant evidence and report the result. Do not modify the workspace unless the request also asks for changes.</item>
@@ -65,7 +65,7 @@ agents without copying provider-specific prompt text or branding:
 
   <delegation>
     <item>Delegate only focused work that benefits from independent or parallel execution.</item>
-    <item>Give each Generic subagent a self-contained task, assess its evidence, and synthesize the final result yourself.</item>
+    <item>Give each Carbon subagent a self-contained task, assess its evidence, and synthesize the final result yourself.</item>
     <item>Do not delegate trivial work or duplicate work already in progress.</item>
   </delegation>
 
@@ -82,15 +82,15 @@ dynamic catalog data.
 
 ## Tools and access
 
-Generic receives the complete coding toolset: repository reads, file edits,
+Carbon receives the complete coding toolset: repository reads, file edits,
 commands, web access, embedded and optional runtime skills, MCP tools, and
 managed delegation. Use one executor set, one combined access gate, and one
-policy revision governed by the session's selected CodeRig access profile.
+policy revision governed by the session's selected Carbon access profile.
 
 Delete planner/reviewer read-only profiles and the reviewer ceiling. Preserve
 the product's existing sandbox enforcement, permission gates, credential
 isolation, egress controls, permission review, and executor lifecycle rules.
-Generic ACP children use workspace-write posture, still bounded by CodeRig's
+Carbon ACP children use workspace-write posture, still bounded by Carbon's
 selected access profile.
 
 ## Configuration and runtime catalog
@@ -100,16 +100,16 @@ associated decoding, normalization, validation, compilation, and digest state.
 An old file containing the field is invalid. Do not bump the schema solely to
 recognize or migrate the removed shape.
 
-Compile runtime entries only for `generic`. CodeRig's in-process
+Compile runtime entries only for `carbon`. Carbon's in-process
 `looprig/native` entry is the automatic default used when `StartAgent` omits
 runtime selectors. Codex and Claude Code ACP rows remain selectable explicitly.
 Internal runtime identity remains durable for restore and attribution even
 though ordinary users do not select a harness.
 
-MCP's optional `roles` filter accepts only `generic`; an empty filter means
+MCP's optional `roles` filter accepts only `carbon`; an empty filter means
 generic. Former role names are invalid configuration.
 
-The agent fingerprint becomes `coderig:generic`. Prompt, access, and runtime
+The agent fingerprint becomes `carbon:carbon`. Prompt, access, and runtime
 catalog revisions change naturally. Restoring a session created by the old
 three-role product is intentionally unsupported.
 
@@ -126,14 +126,14 @@ invalid configuration and unavailable optional runtimes.
 Rewrite tests around the one supported identity rather than preserving legacy
 fixtures. Cover:
 
-- exactly one loop definition and one primer named `generic`;
+- exactly one loop definition and one primer named `carbon`;
 - the unified prompt and full coding toolset;
 - one generic executor set, gate, policy revision, and clean shutdown;
-- generic-to-generic managed delegation;
+- carbon-to-carbon managed delegation;
 - plain delegation choosing the in-process default without a harness selector;
 - explicit Codex and Claude Code ACP selection;
 - strict rejection of `delegate_defaults` and former MCP roles;
-- generic runtime catalog, fingerprint, persistence, and restore behavior;
+- carbon runtime catalog, fingerprint, persistence, and restore behavior;
 - permission review, skills, MCP, access profiles, and integration behavior.
 
 Run focused package tests while changing each boundary, then the race-enabled
@@ -146,6 +146,6 @@ behavior.
 - Compatibility with planner, builder, or reviewer configurations or sessions.
 - A generic/open-ended agent registry.
 - Hidden role modes that recreate the old roster behind one name.
-- Harness API changes when CodeRig can express the behavior with existing
+- Harness API changes when Carbon can express the behavior with existing
   runtime catalogs and loop definitions.
 - New abstraction layers for hypothetical future agents.

@@ -228,8 +228,8 @@ func TestNormalizeMCPConfigRejectsInvalidServers(t *testing.T) {
 		{name: "url unsupported scheme", binding: "docs", base: validHTTPMCPServerConfig, mutate: func(c *mcpServerConfig) { c.URL = "ftp://mcp.example.test/mcp" }},
 		{name: "url has userinfo", binding: "docs", base: validHTTPMCPServerConfig, mutate: func(c *mcpServerConfig) { c.URL = "https://user:pass@mcp.example.test/mcp" }},
 
-		// Legacy role is a rejection fixture; roles accepts only generic.
-		{name: "legacy role is unknown", binding: "docs", mutate: func(c *mcpServerConfig) { c.Roles = []string{"planner"} }},
+		// Former product role is a rejection fixture; roles accepts only carbon.
+		{name: "former generic role is unknown", binding: "docs", mutate: func(c *mcpServerConfig) { c.Roles = []string{"generic"} }},
 		{name: "duplicate roles", binding: "docs", mutate: func(c *mcpServerConfig) { c.Roles = []string{"carbon", "carbon"} }},
 		{name: "padded role is unknown", binding: "docs", mutate: func(c *mcpServerConfig) { c.Roles = []string{"carbon "} }},
 	}
@@ -260,6 +260,19 @@ func TestNormalizeMCPConfigRejectsInvalidServers(t *testing.T) {
 				t.Errorf("error leaked header/env secret: %v", err)
 			}
 		})
+	}
+}
+
+func TestNormalizeMCPServerRejectsFormerCarbonRoleWithCarbonDiagnostic(t *testing.T) {
+	_, err := normalizeMCPServer("docs", mcpServerConfig{
+		Command: "npx",
+		Roles:   []string{"generic"},
+	})
+	if err == nil {
+		t.Fatal("normalizeMCPServer() error = nil, want former generic role rejection")
+	}
+	if got := err.Error(); !strings.Contains(got, `unknown role "generic"`) || !strings.Contains(got, "want carbon") {
+		t.Fatalf("normalizeMCPServer() error = %q, want former generic rejection naming carbon", got)
 	}
 }
 

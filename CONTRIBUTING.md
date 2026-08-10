@@ -1,6 +1,6 @@
-# Contributing to looprig/coderig
+# Contributing to looprig/carbon
 
-Thanks for considering a contribution. `coderig` is the reference coding Rig
+Thanks for considering a contribution. `carbon` is the reference coding Rig
 built from looprig modules — it owns coding behavior and product assembly,
 not reusable runtime machinery. This file is the short guide for working in
 this repository.
@@ -19,24 +19,24 @@ this repository.
 ## Design and security rules (the short version)
 
 - **Placement discipline.** Keep behavior here when it is specific to a
-  coding Rig — Generic's prompt and tool roster, coding modes, model defaults,
+  coding Rig — Carbon's prompt and tool roster, coding modes, model defaults,
   product flags. Move behavior to its owning module (`looprig/tools`,
   `looprig/sandbox`, `looprig/harness`, `looprig/tui`, ...) when it is
   reusable across products. Prefer direct assembly over local wrappers that
   only rename another module's API.
-- **One Generic agent.** `internal/catalog/generic` owns CodeRig's one fixed
-  `generic` identity and prompt. Generic is the sole primer and self-delegates
+- **One Carbon agent.** `internal/catalog/carbon` owns Carbon's one fixed
+  `carbon` identity and prompt. Carbon is the sole primer and self-delegates
   through the managed loop path. There is no open-ended agent registry,
   compatibility bridge, or multi-agent product topology.
 - **One session access authority.** Each session builds one sandbox executor
   set and one combined access gate; each Loop ID resolves to its own executor
-  in that set. Generic receives the complete CodeRig roster: ReadFile,
+  in that set. Carbon receives the complete Carbon roster: ReadFile,
   WriteFile, EditFile, Bash, ProcessOutput, ProcessInput, ProcessStop,
-  WebSearch, Fetch, Task, AskUser, and optional Skill. CodeRig has no dedicated
+  WebSearch, Fetch, Task, AskUser, and optional Skill. Carbon has no dedicated
   Glob or Grep tools; Bash handles search and discovery.
 - **Runtime selection.** Ordinary delegation defaults to the in-process
   `looprig/native` runtime. Codex and Claude Code are explicit optional ACP
-  alternatives for Generic. `models.json` has no `delegate_defaults` field;
+  alternatives for Carbon. `models.json` has no `delegate_defaults` field;
   do not add one or reintroduce frozen production rows, provider-key
   environment reads, or native-model environment variables.
 - **Least privilege.** Keep mutating, command, and network effects
@@ -48,12 +48,12 @@ this repository.
   live only inside the sandbox egress route and never enter the
   fingerprint, permission file, logs, or child environment. Inline provider
   keys are permitted only in the external, owner-only `0600`
-  `~/.looprig/coderig/models.json`; never put them in `.env` or a shell
+  `~/.looprig/carbon/models.json`; never put them in `.env` or a shell
   command.
-- **Keep model and permission boundaries separate.** CodeRig only reads the
+- **Keep model and permission boundaries separate.** Carbon only reads the
   global model catalogue and never writes or chmods it. Native permissions
   remain per workspace at
-  `~/.looprig/coderig/workspaces/<sha256(canonical-workspace)>/permissions.json`.
+  `~/.looprig/carbon/workspaces/<sha256(canonical-workspace)>/permissions.json`.
   ACP children may be gateway-backed or native-auth, but both receive posture
   metadata only and never provider keys or native permission files. Gateway
   children receive only the loopback proxy environment; native children
@@ -64,7 +64,7 @@ this repository.
   entries. Legacy string entries remain accepted for compatibility and retain
   model-only (`none`) behavior. Runtime model/effort support and adapter/session
   availability are checked lazily when the child starts, not by a live ACP
-  session during CodeRig startup. Bounded ACP protocol code/message details may
+  session during Carbon startup. Bounded ACP protocol code/message details may
   reach the parent on launch or prompt failure; paths, stderr, environment values, and
   wrapped causes do not.
 - **Fail closed.** When access, permission, identity, or durable policy
@@ -79,7 +79,7 @@ this repository.
 Run these before pushing. CI runs the same.
 
 ```sh
-make build     # CGO_ENABLED=0 go build -trimpath -o bin/coderig ./cmd/coderig
+make build     # CGO_ENABLED=0 go build -trimpath -o bin/carbon ./cmd/carbon
 make run       # runs the TUI; optional .env values are launcher settings only
 make test      # go test -race ./...
 make fmt       # gofmt this module's Go files in place
@@ -90,15 +90,15 @@ make secure    # lint + vuln
 
 ## Configure production models
 
-CodeRig reads its machine-wide model catalogue once from
-`~/.looprig/coderig/models.json` when production dependencies are assembled. It does
+Carbon reads its machine-wide model catalogue once from
+`~/.looprig/carbon/models.json` when production dependencies are assembled. It does
 not create or modify this file. Create it with an editor, then restrict it to
 the owner:
 
 ```sh
-mkdir -p ~/.looprig/coderig
-$EDITOR ~/.looprig/coderig/models.json
-chmod 600 ~/.looprig/coderig/models.json
+mkdir -p ~/.looprig/carbon
+$EDITOR ~/.looprig/carbon/models.json
+chmod 600 ~/.looprig/carbon/models.json
 ```
 
 Do not paste a real key into a shell command: shell history, process listings,
@@ -113,7 +113,7 @@ model; `FAKE_EXAMPLE_KEY_DO_NOT_USE` is deliberately unusable:
   "models": [
     {
       "alias": "local-generic",
-      "description": "Fast local model for the Generic coding agent.",
+      "description": "Fast local model for the Carbon coding agent.",
       "provider": "lmstudio",
       "api_format": "openai",
       "base_url": "http://localhost:1234/v1",
@@ -133,7 +133,7 @@ model; `FAKE_EXAMPLE_KEY_DO_NOT_USE` is deliberately unusable:
     },
     {
       "alias": "remote-generic",
-      "description": "Reliable hosted model for explicit Generic delegation.",
+      "description": "Reliable hosted model for explicit Carbon delegation.",
       "provider": "openai",
       "api_format": "openai-responses",
       "base_url": "https://api.openai.com/v1",
@@ -156,13 +156,13 @@ model; `FAKE_EXAMPLE_KEY_DO_NOT_USE` is deliberately unusable:
 ```
 
 The catalogue is authoritative for production model aliases and credentials.
-Version 2 is required; CodeRig does not rewrite or migrate an existing file.
+Version 2 is required; Carbon does not rewrite or migrate an existing file.
 Every model that lists `delegate` in `uses` must include a bounded, single-line
 `description`. These descriptions are shown in the `StartAgent` tool's runtime
 catalogue, not repeated in the system prompt.
 There is no `delegate_defaults` field: ordinary delegation uses the
 `looprig/native` runtime by default. Codex and Claude Code ACP runtimes are
-optional and must be selected explicitly for Generic.
+optional and must be selected explicitly for Carbon.
 The `.env` file, when used by `make run`, is only for launcher settings such as
 ACP executable path overrides; it is not a provider-key source.
 
@@ -193,7 +193,7 @@ Each structured entry requires `model`, a non-empty `efforts` list, and a
 `default_effort` contained in that list. Legacy string entries remain accepted
 for compatibility and retain model-only behavior, normalized as effort
 `none`/default `none`. A configured list is strict: only its models and
-efforts are advertised and accepted, with no fallback selection. CodeRig does
+efforts are advertised and accepted, with no fallback selection. Carbon does
 static decoding, normalization, and executable path checks at startup, but
 validates the selected model, effort, and adapter/session availability lazily
   when `StartAgent` launches the child; the child's runtime handshake is not

@@ -2,7 +2,7 @@
 
 ## Problem
 
-CodeRig resolves native Codex model and effort choices correctly, but the launch
+Carbon resolves native Codex model and effort choices correctly, but the launch
 layer passes them as `-c model=...` and `-c model_reasoning_effort=...` arguments
 to `codex-acp`. The installed `@agentclientprotocol/codex-acp` 1.1.9 server path
 does not forward or consume those arguments. It starts `codex app-server`
@@ -21,13 +21,13 @@ The connector will resolve and set:
 - category `thought_level`, config option `reasoning_effort`, for the effort.
 
 Selection is ordered because changing model can change the supported effort
-set. Availability remains lazy: CodeRig startup never contacts the adapter, and
+set. Availability remains lazy: Carbon startup never contacts the adapter, and
 an unavailable model or effort fails only when StartAgent opens the selected
 Codex child.
 
 ## Data flow
 
-1. CodeRig resolves the advertised alias to the adapter-facing model ID and
+1. Carbon resolves the advertised alias to the adapter-facing model ID and
    exact effort.
 2. The foreign ACP driver launches and initializes `codex-acp` without relying
    on model or effort command-line overrides.
@@ -45,7 +45,7 @@ effort-without-model selection remains invalid.
 
 Missing or unadvertised model and effort values return typed bounded selection
 errors without issuing an invalid wire request. Construction failure closes the
-owned ACP session/process exactly once. Existing CodeRig safe-error projection
+owned ACP session/process exactly once. Existing Carbon safe-error projection
 continues to expose only approved bounded detail to the parent.
 
 ## Compatibility
@@ -68,4 +68,4 @@ Test-first coverage will prove:
 - unadvertised values fail before an invalid wire call and close owned
   resources exactly once;
 - native Codex launch arguments no longer claim to carry model or effort; and
-- CodeRig still propagates the adapter-facing model ID and exact effort.
+- Carbon still propagates the adapter-facing model ID and exact effort.

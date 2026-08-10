@@ -6,7 +6,7 @@
 
 ## Goal
 
-CodeRig's agent collaboration tools (`StartAgent`, `MessageAgent`, `ListAgents`,
+Carbon's agent collaboration tools (`StartAgent`, `MessageAgent`, `ListAgents`,
 `StopAgent`) and the full ACP delegation pipeline to Claude Code and Codex are
 implemented and released. In practice, enabling a claude-code or codex runtime
 row today requires an operator to know two undocumented environment variables
@@ -29,7 +29,7 @@ This design closes the enablement gap with two changes:
 
 - No change to the delegation tools, the runtime catalogue contract, the
   preflight probes themselves, or restore semantics.
-- No `coderig doctor` command, no TUI runtime browser, no adapter
+- No `carbon doctor` command, no TUI runtime browser, no adapter
   auto-installation.
 - No relaxation of the fail-closed rules for a malformed `models.json`.
 

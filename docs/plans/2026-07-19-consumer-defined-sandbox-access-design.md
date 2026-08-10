@@ -4,7 +4,7 @@
 
 **Goal:** Replace reusable sandbox modes and permission tiers with consumer-defined profiles while keeping sandbox independently usable and presenting at most one approval gate.
 
-**Architecture:** `sandbox` owns the standalone `Profile`, enforces it, and provides a loopback egress proxy for hostname/port grants with optional fail-closed chaining through an organization proxy. Harness owns generic versioned access evaluation through built-in-only structural interfaces, so neither module imports the other; tools normalize requests and implement durable rule storage. CodeRig constructs one immutable effective profile per role, binds it directly for sandbox capability kinds, adds its own product-only access source, and supplies the same profile to sandbox. For commands, gate resolves `Gated` requirements before sandbox mints narrow per-spawn grants.
+**Architecture:** `sandbox` owns the standalone `Profile`, enforces it, and provides a loopback egress proxy for hostname/port grants with optional fail-closed chaining through an organization proxy. Harness owns generic versioned access evaluation through built-in-only structural interfaces, so neither module imports the other; tools normalize requests and implement durable rule storage. Carbon constructs one immutable effective profile per role, binds it directly for sandbox capability kinds, adds its own product-only access source, and supplies the same profile to sandbox. For commands, gate resolves `Gated` requirements before sandbox mints narrow per-spawn grants.
 
 **Tech Stack:** Go, macOS Seatbelt, Linux Landlock/namespaces/network controls, looprig harness/tools/TUI modules.
 
@@ -13,7 +13,7 @@
 ## Goal
 
 Replace the sandbox security-level ladder and reusable presets with explicit,
-consumer-owned access choices. The reusable modules enforce the policy; CodeRig
+consumer-owned access choices. The reusable modules enforce the policy; Carbon
 and other consumers decide which access is appropriate for each Loop.
 
 The design must keep command approval separate from process confinement while
@@ -62,7 +62,7 @@ combination of capabilities.
 
 A consumer constructs the complete policy it wants. It may define local names,
 configuration, or UI for its own combinations, but those choices stay in the
-consumer. CodeRig may therefore choose different policies for its operator and
+consumer. Carbon may therefore choose different policies for its operator and
 reviewer without adding a registry or mode catalog to the reusable modules.
 
 The reusable construction API belongs in `sandbox`, because the profile
@@ -70,7 +70,7 @@ describes the authority its OS boundary enforces. It exposes a validated
 `Profile` whose access fields use `Deny`, `Gated`, or `Allow`, whose HOME field
 selects isolated or real HOME, and whose isolation field selects sandboxed or
 explicitly acknowledged unconfined execution. It exposes no named combinations
-and has no dependency on harness, tools, TUI, or CodeRig.
+and has no dependency on harness, tools, TUI, or Carbon.
 
 Unconfined behavior remains possible only as an explicitly constructed policy
 with a separate acknowledgement. It is an escape hatch, not a preset or a rung
@@ -155,10 +155,10 @@ fail closed.
 
 The version and fixed numeric values are a tiny structural ABI, like the existing
 `GuaranteeBits() uint64` seam. Contract tests in both independent modules and an
-integration test in CodeRig pin the values and normalized kind identifiers.
-CodeRig passes the same `*sandbox.Profile` instance to the gate bindings for the
+integration test in Carbon pin the values and normalized kind identifiers.
+Carbon passes the same `*sandbox.Profile` instance to the gate bindings for the
 four sandbox kinds and to executor construction; it does not copy or translate
-the profile. Separate CodeRig-owned bindings provide gated `tool.invoke` and
+the profile. Separate Carbon-owned bindings provide gated `tool.invoke` and
 `context.load` kinds for MCP tools and skills. Gate requires exactly one source
 per requested kind, so product-only kinds do not expand the standalone sandbox
 vocabulary or get misclassified as command execution.
@@ -187,9 +187,9 @@ controls whether a command starts but cannot constrain its filesystem or network
 behavior; such a consumer must describe command execution as unconfined and must
 not claim sandbox guarantees.
 
-## CodeRig profiles
+## Carbon profiles
 
-CodeRig directly constructs three product-owned profiles:
+Carbon directly constructs three product-owned profiles:
 
 | Capability | ReadOnly | Trusted | Unconfined |
 |---|---|---|---|
@@ -204,13 +204,13 @@ CodeRig directly constructs three product-owned profiles:
 | Confinement | Sandboxed | Sandboxed | Unconfined |
 | Explicit acknowledgement | No | No | Yes |
 
-These combinations do not become reusable presets. CodeRig validates the three
+These combinations do not become reusable presets. Carbon validates the three
 names directly.
 
-CodeRig fixes the selected profile at session open. The TUI displays it but does
+Carbon fixes the selected profile at session open. The TUI displays it but does
 not change it in flight; a different profile requires a new session. The
 operator uses the selected profile. The reviewer uses the component-wise
-intersection of the selected profile and a CodeRig-owned sandboxed read-only
+intersection of the selected profile and a Carbon-owned sandboxed read-only
 ceiling. Each role passes its same effective immutable profile to gate and
 sandbox.
 
@@ -304,7 +304,7 @@ access therefore composes with a separate target rule such as
 `Network(github.com:443)`; the network grant is independently minted per spawn.
 
 The parser alone does not decide which families are proposed automatically.
-CodeRig owns a small positive catalog of eligible literal command/subcommand
+Carbon owns a small positive catalog of eligible literal command/subcommand
 prefixes. Unknown prefixes fall back to exact rules. Shells, interpreters,
 `find`, `xargs`, `env`, package/task runners, and other prefixes that evaluate
 code or select another executable are ineligible. A syntactically valid manual
@@ -321,7 +321,7 @@ When a `Gated` command requirement and its capability deltas match saved workspa
 approval, the gate may auto-approve the call and ask the sandbox grant issuer to
 mint fresh single-spawn tokens. Tokens themselves are never persisted.
 Workspace rules bind to the normalization schema, exact requested delta, and
-enforcement class, but not to the selected CodeRig profile or live executor
+enforcement class, but not to the selected Carbon profile or live executor
 revision. A different command, delta, schema, or enforcement class does not
 match. A profile `Deny` still overrides a matching rule. Fresh grants bind to the
 exact profile fingerprint, command, working directory, executor, guarantees,
@@ -338,7 +338,7 @@ approval atomically appends the displayed validated allow rules for every unmet
 capability to the single hardened out-of-repository permission file. There is no session or
 user-global approval scope and no persistent-deny UI action.
 
-CodeRig uses
+Carbon uses
 `~/.looprig/workspaces/<sha256(canonical-workspace)>/permissions.json` as its
 interactive workspace file. A headless consumer may explicitly supply one
 read-only file at startup. With no file, rules are empty; an invalid configured
@@ -515,7 +515,7 @@ Tests must cover:
   fingerprint drift; and
 - explicit acknowledgement for truly unconfined execution.
 
-CodeRig integration tests must construct explicit operator and reviewer policies,
+Carbon integration tests must construct explicit operator and reviewer policies,
 exercise new and restored sessions through the same assembly path, and prove that
 the reviewer remains sandboxed and read-only under every selected product
 profile.
@@ -529,7 +529,7 @@ aliases, adapters, dual codecs, migration readers, renamed presets, or temporary
 compatibility shims.
 
 The active repositories are `sandbox`, `harness`, `tools`, `mcp`, `tui`, and
-`coderig`; the `confinement` repository is retired after CodeRig moves to direct
+`carbon`; the `confinement` repository is retired after Carbon moves to direct
 assembly. `mcp` is included because its Harness adapter currently implements
 the removed permission-prompter and approval-scope contracts. `core`,
 `inference`, `storage`, and `fsstore` have no planned behavior changes.

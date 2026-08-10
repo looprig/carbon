@@ -147,7 +147,7 @@ Write tests that inject a fake ACP client/session and prove:
 
 - fresh native `gpt-5.6-luna`/`max` calls model then effort;
 - restored native `gpt-5.6-luna`/`max` calls model then effort after `LoadSession`;
-- the actual adapter model ID, not the friendly CodeRig alias, reaches selection;
+- the actual adapter model ID, not the friendly Carbon alias, reaches selection;
 - managed empty selection makes no calls;
 - model-only selection calls only model;
 - gateway behavior is unchanged;
@@ -218,16 +218,16 @@ git add driver/acp/driver.go driver/acp/driver_test.go
 git commit -m "fix: apply Codex selection after session open"
 ```
 
-### Task 3: Refresh vendor, verify CodeRig integration, and document the correction
+### Task 3: Refresh vendor, verify Carbon integration, and document the correction
 
 **Files:**
 
 - Modify through vendor command: `foreignloops/vendor/github.com/looprig/acp/launch/*`
-- Modify: `coderig/docs/plans/2026-08-08-codex-acp-session-selection-design.md` only if implementation reveals a factual correction
-- Test: `coderig/internal/app/acpchildren_test.go`
-- Test: `coderig/internal/app/agent_tools_integration_test.go`
+- Modify: `carbon/docs/plans/2026-08-08-codex-acp-session-selection-design.md` only if implementation reveals a factual correction
+- Test: `carbon/internal/app/acpchildren_test.go`
+- Test: `carbon/internal/app/agent_tools_integration_test.go`
 
-**Step 1: Add or tighten the CodeRig regression**
+**Step 1: Add or tighten the Carbon regression**
 
 Add a focused integration assertion proving the resolved runtime passed to the foreign driver contains adapter model `gpt-5.6-luna` and effort `max`, and that lazy child construction—not startup composition—owns session selection. Reuse existing builder seams; do not add production test hooks.
 
@@ -263,7 +263,7 @@ go vet ./...
 git diff --check
 ```
 
-Run the CodeRig suite with test-only loopback permission if the sandbox blocks `127.0.0.1:0`.
+Run the Carbon suite with test-only loopback permission if the sandbox blocks `127.0.0.1:0`.
 
 Then launch a fresh configured Codex child and inspect the live behavior. Success criteria:
 
@@ -272,14 +272,14 @@ Then launch a fresh configured Codex child and inspect the live behavior. Succes
 
 It must never silently remain on `gpt-5.6-sol`/`medium`.
 
-**Step 5: Commit vendor and any non-redundant CodeRig regression**
+**Step 5: Commit vendor and any non-redundant Carbon regression**
 
 ```bash
 git add vendor
 git commit -m "chore: refresh Codex ACP session selector vendor"
 ```
 
-If CodeRig gained a meaningful regression:
+If Carbon gained a meaningful regression:
 
 ```bash
 git add internal/app/*_test.go

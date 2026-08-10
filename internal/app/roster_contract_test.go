@@ -45,7 +45,7 @@ func TestProductionSourceUsesOnlyCarbonAgentTopology(t *testing.T) {
 		}
 	}
 	if len(catalogDirs) != 1 || catalogDirs[0] != "carbon" {
-		t.Fatalf("catalog directories = %v, want only [generic]", catalogDirs)
+		t.Fatalf("catalog directories = %v, want only [carbon]", catalogDirs)
 	}
 
 	var source strings.Builder
@@ -75,7 +75,7 @@ func TestProductionSourceUsesOnlyCarbonAgentTopology(t *testing.T) {
 		t.Fatal("production does not import the Carbon catalog")
 	}
 	if !strings.Contains(text, `AgentName("carbon")`) {
-		t.Fatal("production does not define the generic catalog identity")
+		t.Fatal("production does not define the Carbon catalog identity")
 	}
 	if !strings.Contains(text, `carbon:carbon`) {
 		t.Fatal("production does not stamp carbon:carbon")

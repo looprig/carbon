@@ -115,7 +115,7 @@ func waitProcess(t *testing.T, proc tool.Process) tool.ProcessResult {
 }
 
 // --- Step 1: "Harness request maps every field exactly once to Sandbox
-// options" ; "no Coderig parsing opaque grants" for Command/Directory/PTY ---
+// options" ; "no Carbon parsing opaque grants" for Command/Directory/PTY ---
 
 // TestProcessAdapterMapProcessRequestFieldsExactly is a pure, direct
 // field-equality check of mapProcessRequest against every
@@ -336,7 +336,7 @@ func TestProcessAdapterPTYFieldMapsToStreamMode(t *testing.T) {
 }
 
 // --- Step 1: "Sandbox prepared-process access maps exactly to Harness
-// access without Coderig parsing opaque grants" -----------------------------
+// access without Carbon parsing opaque grants" -----------------------------
 
 func TestProcessAdapterPreparedAccessKindMapsExactly(t *testing.T) {
 	t.Parallel()

@@ -2,11 +2,11 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Let CodeRig's `/model` TUI command list and switch between every `models.json` entry tagged `uses: ["primer", ...]` (today: the local deepseek model, `chutes-kimi-k3`, `chutes-glm-5.2`), instead of only ever showing the one active model.
+**Goal:** Let Carbon's `/model` TUI command list and switch between every `models.json` entry tagged `uses: ["primer", ...]` (today: the local deepseek model, `chutes-kimi-k3`, `chutes-glm-5.2`), instead of only ever showing the one active model.
 
 **Architecture:** `compileProductionModels` collects all primer-capable entries into a new `productionModels.PrimerCandidates` roster (mirroring how it already collects delegate-capable entries into `ACP`). That roster threads through `Config` into `RuntimeAgent`, which uses it to list real choices in `LoopRuntimeOptions.Models`, validate `SetModel` against any candidate (not just the current one), and key `Efforts`/`SetEffort` admission off whichever candidate is currently selected instead of a value frozen at session-open. When no roster is configured (today's lower-level test helpers that build a bare `Config{}`), every code path falls back to today's exact single-model behavior — this is purely additive.
 
-**Tech Stack:** Go, `github.com/looprig/coderig` module (`internal/app` package), `github.com/looprig/harness/pkg/loop`, `github.com/looprig/tui`.
+**Tech Stack:** Go, `github.com/looprig/carbon` module (`internal/app` package), `github.com/looprig/harness/pkg/loop`, `github.com/looprig/tui`.
 
 **Design doc:** `docs/plans/2026-08-04-primer-model-picker-design.md`
 
@@ -16,7 +16,7 @@
 
 Read `internal/app/runtime_controls.go` and `internal/app/productionmodels.go` in full — every task below edits one or both. Run `go test ./internal/app/... -run TestRuntimeCatalog -v` and `go test ./internal/app/... -run TestProductionModels -v` once at the start to confirm today's baseline passes, so you know any later failure is yours.
 
-All commands below run from `~/code/looprig/coderig` (the module root).
+All commands below run from `~/code/looprig/carbon` (the module root).
 
 ---
 
@@ -467,18 +467,18 @@ Replace `SetModel` in `internal/app/runtime_controls.go`:
 func (a *RuntimeAgent) SetModel(ctx context.Context, loopID uuid.UUID, id tui.ModelID) error {
 	controller, ok := a.sess.LoopController(loopID)
 	if !ok {
-		return fmt.Errorf("coderig: loop %s is unavailable", loopID)
+		return fmt.Errorf("carbon: loop %s is unavailable", loopID)
 	}
 	if len(a.primerCandidates) == 0 {
 		selectedModel := controller.Model()
 		if a.publicModelID(selectedModel) != string(id) {
-			return fmt.Errorf("coderig: model choice %q is stale or unknown", id)
+			return fmt.Errorf("carbon: model choice %q is stale or unknown", id)
 		}
 		return controller.Change(ctx, loop.ChangeModel(selectedModel))
 	}
 	candidate, ok := findPrimerCandidate(a.primerCandidates, string(id))
 	if !ok {
-		return fmt.Errorf("coderig: model choice %q is stale or unknown", id)
+		return fmt.Errorf("carbon: model choice %q is stale or unknown", id)
 	}
 	changes := []loop.Change{loop.ChangeModel(candidate.Model)}
 	if currentEffort := controller.Model().Sampling.Effort; !containsPrimerEffort(candidate.Efforts, currentEffort) {
@@ -548,18 +548,18 @@ Replace `SetEffort` in `internal/app/runtime_controls.go`:
 func (a *RuntimeAgent) SetEffort(ctx context.Context, loopID uuid.UUID, id tui.EffortID) error {
 	controller, ok := a.sess.LoopController(loopID)
 	if !ok {
-		return fmt.Errorf("coderig: loop %s is unavailable", loopID)
+		return fmt.Errorf("carbon: loop %s is unavailable", loopID)
 	}
 	effort := model.Effort(id)
 	if !effort.Valid() {
-		return fmt.Errorf("coderig: effort choice %q is unknown", id)
+		return fmt.Errorf("carbon: effort choice %q is unknown", id)
 	}
 	admitted := a.primerEfforts
 	if current, ok := currentPrimerCandidate(a.primerCandidates, controller.Model()); ok {
 		admitted = current.Efforts
 	}
 	if len(admitted) != 0 && !containsPrimerEffort(admitted, effort) {
-		return fmt.Errorf("coderig: effort choice %q is not admitted by the configured primer", id)
+		return fmt.Errorf("carbon: effort choice %q is not admitted by the configured primer", id)
 	}
 	return controller.Change(ctx, loop.ChangeEffort(effort))
 }
@@ -597,7 +597,7 @@ Expected: no output (empty = clean).
 
 ---
 
-### Task 7: Update `coderig/CLAUDE.md`
+### Task 7: Update `carbon/CLAUDE.md`
 
 **Files:**
 - Modify: `CLAUDE.md`

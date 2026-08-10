@@ -4,15 +4,15 @@
 
 ## Goal
 
-Remove CodeRig's embedded `code-style` skill, make human-gated workspace
+Remove Carbon's embedded `code-style` skill, make human-gated workspace
 skills an unconditional product capability, and allow Bash calls to use either
 relative or absolute in-workspace working directories without weakening the
 sandbox boundary.
 
 ## Current problems
 
-CodeRig currently embeds `internal/app/skills/code-style/SKILL.md`, adds it to
-Generic's system prompt, and exposes workspace `.skills/` only when the process
+Carbon currently embeds `internal/app/skills/code-style/SKILL.md`, adds it to
+Carbon's system prompt, and exposes workspace `.skills/` only when the process
 is launched with `--runtime-skills`.
 
 The Bash schema describes `workdir` as workspace-relative, but the tools path
@@ -28,13 +28,13 @@ for what was actually a working-directory normalization problem.
 
 ### Workspace skills
 
-CodeRig will ship no embedded skills. Delete the `code-style` document, its
+Carbon will ship no embedded skills. Delete the `code-style` document, its
 embedded filesystem, its allow-list/catalog construction, and its system-prompt
 catalog entry.
 
-Generic will always receive the workspace-aware `Skill` tool. A requested
+Carbon will always receive the workspace-aware `Skill` tool. A requested
 workspace skill remains untrusted and keeps the existing preparation flow:
-CodeRig snapshots `.skills/<name>/SKILL.md`, emits `context.load` and
+Carbon snapshots `.skills/<name>/SKILL.md`, emits `context.load` and
 `filesystem.read` requirements, waits for the combined human gate, and returns
 only the approved snapshot. Removing the launch switch does not bypass or widen
 that gate.
@@ -89,9 +89,9 @@ In `tools`:
 - reject absolute outside-workspace paths, lexical escapes, and symlink escapes;
 - run a command successfully from an absolute in-workspace directory.
 
-In `coderig`:
+In `carbon`:
 
-- assert Generic has no embedded `code-style` catalog or asset;
+- assert Carbon has no embedded `code-style` catalog or asset;
 - assert the workspace-aware Skill definition is always present and requires a
   workspace binding;
 - run the existing gated workspace-skill integration with a zero `Config`;

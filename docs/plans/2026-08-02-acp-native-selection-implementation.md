@@ -6,7 +6,7 @@
 
 **Architecture:** Add a source-aware runtime selection (`gateway` or `native`) and an explicit harness-managed selection kind. Native ACP profiles are optional in `~/.looprig/models.json`; an enabled profile without `models` passes no model or effort override to the harness. Explicit native rows are preflighted and exposed like ordinary choices. Gateway children remain loopback-proxy-only; native children receive only their native login environment.
 
-**Tech Stack:** Go 1.26.x, the local `harness`, `acp`, `foreignloops`, and CodeRig modules, ACP Claude/Codex launch adapters, strict JSON configuration, and existing persistence/fingerprint tests.
+**Tech Stack:** Go 1.26.x, the local `harness`, `acp`, `foreignloops`, and Carbon modules, ACP Claude/Codex launch adapters, strict JSON configuration, and existing persistence/fingerprint tests.
 
 ---
 
@@ -14,8 +14,8 @@
 
 - `native_acp` absent: preserve gateway-only behavior.
 - A native profile absent or `enabled: false`: native ACP is unavailable.
-- `enabled: true` with omitted `models`: harness-managed model, small-model, effort, and picker; CodeRig applies no model/effort override.
-- `enabled: true` with non-empty `models`: CodeRig exposes only configured, preflight-valid native choices.
+- `enabled: true` with omitted `models`: harness-managed model, small-model, effort, and picker; Carbon applies no model/effort override.
+- `enabled: true` with non-empty `models`: Carbon exposes only configured, preflight-valid native choices.
 - `models: []` is invalid; omission is the harness-managed mode.
 - Existing delegate defaults without `source` remain gateway selections. Native defaults require `source: "native"`.
 - Native explicit effort overrides remain deferred unless the adapter can enforce them; omitted effort remains harness-managed.
@@ -46,6 +46,6 @@ Resolve source-aware ACP children, omit model/effort environment and arguments f
 
 ## Phase 6: Persistence, restore, documentation, and verification
 
-Persist source, selection kind, profile, catalogue revision, and ACP session identity without inventing a native model. Fail closed on source/catalogue drift and tombstone failed native resume rather than silently selecting a new default. Update the design and implementation plans and project guidance. Run all module tests, CodeRig tests, lint, security checks, integration tests, and `git diff --check` with the worktree-local `go.work` and temporary Go caches as needed.
+Persist source, selection kind, profile, catalogue revision, and ACP session identity without inventing a native model. Fail closed on source/catalogue drift and tombstone failed native resume rather than silently selecting a new default. Update the design and implementation plans and project guidance. Run all module tests, Carbon tests, lint, security checks, integration tests, and `git diff --check` with the worktree-local `go.work` and temporary Go caches as needed.
 
 Native login setup/discovery, live config reload, interactive ACP permissions, native effort enforcement where unsupported, executable discovery, and a config-writing CLI remain deferred.

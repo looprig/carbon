@@ -161,9 +161,9 @@ func TestManagedAgentSelfDelegates(t *testing.T) {
 			return nil, fmt.Errorf("request did not carry Carbon identity")
 		}
 		if calls == 1 {
-			return startAgentCall("generic-child", `{"agent_type":"carbon","instructions":"inspect"}`), nil
+			return startAgentCall("carbon-child", `{"agent_type":"carbon","instructions":"inspect"}`), nil
 		}
-		return finalText("generic child complete"), nil
+		return finalText("Carbon child complete"), nil
 	}
 	stores, err := openTestStores(t)
 	if err != nil {
@@ -174,7 +174,7 @@ func TestManagedAgentSelfDelegates(t *testing.T) {
 		t.Fatalf("newSessionOverStores: %v", err)
 	}
 	t.Cleanup(func() { _ = agent.Close(context.Background()) })
-	if got := runManagedTurn(t, agent, "delegate focused inspection"); got != "generic child complete" {
+	if got := runManagedTurn(t, agent, "delegate focused inspection"); got != "Carbon child complete" {
 		t.Fatalf("Carbon self-delegation result = %q", got)
 	}
 }

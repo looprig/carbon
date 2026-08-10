@@ -106,7 +106,7 @@ func TestMCPConfigDigestMovesWithRealTopologyChanges(t *testing.T) {
 		}
 	})
 
-	t.Run("omitted roles equal explicit generic", func(t *testing.T) {
+	t.Run("omitted roles equal explicit carbon", func(t *testing.T) {
 		t.Parallel()
 		before := []mcpServerSpec{{name: "a", kind: "stdio", command: "/bin/sh", roles: []string{"carbon"}}}
 		after := []mcpServerSpec{{name: "a", kind: "stdio", command: "/bin/sh", roles: nil}}
