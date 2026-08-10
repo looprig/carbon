@@ -246,7 +246,6 @@ func assertTask31PrimersPresent(t *testing.T, rootIDs map[identity.AgentName]uui
 }
 
 func TestACPCompositionRestoresCodexRuntimeThroughCurrentCatalog(t *testing.T) {
-	t.Parallel()
 	ctx := context.Background()
 	catalog := gatewayRuntimeCatalogForTask31(t, map[model.ProviderName]inference.Client{
 		"anthropic": &fakeLLM{}, "openai": &fakeLLM{},
@@ -321,7 +320,6 @@ func TestACPCompositionRestoresCodexRuntimeThroughCurrentCatalog(t *testing.T) {
 }
 
 func TestACPCompositionMissingLunaTombstonesChildAndKeepsPrimer(t *testing.T) {
-	t.Parallel()
 	ctx := context.Background()
 	fullCatalog := gatewayRuntimeCatalogForTask31(t, map[model.ProviderName]inference.Client{
 		"anthropic": &fakeLLM{}, "openai": &fakeLLM{},
@@ -391,7 +389,6 @@ func TestACPCompositionMissingLunaTombstonesChildAndKeepsPrimer(t *testing.T) {
 }
 
 func TestACPCompositionWithoutProfilesUsesManagedNativeFallback(t *testing.T) {
-	t.Parallel()
 	ctx := context.Background()
 	client := &managedScript{}
 	var schema string
