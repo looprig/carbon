@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/looprig/coderig/internal/catalog/generic"
+	"github.com/looprig/carbon/internal/catalog/carbon"
 	"github.com/looprig/credentials"
 	"github.com/looprig/harness/pkg/loop"
 	"github.com/looprig/inference"
@@ -40,7 +40,7 @@ func TestProductionModelsWithoutDelegateDefaultsCompileACPPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newProductionACPCompositionWithPreflight() error = %v", err)
 	}
-	if composition == nil || len(composition.Catalog.RuntimeCatalog.EntriesFor(generic.Name)) == 0 {
+	if composition == nil || len(composition.Catalog.RuntimeCatalog.EntriesFor(carbon.Name)) == 0 {
 		t.Fatalf("production ACP composition = %#v, want a compiled runtime catalog", composition)
 	}
 }

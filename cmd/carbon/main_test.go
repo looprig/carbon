@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	coderig "github.com/looprig/coderig/internal/app"
+	carbon "github.com/looprig/carbon/internal/app"
 	"github.com/looprig/core/content"
 	"github.com/looprig/core/uuid"
 	"github.com/looprig/harness/pkg/event"
@@ -31,12 +31,12 @@ import (
 func TestOpenThunkSelectsResumeOnlyOnce(t *testing.T) {
 	resume := mustUUID(t)
 	const opens = 3
-	var selectors []coderig.SessionSelector
-	openSession := func(_ context.Context, sel coderig.SessionSelector, _ coderig.Config) (tui.Agent, error) {
+	var selectors []carbon.SessionSelector
+	openSession := func(_ context.Context, sel carbon.SessionSelector, _ carbon.Config) (tui.Agent, error) {
 		selectors = append(selectors, sel)
 		return nil, nil
 	}
-	open := openThunk(openSession, resume, coderig.Config{})
+	open := openThunk(openSession, resume, carbon.Config{})
 
 	for range opens {
 		if _, err := open(context.Background()); err != nil {
@@ -64,12 +64,12 @@ func TestOpenThunkSelectsResumeOnlyOnce(t *testing.T) {
 // initial open and the later /clear reopen carry a zero selector, which SessionStoreFactory
 // maps to Rig.NewSession.
 func TestOpenThunkSelectsNewForLaunchAndClear(t *testing.T) {
-	var selectors []coderig.SessionSelector
-	openSession := func(_ context.Context, sel coderig.SessionSelector, _ coderig.Config) (tui.Agent, error) {
+	var selectors []carbon.SessionSelector
+	openSession := func(_ context.Context, sel carbon.SessionSelector, _ carbon.Config) (tui.Agent, error) {
 		selectors = append(selectors, sel)
 		return nil, nil
 	}
-	open := openThunk(openSession, uuid.UUID{}, coderig.Config{})
+	open := openThunk(openSession, uuid.UUID{}, carbon.Config{})
 	for i := 0; i < 2; i++ {
 		if _, err := open(context.Background()); err != nil {
 			t.Fatalf("open %d: %v", i, err)
@@ -155,7 +155,7 @@ func (*orderingAgent) RespondGate(context.Context, gate.ID, string, map[string]j
 var _ tui.Agent = (*orderingAgent)(nil)
 
 // TestRunPreservesPublicIdentity pins the process-facing name independently from the rig's
-// internal Generic identity.
+// internal Carbon identity.
 func TestRunPreservesPublicIdentity(t *testing.T) {
 	if bannerName != "Carbon" {
 		t.Errorf("bannerName = %q, want %q", bannerName, "Carbon")
@@ -164,10 +164,10 @@ func TestRunPreservesPublicIdentity(t *testing.T) {
 
 // TestRunHasNoServeAdapter guards the process boundary: the command and Rig
 // packages do not directly import the generic harness HTTP layer. A future HTTP entry point
-// should pass the real rig to serve.Handler instead of adding a CodeRig Runner adapter here.
+// should pass the real rig to serve.Handler instead of adding a Carbon Runner adapter here.
 func TestRunHasNoServeAdapter(t *testing.T) {
 	moduleRoot := filepath.Clean("../..")
-	for _, relRoot := range []string{"cmd/coderig", "."} {
+	for _, relRoot := range []string{"cmd/carbon", "."} {
 		root := filepath.Join(moduleRoot, relRoot)
 		err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 			if err != nil {
@@ -186,7 +186,7 @@ func TestRunHasNoServeAdapter(t *testing.T) {
 					return err
 				}
 				if importPath == "github.com/looprig/harness/pkg/serve" {
-					t.Errorf("%s imports harness serve; no CodeRig serve adapter belongs in this migration", path)
+					t.Errorf("%s imports harness serve; no Carbon serve adapter belongs in this migration", path)
 				}
 			}
 			return nil
@@ -197,10 +197,10 @@ func TestRunHasNoServeAdapter(t *testing.T) {
 	}
 }
 
-// TestParseFlags covers the CodeRig CLI flag parser: --list, --resume <uuid>,
+// TestParseFlags covers the Carbon CLI flag parser: --list, --resume <uuid>,
 // --data-dir, and the boundary validation (an invalid/empty resume id fails at the
-// boundary, not deep in the wiring; --list and --resume are mutually exclusive). CodeRig has no
-// positional agent name (it is one fixed Generic session), so an unexpected positional arg is rejected.
+// boundary, not deep in the wiring; --list and --resume are mutually exclusive). Carbon has no
+// positional agent name (it is one fixed Carbon session), so an unexpected positional arg is rejected.
 func TestParseFlags(t *testing.T) {
 	t.Parallel()
 
@@ -214,31 +214,31 @@ func TestParseFlags(t *testing.T) {
 		wantList    bool
 		wantResume  uuid.UUID
 		wantDataDir string
-		wantProfile coderig.AccessProfile
+		wantProfile carbon.AccessProfile
 		wantAck     bool
 		wantErr     bool
 	}{
-		{name: "no flags → new session", args: nil, wantProfile: coderig.AccessReadOnly},
-		{name: "list flag", args: []string{"-list"}, wantList: true, wantProfile: coderig.AccessReadOnly},
-		{name: "list flag double dash", args: []string{"--list"}, wantList: true, wantProfile: coderig.AccessReadOnly},
-		{name: "resume a session", args: []string{"-resume", validID.String()}, wantResume: validID, wantProfile: coderig.AccessReadOnly},
-		{name: "resume double dash", args: []string{"--resume", validID.String()}, wantResume: validID, wantProfile: coderig.AccessReadOnly},
+		{name: "no flags → new session", args: nil, wantProfile: carbon.AccessReadOnly},
+		{name: "list flag", args: []string{"-list"}, wantList: true, wantProfile: carbon.AccessReadOnly},
+		{name: "list flag double dash", args: []string{"--list"}, wantList: true, wantProfile: carbon.AccessReadOnly},
+		{name: "resume a session", args: []string{"-resume", validID.String()}, wantResume: validID, wantProfile: carbon.AccessReadOnly},
+		{name: "resume double dash", args: []string{"--resume", validID.String()}, wantResume: validID, wantProfile: carbon.AccessReadOnly},
 		{name: "removed runtime-skills flag rejected", args: []string{"--runtime-skills"}, wantErr: true},
 		{name: "removed greeting flag rejected", args: []string{"--greeting"}, wantErr: true},
 		{name: "removed security-mode flag rejected", args: []string{"--security-mode", "write"}, wantErr: true},
-		{name: "data-dir default empty", args: nil, wantDataDir: "", wantProfile: coderig.AccessReadOnly},
-		{name: "data-dir flag", args: []string{"-data-dir", "/tmp/coderig-store"}, wantDataDir: "/tmp/coderig-store", wantProfile: coderig.AccessReadOnly},
-		{name: "data-dir double dash", args: []string{"--data-dir", "/tmp/coderig-store"}, wantDataDir: "/tmp/coderig-store", wantProfile: coderig.AccessReadOnly},
-		{name: "data-dir whitespace trimmed to empty", args: []string{"-data-dir", "   "}, wantDataDir: "", wantProfile: coderig.AccessReadOnly},
-		{name: "data-dir with resume", args: []string{"-data-dir", "/tmp/s", "-resume", validID.String()}, wantResume: validID, wantDataDir: "/tmp/s", wantProfile: coderig.AccessReadOnly},
-		{name: "access-profile default is readonly", args: nil, wantProfile: coderig.AccessReadOnly},
-		{name: "access-profile trusted", args: []string{"--access-profile", "trusted"}, wantProfile: coderig.AccessTrusted},
-		{name: "access-profile readonly explicit", args: []string{"-access-profile", "readonly"}, wantProfile: coderig.AccessReadOnly},
-		{name: "access-profile case-insensitive", args: []string{"--access-profile", "TRUSTED"}, wantProfile: coderig.AccessTrusted},
+		{name: "data-dir default empty", args: nil, wantDataDir: "", wantProfile: carbon.AccessReadOnly},
+		{name: "data-dir flag", args: []string{"-data-dir", "/tmp/carbon-store"}, wantDataDir: "/tmp/carbon-store", wantProfile: carbon.AccessReadOnly},
+		{name: "data-dir double dash", args: []string{"--data-dir", "/tmp/carbon-store"}, wantDataDir: "/tmp/carbon-store", wantProfile: carbon.AccessReadOnly},
+		{name: "data-dir whitespace trimmed to empty", args: []string{"-data-dir", "   "}, wantDataDir: "", wantProfile: carbon.AccessReadOnly},
+		{name: "data-dir with resume", args: []string{"-data-dir", "/tmp/s", "-resume", validID.String()}, wantResume: validID, wantDataDir: "/tmp/s", wantProfile: carbon.AccessReadOnly},
+		{name: "access-profile default is readonly", args: nil, wantProfile: carbon.AccessReadOnly},
+		{name: "access-profile trusted", args: []string{"--access-profile", "trusted"}, wantProfile: carbon.AccessTrusted},
+		{name: "access-profile readonly explicit", args: []string{"-access-profile", "readonly"}, wantProfile: carbon.AccessReadOnly},
+		{name: "access-profile case-insensitive", args: []string{"--access-profile", "TRUSTED"}, wantProfile: carbon.AccessTrusted},
 		{name: "access-profile unknown rejected", args: []string{"--access-profile", "write"}, wantErr: true},
 		{name: "unconfined requires acknowledgement", args: []string{"--access-profile", "unconfined"}, wantErr: true},
-		{name: "unconfined with acknowledgement", args: []string{"--access-profile", "unconfined", "--acknowledge-unconfined"}, wantProfile: coderig.AccessUnconfined, wantAck: true},
-		{name: "acknowledgement without unconfined is harmless", args: []string{"--acknowledge-unconfined"}, wantProfile: coderig.AccessReadOnly, wantAck: true},
+		{name: "unconfined with acknowledgement", args: []string{"--access-profile", "unconfined", "--acknowledge-unconfined"}, wantProfile: carbon.AccessUnconfined, wantAck: true},
+		{name: "acknowledgement without unconfined is harmless", args: []string{"--acknowledge-unconfined"}, wantProfile: carbon.AccessReadOnly, wantAck: true},
 		{name: "invalid resume id rejected", args: []string{"-resume", "not-a-uuid"}, wantErr: true},
 		{name: "empty resume id rejected", args: []string{"-resume", ""}, wantErr: true},
 		{name: "list and resume are mutually exclusive", args: []string{"-list", "-resume", validID.String()}, wantErr: true},
@@ -315,7 +315,7 @@ func TestParseCredentialFlagsAndRejectMixedCommands(t *testing.T) {
 
 func TestPrintCredentialsRedactsSensitiveFieldsByConstruction(t *testing.T) {
 	var out bytes.Buffer
-	err := printCredentials(&out, []coderig.CredentialSummary{{
+	err := printCredentials(&out, []carbon.CredentialSummary{{
 		Reference: "credential://openai/personal",
 		Provider:  "openai",
 		Transport: "responses",
@@ -339,7 +339,7 @@ func TestPrintCredentialsRedactsSensitiveFieldsByConstruction(t *testing.T) {
 
 func TestPrintCredentialLogoutDoesNotClaimRemoteRevocation(t *testing.T) {
 	var out bytes.Buffer
-	if err := printCredentialLogout(&out, coderig.CredentialLogoutOutcome{
+	if err := printCredentialLogout(&out, carbon.CredentialLogoutOutcome{
 		Reference:           "credential://openai/personal",
 		LocalCatalogDeleted: true,
 		LocalStateDeleted:   true,
@@ -366,11 +366,11 @@ func TestFlagParseErrorIsTyped(t *testing.T) {
 		wantMsg   string
 		wantCause bool
 	}{
-		{name: "reason only", err: &FlagParseError{Reason: "boom"}, wantMsg: "coderig: boom"},
+		{name: "reason only", err: &FlagParseError{Reason: "boom"}, wantMsg: "carbon: boom"},
 		{
 			name:      "reason with cause",
 			err:       &FlagParseError{Reason: "bad id", Cause: errStub{}},
-			wantMsg:   "coderig: bad id: stub",
+			wantMsg:   "carbon: bad id: stub",
 			wantCause: true,
 		},
 	}

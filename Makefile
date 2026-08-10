@@ -4,14 +4,14 @@
 GO_DIRS := $(shell go list -f '{{.Dir}}' ./...)
 GO_FILES := $(shell go list -f '{{range .GoFiles}}{{$$.Dir}}/{{.}} {{end}}{{range .TestGoFiles}}{{$$.Dir}}/{{.}} {{end}}{{range .XTestGoFiles}}{{$$.Dir}}/{{.}} {{end}}' ./...)
 
-# Build the CodeRig binary into this repo's own (gitignored) bin/ dir. This is a
+# Build the Carbon binary into this repo's own (gitignored) bin/ dir. This is a
 # local dev-iteration artifact, deliberately NOT on PATH -- use `make install` to
-# put a runnable coderig on PATH.
+# put a runnable carbon on PATH.
 build:
 	mkdir -p bin
-	CGO_ENABLED=0 go build -trimpath -o bin/coderig ./cmd/coderig
+	CGO_ENABLED=0 go build -trimpath -o bin/carbon ./cmd/carbon
 
-# Build and install the CodeRig binary onto PATH at ~/.looprig/bin/coderig. Copies to a
+# Build and install the Carbon binary onto PATH at ~/.looprig/bin/carbon. Copies to a
 # temp file then renames into place rather than overwriting the destination's bytes
 # in-place: macOS's kernel caches code-signature validation per inode, and overwriting a
 # previously-executed binary in place leaves that cache stale, so the NEW content gets
@@ -20,14 +20,14 @@ build:
 # which avoids the stale cache entirely.
 install: build
 	mkdir -p $(HOME)/.looprig/bin
-	cp bin/coderig $(HOME)/.looprig/bin/coderig.new
-	mv -f $(HOME)/.looprig/bin/coderig.new $(HOME)/.looprig/bin/coderig
+	cp bin/carbon $(HOME)/.looprig/bin/carbon.new
+	mv -f $(HOME)/.looprig/bin/carbon.new $(HOME)/.looprig/bin/carbon
 
 # Run the TUI directly. Optional .env values are launcher settings (for example,
 # ACP executable path overrides), never provider credentials; models and inline
 # keys belong only in the owner-only ~/.looprig/models.json.
 run:
-	set -a; [ -f .env ] && . ./.env; set +a; go run ./cmd/coderig
+	set -a; [ -f .env ] && . ./.env; set +a; go run ./cmd/carbon
 
 test:
 	go test -race ./...

@@ -3,7 +3,7 @@ package app
 // This compile-only dependency-surface probe covers both the completed rig
 // migration and Task 34's context/hustle additions. It builds only when the
 // planned core, inference, LLM, harness, and CLI APIs are all present through
-// CodeRig's retained local replaces. It carries no test functions because its value
+// Carbon's retained local replaces. It carries no test functions because its value
 // is that the package cannot compile against a partial dependency rollout.
 
 import (
@@ -26,7 +26,7 @@ var (
 	_ = loop.Define
 	_ session.SessionController
 	_ = event.ActiveLoopChanged{}
-	_ = event.LoopStarted{DisplayName: "generic"}
+	_ = event.LoopStarted{DisplayName: "carbon"}
 	_ tui.Agent
 	_ = loop.WithDisplayName
 	_ = rig.WithOffloadGC

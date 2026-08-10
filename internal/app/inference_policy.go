@@ -32,7 +32,7 @@ func (p fixedModelInferencePolicy) InferenceCapability() contextcount.InferenceC
 	return p.capability
 }
 
-// UnsupportedInferenceProviderError reports a provider for which CodeRig has no
+// UnsupportedInferenceProviderError reports a provider for which Carbon has no
 // reviewed inference-transport declaration. It contains only a public provider
 // label and never carries endpoint credentials.
 type UnsupportedInferenceProviderError struct {
@@ -40,7 +40,7 @@ type UnsupportedInferenceProviderError struct {
 }
 
 func (e *UnsupportedInferenceProviderError) Error() string {
-	return "coderig: unsupported inference policy provider " + strconv.Quote(string(e.Provider))
+	return "carbon: unsupported inference policy provider " + strconv.Quote(string(e.Provider))
 }
 
 const (
@@ -52,7 +52,7 @@ const (
 // newModelInferencePolicy resolves the fixed, I/O-free counter and inference
 // posture for one supported provider. The local estimator never sends request
 // bytes to a separate counting endpoint. Remote retention remains Unknown
-// because CodeRig has no reviewed provider retention guarantee; the in-process
+// because Carbon has no reviewed provider retention guarantee; the in-process
 // RetentionNone counter remains compatible with that conservative declaration.
 func newModelInferencePolicy(model model.Model) (modelInferencePolicy, error) {
 	capability, err := inferenceCapabilityForModel(model)
@@ -143,7 +143,7 @@ func contextTransportsForModels(models []model.Model) ([]loop.ContextTransport, 
 // and every configured gateway-backed delegate model's transport (native,
 // in-process, RuntimeClient-routed StartAgent delegates — NOT NativeACP,
 // which runs via a separate harness's own login state and never binds to a
-// CodeRig-owned loop.Definition). base is always seeded first so harness's
+// Carbon-owned loop.Definition). base is always seeded first so harness's
 // build-time base-transport-membership requirement
 // (pkg/loop/definition.go's validateContextDefinition: a non-empty declared
 // set must contain a member matching the loop's own WithInference model,
@@ -152,7 +152,7 @@ func contextTransportsForModels(models []model.Model) ([]loop.ContextTransport, 
 // equality is automatic since both are derived by calling
 // inferenceCapabilityForModel on the same model value. Native delegate
 // loops are ordinary harness Loop instances subject to the same
-// declared-transport restore check as the Generic primer and delegates, so omitting their
+// declared-transport restore check as the Carbon primer and delegates, so omitting their
 // transport here would make restoring a session with an active/prior
 // delegate on a foreign transport fail harness's RestoreTransportMismatchError.
 func declaredContextTransports(base model.Model, primerCandidates []PrimerCandidate, delegateModels []model.Model) ([]loop.ContextTransport, error) {

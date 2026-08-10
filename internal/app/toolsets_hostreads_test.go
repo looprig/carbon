@@ -11,15 +11,15 @@ import (
 )
 
 // mustExecutorSet builds a minimal, real ExecutorSet under a trusted profile
-// for tests that only need SOME executor set to build Generic's tool
+// for tests that only need SOME executor set to build Carbon's tool
 // definitions -- the actual access decision is proven separately by
 // TestAcceptanceProfileGateBehavior; this only proves the built ReadFile tool
 // carries WithHostReads().
 func mustExecutorSet(t *testing.T, root string) *sandbox.ExecutorSet {
 	t.Helper()
-	profile, err := coderigProfile(AccessTrusted, root)
+	profile, err := carbonProfile(AccessTrusted, root)
 	if err != nil {
-		t.Fatalf("coderigProfile: %v", err)
+		t.Fatalf("carbonProfile: %v", err)
 	}
 	set, err := sandbox.NewExecutorSet(profile, sandbox.WithScratchRoot(t.TempDir()), sandbox.WithMaxExecutors(1))
 	if err != nil {
@@ -70,16 +70,16 @@ func definitionDescByName(t *testing.T, root string, defs []tool.Definition, nam
 	return ""
 }
 
-// TestGenericToolDefinitionsEnableHostReads proves genericToolDefinitions
+// TestCarbonToolDefinitionsEnableHostReads proves carbonToolDefinitions
 // wires WithHostReads() into ReadFile: its advertised description no longer
 // claims workspace-only confinement, matching
-// coderigReadGuard's doc comment ("sandbox profile access is the
+// carbonReadGuard's doc comment ("sandbox profile access is the
 // read-authority source of truth").
-func TestGenericToolDefinitionsEnableHostReads(t *testing.T) {
+func TestCarbonToolDefinitionsEnableHostReads(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	set := mustExecutorSet(t, root)
-	defs := genericToolDefinitions(set, nil, nil)
+	defs := carbonToolDefinitions(set, nil, nil)
 
 	for _, tc := range []struct {
 		name           string
@@ -94,12 +94,12 @@ func TestGenericToolDefinitionsEnableHostReads(t *testing.T) {
 	}
 }
 
-// TestGenericToolDefinitionsExposeCompleteCodingRoster proves the one Generic
+// TestCarbonToolDefinitionsExposeCompleteCodingRoster proves the one Carbon
 // capability set includes repository reads/search, mutation, supervised command
 // and process tools, web access, interaction, and the optional Skill seam.
-func TestGenericToolDefinitionsExposeCompleteCodingRoster(t *testing.T) {
+func TestCarbonToolDefinitionsExposeCompleteCodingRoster(t *testing.T) {
 	t.Parallel()
-	defs := genericToolDefinitions(mustExecutorSet(t, t.TempDir()), nil, tool.NewDefinition("Skill", 0, func(context.Context, tool.Bindings) ([]tool.InvokableTool, error) { return nil, nil }))
+	defs := carbonToolDefinitions(mustExecutorSet(t, t.TempDir()), nil, tool.NewDefinition("Skill", 0, func(context.Context, tool.Bindings) ([]tool.InvokableTool, error) { return nil, nil }))
 	want := []string{"ReadFile", "WriteFile", "EditFile", "Bash", "ProcessOutput", "ProcessInput", "ProcessStop", "WebSearch", "Fetch", "TaskCreate", "TaskGet", "TaskList", "TaskUpdate", "AskUser", "Skill"}
 	got := make(map[string]bool)
 	for _, def := range defs {
@@ -109,12 +109,12 @@ func TestGenericToolDefinitionsExposeCompleteCodingRoster(t *testing.T) {
 	}
 	for _, name := range want {
 		if !got[name] {
-			t.Errorf("Generic roster missing %q; got %v", name, got)
+			t.Errorf("Carbon roster missing %q; got %v", name, got)
 		}
 	}
 	for _, name := range []string{"Glob", "Grep"} {
 		if got[name] {
-			t.Errorf("Generic roster unexpectedly includes %q; got %v", name, got)
+			t.Errorf("Carbon roster unexpectedly includes %q; got %v", name, got)
 		}
 	}
 }

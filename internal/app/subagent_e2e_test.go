@@ -16,7 +16,7 @@ import (
 
 	"github.com/looprig/acp/launch"
 	"github.com/looprig/acp/protocol"
-	"github.com/looprig/coderig/internal/catalog/generic"
+	"github.com/looprig/carbon/internal/catalog/carbon"
 	"github.com/looprig/core/content"
 	"github.com/looprig/core/uuid"
 	"github.com/looprig/harness/pkg/event"
@@ -275,7 +275,7 @@ func TestACPRequestPermissionDeniesOutsidePostureWithoutNativePermissionWrites(t
 		switch step {
 		case 0:
 			step++
-			return startAgentCall("task6-permission", `{"agent_type":"generic","instructions":"request outside write","agent_harness":"codex","model":"fixture-model","effort":"none"}`), nil
+			return startAgentCall("task6-permission", `{"agent_type":"carbon","instructions":"request outside write","agent_harness":"codex","model":"fixture-model","effort":"none"}`), nil
 		case 1:
 			step++
 			return finalText("task6 parent complete"), nil
@@ -284,9 +284,9 @@ func TestACPRequestPermissionDeniesOutsidePostureWithoutNativePermissionWrites(t
 		}
 	}}
 	access, cfg := headlessTestAccess(t, Config{ACPChildren: composition, RuntimeCatalog: compiled.RuntimeCatalog}, workspace)
-	definition, err := genericTestDefinition(parent, testModel(), cfg, access)
+	definition, err := carbonTestDefinition(parent, testModel(), cfg, access)
 	if err != nil {
-		t.Fatalf("genericTestDefinition: %v", err)
+		t.Fatalf("carbonTestDefinition: %v", err)
 	}
 	stores, err := openTestStores(t)
 	if err != nil {
@@ -402,14 +402,14 @@ func TestAgentRuntimeChoicesEndToEnd(t *testing.T) {
 	var toolResult string
 	client := &managedScript{}
 	client.fn = func(_ context.Context, req inference.Request) ([]content.Chunk, error) {
-		if !requestHasRole(req, generic.Name) {
+		if !requestHasRole(req, carbon.Name) {
 			return nil, fmt.Errorf("task33: unexpected non-parent inference request")
 		}
 		prior := lastToolText(req)
 		switch step {
 		case 0:
 			step++
-			return startAgentCall("task33-claude-start", `{"agent_type":"generic","instructions":"check it","agent_harness":"claude-code","model":"sonnet-5","effort":"high"}`), nil
+			return startAgentCall("task33-claude-start", `{"agent_type":"carbon","instructions":"check it","agent_harness":"claude-code","model":"sonnet-5","effort":"high"}`), nil
 		case 1:
 			toolResult = prior
 			var foreground struct {
@@ -431,9 +431,9 @@ func TestAgentRuntimeChoicesEndToEnd(t *testing.T) {
 	}
 
 	access, cfg := headlessTestAccess(t, Config{ACPChildren: composition, RuntimeCatalog: compiled.RuntimeCatalog}, workspace)
-	definition, err := genericTestDefinition(client, testModel(), cfg, access)
+	definition, err := carbonTestDefinition(client, testModel(), cfg, access)
 	if err != nil {
-		t.Fatalf("genericTestDefinition() error = %v", err)
+		t.Fatalf("carbonTestDefinition() error = %v", err)
 	}
 	stores, err := openTestStores(t)
 	if err != nil {
@@ -466,7 +466,7 @@ func TestAgentRuntimeChoicesEndToEnd(t *testing.T) {
 		t.Fatalf("newSessionAdapter() error = %v", err)
 	}
 	t.Cleanup(func() { _ = agent.Close(context.Background()) })
-	result := runManagedTurn(t, agent, "run the Generic ACP child")
+	result := runManagedTurn(t, agent, "run the Carbon ACP child")
 	if result != "task33 complete" {
 		t.Fatalf("parent final = %q", result)
 	}
@@ -512,7 +512,7 @@ func TestNativeCodexStartAgentSelectsModelAndEffortOverWire(t *testing.T) {
 
 	step := 0
 	parent.fn = func(_ context.Context, req inference.Request) ([]content.Chunk, error) {
-		if !requestHasRole(req, generic.Name) {
+		if !requestHasRole(req, carbon.Name) {
 			return nil, fmt.Errorf("unexpected role in native Codex StartAgent request")
 		}
 		switch step {
@@ -526,7 +526,7 @@ func TestNativeCodexStartAgentSelectsModelAndEffortOverWire(t *testing.T) {
 			if strings.Contains(schema, "gpt-5.6-luna") {
 				return nil, fmt.Errorf("StartAgent schema leaked adapter model ID")
 			}
-			return startAgentCall("task33-native-codex-start", `{"agent_type":"generic","instructions":"check it","agent_harness":"codex","model":"friendly-luna","effort":"max"}`), nil
+			return startAgentCall("task33-native-codex-start", `{"agent_type":"carbon","instructions":"check it","agent_harness":"codex","model":"friendly-luna","effort":"max"}`), nil
 		case 1:
 			if !strings.Contains(lastToolText(req), `"response":"task33 native codex answer"`) {
 				return nil, fmt.Errorf("native Codex StartAgent did not return the expected response")
@@ -538,9 +538,9 @@ func TestNativeCodexStartAgentSelectsModelAndEffortOverWire(t *testing.T) {
 	}
 
 	access, cfg := headlessTestAccess(t, Config{ACPChildren: composition, RuntimeCatalog: compiled.RuntimeCatalog}, workspace)
-	definition, err := genericTestDefinition(parent, testModel(), cfg, access)
+	definition, err := carbonTestDefinition(parent, testModel(), cfg, access)
 	if err != nil {
-		t.Fatalf("genericTestDefinition() error = %v", err)
+		t.Fatalf("carbonTestDefinition() error = %v", err)
 	}
 	stores, err := openTestStores(t)
 	if err != nil {
@@ -646,7 +646,7 @@ func TestNativeCodexUnavailableEffortFailsLazilyWithoutInvalidWireCall(t *testin
 		t.Fatalf("native selection preflight calls = %d, want zero", preflightCalls)
 	}
 	resolved, err := composition.Catalog.RuntimeCatalog.ResolveWithExplicitSource(
-		generic.Name, "codex", loop.RuntimeSourceNative, "friendly-terra", model.EffortMax, true,
+		carbon.Name, "codex", loop.RuntimeSourceNative, "friendly-terra", model.EffortMax, true,
 	)
 	if err != nil {
 		t.Fatalf("ResolveWithExplicitSource() error = %v", err)
@@ -681,7 +681,7 @@ var task33SensitivePayloadPattern = regexp.MustCompile(`(?i)(https?://|(?:^|[\s"
 func assertTask33DurableEvents(t *testing.T, events []event.Event, claude agentHandle) {
 	t.Helper()
 	want := map[identity.AgentName]event.AgentRuntime{
-		generic.Name: {
+		carbon.Name: {
 			Harness: "claude-code", Profile: "acp/claude-code", CredentialMode: "gateway-backed",
 			Source: "gateway", SelectionKind: "explicit",
 			ModelAlias: "sonnet-5@high", SmallModelAlias: "sonnet-5",
@@ -712,9 +712,9 @@ func assertTask33DurableEvents(t *testing.T, events []event.Event, claude agentH
 		}
 	}
 	if len(ids) != 1 {
-		t.Fatalf("durable ACP LoopStarted identities = %v, want one Generic child", ids)
+		t.Fatalf("durable ACP LoopStarted identities = %v, want one Carbon child", ids)
 	}
-	if bound[generic.Name] != "task33-claude-code-session" {
+	if bound[carbon.Name] != "task33-claude-code-session" {
 		t.Fatalf("durable ACP session bindings = %v", bound)
 	}
 	if claude.AgentID == "" {

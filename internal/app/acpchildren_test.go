@@ -13,7 +13,7 @@ import (
 
 	"github.com/looprig/acp/launch"
 	"github.com/looprig/acp/protocol"
-	"github.com/looprig/coderig/internal/catalog/generic"
+	"github.com/looprig/carbon/internal/catalog/carbon"
 	"github.com/looprig/core/content"
 	"github.com/looprig/core/uuid"
 	"github.com/looprig/foreignloops/driver"
@@ -238,7 +238,7 @@ func acpPostureMatrixCatalog(t *testing.T, harness loop.AgentHarnessName, creden
 func acpPostureMatrixBound(t *testing.T, catalog ACPCompiledCatalog, harness loop.AgentHarnessName, credential loop.CredentialMode) loop.BoundDefinition {
 	t.Helper()
 	definition, err := loop.Define(
-		loop.WithName(generic.Name),
+		loop.WithName(carbon.Name),
 		loop.WithInference(&fakeLLM{}, testModel()),
 		loop.WithSystem("acp posture matrix"),
 		loop.WithPolicyRevision("acp-posture-matrix"),
@@ -268,7 +268,7 @@ func acpPostureMatrixBound(t *testing.T, catalog ACPCompiledCatalog, harness loo
 		}
 		return bound
 	}
-	resolved, err := catalog.RuntimeCatalog.ResolveWithExplicitSource(generic.Name, harness, source, alias, effort, true)
+	resolved, err := catalog.RuntimeCatalog.ResolveWithExplicitSource(carbon.Name, harness, source, alias, effort, true)
 	if err != nil {
 		t.Fatalf("ResolveWithExplicitSource(): %v", err)
 	}
@@ -327,7 +327,7 @@ func TestBoundedACPChildErrorDoesNotExposeProcessDetails(t *testing.T) {
 	t.Parallel()
 	cause := errors.New("stdio: process exited at /private/login/home; https://provider.invalid/token")
 	got := boundedACPChildError(cause)
-	if got.Error() != "coderig: ACP child unavailable" {
+	if got.Error() != "carbon: ACP child unavailable" {
 		t.Fatalf("bounded error = %q, want fixed category", got)
 	}
 	if strings.Contains(got.Error(), "/private/login/home") || strings.Contains(got.Error(), "provider.invalid") {
@@ -417,7 +417,7 @@ func TestBoundedACPChildErrorKeepsCancellationAndDeadlineIdentity(t *testing.T) 
 	}
 }
 
-func TestBoundedACPChildErrorKeepsArbitraryFailuresGeneric(t *testing.T) {
+func TestBoundedACPChildErrorKeepsArbitraryFailuresCarbon(t *testing.T) {
 	t.Parallel()
 	got := boundedACPChildError(errors.New("internal path=/private/acp token=secret"))
 	if got != errACPChildUnavailable {
@@ -580,7 +580,7 @@ func TestACPChildConfigReceivesNativeResolvedEffort(t *testing.T) {
 				t.Fatalf("CompileAgentRuntimeCatalog(): %v", err)
 			}
 			definition, err := loop.Define(
-				loop.WithName(generic.Name),
+				loop.WithName(carbon.Name),
 				loop.WithInference(&fakeLLM{}, testModel()),
 				loop.WithPolicyRevision("acp-child-effort-test"),
 			)
@@ -591,7 +591,7 @@ func TestACPChildConfigReceivesNativeResolvedEffort(t *testing.T) {
 			if err != nil {
 				t.Fatalf("definition.Bind(): %v", err)
 			}
-			resolved, err := compiled.RuntimeCatalog.ResolveWithExplicitSource(generic.Name, tt.harness, loop.RuntimeSourceNative, tt.alias, model.EffortHigh, true)
+			resolved, err := compiled.RuntimeCatalog.ResolveWithExplicitSource(carbon.Name, tt.harness, loop.RuntimeSourceNative, tt.alias, model.EffortHigh, true)
 			if err != nil {
 				t.Fatalf("ResolveWithExplicitSource(): %v", err)
 			}
@@ -623,7 +623,7 @@ func TestACPChildConfigKeepsHarnessManagedModelAndEffortEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CompileAgentRuntimeCatalog(): %v", err)
 	}
-	definition, err := loop.Define(loop.WithName(generic.Name), loop.WithInference(&fakeLLM{}, testModel()), loop.WithPolicyRevision("acp-child-managed-test"))
+	definition, err := loop.Define(loop.WithName(carbon.Name), loop.WithInference(&fakeLLM{}, testModel()), loop.WithPolicyRevision("acp-child-managed-test"))
 	if err != nil {
 		t.Fatalf("loop.Define(): %v", err)
 	}
@@ -687,7 +687,7 @@ func TestACPChildConfigNativeNoneKeepsEffortEmptyForLegacyAndStructuredRows(t *t
 			if err != nil {
 				t.Fatalf("CompileAgentRuntimeCatalog(): %v", err)
 			}
-			resolved, err := compiled.RuntimeCatalog.ResolveWithExplicitSource(generic.Name, tt.harness, loop.RuntimeSourceNative, tt.modelAlias, model.EffortNone, true)
+			resolved, err := compiled.RuntimeCatalog.ResolveWithExplicitSource(carbon.Name, tt.harness, loop.RuntimeSourceNative, tt.modelAlias, model.EffortNone, true)
 			if err != nil {
 				t.Fatalf("ResolveWithExplicitSource(): %v", err)
 			}
@@ -728,7 +728,7 @@ func TestACPChildConfigNativeNonNoneEffortPropagatesExactly(t *testing.T) {
 			if err != nil {
 				t.Fatalf("CompileAgentRuntimeCatalog(): %v", err)
 			}
-			resolved, err := compiled.RuntimeCatalog.ResolveWithExplicitSource(generic.Name, tt.harness, loop.RuntimeSourceNative, loop.ModelAlias(tt.model), tt.effort, true)
+			resolved, err := compiled.RuntimeCatalog.ResolveWithExplicitSource(carbon.Name, tt.harness, loop.RuntimeSourceNative, loop.ModelAlias(tt.model), tt.effort, true)
 			if err != nil {
 				t.Fatalf("ResolveWithExplicitSource(): %v", err)
 			}
@@ -775,7 +775,7 @@ func TestACPChildConfigUsesAdapterModelForFriendlyNativeAlias(t *testing.T) {
 			if err != nil {
 				t.Fatalf("CompileAgentRuntimeCatalog(): %v", err)
 			}
-			resolved, err := compiled.RuntimeCatalog.ResolveWithExplicitSource(generic.Name, tt.harness, loop.RuntimeSourceNative, tt.alias, tt.effort, true)
+			resolved, err := compiled.RuntimeCatalog.ResolveWithExplicitSource(carbon.Name, tt.harness, loop.RuntimeSourceNative, tt.alias, tt.effort, true)
 			if err != nil {
 				t.Fatalf("ResolveWithExplicitSource(): %v", err)
 			}
@@ -814,7 +814,7 @@ func TestACPChildConfigFailsClosedWhenNativeAdapterMappingMissing(t *testing.T) 
 	if err != nil {
 		t.Fatalf("CompileAgentRuntimeCatalog(): %v", err)
 	}
-	resolved, err := compiled.RuntimeCatalog.ResolveWithExplicitSource(generic.Name, "codex", loop.RuntimeSourceNative, alias, model.EffortHigh, true)
+	resolved, err := compiled.RuntimeCatalog.ResolveWithExplicitSource(carbon.Name, "codex", loop.RuntimeSourceNative, alias, model.EffortHigh, true)
 	if err != nil {
 		t.Fatalf("ResolveWithExplicitSource(): %v", err)
 	}
@@ -829,7 +829,7 @@ func TestACPChildConfigFailsClosedWhenNativeAdapterMappingMissing(t *testing.T) 
 func testACPChildBound(t *testing.T, resolved loop.Resolved) loop.BoundDefinition {
 	t.Helper()
 	definition, err := loop.Define(
-		loop.WithName(generic.Name),
+		loop.WithName(carbon.Name),
 		loop.WithInference(&fakeLLM{}, testModel()),
 		loop.WithSystem("native ACP compatibility test"),
 		loop.WithPolicyRevision("acp-child-native-compatibility-test"),
@@ -911,7 +911,7 @@ func TestACPChildNativeModelOnlyRowsBuildThroughDriverWithoutLivePreflight(t *te
 			if preflightCalls != 0 {
 				t.Fatalf("native model availability preflight calls = %d, want zero", preflightCalls)
 			}
-			resolved, err := composition.Catalog.RuntimeCatalog.ResolveWithExplicitSource(generic.Name, tt.harness, loop.RuntimeSourceNative, loop.ModelAlias(tt.model), model.EffortNone, true)
+			resolved, err := composition.Catalog.RuntimeCatalog.ResolveWithExplicitSource(carbon.Name, tt.harness, loop.RuntimeSourceNative, loop.ModelAlias(tt.model), model.EffortNone, true)
 			if err != nil {
 				t.Fatalf("ResolveWithExplicitSource(): %v", err)
 			}
@@ -975,7 +975,7 @@ func TestACPChildBuilderLaunchFiltersHostileProviderEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolved, err := composition.Catalog.RuntimeCatalog.ResolveWithExplicitSource(generic.Name, "codex", loop.RuntimeSourceNative, "native-codex", model.EffortNone, true)
+	resolved, err := composition.Catalog.RuntimeCatalog.ResolveWithExplicitSource(carbon.Name, "codex", loop.RuntimeSourceNative, "native-codex", model.EffortNone, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1019,7 +1019,7 @@ func TestACPChildBuilderLaunchFiltersHostileProviderEnvironment(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		resolved, err := composition.Catalog.RuntimeCatalog.ResolveWithExplicitSource(generic.Name, "codex", loop.RuntimeSourceGateway, "gpt-5.6-luna", model.EffortMax, true)
+		resolved, err := composition.Catalog.RuntimeCatalog.ResolveWithExplicitSource(carbon.Name, "codex", loop.RuntimeSourceGateway, "gpt-5.6-luna", model.EffortMax, true)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1080,7 +1080,7 @@ func TestNewACPCompositionChecksExecutablePathsAndFiltersEnv(t *testing.T) {
 		t.Fatal("Claude profile disappeared from the catalog")
 	}
 	if composition.Catalog.HasProfile("acp/codex") {
-		t.Fatalf("catalog still advertises the invalid Codex executable: %#v", composition.Catalog.RuntimeCatalog.EntriesFor(generic.Name))
+		t.Fatalf("catalog still advertises the invalid Codex executable: %#v", composition.Catalog.RuntimeCatalog.EntriesFor(carbon.Name))
 	}
 	if got := filterACPEnv([]string{"PATH=/bin", "SECRET=x", "LANG=C"}, []string{"PATH", "LANG"}); len(got) != 2 || got[0] != "PATH=/bin" || got[1] != "LANG=C" {
 		t.Fatalf("filtered env = %#v", got)
@@ -1232,7 +1232,7 @@ func TestNewACPCompositionBuildsNativeAuthProfileWithoutGateway(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolved, err := compiled.RuntimeCatalog.Resolve(generic.Name, "codex", "native-model", model.EffortNone)
+	resolved, err := compiled.RuntimeCatalog.Resolve(carbon.Name, "codex", "native-model", model.EffortNone)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1287,7 +1287,7 @@ func TestACPChildEnvironmentIsCredentialScopedWithoutStartupPreflight(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	claudeEntries := composition.Catalog.RuntimeCatalog.EntriesFor(generic.Name)
+	claudeEntries := composition.Catalog.RuntimeCatalog.EntriesFor(carbon.Name)
 	var claude loop.RuntimeCatalogEntry
 	for _, entry := range claudeEntries {
 		if entry.AgentHarness == "claude-code" {
@@ -1299,7 +1299,7 @@ func TestACPChildEnvironmentIsCredentialScopedWithoutStartupPreflight(t *testing
 		t.Fatalf("Claude gateway entry missing: %#v", claudeEntries)
 	}
 	wantClaudeModels := 0
-	for _, entry := range compiled.RuntimeCatalog.EntriesFor(generic.Name) {
+	for _, entry := range compiled.RuntimeCatalog.EntriesFor(carbon.Name) {
 		if entry.AgentHarness == "claude-code" {
 			wantClaudeModels += len(entry.Models)
 		}
@@ -1322,7 +1322,7 @@ func TestNewACPCompositionRetainsTransientlyUnavailableACPEntries(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	compiled := testGenericACPGatewayCatalog(t)
+	compiled := testCarbonACPGatewayCatalog(t)
 	composition, err := NewACPComposition(ACPChildrenConfig{
 		Catalog:       compiled,
 		Executables:   map[loop.AgentHarnessName]string{"claude-code": executable, "codex": executable},
@@ -1344,13 +1344,13 @@ func TestNewACPCompositionRetainsTransientlyUnavailableACPEntries(t *testing.T) 
 	if composition == nil {
 		t.Fatal("NewACPComposition() returned nil composition")
 	}
-	entries := composition.Catalog.RuntimeCatalog.EntriesFor(generic.Name)
+	entries := composition.Catalog.RuntimeCatalog.EntriesFor(carbon.Name)
 	if len(entries) != 3 {
-		t.Fatalf("NewACPComposition() entries = %#v, want Generic native default plus both configured ACP rows", entries)
+		t.Fatalf("NewACPComposition() entries = %#v, want Carbon native default plus both configured ACP rows", entries)
 	}
 	for _, entry := range entries {
 		if entry.AgentHarness == looprigRuntimeHarness && !entry.Default {
-			t.Fatalf("ordinary Generic row lost default after ACP filtering: %#v", entry)
+			t.Fatalf("ordinary Carbon row lost default after ACP filtering: %#v", entry)
 		}
 	}
 	if !composition.Catalog.HasProfile("acp/claude-code") || !composition.Catalog.HasProfile("acp/codex") {
@@ -1358,7 +1358,7 @@ func TestNewACPCompositionRetainsTransientlyUnavailableACPEntries(t *testing.T) 
 	}
 }
 
-func testGenericACPGatewayCatalog(t *testing.T) ACPCompiledCatalog {
+func testCarbonACPGatewayCatalog(t *testing.T) ACPCompiledCatalog {
 	t.Helper()
 	targets := legacyTestGatewayTargets(map[model.ProviderName]inference.Client{
 		"anthropic": &fakeLLM{},
@@ -1463,11 +1463,11 @@ func TestNewACPCompositionNativeEnvironmentIsDeferredToChildLaunch(t *testing.T)
 func TestACPChildModelAliasesUseConcreteGatewayTargetsAndNativeModels(t *testing.T) {
 	t.Parallel()
 	compiled := testACPGatewayCatalog(t)
-	claude, err := compiled.RuntimeCatalog.Resolve(generic.Name, "claude-code", "sonnet-5", model.EffortHigh)
+	claude, err := compiled.RuntimeCatalog.Resolve(carbon.Name, "claude-code", "sonnet-5", model.EffortHigh)
 	if err != nil {
 		t.Fatal(err)
 	}
-	mainAlias, smallAlias, err := acpChildModelAliases(compiled, generic.Name, "claude-code", claude)
+	mainAlias, smallAlias, err := acpChildModelAliases(compiled, carbon.Name, "claude-code", claude)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1475,11 +1475,11 @@ func TestACPChildModelAliasesUseConcreteGatewayTargetsAndNativeModels(t *testing
 		t.Fatalf("Claude child aliases = %q/%q, want sonnet-5@high/sonnet-5", mainAlias, smallAlias)
 	}
 
-	codex, err := compiled.RuntimeCatalog.Resolve(generic.Name, "codex", "gpt-5.6-luna", model.EffortMax)
+	codex, err := compiled.RuntimeCatalog.Resolve(carbon.Name, "codex", "gpt-5.6-luna", model.EffortMax)
 	if err != nil {
 		t.Fatal(err)
 	}
-	mainAlias, smallAlias, err = acpChildModelAliases(compiled, generic.Name, "codex", codex)
+	mainAlias, smallAlias, err = acpChildModelAliases(compiled, carbon.Name, "codex", codex)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1496,11 +1496,11 @@ func TestACPChildModelAliasesUseConcreteGatewayTargetsAndNativeModels(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	native, err := nativeCatalog.RuntimeCatalog.Resolve(generic.Name, "codex", "native-model", model.EffortNone)
+	native, err := nativeCatalog.RuntimeCatalog.Resolve(carbon.Name, "codex", "native-model", model.EffortNone)
 	if err != nil {
 		t.Fatal(err)
 	}
-	mainAlias, smallAlias, err = acpChildModelAliases(nativeCatalog, generic.Name, "codex", native)
+	mainAlias, smallAlias, err = acpChildModelAliases(nativeCatalog, carbon.Name, "codex", native)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1521,7 +1521,7 @@ func TestACPBoundRuntimeResolutionUsesPinnedSelectors(t *testing.T) {
 		t.Fatal(err)
 	}
 	definition, err := loop.Define(
-		loop.WithName(generic.Name),
+		loop.WithName(carbon.Name),
 		loop.WithInference(&fakeLLM{}, testModel()),
 		loop.WithPolicyRevision("acp-child-test"),
 	)
@@ -1532,7 +1532,7 @@ func TestACPBoundRuntimeResolutionUsesPinnedSelectors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolved, err := compiled.RuntimeCatalog.Resolve(generic.Name, "codex", "gpt-5.6-luna", model.EffortMax)
+	resolved, err := compiled.RuntimeCatalog.Resolve(carbon.Name, "codex", "gpt-5.6-luna", model.EffortMax)
 	if err != nil {
 		t.Fatal(err)
 	}

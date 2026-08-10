@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/looprig/acp/launch"
-	"github.com/looprig/coderig/internal/catalog/generic"
+	"github.com/looprig/carbon/internal/catalog/carbon"
 	"github.com/looprig/harness/pkg/loop"
 	"github.com/looprig/inference/model"
 )
@@ -157,9 +157,9 @@ func TestProductionACPCompositionKeepsConfiguredGatewayRowsAlongsideOrdinaryRows
 	if err != nil {
 		t.Fatal(err)
 	}
-	entries := composition.Catalog.RuntimeCatalog.EntriesFor(generic.Name)
+	entries := composition.Catalog.RuntimeCatalog.EntriesFor(carbon.Name)
 	if len(entries) != 3 {
-		t.Fatalf("Generic entries = %#v, want ordinary plus configured Claude and Codex entries", entries)
+		t.Fatalf("Carbon entries = %#v, want ordinary plus configured Claude and Codex entries", entries)
 	}
 	var gatewayRows, nativeRows int
 	for _, entry := range entries {

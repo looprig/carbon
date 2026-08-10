@@ -141,7 +141,7 @@ func TestPermissionReviewOffByDefault(t *testing.T) {
 // set includes a classifier's evidence tools currently fails closed with
 // *hustleruntime.ConfigError{Reason: ConfigMissingCollaborator, Field:
 // "runtime.evidence"} — a known, explicitly out-of-scope cross-cutting
-// Harness gap (see the plan's Task 24 addendum), not a CodeRig config-surface
+// Harness gap (see the plan's Task 24 addendum), not a Carbon config-surface
 // defect. Task 23's own scope is proving the config surface composes
 // correctly, which construction success already demonstrates.
 func TestPermissionReviewExplicitEnable(t *testing.T) {
@@ -161,9 +161,9 @@ func TestPermissionReviewExplicitEnable(t *testing.T) {
 
 	root := t.TempDir()
 	access, sessionCfg := headlessTestAccess(t, cfg, root)
-	definition, err := genericTestDefinition(&fakeLLM{}, testModel(), sessionCfg, access)
+	definition, err := carbonTestDefinition(&fakeLLM{}, testModel(), sessionCfg, access)
 	if err != nil {
-		t.Fatalf("genericTestDefinition() error = %v", err)
+		t.Fatalf("carbonTestDefinition() error = %v", err)
 	}
 	stores := mustHeadlessTestStores(t)
 	if _, err := buildRigForDelegationCaps(
@@ -208,9 +208,9 @@ func TestPermissionReviewSecurityCeilingOptionInstalled(t *testing.T) {
 		PermissionReviewModel:   permissionReviewTestModel(),
 		AccessProfile:           AccessTrusted,
 	}, root)
-	definition, err := genericTestDefinition(&fakeLLM{}, testModel(), sessionCfg, access)
+	definition, err := carbonTestDefinition(&fakeLLM{}, testModel(), sessionCfg, access)
 	if err != nil {
-		t.Fatalf("genericTestDefinition() error = %v", err)
+		t.Fatalf("carbonTestDefinition() error = %v", err)
 	}
 	stores := mustHeadlessTestStores(t)
 	if _, err := buildRigForDelegationCaps(
@@ -335,7 +335,7 @@ func TestPermissionReviewTrustedProfileGate(t *testing.T) {
 // TestPermissionReviewNamedModelRequired proves requirement 3: enabling
 // permission review without a named PermissionReviewModel fails closed with a
 // typed *PermissionReviewConfigError, rather than silently reusing an
-// Generic Loop's model.
+// Carbon Loop's model.
 func TestPermissionReviewNamedModelRequired(t *testing.T) {
 	t.Parallel()
 
@@ -438,7 +438,7 @@ func TestPermissionReviewDuplicateClassifierRegistrationRejected(t *testing.T) {
 }
 
 // TestPermissionReviewRigOptionDoubleRegistrationRejected proves requirement
-// 5 at CodeRig's own composition boundary: appending the SAME registration's
+// 5 at Carbon's own composition boundary: appending the SAME registration's
 // rig options twice into one rig.Define call — the shape a future wiring bug
 // could produce — fails closed with rig's singleton-option protection, rather
 // than silently accepting a duplicate classifier registration.
@@ -479,9 +479,9 @@ func TestPermissionReviewRigOptionDoubleRegistrationRejected(t *testing.T) {
 // TestPermissionReviewDoesNotWidenAccessCeiling proves requirement 6: for
 // every named access profile, enabling permission review (any model, either
 // policy) leaves the durable access-config digest — which folds the
-// selected profile and the complete normalized Generic sandbox profile
+// selected profile and the complete normalized Carbon sandbox profile
 // (accessConfigDigest, access.go) — byte-for-byte IDENTICAL to the
-// same profile with permission review disabled. CodeRig exposes no
+// same profile with permission review disabled. Carbon exposes no
 // independent "security ceiling" knob for the classifier: whatever ceiling a
 // request's own access-gate binding already grants under the selected
 // profile is the only ceiling permission review can ever operate within.
@@ -529,12 +529,12 @@ func TestPermissionReviewHeadlessComposesSafely(t *testing.T) {
 
 	gateImpl, ok := access.gate.(*accessGate)
 	if !ok || gateImpl.interactive || gateImpl.writer != nil {
-		t.Fatalf("Generic gate = %+v, want a non-interactive headless gate with no rule writer", access.gate)
+		t.Fatalf("Carbon gate = %+v, want a non-interactive headless gate with no rule writer", access.gate)
 	}
 
-	definition, err := genericTestDefinition(&fakeLLM{}, testModel(), sessionCfg, access)
+	definition, err := carbonTestDefinition(&fakeLLM{}, testModel(), sessionCfg, access)
 	if err != nil {
-		t.Fatalf("genericTestDefinition() error = %v", err)
+		t.Fatalf("carbonTestDefinition() error = %v", err)
 	}
 	permissionReview, err := newPermissionReviewRegistration(sessionCfg, &fakeLLM{})
 	if err != nil {
@@ -727,7 +727,7 @@ func TestPermissionReviewProgrammaticModelWinsOverModelsJSONThroughFullCompositi
 // configuration than the one it was opened with is REJECTED, closed, exactly
 // when that change WIDENS review coverage (disabled -> enabled, either
 // policy) — never silently re-adopted — unless the caller explicitly opts in
-// via CodeRig's OWN existing config-mismatch-acceptance mechanism
+// via Carbon's OWN existing config-mismatch-acceptance mechanism
 // (SessionSelector.AllowConfigMismatch -> rig.WithAllowConfigMismatch(),
 // persistence.go). Narrowing (a hypothetical enabled -> disabled restore) and
 // the no-change control still restore cleanly with no override needed.
@@ -741,14 +741,14 @@ func TestPermissionReviewProgrammaticModelWinsOverModelsJSONThroughFullCompositi
 // silently resumes with a different permission-review configuration" — exactly
 // the bug this fix closes), enabled -> disabled stays event.DriftInfo (strictly narrower, more
 // human control). event.DefaultPolicyDecider (pkg/session/decider.go, the
-// Harness default CodeRig never overrides with a custom RestoreDecider)
+// Harness default Carbon never overrides with a custom RestoreDecider)
 // rejects on ANY Warn change, so RestoreSession now returns a typed
 // *session.RestoreRejectedError for the widening case.
 //
-// Reasoning for why CodeRig does NOT auto-accept this drift on the caller's
+// Reasoning for why Carbon does NOT auto-accept this drift on the caller's
 // behalf: per CLAUDE.md's "fail closed when access, permission, identity, or
 // durable policy state is uncertain," and because TestRestoreRejectsAccessProfileDrift
-// already establishes CodeRig's existing convention for every other kind of
+// already establishes Carbon's existing convention for every other kind of
 // rejected restore drift (access-profile change) — surface the plain
 // rejection error to the caller and require the SAME explicit,
 // caller-supplied SessionSelector.AllowConfigMismatch a caller would use
@@ -774,9 +774,9 @@ func TestPermissionReviewConfigFingerprintChanges(t *testing.T) {
 		}
 		root = t.TempDir()
 		access, cfg := headlessTestAccess(t, Config{}, root)
-		definition, err := genericTestDefinition(&fakeLLM{}, testModel(), cfg, access)
+		definition, err := carbonTestDefinition(&fakeLLM{}, testModel(), cfg, access)
 		if err != nil {
-			t.Fatalf("genericTestDefinition() error = %v", err)
+			t.Fatalf("carbonTestDefinition() error = %v", err)
 		}
 		assembly, err := buildRig(definition, stores, root, cfg, false)
 		if err != nil {
@@ -796,9 +796,9 @@ func TestPermissionReviewConfigFingerprintChanges(t *testing.T) {
 	restoreWith := func(t *testing.T, stores *sessionStores, root string, sid uuid.UUID, permissionReview permissionReviewRegistration, allowMismatch bool) error {
 		t.Helper()
 		racc, rcfg := headlessTestAccess(t, Config{}, root)
-		rdef, err := genericTestDefinition(&fakeLLM{}, testModel(), rcfg, racc)
+		rdef, err := carbonTestDefinition(&fakeLLM{}, testModel(), rcfg, racc)
 		if err != nil {
-			t.Fatalf("genericTestDefinition() error = %v", err)
+			t.Fatalf("carbonTestDefinition() error = %v", err)
 		}
 		rasm, err := buildRigForDelegationCaps(
 			rdef, stores, root, rcfg, allowMismatch,

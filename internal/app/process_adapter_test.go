@@ -22,11 +22,11 @@ import (
 // exercises REAL *sandbox.Executor/ExecutorSet values (never a fake or an
 // injected interface seam) so grant/access/error assertions are checked
 // against Sandbox's own real verification logic as the oracle -- exactly
-// what "without CodeRig parsing opaque grants" means in practice.
+// what "without Carbon parsing opaque grants" means in practice.
 
 // --- test helpers -----------------------------------------------------------
 
-// unconfinedExecutorSet builds a real ExecutorSet under CodeRig's Unconfined
+// unconfinedExecutorSet builds a real ExecutorSet under Carbon's Unconfined
 // access profile: Command/Workspace/HostRead/HostWrite/Network are all
 // Allow, so PrepareProcess needs no grants and Start actually spawns and
 // supervises a real process on every platform, including Darwin -- where a
@@ -40,9 +40,9 @@ import (
 // Resize/Close lifecycle from this package.
 func unconfinedExecutorSet(t *testing.T, root string, max int) *sandbox.ExecutorSet {
 	t.Helper()
-	profile, err := coderigProfile(AccessUnconfined, root)
+	profile, err := carbonProfile(AccessUnconfined, root)
 	if err != nil {
-		t.Fatalf("coderigProfile(unconfined): %v", err)
+		t.Fatalf("carbonProfile(unconfined): %v", err)
 	}
 	set, err := sandbox.NewExecutorSet(profile, sandbox.WithScratchRoot(t.TempDir()), sandbox.WithMaxExecutors(max))
 	if err != nil {
@@ -65,7 +65,7 @@ func unconfinedExecutor(t *testing.T, root string) *sandbox.Executor {
 // rawProfile builds a Sandboxed profile with precise, independently
 // controlled WorkspaceWrite and Command authority -- used by tests that need
 // a specific ProcessAccessKind or a specific Command Gated/Allow posture,
-// which none of CodeRig's three named product profiles expose independently.
+// which none of Carbon's three named product profiles expose independently.
 func rawProfile(t *testing.T, root string, workspaceWrite, command sandbox.Access) *sandbox.Profile {
 	t.Helper()
 	profile, err := sandbox.NewProfile(sandbox.ProfileConfig{
@@ -256,7 +256,7 @@ func TestProcessAdapterGrantsAndOriginExecutionIDPreserved(t *testing.T) {
 			t.Fatal("PrepareProcess with a garbage grant token unexpectedly succeeded")
 		}
 		if errors.Is(err, sandbox.ErrGrantRequired) {
-			t.Fatal("garbage grant treated as if no grant were supplied at all -- CodeRig must forward Grants verbatim, not drop or filter them")
+			t.Fatal("garbage grant treated as if no grant were supplied at all -- Carbon must forward Grants verbatim, not drop or filter them")
 		}
 	})
 }
@@ -734,9 +734,9 @@ func TestProcessAdapterUnattributedSignalDeathMapsToRunnerShutdown(t *testing.T)
 	}
 	t.Parallel()
 	root := canonicalTempDir(t)
-	profile, err := coderigProfile(AccessUnconfined, root)
+	profile, err := carbonProfile(AccessUnconfined, root)
 	if err != nil {
-		t.Fatalf("coderigProfile: %v", err)
+		t.Fatalf("carbonProfile: %v", err)
 	}
 	set, err := sandbox.NewExecutorSet(profile, sandbox.WithScratchRoot(t.TempDir()), sandbox.WithMaxExecutors(1))
 	if err != nil {

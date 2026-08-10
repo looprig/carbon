@@ -25,7 +25,7 @@ import (
 	model "github.com/looprig/inference/model"
 )
 
-var errACPChildUnavailable = errors.New("coderig: ACP child unavailable")
+var errACPChildUnavailable = errors.New("carbon: ACP child unavailable")
 
 // maxACPModelFacingErrorBytes bounds the complete ACP construction detail,
 // including its fixed prefix. This matches foreignloops' ACP turn projection
@@ -76,7 +76,7 @@ func (e *acpChildModelFacingError) ModelFacingError() string {
 // errACPAccessProfileUnavailable is intentionally fixed and bounded. An
 // invalid Config.AccessProfile must stop ACP composition before any child or
 // gateway launch without reflecting caller-controlled values in the error.
-var errACPAccessProfileUnavailable = errors.New("coderig: ACP access profile unavailable")
+var errACPAccessProfileUnavailable = errors.New("carbon: ACP access profile unavailable")
 
 // boundedACPChildError is the model-facing error boundary for ACP startup and
 // restore. ACP launch/RPC/stdio errors can contain executable paths, login
@@ -322,7 +322,7 @@ func truncateACPModelFacingUTF8(value string, maxBytes int) string {
 // is reduced to EnvAllowlist before it reaches the child process.
 type ACPChildrenConfig struct {
 	Catalog ACPCompiledCatalog
-	// AccessProfile is the session-fixed CodeRig profile. Empty selects
+	// AccessProfile is the session-fixed Carbon profile. Empty selects
 	// DefaultAccessProfile; NewACPComposition normalizes and validates it once.
 	AccessProfile AccessProfile
 	Executables   map[loop.AgentHarnessName]string
@@ -384,7 +384,7 @@ type ACPPreflightResult struct {
 	AdvertisedModels []string
 }
 
-// ACPComposition is the immutable CodeRig-to-Harness bridge for ACP children.
+// ACPComposition is the immutable Carbon-to-Harness bridge for ACP children.
 // The registry is retained for inspection and the function pair is the narrow
 // legacy rig option; dispatch still selects by bound RuntimeProfile.
 type ACPComposition struct {
@@ -441,7 +441,7 @@ func NewACPComposition(config ACPChildrenConfig) (*ACPComposition, error) {
 		config.collabMCPSnapshot = &snapshot
 	}
 	if (config.Catalog.HasProfile("acp/claude-code") || config.Catalog.HasProfile("acp/codex")) && !cleanAbsolutePath(config.WorkspaceRoot) {
-		return nil, fmt.Errorf("coderig: ACP workspace root must be a clean absolute path")
+		return nil, fmt.Errorf("carbon: ACP workspace root must be a clean absolute path")
 	}
 	registry := new(foreign.BuilderRegistry)
 	var diagnostics []string
@@ -863,7 +863,7 @@ func firstACPGatewayResolved(catalog ACPCompiledCatalog, harness loop.AgentHarne
 // Production composition uses filterACPStaticCatalog and never applies live
 // adapter availability to the configured catalog.
 func filterACPPreflightCatalog(catalog ACPCompiledCatalog, decisions map[loop.AgentHarnessName]acpPreflightDecision) (ACPCompiledCatalog, error) {
-	// The ordinary Generic row is always retained and remains the sole
+	// The ordinary Carbon row is always retained and remains the sole
 	// product default. ACP entries were compiled non-default and are only
 	// retained when their source-specific preflight succeeds.
 	entries := make([]loop.RuntimeCatalogEntry, 0, len(catalog.entries))
@@ -1085,7 +1085,7 @@ func (f *acpChildFactory) liveServices(
 	}
 	if backend == nil {
 		_ = ownedGateway.Close(context.Background())
-		return nil, "", boundedACPChildError(errors.New("coderig: ACP builder returned no backend"))
+		return nil, "", boundedACPChildError(errors.New("carbon: ACP builder returned no backend"))
 	}
 	return wrapACPGatewayBackend(backend, ownedGateway), sid, nil
 }
@@ -1125,7 +1125,7 @@ func (f *acpChildFactory) restoredServices(
 	}
 	if backend == nil {
 		_ = ownedGateway.Close(context.Background())
-		return nil, boundedACPChildError(errors.New("coderig: ACP restored builder returned no backend"))
+		return nil, boundedACPChildError(errors.New("carbon: ACP restored builder returned no backend"))
 	}
 	return wrapACPGatewayBackend(backend, ownedGateway), nil
 }
@@ -1217,7 +1217,7 @@ func acpChildModelAliases(catalog ACPCompiledCatalog, agent identity.AgentName, 
 			return "", "", nil
 		}
 		if resolved.ModelAlias == "" {
-			return "", "", fmt.Errorf("coderig: native ACP model unavailable")
+			return "", "", fmt.Errorf("carbon: native ACP model unavailable")
 		}
 		modelAlias, err := catalog.nativeModelID(harness, resolved.ModelAlias)
 		if err != nil {
@@ -1231,14 +1231,14 @@ func acpChildModelAliases(catalog ACPCompiledCatalog, agent identity.AgentName, 
 	}
 	modelAlias := string(resolved.TargetAlias)
 	if modelAlias == "" {
-		return "", "", fmt.Errorf("coderig: ACP target alias unavailable")
+		return "", "", fmt.Errorf("carbon: ACP target alias unavailable")
 	}
 	if harness != "claude-code" || resolved.SmallModel == "" {
 		return modelAlias, "", nil
 	}
 	smallResolved, err := catalog.RuntimeCatalog.ResolveWithExplicitEffort(agent, harness, resolved.SmallModel, model.EffortNone, false)
 	if err != nil || smallResolved.Credential != loop.CredentialGatewayBacked || smallResolved.TargetAlias == "" {
-		return "", "", fmt.Errorf("coderig: ACP small target alias unavailable")
+		return "", "", fmt.Errorf("carbon: ACP small target alias unavailable")
 	}
 	return modelAlias, string(smallResolved.TargetAlias), nil
 }
@@ -1263,7 +1263,7 @@ func (c ACPChildrenConfig) envForCredential(credential loop.CredentialMode) []st
 // explicit process-environment allowlists. A caller may supply a broad legacy
 // allowlist, but provider API keys/tokens/secrets must never reach either a
 // gateway-backed or native ACP child. Gateway children receive their
-// CodeRig-owned loopback bearer through the launch protocol, not this env.
+// Carbon-owned loopback bearer through the launch protocol, not this env.
 func filterACPProviderSecrets(env []string) []string {
 	filtered := make([]string, 0, len(env))
 	for _, assignment := range env {
@@ -1311,30 +1311,30 @@ func resolveACPBoundRuntime(catalog ACPCompiledCatalog, cfg loop.BoundDefinition
 	identity := cfg.RuntimeIdentity()
 	profile := cfg.RuntimeProfile()
 	if profile == "" || !catalog.HasProfile(profile) {
-		return loop.Resolved{}, "", fmt.Errorf("coderig: ACP runtime selection unavailable")
+		return loop.Resolved{}, "", fmt.Errorf("carbon: ACP runtime selection unavailable")
 	}
 	harness := loop.AgentHarnessName(strings.TrimPrefix(string(profile), "acp/"))
 	var resolved loop.Resolved
 	var err error
 	if identity.SelectionKind == loop.RuntimeSelectionHarnessManaged {
 		if identity.Source != loop.RuntimeSourceNative || identity.ModelAlias != "" || identity.Effort != model.EffortNone {
-			return loop.Resolved{}, "", fmt.Errorf("coderig: ACP runtime selection unavailable")
+			return loop.Resolved{}, "", fmt.Errorf("carbon: ACP runtime selection unavailable")
 		}
 		resolved, err = catalog.RuntimeCatalog.ResolveTargetAliasWithSource(cfg.Name(), harness, identity.Source, "", model.EffortNone)
 	} else {
 		if identity.ModelAlias == "" {
-			return loop.Resolved{}, "", fmt.Errorf("coderig: ACP runtime selection unavailable")
+			return loop.Resolved{}, "", fmt.Errorf("carbon: ACP runtime selection unavailable")
 		}
 		resolved, err = catalog.RuntimeCatalog.ResolveTargetAliasWithSource(cfg.Name(), harness, identity.Source, identity.ModelAlias, identity.Effort)
 	}
 	if err != nil || resolved.Profile != profile {
-		return loop.Resolved{}, "", fmt.Errorf("coderig: ACP runtime selection unavailable")
+		return loop.Resolved{}, "", fmt.Errorf("carbon: ACP runtime selection unavailable")
 	}
 	if identity.Source != "" && resolved.Source != identity.Source {
-		return loop.Resolved{}, "", fmt.Errorf("coderig: ACP runtime selection unavailable")
+		return loop.Resolved{}, "", fmt.Errorf("carbon: ACP runtime selection unavailable")
 	}
 	if identity.SelectionKind != "" && resolved.SelectionKind != identity.SelectionKind {
-		return loop.Resolved{}, "", fmt.Errorf("coderig: ACP runtime selection unavailable")
+		return loop.Resolved{}, "", fmt.Errorf("carbon: ACP runtime selection unavailable")
 	}
 	return resolved, harness, nil
 }

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/looprig/coderig/internal/catalog/generic"
+	"github.com/looprig/carbon/internal/catalog/carbon"
 	"github.com/looprig/core/content"
 	"github.com/looprig/core/uuid"
 	"github.com/looprig/harness/pkg/event"
@@ -16,16 +16,16 @@ import (
 	"github.com/looprig/harness/pkg/sessionstore"
 )
 
-// acceptance_test.go drives the assembled CodeRig headless (over an isolated in-memory
+// acceptance_test.go drives the assembled Carbon headless (over an isolated in-memory
 // store + a temp checkout, so it never contends on the real current-checkout lease with
-// sibling tests). It proves the composed rig starts with Generic as the sole durable
+// sibling tests). It proves the composed rig starts with Carbon as the sole durable
 // primer, that a submitted turn is observable on the whole-session event stream, and that
 // the agent closes cleanly.
 //
 // The composed managed-delegation action flows live in managed_delegation_test.go; the
 // fresh-fsstore restore and runtime-skill matrix lives in the integration-tagged tests.
 
-// openAcceptanceAgent opens a headless CodeRig session over an isolated store + temp root and
+// openAcceptanceAgent opens a headless Carbon session over an isolated store + temp root and
 // returns the composition-root runtime agent (which owns the session's executor-set closers).
 func openAcceptanceAgent(t *testing.T) (*RuntimeAgent, *sessionStores) {
 	t.Helper()
@@ -65,18 +65,18 @@ func durableRootLoops(t *testing.T, stores *sessionStores, sessionID uuid.UUID) 
 	}
 }
 
-// TestAcceptanceActivePrimerIsGeneric proves the composed rig selects Generic
+// TestAcceptanceActivePrimerIsCarbon proves the composed rig selects Carbon
 // as the sole active durable, zero-parent primer.
-func TestAcceptanceActivePrimerIsGeneric(t *testing.T) {
+func TestAcceptanceActivePrimerIsCarbon(t *testing.T) {
 	t.Parallel()
 	agent, stores := openAcceptanceAgent(t)
 
 	roots := durableRootLoops(t, stores, agent.SessionID())
-	if len(roots) != 1 || roots[string(generic.Name)].IsZero() {
-		t.Errorf("durable Generic root is missing; roots=%v", roots)
+	if len(roots) != 1 || roots[string(carbon.Name)].IsZero() {
+		t.Errorf("durable Carbon root is missing; roots=%v", roots)
 	}
-	if got, want := agent.ActiveLoopID(), roots[string(generic.Name)]; got != want {
-		t.Errorf("ActiveLoopID() = %v, want Generic root %v", got, want)
+	if got, want := agent.ActiveLoopID(), roots[string(carbon.Name)]; got != want {
+		t.Errorf("ActiveLoopID() = %v, want Carbon root %v", got, want)
 	}
 }
 

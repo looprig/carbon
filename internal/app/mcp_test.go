@@ -63,10 +63,10 @@ func TestMCPDefinitionsStdioHappyPath(t *testing.T) {
 	}
 
 	loopID := mcpTestLoopID(t)
-	if !binding.Visibility.Permits(loopID, "generic") {
+	if !binding.Visibility.Permits(loopID, "carbon") {
 		t.Errorf("binding.Visibility.Permits(_, generic) = false, want true (roles empty -> generic)")
 	}
-	// Removed names and an unknown name are rejection fixtures; only Generic
+	// Removed names and an unknown name are rejection fixtures; only Carbon
 	// visibility is accepted.
 	for _, role := range []string{"planner", "builder", "reviewer", "not-a-role"} {
 		if binding.Visibility.Permits(loopID, role) {
@@ -94,7 +94,7 @@ func TestMCPDefinitionsStdioMissingCommandFailsClosed(t *testing.T) {
 	}
 }
 
-func TestMCPDefinitionsVisibilityDefaultsToGenericWhenEmpty(t *testing.T) {
+func TestMCPDefinitionsVisibilityDefaultsToCarbonWhenEmpty(t *testing.T) {
 	spec := mcpServerSpec{name: "sh", kind: "stdio", command: "/bin/sh"} // roles nil
 
 	bindings, err := mcpDefinitions([]mcpServerSpec{spec})
@@ -103,7 +103,7 @@ func TestMCPDefinitionsVisibilityDefaultsToGenericWhenEmpty(t *testing.T) {
 	}
 	binding := bindings[0]
 	loopID := mcpTestLoopID(t)
-	if !binding.Visibility.Permits(loopID, "generic") {
+	if !binding.Visibility.Permits(loopID, "carbon") {
 		t.Errorf("empty roles: Permits(_, generic) = false, want true")
 	}
 	// Legacy role names remain explicit hidden-visibility fixtures.
@@ -114,12 +114,12 @@ func TestMCPDefinitionsVisibilityDefaultsToGenericWhenEmpty(t *testing.T) {
 	}
 }
 
-func TestMCPDefinitionsVisibilityHonorsExplicitGenericRole(t *testing.T) {
+func TestMCPDefinitionsVisibilityHonorsExplicitCarbonRole(t *testing.T) {
 	spec := mcpServerSpec{
 		name:    "sh",
 		kind:    "stdio",
 		command: "/bin/sh",
-		roles:   []string{"generic"},
+		roles:   []string{"carbon"},
 	}
 
 	bindings, err := mcpDefinitions([]mcpServerSpec{spec})
@@ -128,7 +128,7 @@ func TestMCPDefinitionsVisibilityHonorsExplicitGenericRole(t *testing.T) {
 	}
 	binding := bindings[0]
 	loopID := mcpTestLoopID(t)
-	if !binding.Visibility.Permits(loopID, "generic") {
+	if !binding.Visibility.Permits(loopID, "carbon") {
 		t.Errorf("explicit roles: Permits(_, generic) = false, want true")
 	}
 	// Legacy role names remain explicit hidden-visibility fixtures.
@@ -366,7 +366,7 @@ type fakeGateHostCloseCall struct {
 // own claims about what it maps. Harness's own contract for OpenHostGate
 // (pkg/rig/gate_host_test.go) is proven separately, in harness; this fake
 // exists only to prove mcpGateOpener's mapping onto that contract, at the
-// coderig layer.
+// carbon layer.
 type fakeGateHost struct {
 	mu sync.Mutex
 

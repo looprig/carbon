@@ -14,7 +14,7 @@ import (
 	"github.com/looprig/harness/pkg/gate"
 )
 
-// permission_review_observation.go is CodeRig's implementation of the
+// permission_review_observation.go is Carbon's implementation of the
 // TOCTOU-recheck seam, gate.EvidenceObservationVerifier (design §13.4,
 // Addendum 4, harness/pkg/gate/observation.go). It is installed via
 // rig.WithPermissionReviewObservations alongside
@@ -65,7 +65,7 @@ import (
 // change together, by design, even though they are two independently
 // maintained implementations.
 
-// permissionReviewEvidenceObservation is CodeRig's gate.EvidenceObservationVerifier.
+// permissionReviewEvidenceObservation is Carbon's gate.EvidenceObservationVerifier.
 // ceiling is the ONE security-ceiling value this session's observation
 // rechecks may ever present — the identical value permissionReviewEvidenceContainment
 // trusts (evidenceCeilingFor), never independently derived. It is stateless
@@ -74,7 +74,7 @@ type permissionReviewEvidenceObservation struct {
 	ceiling string
 }
 
-// newPermissionReviewEvidenceObservation returns CodeRig's observation
+// newPermissionReviewEvidenceObservation returns Carbon's observation
 // verifier bound to ceiling (the session's selected access profile name).
 // An empty ceiling is accepted structurally but VerifyEvidenceObservations
 // then fails closed for every call with at least one requirement, since an
@@ -87,10 +87,10 @@ func newPermissionReviewEvidenceObservation(ceiling string) permissionReviewEvid
 // Sentinel observation errors. Unexported and secret-free, matching this
 // package's existing containment sentinels' discipline.
 var (
-	errEvidenceObservationAmbiguous = errors.New("coderig: observation requirement target could not be unambiguously resolved within the review workspace")
-	errEvidenceObservationEscape    = errors.New("coderig: observation requirement target resolves outside the review workspace")
-	errEvidenceObservationCeiling   = errors.New("coderig: observation review security ceiling does not match this session")
-	errEvidenceObservationMismatch  = errors.New("coderig: observation token no longer matches the target's current state")
+	errEvidenceObservationAmbiguous = errors.New("carbon: observation requirement target could not be unambiguously resolved within the review workspace")
+	errEvidenceObservationEscape    = errors.New("carbon: observation requirement target resolves outside the review workspace")
+	errEvidenceObservationCeiling   = errors.New("carbon: observation review security ceiling does not match this session")
+	errEvidenceObservationMismatch  = errors.New("carbon: observation token no longer matches the target's current state")
 )
 
 // VerifyEvidenceObservations independently re-derives, from the LIVE

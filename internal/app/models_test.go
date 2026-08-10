@@ -8,7 +8,7 @@ import (
 	"github.com/looprig/llm"
 )
 
-// TestModelsAreValid proves every CodeRig-owned model descriptor is well-formed,
+// TestModelsAreValid proves every Carbon-owned model descriptor is well-formed,
 // secret-free model.Model that passes the fail-closed llm.ValidateModel provider preset,
 // and pins the exact wire identity (provider / API format / endpoint / model id / caps) each
 // row was confirmed with. If a hardcoded row drifts, this fails loud here rather than at the

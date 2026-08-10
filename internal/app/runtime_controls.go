@@ -14,7 +14,7 @@ import (
 	"github.com/looprig/tui/sessionadapter"
 )
 
-// RuntimeAgent keeps provider and policy knowledge in CodeRig while embedding the stable
+// RuntimeAgent keeps provider and policy knowledge in Carbon while embedding the stable
 // session adapter used by the TUI data plane. It OWNS the session's executor-set closers
 // (through access) and its MCP composition closers (mgr, adopter, both nil when the
 // session has no mcp.json), and supplies the synchronous, session-fixed presentation
@@ -177,7 +177,7 @@ func (a *RuntimeAgent) SessionPresentation() tui.SessionPresentation {
 func (a *RuntimeAgent) LoopRuntimeOptions(_ context.Context, loopID uuid.UUID) (tui.LoopRuntimeOptions, error) {
 	handle, ok := a.sess.Loop(loopID)
 	if !ok {
-		return tui.LoopRuntimeOptions{}, fmt.Errorf("coderig: loop %s is unavailable", loopID)
+		return tui.LoopRuntimeOptions{}, fmt.Errorf("carbon: loop %s is unavailable", loopID)
 	}
 	options := tui.LoopRuntimeOptions{}
 	if catalog, ok := handle.(loop.ModeCatalog); ok {
@@ -218,18 +218,18 @@ func (a *RuntimeAgent) LoopRuntimeOptions(_ context.Context, loopID uuid.UUID) (
 func (a *RuntimeAgent) SetMode(ctx context.Context, loopID uuid.UUID, id tui.ModeID) error {
 	controller, ok := a.sess.LoopController(loopID)
 	if !ok {
-		return fmt.Errorf("coderig: loop %s is unavailable", loopID)
+		return fmt.Errorf("carbon: loop %s is unavailable", loopID)
 	}
 	mode := loop.ModeName(id)
 	if len(a.primerEfforts) != 0 {
 		switch mode {
 		case "quick":
 			if !containsPrimerEffort(a.primerEfforts, model.EffortLow) {
-				return fmt.Errorf("coderig: mode %q is not admitted by the configured primer", id)
+				return fmt.Errorf("carbon: mode %q is not admitted by the configured primer", id)
 			}
 		case "deep":
 			if !containsPrimerEffort(a.primerEfforts, model.EffortMax) {
-				return fmt.Errorf("coderig: mode %q is not admitted by the configured primer", id)
+				return fmt.Errorf("carbon: mode %q is not admitted by the configured primer", id)
 			}
 		}
 	}
@@ -239,18 +239,18 @@ func (a *RuntimeAgent) SetMode(ctx context.Context, loopID uuid.UUID, id tui.Mod
 func (a *RuntimeAgent) SetModel(ctx context.Context, loopID uuid.UUID, id tui.ModelID) error {
 	controller, ok := a.sess.LoopController(loopID)
 	if !ok {
-		return fmt.Errorf("coderig: loop %s is unavailable", loopID)
+		return fmt.Errorf("carbon: loop %s is unavailable", loopID)
 	}
 	if len(a.primerCandidates) == 0 {
 		selectedModel := controller.Model()
 		if a.publicModelID(selectedModel) != string(id) {
-			return fmt.Errorf("coderig: model choice %q is stale or unknown", id)
+			return fmt.Errorf("carbon: model choice %q is stale or unknown", id)
 		}
 		return controller.Change(ctx, loop.ChangeModel(selectedModel))
 	}
 	candidate, ok := findPrimerCandidate(a.primerCandidates, string(id))
 	if !ok {
-		return fmt.Errorf("coderig: model choice %q is stale or unknown", id)
+		return fmt.Errorf("carbon: model choice %q is stale or unknown", id)
 	}
 	currentModel := controller.Model()
 	changes := []loop.Change{loop.ChangeModel(candidate.Model)}
@@ -258,7 +258,7 @@ func (a *RuntimeAgent) SetModel(ctx context.Context, loopID uuid.UUID, id tui.Mo
 		changes = append(changes, loop.ChangeEffort(candidate.DefaultEffort))
 	}
 	if err := controller.Change(ctx, changes...); err != nil {
-		return fmt.Errorf("coderig: switch to model %q: %w", id, err)
+		return fmt.Errorf("carbon: switch to model %q: %w", id, err)
 	}
 	return nil
 }
@@ -266,18 +266,18 @@ func (a *RuntimeAgent) SetModel(ctx context.Context, loopID uuid.UUID, id tui.Mo
 func (a *RuntimeAgent) SetEffort(ctx context.Context, loopID uuid.UUID, id tui.EffortID) error {
 	controller, ok := a.sess.LoopController(loopID)
 	if !ok {
-		return fmt.Errorf("coderig: loop %s is unavailable", loopID)
+		return fmt.Errorf("carbon: loop %s is unavailable", loopID)
 	}
 	effort := model.Effort(id)
 	if !effort.Valid() {
-		return fmt.Errorf("coderig: effort choice %q is unknown", id)
+		return fmt.Errorf("carbon: effort choice %q is unknown", id)
 	}
 	admitted := a.primerEfforts
 	if current, ok := currentPrimerCandidate(a.primerCandidates, controller.Model()); ok {
 		admitted = current.Efforts
 	}
 	if len(admitted) != 0 && !containsPrimerEffort(admitted, effort) {
-		return fmt.Errorf("coderig: effort choice %q is not admitted by the configured primer", id)
+		return fmt.Errorf("carbon: effort choice %q is not admitted by the configured primer", id)
 	}
 	return controller.Change(ctx, loop.ChangeEffort(effort))
 }

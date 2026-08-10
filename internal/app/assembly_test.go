@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/looprig/coderig/internal/catalog/generic"
+	"github.com/looprig/carbon/internal/catalog/carbon"
 	"github.com/looprig/core/uuid"
 	"github.com/looprig/harness/pkg/event"
 	"github.com/looprig/harness/pkg/identity"
@@ -20,43 +20,43 @@ import (
 	model "github.com/looprig/inference/model"
 )
 
-func genericDef(t *testing.T, cfg Config) loop.Definition {
+func carbonDef(t *testing.T, cfg Config) loop.Definition {
 	t.Helper()
 	access, cfg := headlessTestAccess(t, cfg, t.TempDir())
-	definition, err := genericDefinition(&fakeLLM{}, testModel(), cfg, access, nil)
+	definition, err := carbonDefinition(&fakeLLM{}, testModel(), cfg, access, nil)
 	if err != nil {
-		t.Fatalf("genericDefinition() error = %v", err)
+		t.Fatalf("carbonDefinition() error = %v", err)
 	}
 	return definition
 }
 
-func genericTestDefinition(client inference.Client, model model.Model, cfg Config, access *sessionAccess) (loop.Definition, error) {
-	return genericDefinition(client, model, cfg, access, nil)
+func carbonTestDefinition(client inference.Client, model model.Model, cfg Config, access *sessionAccess) (loop.Definition, error) {
+	return carbonDefinition(client, model, cfg, access, nil)
 }
 
-func genericTestDefinitionWithContextPolicy(client inference.Client, model model.Model, cfg Config, contextPolicy conversationContextPolicy, access *sessionAccess) (loop.Definition, error) {
-	return genericDefinitionWithContextPolicy(client, model, cfg, contextPolicy, access, nil)
+func carbonTestDefinitionWithContextPolicy(client inference.Client, model model.Model, cfg Config, contextPolicy conversationContextPolicy, access *sessionAccess) (loop.Definition, error) {
+	return carbonDefinitionWithContextPolicy(client, model, cfg, contextPolicy, access, nil)
 }
 
-func genericTestDefinitionWithAdditionalTools(client inference.Client, model model.Model, cfg Config, access *sessionAccess, extras []tool.Definition) (loop.Definition, error) {
+func carbonTestDefinitionWithAdditionalTools(client inference.Client, model model.Model, cfg Config, access *sessionAccess, extras []tool.Definition) (loop.Definition, error) {
 	contextPolicy, err := newConversationContextPolicy(model, cfg.PrimerCandidates, cfg.DelegateModels)
 	if err != nil {
 		return loop.Definition{}, err
 	}
-	return genericDefinitionWithContextPolicy(client, model, cfg, contextPolicy, access, extras)
+	return carbonDefinitionWithContextPolicy(client, model, cfg, contextPolicy, access, extras)
 }
 
-func TestGenericDefinitionIsSoleManagedLoop(t *testing.T) {
+func TestCarbonDefinitionIsSoleManagedLoop(t *testing.T) {
 	t.Parallel()
-	definition := genericDef(t, Config{})
-	if got := definition.Name(); got != generic.Name {
-		t.Fatalf("Name() = %q, want %q", got, generic.Name)
+	definition := carbonDef(t, Config{})
+	if got := definition.Name(); got != carbon.Name {
+		t.Fatalf("Name() = %q, want %q", got, carbon.Name)
 	}
-	if got := definition.Description(); got != generic.Description {
-		t.Fatalf("Description() = %q, want Generic description", got)
+	if got := definition.Description(); got != carbon.Description {
+		t.Fatalf("Description() = %q, want Carbon description", got)
 	}
-	if got := definition.Delegates(); !slices.Equal(got, []identity.AgentName{generic.Name}) {
-		t.Fatalf("Delegates() = %v, want [%q]", got, generic.Name)
+	if got := definition.Delegates(); !slices.Equal(got, []identity.AgentName{carbon.Name}) {
+		t.Fatalf("Delegates() = %v, want [%q]", got, carbon.Name)
 	}
 	if got := definition.Delegation().Style; got != loop.DelegationManaged {
 		t.Fatalf("Delegation().Style = %q, want managed", got)
@@ -66,8 +66,8 @@ func TestGenericDefinitionIsSoleManagedLoop(t *testing.T) {
 	}
 
 	initial := definition.FingerprintInitial()
-	if !strings.Contains(initial.EffectiveSystem, generic.SystemPrompt) {
-		t.Fatal("Generic system prompt is not used directly")
+	if !strings.Contains(initial.EffectiveSystem, carbon.SystemPrompt) {
+		t.Fatal("Carbon system prompt is not used directly")
 	}
 	if got := strings.Count(initial.EffectiveSystem, "<delegation>"); got != 1 {
 		t.Fatalf("delegation section count = %d, want exactly 1", got)
@@ -77,19 +77,19 @@ func TestGenericDefinitionIsSoleManagedLoop(t *testing.T) {
 	}
 	for _, name := range []string{"ReadFile", "WriteFile", "EditFile", "Bash", "ProcessOutput", "ProcessInput", "ProcessStop", "WebSearch", "Fetch", "TaskCreate", "TaskGet", "TaskList", "TaskUpdate", "AskUser", "Skill"} {
 		if !slices.Contains(initial.ToolNames, name) {
-			t.Errorf("Generic tool roster missing %q: %v", name, initial.ToolNames)
+			t.Errorf("Carbon tool roster missing %q: %v", name, initial.ToolNames)
 		}
 	}
 	for _, name := range []string{"Glob", "Grep"} {
 		if slices.Contains(initial.ToolNames, name) {
-			t.Errorf("Generic tool roster unexpectedly includes %q: %v", name, initial.ToolNames)
+			t.Errorf("Carbon tool roster unexpectedly includes %q: %v", name, initial.ToolNames)
 		}
 	}
 }
 
-func TestGenericDefinitionUsesQuickAndDeepModes(t *testing.T) {
+func TestCarbonDefinitionUsesQuickAndDeepModes(t *testing.T) {
 	t.Parallel()
-	definition := genericDef(t, Config{})
+	definition := carbonDef(t, Config{})
 	if got := definition.InitialMode(); got != initialCodingMode {
 		t.Fatalf("initial mode = %q, want %q", got, initialCodingMode)
 	}
@@ -105,26 +105,26 @@ func TestGenericDefinitionUsesQuickAndDeepModes(t *testing.T) {
 	}
 }
 
-func TestGenericDefinitionCompactionComposition(t *testing.T) {
+func TestCarbonDefinitionCompactionComposition(t *testing.T) {
 	t.Parallel()
 	client := &fakeLLM{}
 	model := testModel()
 	root := t.TempDir()
 	access, cfg := headlessTestAccess(t, Config{}, root)
-	definition, err := genericDefinition(client, model, cfg, access, nil)
+	definition, err := carbonDefinition(client, model, cfg, access, nil)
 	if err != nil {
-		t.Fatalf("genericDefinition() error = %v", err)
+		t.Fatalf("carbonDefinition() error = %v", err)
 	}
 	if got := strings.Count(definition.FingerprintInitial().EffectiveSystem, conversationSummaryConsumptionFragment); got != 1 {
 		t.Fatalf("summary fragment count = %d, want 1", got)
 	}
 	policy, ok := definition.CompactionPolicy()
 	if !ok || policy != conversationCompactionPolicy() {
-		t.Fatalf("CompactionPolicy() = %+v, configured=%v, want CodeRig policy", policy, ok)
+		t.Fatalf("CompactionPolicy() = %+v, configured=%v, want Carbon policy", policy, ok)
 	}
 }
 
-func TestNewSessionHasGenericAsSoleActivePrimer(t *testing.T) {
+func TestNewSessionHasCarbonAsSoleActivePrimer(t *testing.T) {
 	ctx := context.Background()
 	stores := mustHeadlessTestStores(t)
 	root := t.TempDir()
@@ -138,12 +138,12 @@ func TestNewSessionHasGenericAsSoleActivePrimer(t *testing.T) {
 	if len(roots) != 1 {
 		t.Fatalf("root loop count = %d, want 1 (%v)", len(roots), roots)
 	}
-	rootLoop, ok := roots[generic.Name]
+	rootLoop, ok := roots[carbon.Name]
 	if !ok {
-		t.Fatalf("sole root loop = %v, want %q", roots, generic.Name)
+		t.Fatalf("sole root loop = %v, want %q", roots, carbon.Name)
 	}
 	if agent.ActiveLoopID() != rootLoop.LoopID {
-		t.Fatalf("ActiveLoopID() = %v, want Generic root %v", agent.ActiveLoopID(), rootLoop.LoopID)
+		t.Fatalf("ActiveLoopID() = %v, want Carbon root %v", agent.ActiveLoopID(), rootLoop.LoopID)
 	}
 }
 

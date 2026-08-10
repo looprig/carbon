@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/looprig/coderig/internal/catalog/generic"
+	"github.com/looprig/carbon/internal/catalog/carbon"
 	"github.com/looprig/core/uuid"
 	"github.com/looprig/harness/pkg/event"
 	"github.com/looprig/harness/pkg/hustle"
@@ -30,9 +30,9 @@ import (
 func compactionFingerprintFor(t *testing.T, root string, client *fakeLLM, policy conversationContextPolicy, registration conversationHustleRegistration) event.ConfigFingerprint {
 	t.Helper()
 	access, cfg := headlessTestAccess(t, Config{}, root)
-	definition, err := genericTestDefinitionWithContextPolicy(client, testModel(), cfg, policy, access)
+	definition, err := carbonTestDefinitionWithContextPolicy(client, testModel(), cfg, policy, access)
 	if err != nil {
-		t.Fatalf("genericTestDefinitionWithContextPolicy() error = %v", err)
+		t.Fatalf("carbonTestDefinitionWithContextPolicy() error = %v", err)
 	}
 	stores := mustHeadlessTestStores(t)
 	assembly, err := buildRigWithRegistration(
@@ -118,10 +118,10 @@ func TestCompactionCompositionFingerprintSensitivityAndSecretExclusion(t *testin
 		{name: "compaction policy", client: &fakeLLM{}, policy: func() conversationContextPolicy { value := basePolicy; value.compaction.CompactAt--; return value }(), registration: baseRegistration},
 		{name: "summary revision", client: &fakeLLM{}, policy: func() conversationContextPolicy {
 			value := basePolicy
-			value.summaryRevision = "coderig-summary-consumption-v2"
+			value.summaryRevision = "carbon-summary-consumption-v2"
 			return value
 		}(), registration: baseRegistration},
-		{name: "hustle prompt revision", client: &fakeLLM{}, policy: basePolicy, registration: conversationHustleRegistration{definition: compactionDefinitionForFingerprint(t, "coderig-compaction-prompt-v2", conversationCompactionParserRevision), limits: baseRegistration.limits}},
+		{name: "hustle prompt revision", client: &fakeLLM{}, policy: basePolicy, registration: conversationHustleRegistration{definition: compactionDefinitionForFingerprint(t, "carbon-compaction-prompt-v2", conversationCompactionParserRevision), limits: baseRegistration.limits}},
 		{name: "hustle parser revision", client: &fakeLLM{}, policy: basePolicy, registration: conversationHustleRegistration{definition: compactionDefinitionForFingerprint(t, conversationCompactionPromptRevision, "harness-compaction-parser-v2"), limits: baseRegistration.limits}},
 		{name: "hustle lane limits", client: &fakeLLM{}, policy: basePolicy, registration: func() conversationHustleRegistration {
 			value := baseRegistration
@@ -297,7 +297,7 @@ func TestSecretRedactionAcrossModelCatalogueGatewayFingerprintAndDurableEvents(t
 		t.Fatalf("CompileAgentRuntimeCatalog: %v", err)
 	}
 	capture("runtime catalogue digest", compiled.RuntimeCatalog.Digest())
-	capture("runtime catalogue "+string(generic.Name), compiled.RuntimeCatalog.EntriesFor(generic.Name))
+	capture("runtime catalogue "+string(carbon.Name), compiled.RuntimeCatalog.EntriesFor(carbon.Name))
 	duplicateTargets := append(append([]ACPGatewaySource(nil), configured.ACP...), configured.ACP[0])
 	_, catalogueErr := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
 		GatewayTargets: duplicateTargets,
@@ -305,7 +305,7 @@ func TestSecretRedactionAcrossModelCatalogueGatewayFingerprintAndDurableEvents(t
 	})
 	captureErrorFormats("catalogue compilation failure", catalogueErr)
 
-	resolved, err := compiled.RuntimeCatalog.Resolve(generic.Name, "codex", "zeta", model.EffortHigh)
+	resolved, err := compiled.RuntimeCatalog.Resolve(carbon.Name, "codex", "zeta", model.EffortHigh)
 	if err != nil {
 		t.Fatalf("resolve gateway target: %v", err)
 	}
@@ -355,7 +355,7 @@ func TestSecretRedactionAcrossModelCatalogueGatewayFingerprintAndDurableEvents(t
 	if preflightCalled {
 		t.Fatal("ACP preflight callback was called during composition")
 	}
-	capture("static ACP catalogue", failedPreflight.Catalog.RuntimeCatalog.EntriesFor(generic.Name))
+	capture("static ACP catalogue", failedPreflight.Catalog.RuntimeCatalog.EntriesFor(carbon.Name))
 	captureErrorFormats("ACP bounded child failure", boundedACPChildError(errors.New("child failed: "+sentinel)))
 
 	fingerprintFields := agentFingerprintFields(Config{
@@ -391,8 +391,8 @@ func TestSecretRedactionAcrossModelCatalogueGatewayFingerprintAndDurableEvents(t
 }
 
 // TestAgentFingerprintFields asserts the rig-level config-fingerprint fields the
-// composition root injects via rig.WithFingerprintFields: AgentKind is the Generic
-// identity ("coderig:generic") and RuntimeSkills records the always-on workspace source. The
+// composition root injects via rig.WithFingerprintFields: AgentKind is the Carbon
+// identity ("carbon:carbon") and RuntimeSkills records the always-on workspace source. The
 // workspace-root field is NOT set here — the rig's exclusive-workspace placement folds the
 // canonical root into the fingerprint — so a restore still compares agent identity, skill
 // mode, AND (via the placement) the repo root.
@@ -411,21 +411,21 @@ func TestAgentFingerprintFields(t *testing.T) {
 		},
 		{
 			name: "access profile and digest fold in",
-			cfg:  Config{AccessProfile: AccessTrusted, AccessConfigRev: "coderig-access-v1:deadbeef"},
+			cfg:  Config{AccessProfile: AccessTrusted, AccessConfigRev: "carbon-access-v1:deadbeef"},
 			want: rig.ConfigFingerprintFields{
 				AgentKind:                 "carbon:carbon",
 				RuntimeSkills:             true,
-				NativePermissionPolicyRev: "coderig-access-v1:deadbeef",
+				NativePermissionPolicyRev: "carbon-access-v1:deadbeef",
 				AppFields:                 map[string]string{"access_profile": "trusted"},
 			},
 		},
 		{
 			name: "model configuration digest folds in",
-			cfg:  Config{ModelConfigRev: "coderig-models-v1:deadbeef"},
+			cfg:  Config{ModelConfigRev: "carbon-models-v1:deadbeef"},
 			want: rig.ConfigFingerprintFields{
 				AgentKind:         "carbon:carbon",
 				RuntimeSkills:     true,
-				RuntimeCatalogRev: "coderig-models-v1:deadbeef",
+				RuntimeCatalogRev: "carbon-models-v1:deadbeef",
 			},
 		},
 	}
@@ -457,7 +457,7 @@ func TestAgentFingerprintCombinesModelAndRuntimeCatalogRevisionsAsValidIdentifie
 	t.Parallel()
 
 	catalog, err := loop.NewRuntimeCatalog([]loop.RuntimeCatalogEntry{{
-		AgentType:     generic.Name,
+		AgentType:     carbon.Name,
 		AgentHarness:  "codex",
 		Profile:       "acp/codex",
 		Source:        loop.RuntimeSourceNative,
@@ -488,7 +488,7 @@ func TestAgentFingerprintBoundsProductionLengthModelAndRuntimeCatalogRevisions(t
 		t.Fatalf("NewRuntimeCatalog(nil) error = %v", err)
 	}
 	populatedCatalog, err := loop.NewRuntimeCatalog([]loop.RuntimeCatalogEntry{{
-		AgentType:     generic.Name,
+		AgentType:     carbon.Name,
 		AgentHarness:  "codex",
 		Profile:       "acp/codex",
 		Credential:    loop.CredentialNativeAuth,
@@ -545,7 +545,7 @@ func TestAccessConfigInvalidatesFingerprintFields(t *testing.T) {
 	}
 }
 
-// TestAgentKindFormat pins the Generic AgentKind used in the fingerprint.
+// TestAgentKindFormat pins the Carbon AgentKind used in the fingerprint.
 func TestAgentKindFormat(t *testing.T) {
 	t.Parallel()
 	want := "carbon:carbon"

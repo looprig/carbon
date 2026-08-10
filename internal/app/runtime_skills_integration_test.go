@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/looprig/coderig/internal/catalog/generic"
+	"github.com/looprig/carbon/internal/catalog/carbon"
 	"github.com/looprig/core/content"
 	"github.com/looprig/core/uuid"
 	"github.com/looprig/harness/pkg/event"
@@ -20,8 +20,8 @@ import (
 )
 
 // runtime_skills_integration_test.go is the workspace-skill END-TO-END acceptance: with
-// a real on-disk <root>/.skills/<name>/SKILL.md, the Generic
-// agent delegates to a Generic child, the child calls Skill{name:"<workspace-skill>"}, the
+// a real on-disk <root>/.skills/<name>/SKILL.md, the Carbon
+// agent delegates to a Carbon child, the child calls Skill{name:"<workspace-skill>"}, the
 // workspace load surfaces a HUMAN-GATED SkillLoadRequest (ScopeOnce) attributed to the
 // delegate loop, and after Approve the snapshot body is returned as the tool result.
 //
@@ -53,9 +53,9 @@ func TestRuntimeSkillsWorkspaceLoadGatedEndToEnd(t *testing.T) {
 	var skillResult string
 	client := &managedScript{}
 	client.fn = func(_ context.Context, req inference.Request) ([]content.Chunk, error) {
-		if requestHasRole(req, generic.Name) && phase == "initial" && step == 0 {
+		if requestHasRole(req, carbon.Name) && phase == "initial" && step == 0 {
 			step++
-			return startAgentCall("skill-delegate", `{"agent_type":"generic","instructions":"prepare for restore"}`), nil
+			return startAgentCall("skill-delegate", `{"agent_type":"carbon","instructions":"prepare for restore"}`), nil
 		}
 		if phase == "initial" {
 			return finalText("runtime skill child prepared"), nil
@@ -146,7 +146,7 @@ func TestRuntimeSkillsWorkspaceLoadGatedEndToEnd(t *testing.T) {
 				if ev.EventHeader().LoopID != childID || childID.IsZero() {
 					t.Fatalf("workspace-skill gate loop = %v, want delegate %v", ev.EventHeader().LoopID, childID)
 				}
-				// The untrusted workspace skill load (context.load) is Gated by CodeRig's
+				// The untrusted workspace skill load (context.load) is Gated by Carbon's
 				// product access source, so it surfaces one combined approval on the delegate
 				// loop; approving it once admits the exact skill identity.
 				if err := a.Approve(ctx, childID, ev.Gate.Subject.ToolExecutionID, gate.ApprovalApprove); err != nil {

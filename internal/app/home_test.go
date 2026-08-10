@@ -70,7 +70,7 @@ func TestLooprigHomeIsolatedFromRealHOME(t *testing.T) {
 	// isolated directory must live under the OS temp directory and carry
 	// TestMain's own MkdirTemp prefix -- never something that looks like a
 	// real user home directory (e.g. /Users/<name> or /home/<name>).
-	if !strings.HasPrefix(filepath.Base(testIsolatedHome), "coderig-internal-app-test-home-") {
+	if !strings.HasPrefix(filepath.Base(testIsolatedHome), "carbon-internal-app-test-home-") {
 		t.Fatalf("isolated HOME %q does not carry TestMain's temp-dir prefix", testIsolatedHome)
 	}
 	if !strings.HasPrefix(testIsolatedHome, os.TempDir()) {

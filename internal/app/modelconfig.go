@@ -260,7 +260,7 @@ func modelConfigFileFromV3(wire modelConfigV3Wire) (modelConfigFile, error) {
 // permission review section. It is parsing plumbing only: whether Model is
 // required, whether it names a configured alias, and whether review may
 // take effect for the session's access profile are all resolved later (see
-// Task 4 in docs/plans/2026-08-05-coderig-mcp-and-permission-review-implementation.md).
+// Task 4 in docs/plans/2026-08-05-carbon-mcp-and-permission-review-implementation.md).
 type permissionReviewConfig struct {
 	Model  string `json:"model"`
 	Strict bool   `json:"strict"`
@@ -399,7 +399,7 @@ type modelCapabilitiesConfig struct {
 	StructuredOutputWithTools bool `json:"structured_output_with_tools"`
 }
 
-// ModelConfigError reports a failure to locate or read CodeRig's global model
+// ModelConfigError reports a failure to locate or read Carbon's global model
 // configuration.
 type modelConfigErrorKind uint8
 
@@ -417,7 +417,7 @@ type ModelConfigError struct {
 
 func (e *ModelConfigError) Error() string {
 	operation := boundedModelConfigText(e.operation, maxModelConfigErrorOperationBytes)
-	message := "coderig: model configuration " + operation + " failed"
+	message := "carbon: model configuration " + operation + " failed"
 	if e.causeText == "" {
 		return boundedModelConfigText(message, maxModelConfigErrorBytes)
 	}
@@ -808,10 +808,10 @@ func boundedModelConfigText(value string, limit int) string {
 	return value[:end] + "..."
 }
 
-// defaultModelConfigPath computes CodeRig's models.json path under the
+// defaultModelConfigPath computes Carbon's models.json path under the
 // resolved looprig home directory: <home>/models.json. home is the
 // already-resolved looprig base directory (looprigHome's result, e.g.
-// ~/.looprig/coderig or Config.HomeDir) — this function no longer resolves HOME
+// ~/.looprig/carbon or Config.HomeDir) — this function no longer resolves HOME
 // itself, so it retains its (string, error) signature for call-site
 // consistency but cannot fail today.
 func defaultModelConfigPath(home string) (string, error) {

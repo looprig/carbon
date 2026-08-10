@@ -62,7 +62,7 @@ func TestMain(m *testing.M) {
 // via defer regardless of how m.Run() finishes, but never substitutes or
 // swallows the real exit code, which CI depends on to detect failures.
 func runPackageTestsWithIsolatedHome(m *testing.M) int {
-	home, err := os.MkdirTemp("", "coderig-internal-app-test-home-*")
+	home, err := os.MkdirTemp("", "carbon-internal-app-test-home-*")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "internal/app TestMain: create isolated HOME:", err)
 		return 1

@@ -8,7 +8,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/looprig/coderig/internal/catalog/generic"
+	"github.com/looprig/carbon/internal/catalog/carbon"
 	"github.com/looprig/core/content"
 	"github.com/looprig/core/uuid"
 	"github.com/looprig/harness/pkg/command"
@@ -166,9 +166,9 @@ func task31ProductionDefinition(t *testing.T, client inference.Client, probe *de
 	t.Helper()
 	root := t.TempDir()
 	access, cfg := headlessTestAccess(t, cfg, root)
-	definition, err := genericTestDefinitionWithAdditionalTools(client, testModel(), cfg, access, []tool.Definition{probe.definition()})
+	definition, err := carbonTestDefinitionWithAdditionalTools(client, testModel(), cfg, access, []tool.Definition{probe.definition()})
 	if err != nil {
-		t.Fatalf("genericTestDefinitionWithAdditionalTools() error = %v", err)
+		t.Fatalf("carbonTestDefinitionWithAdditionalTools() error = %v", err)
 	}
 	return definition, root, cfg
 }
@@ -224,9 +224,9 @@ func task31PrimerRootIDs(t *testing.T, store *sessionstore.Store, sessionID uuid
 			rootIDs[ev.AgentName] = ev.LoopID
 		}
 	}
-	wantPrimers := []identity.AgentName{generic.Name}
+	wantPrimers := []identity.AgentName{carbon.Name}
 	if len(rootIDs) != len(wantPrimers) {
-		t.Fatalf("durable root loops = %v, want one Generic root", rootIDs)
+		t.Fatalf("durable root loops = %v, want one Carbon root", rootIDs)
 	}
 	for _, name := range wantPrimers {
 		if _, ok := rootIDs[name]; !ok {
@@ -238,7 +238,7 @@ func task31PrimerRootIDs(t *testing.T, store *sessionstore.Store, sessionID uuid
 
 func assertTask31PrimersPresent(t *testing.T, rootIDs map[identity.AgentName]uuid.UUID, lookup func(uuid.UUID) (loop.Handle, bool)) {
 	t.Helper()
-	for _, name := range []identity.AgentName{generic.Name} {
+	for _, name := range []identity.AgentName{carbon.Name} {
 		if _, ok := lookup(rootIDs[name]); !ok {
 			t.Fatalf("primer %q is missing", name)
 		}
@@ -261,12 +261,12 @@ func TestACPCompositionRestoresCodexRuntimeThroughCurrentCatalog(t *testing.T) {
 	}
 	rootIDs := task31PrimerRootIDs(t, stores.session, live.SessionID())
 	assertTask31PrimersPresent(t, rootIDs, live.Loop)
-	rootID := rootIDs[generic.Name]
+	rootID := rootIDs[carbon.Name]
 	if live.ActiveLoop().ID() != rootID {
-		t.Fatalf("active primer = %v, want Generic root %v", live.ActiveLoop().ID(), rootID)
+		t.Fatalf("active primer = %v, want Carbon root %v", live.ActiveLoop().ID(), rootID)
 	}
 	started, err := probe.captured().Execute(ctx, tool.DelegateRequest{
-		Operation: tool.DelegateStart, AgentType: string(generic.Name), Message: "review", WaitForResponse: false, Runtime: codexMaxRuntime(),
+		Operation: tool.DelegateStart, AgentType: string(carbon.Name), Message: "review", WaitForResponse: false, Runtime: codexMaxRuntime(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -316,7 +316,7 @@ func TestACPCompositionRestoresCodexRuntimeThroughCurrentCatalog(t *testing.T) {
 	}
 	assertTask31PrimersPresent(t, rootIDs, restored.Loop)
 	if restored.ActiveLoop().ID() != rootID {
-		t.Fatalf("restored active primer = %v, want Generic root %v", restored.ActiveLoop().ID(), rootID)
+		t.Fatalf("restored active primer = %v, want Carbon root %v", restored.ActiveLoop().ID(), rootID)
 	}
 }
 
@@ -335,12 +335,12 @@ func TestACPCompositionMissingLunaTombstonesChildAndKeepsPrimer(t *testing.T) {
 	}
 	rootIDs := task31PrimerRootIDs(t, stores.session, live.SessionID())
 	assertTask31PrimersPresent(t, rootIDs, live.Loop)
-	rootID := rootIDs[generic.Name]
+	rootID := rootIDs[carbon.Name]
 	if live.ActiveLoop().ID() != rootID {
-		t.Fatalf("active primer = %v, want Generic root %v", live.ActiveLoop().ID(), rootID)
+		t.Fatalf("active primer = %v, want Carbon root %v", live.ActiveLoop().ID(), rootID)
 	}
 	started, err := probe.captured().Execute(ctx, tool.DelegateRequest{
-		Operation: tool.DelegateStart, AgentType: string(generic.Name), Message: "review", WaitForResponse: false, Runtime: codexMaxRuntime(),
+		Operation: tool.DelegateStart, AgentType: string(carbon.Name), Message: "review", WaitForResponse: false, Runtime: codexMaxRuntime(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -355,7 +355,7 @@ func TestACPCompositionMissingLunaTombstonesChildAndKeepsPrimer(t *testing.T) {
 	})
 	missingComposition := testACPComposition(t, missingCatalog, &acpCompositionRecorder{backend: newACPCompositionBackend()})
 	missingCfg := Config{ACPChildren: missingComposition, RuntimeCatalog: missingCatalog}
-	// Rebuild the same CodeRig topology with the current, deliberately incomplete catalog.
+	// Rebuild the same Carbon topology with the current, deliberately incomplete catalog.
 	client := &managedScript{fn: func(context.Context, inference.Request) ([]content.Chunk, error) { return finalText("unused"), nil }}
 	probe2 := &delegateProbe{}
 	definition, root, missingCfg := task31ProductionDefinition(t, client, probe2, missingCfg)
@@ -374,7 +374,7 @@ func TestACPCompositionMissingLunaTombstonesChildAndKeepsPrimer(t *testing.T) {
 	defer func() { _ = restored.Shutdown(ctx) }()
 	assertTask31PrimersPresent(t, rootIDs, restored.Loop)
 	if restored.ActiveLoop().ID() != rootID {
-		t.Fatalf("restored active primer = %v, want Generic root %v", restored.ActiveLoop().ID(), rootID)
+		t.Fatalf("restored active primer = %v, want Carbon root %v", restored.ActiveLoop().ID(), rootID)
 	}
 	if _, ok := restored.Loop(childID); !ok {
 		t.Fatal("missing-runtime child was not retained as a tombstone")
@@ -405,7 +405,7 @@ func TestACPCompositionWithoutProfilesUsesManagedNativeFallback(t *testing.T) {
 				}
 			}
 			step++
-			return startAgentCall("no-acp", `{"agent_type":"generic","instructions":"do it","wait_for_response":false}`), nil
+			return startAgentCall("no-acp", `{"agent_type":"carbon","instructions":"do it","wait_for_response":false}`), nil
 		}
 		result = lastToolText(req)
 		return finalText("parent done"), nil

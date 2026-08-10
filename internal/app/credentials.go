@@ -1,6 +1,6 @@
 package app
 
-// This file is the CodeRig credential composition boundary.  A production
+// This file is the Carbon credential composition boundary.  A production
 // model configuration names only a safe credential reference; this package is
 // the only place that resolves that reference, reads the explicit local
 // stores, and turns the resulting source into an inference client.  In
@@ -36,9 +36,9 @@ var (
 	// These errors are deliberately package-owned and bounded.  They are used
 	// by the session and CLI boundaries without exposing filesystem paths,
 	// provider responses, or secret material.
-	ErrCredentialLifecycleClosed = errors.New("coderig: credential lifecycle closed")
-	ErrCredentialLogoutActive    = errors.New("coderig: credential logout is waiting for active sessions")
-	ErrCredentialLogoutBlocked   = errors.New("coderig: credential is unavailable during logout")
+	ErrCredentialLifecycleClosed = errors.New("carbon: credential lifecycle closed")
+	ErrCredentialLogoutActive    = errors.New("carbon: credential logout is waiting for active sessions")
+	ErrCredentialLogoutBlocked   = errors.New("carbon: credential is unavailable during logout")
 )
 
 // CredentialCompositionError reports a fail-closed model/source binding
@@ -53,9 +53,9 @@ type CredentialCompositionError struct {
 
 func (e *CredentialCompositionError) Error() string {
 	if e == nil {
-		return "coderig: credential composition failed"
+		return "carbon: credential composition failed"
 	}
-	message := "coderig: credential composition failed"
+	message := "carbon: credential composition failed"
 	if e.Reference.Valid() {
 		message += " for " + e.Reference.String()
 	}
@@ -79,7 +79,7 @@ func (e *CredentialCompositionError) Format(state fmt.State, _ rune) {
 	_, _ = io.WriteString(state, e.Error())
 }
 
-// CredentialUnsupportedError is used for providers for which CodeRig has no
+// CredentialUnsupportedError is used for providers for which Carbon has no
 // sanctioned registration or source implementation.  Login callers receive
 // the provider package's typed unsupported-registration error for the two
 // currently gated subscription providers; this type covers all other names.
@@ -90,7 +90,7 @@ type CredentialUnsupportedError struct {
 
 func (e *CredentialUnsupportedError) Error() string {
 	if e == nil {
-		return "coderig: credential operation unsupported"
+		return "carbon: credential operation unsupported"
 	}
 	provider := safeCredentialText(e.Provider)
 	if provider == "" {
@@ -100,7 +100,7 @@ func (e *CredentialUnsupportedError) Error() string {
 	if operation == "" {
 		operation = "operation"
 	}
-	return "coderig: credential " + operation + " unsupported for provider " + provider
+	return "carbon: credential " + operation + " unsupported for provider " + provider
 }
 
 func safeCredentialText(value string) string {
@@ -165,24 +165,24 @@ type CredentialLogoutError struct {
 
 func (e *CredentialLogoutError) Error() string {
 	if e == nil {
-		return "coderig: credential logout failed"
+		return "carbon: credential logout failed"
 	}
 	if e.Canceled {
-		return "coderig: credential logout canceled"
+		return "carbon: credential logout canceled"
 	}
 	if e.Warning {
-		return "coderig: credential logout completed with local durability warning"
+		return "carbon: credential logout completed with local durability warning"
 	}
 	if e.Catalog && e.State {
-		return "coderig: credential logout could not delete local catalog and state"
+		return "carbon: credential logout could not delete local catalog and state"
 	}
 	if e.Catalog {
-		return "coderig: credential logout could not delete local catalog"
+		return "carbon: credential logout could not delete local catalog"
 	}
 	if e.State {
-		return "coderig: credential logout could not delete local state"
+		return "carbon: credential logout could not delete local state"
 	}
-	return "coderig: credential logout failed"
+	return "carbon: credential logout failed"
 }
 
 func (e *CredentialLogoutError) Unwrap() error {
@@ -290,9 +290,9 @@ func (s *apiKeySource) Close() error {
 
 func (s *apiKeySource) String() string {
 	if s == nil {
-		return "coderig: nil credential source"
+		return "carbon: nil credential source"
 	}
-	return "coderig: api-key credential source"
+	return "carbon: api-key credential source"
 }
 
 func (s *apiKeySource) Format(state fmt.State, _ rune) {
@@ -310,7 +310,7 @@ func (l apiKeyLease) Descriptor() credentials.Descriptor { return l.descriptor }
 func (l apiKeyLease) ExpiresAt() time.Time               { return time.Time{} }
 func (l apiKeyLease) Authorizer() httpauth.Authorizer    { return l.authorizer }
 
-func (l apiKeyLease) String() string { return "coderig: immutable api-key lease" }
+func (l apiKeyLease) String() string { return "carbon: immutable api-key lease" }
 
 func (l apiKeyLease) Format(state fmt.State, _ rune) {
 	_, _ = io.WriteString(state, l.String())
@@ -480,7 +480,7 @@ func (l *credentialRegistryLease) Release() error {
 }
 
 // newCredentialRuntime is intentionally explicit: the caller supplies the
-// already-resolved CodeRig home. No environment or user-home lookup occurs in
+// already-resolved Carbon home. No environment or user-home lookup occurs in
 // this constructor.
 func newCredentialRuntime(home string) (*credentialRuntime, error) {
 	canonical, err := canonicalCredentialHome(home)
@@ -606,14 +606,14 @@ func credentialDescriptorsMatchPolicy(actual, expected credentials.Descriptor) b
 	return actual.BindingCanonical() == expected.BindingCanonical()
 }
 
-// newAPIKeySource is the only API-key factory installed by CodeRig. It reads
+// newAPIKeySource is the only API-key factory installed by Carbon. It reads
 // one explicit state reference from the injected resolver and immediately
 // clears the mutable copy returned by Secret.Bytes.
 func newAPIKeySource(ctx context.Context, input credentials.FactoryInput) (credentials.Source, error) {
 	if ctx == nil || input.Resolver == nil {
 		return nil, credentials.ErrFactoryConstruction
 	}
-	// CodeRig's current local factory owns only explicit API-key records. OAuth,
+	// Carbon's current local factory owns only explicit API-key records. OAuth,
 	// SigV4, and workload-identity records require their provider-specific
 	// refresh/registration implementation; treating an opaque token as a
 	// static API key would silently weaken that policy.

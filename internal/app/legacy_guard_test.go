@@ -27,7 +27,7 @@ const (
 
 // These names and members are deliberate rejection fixtures: the guard scans
 // source for retired manual-wiring APIs and must not be mistaken for live
-// CodeRig agent identities or delegation paths.
+// Carbon agent identities or delegation paths.
 var forbiddenIdentifiers = map[string]string{
 	"swarmSpawner":        "custom delegation spawner",
 	"subagentRunner":      "custom delegation runner",

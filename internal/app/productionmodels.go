@@ -33,9 +33,9 @@ type configuredClientConstructionError struct {
 
 func (e *configuredClientConstructionError) Error() string {
 	if e == nil {
-		return "coderig: configured model client construction failed"
+		return "carbon: configured model client construction failed"
 	}
-	return fmt.Sprintf("coderig: construct configured model alias %q provider %q", e.Alias, e.Provider)
+	return fmt.Sprintf("carbon: construct configured model alias %q provider %q", e.Alias, e.Provider)
 }
 
 func (e *configuredClientConstructionError) Unwrap() error {

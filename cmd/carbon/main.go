@@ -1,8 +1,8 @@
-// Command coderig is the CodeRig TUI entry point and composition root. It parses the CLI
+// Command carbon is the Carbon TUI entry point and composition root. It parses the CLI
 // invocation (--list / --resume / --data-dir), opens the session-store factory (one on-disk
 // fsstore-backed session store shared by every session), and either prints the session list
 // (--list) or hands the shared TUI runtime (runtime.Run) a thunk that opens/resumes the persisted
-// Generic session. It is wiring only: all runtime behavior (logging, signal teardown, the TUI)
+// Carbon session. It is wiring only: all runtime behavior (logging, signal teardown, the TUI)
 // lives in tui, and all Session/persistence behavior lives in the internal app package.
 package main
 
@@ -18,7 +18,7 @@ import (
 	"syscall"
 	"time"
 
-	coderig "github.com/looprig/coderig/internal/app"
+	carbon "github.com/looprig/carbon/internal/app"
 	"github.com/looprig/core/uuid"
 	"github.com/looprig/harness/pkg/sessionstore"
 	"github.com/looprig/sandbox"
@@ -26,9 +26,9 @@ import (
 	"github.com/looprig/tui/runtime"
 )
 
-// bannerName is the CodeRig's user-facing banner name shown in the TUI session-ready
+// bannerName is the Carbon's user-facing banner name shown in the TUI session-ready
 // notice (passed through runtime.Banner).
-const bannerName = "CodeRig"
+const bannerName = "Carbon"
 
 // Process exit codes main returns via os.Exit. exitOK / exitRuntime mirror the runtime's
 // codes; exitUsage is the boundary-failure code for a malformed invocation or a
@@ -44,7 +44,7 @@ const (
 // (--data-dir; empty = the ~/.looprig/store default), the selected access profile
 // (--access-profile readonly|trusted|unconfined; default readonly), and the explicit
 // unconfined acknowledgement (--acknowledge-unconfined; required to select unconfined). There
-// is no positional agent name because CodeRig is one fixed Rig.
+// is no positional agent name because Carbon is one fixed Rig.
 type cliFlags struct {
 	list             bool
 	credentialList   bool
@@ -54,7 +54,7 @@ type cliFlags struct {
 	dataDir          string
 	// accessProfile is the session-fixed product access profile, validated at this
 	// boundary against exactly the three known names before the Rig is constructed.
-	accessProfile coderig.AccessProfile
+	accessProfile carbon.AccessProfile
 	// acknowledgeUnconfined is the explicit opt-in required to select the unconfined
 	// profile (direct host execution). Selecting unconfined without it fails closed.
 	acknowledgeUnconfined bool
@@ -71,16 +71,16 @@ type FlagParseError struct {
 
 func (e *FlagParseError) Error() string {
 	if e.Cause != nil {
-		return "coderig: " + e.Reason + ": " + e.Cause.Error()
+		return "carbon: " + e.Reason + ": " + e.Cause.Error()
 	}
-	return "coderig: " + e.Reason
+	return "carbon: " + e.Reason
 }
 func (e *FlagParseError) Unwrap() error { return e.Cause }
 
 // parseFlags parses args (os.Args[1:]) into a cliFlags, validating every value at this
 // boundary: --resume must be a canonical UUID (parsed via uuid.UnmarshalText, fail-closed),
 // --list and --resume are mutually exclusive (a list-and-resume request is ambiguous), and
-// no positional args are accepted because CodeRig is one fixed Rig. It
+// no positional args are accepted because Carbon is one fixed Rig. It
 // uses an isolated FlagSet (ContinueOnError, discarded output) so a bad flag returns a
 // typed error rather than calling os.Exit, keeping main the single exit point and making
 // the parser unit-testable.
@@ -89,7 +89,7 @@ func parseFlags(args []string) (cliFlags, error) {
 	if commandErr != "" {
 		return cliFlags{}, &FlagParseError{Reason: commandErr}
 	}
-	fs := flag.NewFlagSet("coderig", flag.ContinueOnError)
+	fs := flag.NewFlagSet("carbon", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	var (
 		list                  = fs.Bool("list", false, "list resumable sessions and exit")
@@ -102,14 +102,14 @@ func parseFlags(args []string) (cliFlags, error) {
 		credentialLogoutAlias = fs.String("credential-logout", "", "explicitly log out credential://provider/name")
 		resume                = fs.String("resume", "", "resume the session with this id")
 		dataDir               = fs.String("data-dir", "", "session store root (default ~/.looprig/store)")
-		accessProfile         = fs.String("access-profile", string(coderig.DefaultAccessProfile), "session access profile: readonly|trusted|unconfined")
+		accessProfile         = fs.String("access-profile", string(carbon.DefaultAccessProfile), "session access profile: readonly|trusted|unconfined")
 		ackUnconfined         = fs.Bool("acknowledge-unconfined", false, "acknowledge that --access-profile unconfined runs commands directly on the host with no OS confinement")
 	)
 	if err := fs.Parse(args); err != nil {
 		return cliFlags{}, &FlagParseError{Reason: "invalid flags", Cause: err}
 	}
 
-	// CodeRig takes no positional args: reject any so a typo'd flag (e.g. a bare "list"
+	// Carbon takes no positional args: reject any so a typo'd flag (e.g. a bare "list"
 	// instead of "-list") fails loud at the boundary rather than being silently ignored.
 	if fs.NArg() > 0 {
 		return cliFlags{}, &FlagParseError{Reason: "unexpected argument " + strconv.Quote(fs.Arg(0))}
@@ -119,14 +119,14 @@ func parseFlags(args []string) (cliFlags, error) {
 	// three known names are accepted, so an unknown value fails closed rather than
 	// silently defaulting to a surprising authority. The name is validated before the Rig
 	// is constructed.
-	profile, ok := coderig.ParseAccessProfile(strings.ToLower(strings.TrimSpace(*accessProfile)))
+	profile, ok := carbon.ParseAccessProfile(strings.ToLower(strings.TrimSpace(*accessProfile)))
 	if !ok {
 		return cliFlags{}, &FlagParseError{Reason: "invalid --access-profile " + strconv.Quote(*accessProfile) + " (want readonly|trusted|unconfined)"}
 	}
 
 	// Unconfined requires an explicit, separate acknowledgement: selecting direct host
 	// execution by accident must be impossible.
-	if profile == coderig.AccessUnconfined && !*ackUnconfined {
+	if profile == carbon.AccessUnconfined && !*ackUnconfined {
 		return cliFlags{}, &FlagParseError{Reason: "--access-profile unconfined requires --acknowledge-unconfined (it runs commands directly on the host with no OS confinement)"}
 	}
 
@@ -250,7 +250,7 @@ func normalizeCredentialCommandArgs(args []string) ([]string, string) {
 // index only — no session lease, no replay — so it is cheap and cannot contend a running
 // session. The catalog returns a single error (not per-entry), and an empty store prints a
 // friendly note rather than nothing.
-func listSessions(ctx context.Context, factory *coderig.SessionStoreFactory, w io.Writer) error {
+func listSessions(ctx context.Context, factory *carbon.SessionStoreFactory, w io.Writer) error {
 	metas, err := factory.List(ctx)
 	if err != nil {
 		return err
@@ -278,7 +278,7 @@ func printSessions(w io.Writer, metas []sessionstore.SessionMeta) error {
 	return nil
 }
 
-func printCredentials(w io.Writer, summaries []coderig.CredentialSummary) error {
+func printCredentials(w io.Writer, summaries []carbon.CredentialSummary) error {
 	if len(summaries) == 0 {
 		fmt.Fprintln(w, "no credentials yet")
 		return nil
@@ -290,7 +290,7 @@ func printCredentials(w io.Writer, summaries []coderig.CredentialSummary) error 
 	return nil
 }
 
-func printCredentialLogout(w io.Writer, outcome coderig.CredentialLogoutOutcome) error {
+func printCredentialLogout(w io.Writer, outcome carbon.CredentialLogoutOutcome) error {
 	remote := "not-attempted"
 	if outcome.RemoteRevocationAttempted {
 		if outcome.RemoteRevoked {
@@ -316,10 +316,10 @@ func boolStatus(value bool) string {
 // sessionOpen is the SessionStoreFactory.Open-shaped process composition seam. Production
 // binds it directly to the shared factory; tests can observe selector decisions without
 // opening an on-disk store.
-type sessionOpen func(context.Context, coderig.SessionSelector, coderig.Config) (tui.Agent, error)
+type sessionOpen func(context.Context, carbon.SessionSelector, carbon.Config) (tui.Agent, error)
 
 // openThunk builds the tui.OpenAgent the runtime drives. It returns a closure that opens a
-// persisted Generic session: the FIRST call honors resume (a non-zero id restores that
+// persisted Carbon session: the FIRST call honors resume (a non-zero id restores that
 // session); every later call (a /clear reopen) starts a fresh NEW session, so /clear never
 // re-restores the same id. The CLI serializes lifecycle handoff by closing the live session
 // before invoking this opener for /clear. cfg applies to every open, including a /clear
@@ -328,10 +328,10 @@ type sessionOpen func(context.Context, coderig.SessionSelector, coderig.Config) 
 // /clear reopen's new session is independent of the one it replaces. The returned thunk yields
 // a tui.Agent (the persisted session adapter exposes current active selection and independent
 // focused-loop routing for the CLI).
-func openThunk(openSession sessionOpen, resume uuid.UUID, cfg coderig.Config) tui.OpenAgent {
+func openThunk(openSession sessionOpen, resume uuid.UUID, cfg carbon.Config) tui.OpenAgent {
 	var opened bool
 	return func(c context.Context) (tui.Agent, error) {
-		sel := coderig.SessionSelector{}
+		sel := carbon.SessionSelector{}
 		if !opened {
 			sel.Resume = resume // only the first open resumes; /clear reopens start fresh
 		}
@@ -366,11 +366,11 @@ func run(ctx context.Context, args []string, out, errOut io.Writer) int {
 		return exitUsage
 	}
 
-	// Resolve CodeRig's home exactly once for this process invocation. The
+	// Resolve Carbon's home exactly once for this process invocation. The
 	// resolved absolute value is carried in Config so credential, model, and
 	// session composition never repeat ambient home discovery.
-	cfg := coderig.Config{AccessProfile: flags.accessProfile}
-	home, herr := coderig.LooprigHome(cfg)
+	cfg := carbon.Config{AccessProfile: flags.accessProfile}
+	home, herr := carbon.LooprigHome(cfg)
 	if herr != nil {
 		fmt.Fprintln(errOut, "home:", herr)
 		return exitFailed
@@ -381,7 +381,7 @@ func run(ctx context.Context, args []string, out, errOut io.Writer) int {
 	// (relative to cfg's resolved home directory).
 	dataDir := flags.dataDir
 	if dataDir == "" {
-		dd, derr := coderig.DefaultDataDirIn(home)
+		dd, derr := carbon.DefaultDataDirIn(home)
 		if derr != nil {
 			fmt.Fprintln(errOut, "persistence:", derr)
 			return exitFailed
@@ -393,7 +393,7 @@ func run(ctx context.Context, args []string, out, errOut io.Writer) int {
 	// do not construct a session store or start the TUI, and login is gated by
 	// the provider registration policy before any browser/network path exists.
 	if flags.credentialList {
-		summaries, err := coderig.ListCredentials(ctx, cfg)
+		summaries, err := carbon.ListCredentials(ctx, cfg)
 		if err != nil {
 			fmt.Fprintln(errOut, "credentials list:", err)
 			return exitFailed
@@ -405,7 +405,7 @@ func run(ctx context.Context, args []string, out, errOut io.Writer) int {
 		return exitOK
 	}
 	if flags.credentialLogin != "" {
-		if err := coderig.LoginCredential(ctx, cfg, flags.credentialLogin); err != nil {
+		if err := carbon.LoginCredential(ctx, cfg, flags.credentialLogin); err != nil {
 			fmt.Fprintln(errOut, "credentials login:", err)
 			return exitFailed
 		}
@@ -413,7 +413,7 @@ func run(ctx context.Context, args []string, out, errOut io.Writer) int {
 		return exitOK
 	}
 	if flags.credentialLogout != "" {
-		outcome, err := coderig.LogoutCredential(ctx, cfg, flags.credentialLogout)
+		outcome, err := carbon.LogoutCredential(ctx, cfg, flags.credentialLogout)
 		if outcome.Reference != "" {
 			if printErr := printCredentialLogout(out, outcome); printErr != nil {
 				fmt.Fprintln(errOut, "credentials logout:", printErr)
@@ -431,7 +431,7 @@ func run(ctx context.Context, args []string, out, errOut io.Writer) int {
 	// on-disk store shared by every session. A failure to open it fails loud — persistence is
 	// the point. It is closed once here on return, after runtime.Run (and every session it opened)
 	// finishes.
-	factory, perr := coderig.NewSessionStoreFactory(dataDir)
+	factory, perr := carbon.NewSessionStoreFactory(dataDir)
 	if perr != nil {
 		fmt.Fprintln(errOut, "persistence:", perr)
 		return exitFailed
@@ -454,8 +454,8 @@ func run(ctx context.Context, args []string, out, errOut io.Writer) int {
 	// Selecting unconfined execution surfaces an explicit warning before the session opens:
 	// the profile runs commands directly on the host with the invoking user's authority and
 	// no OS confinement. The acknowledgement flag was already required at the boundary.
-	if flags.accessProfile == coderig.AccessUnconfined {
-		fmt.Fprintln(errOut, "coderig: WARNING: --access-profile unconfined runs commands directly on the host with no OS confinement (real HOME, full filesystem and network authority).")
+	if flags.accessProfile == carbon.AccessUnconfined {
+		fmt.Fprintln(errOut, "carbon: WARNING: --access-profile unconfined runs commands directly on the host with no OS confinement (real HOME, full filesystem and network authority).")
 	}
 
 	// The initial open honors --resume; every /clear reopen starts a FRESH persisted session.
@@ -463,7 +463,7 @@ func run(ctx context.Context, args []string, out, errOut io.Writer) int {
 	// teardown, the TUI, the session-identifying startup banner, and bounded Close. cfg was
 	// already built above (the single point of Config construction this run resolves both the
 	// store root and the session-opening modes through).
-	open := openThunk(func(ctx context.Context, sel coderig.SessionSelector, cfg coderig.Config) (tui.Agent, error) {
+	open := openThunk(func(ctx context.Context, sel carbon.SessionSelector, cfg carbon.Config) (tui.Agent, error) {
 		return factory.Open(ctx, sel, cfg)
 	}, flags.resume, cfg)
 	runCLI := func(ctx context.Context, open tui.OpenAgent, banner runtime.Banner) int {

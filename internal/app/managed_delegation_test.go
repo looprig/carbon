@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/looprig/coderig/internal/catalog/generic"
+	"github.com/looprig/carbon/internal/catalog/carbon"
 	"github.com/looprig/core/content"
 	"github.com/looprig/core/uuid"
 	"github.com/looprig/harness/pkg/event"
@@ -147,21 +147,21 @@ func toolNamesFromRequest(req inference.Request) []string {
 }
 
 func requestHasRole(req inference.Request, name identity.AgentName) bool {
-	return name == generic.Name && strings.Contains(req.System, "You are Generic")
+	return name == carbon.Name && strings.Contains(req.System, "You are Carbon")
 }
 
-// TestManagedAgentSelfDelegates proves Generic is both the primer and the only
+// TestManagedAgentSelfDelegates proves Carbon is both the primer and the only
 // managed delegate target, while harness still owns depth/quota enforcement.
 func TestManagedAgentSelfDelegates(t *testing.T) {
 	client := &managedScript{}
 	calls := 0
 	client.fn = func(_ context.Context, req inference.Request) ([]content.Chunk, error) {
 		calls++
-		if !requestHasRole(req, generic.Name) {
-			return nil, fmt.Errorf("request did not carry Generic identity")
+		if !requestHasRole(req, carbon.Name) {
+			return nil, fmt.Errorf("request did not carry Carbon identity")
 		}
 		if calls == 1 {
-			return startAgentCall("generic-child", `{"agent_type":"generic","instructions":"inspect"}`), nil
+			return startAgentCall("generic-child", `{"agent_type":"carbon","instructions":"inspect"}`), nil
 		}
 		return finalText("generic child complete"), nil
 	}
@@ -175,7 +175,7 @@ func TestManagedAgentSelfDelegates(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = agent.Close(context.Background()) })
 	if got := runManagedTurn(t, agent, "delegate focused inspection"); got != "generic child complete" {
-		t.Fatalf("Generic self-delegation result = %q", got)
+		t.Fatalf("Carbon self-delegation result = %q", got)
 	}
 }
 

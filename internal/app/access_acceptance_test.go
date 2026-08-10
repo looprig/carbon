@@ -47,7 +47,7 @@ func mustLoopProvenance(t *testing.T) context.Context {
 // grantFreeRequest builds a single-requirement prepared request that needs no
 // executor grant (no GrantClass/GrantTarget), so Authorize observes only the
 // profile's structural access decision (Allow/Deny/Gated) without minting a
-// token. Kind/Scope route to the session's Generic sandbox profile.
+// token. Kind/Scope route to the session's Carbon sandbox profile.
 func grantFreeRequest(kind, scope, match string) tool.Request {
 	return tool.Request{
 		ToolName: "Probe",
@@ -88,7 +88,7 @@ func observeGate(t *testing.T, ctx context.Context, g loop.AccessGate, req tool.
 }
 
 // TestAcceptanceProfileGateBehavior opens a session's access wiring under EACH of
-// the three product profiles and observes Generic's assembled gate decision
+// the three product profiles and observes Carbon's assembled gate decision
 // for host read, host write, workspace write, and network — the effective
 // authority each profile grants end-to-end (not just the profile struct). It also
 // proves host access is DENIED under ReadOnly (the OS-enforcement counterpart —
@@ -132,16 +132,16 @@ func TestAcceptanceProfileGateBehavior(t *testing.T) {
 			ctx := mustLoopProvenance(t)
 
 			if got := observeGate(t, ctx, access.gate, hostRead); got != tc.hostRead {
-				t.Errorf("Generic host read = %d, want %d", got, tc.hostRead)
+				t.Errorf("Carbon host read = %d, want %d", got, tc.hostRead)
 			}
 			if got := observeGate(t, ctx, access.gate, hostWrite); got != tc.hostWrite {
-				t.Errorf("Generic host write = %d, want %d", got, tc.hostWrite)
+				t.Errorf("Carbon host write = %d, want %d", got, tc.hostWrite)
 			}
 			if got := observeGate(t, ctx, access.gate, workspaceWrite); got != tc.workspaceWrite {
-				t.Errorf("Generic workspace write = %d, want %d", got, tc.workspaceWrite)
+				t.Errorf("Carbon workspace write = %d, want %d", got, tc.workspaceWrite)
 			}
 			if got := observeGate(t, ctx, access.gate, network); got != tc.network {
-				t.Errorf("Generic network = %d, want %d", got, tc.network)
+				t.Errorf("Carbon network = %d, want %d", got, tc.network)
 			}
 
 		})
@@ -150,7 +150,7 @@ func TestAcceptanceProfileGateBehavior(t *testing.T) {
 
 // commandRequest mirrors the tools/bash command requirement (commandRequirement)
 // so the test exercises the SAME shapes the assembled Bash tool prepares, but
-// wired to CodeRig's product family catalog. When the command is a catalog member
+// wired to Carbon's product family catalog. When the command is a catalog member
 // the reusable candidate is the family prefix; otherwise it is the exact command.
 func commandRequest(t *testing.T, root, command string) tool.Request {
 	t.Helper()
@@ -186,8 +186,8 @@ func commandRequest(t *testing.T, root, command string) tool.Request {
 }
 
 // TestAcceptanceFamilyAndExactApprovalFlow drives the INTERACTIVE assembled
-// Generic gate + workspace permission store end-to-end: a `git log` invocation is
-// approved-always, persisting CodeRig's product family rule (git log/status/diff/
+// Carbon gate + workspace permission store end-to-end: a `git log` invocation is
+// approved-always, persisting Carbon's product family rule (git log/status/diff/
 // show/push), so a DIFFERENT `git log` invocation is reused with no second prompt,
 // while a non-catalog `git commit` gets only an exact candidate and still prompts.
 // This asserts the wired family catalog is the product one and that a family
@@ -265,7 +265,7 @@ func TestAcceptanceFamilyAndExactApprovalFlow(t *testing.T) {
 	}
 }
 
-func TestAcceptanceGenericPermissionApprovalReachesStoreAndExecutorGrantPath(t *testing.T) {
+func TestAcceptanceCarbonPermissionApprovalReachesStoreAndExecutorGrantPath(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("HTTPS_PROXY", "")
@@ -312,7 +312,7 @@ func TestAcceptanceGenericPermissionApprovalReachesStoreAndExecutorGrantPath(t *
 		t.Fatalf("granted execution = stdout %q exit %d error %v", stdout, exitCode, err)
 	}
 
-	permissionPath, err := defaultPermissionsPath(filepath.Join(home, ".looprig", "coderig"), root)
+	permissionPath, err := defaultPermissionsPath(filepath.Join(home, ".looprig", "carbon"), root)
 	if err != nil {
 		t.Fatalf("defaultPermissionsPath: %v", err)
 	}
@@ -336,9 +336,9 @@ func TestAcceptanceGenericPermissionApprovalReachesStoreAndExecutorGrantPath(t *
 }
 
 // TestAcceptanceProcessEnabledBashSharesExecutorAcrossGateAndBuild extends
-// TestAcceptanceGenericPermissionApprovalReachesStoreAndExecutorGrantPath's
+// TestAcceptanceCarbonPermissionApprovalReachesStoreAndExecutorGrantPath's
 // grant-redemption proof through the REAL, session-supervised Bash
-// definition Task 27 wires into the Generic roster: a grant minted by
+// definition Task 27 wires into the Carbon roster: a grant minted by
 // access.gate.Authorize for one Loop ID validates when redeemed
 // through bashDefinition's OWN Build, invoked for that SAME Loop ID. Since a
 // minted grant only verifies against the EXACT *sandbox.Executor it was
@@ -436,7 +436,7 @@ func TestAcceptanceModelAndInteractivePermissionFilesRemainSeparated(t *testing.
 	t.Setenv("NO_PROXY", "")
 	root := canonicalTempDir(t)
 
-	looprigRoot := filepath.Join(home, ".looprig", "coderig")
+	looprigRoot := filepath.Join(home, ".looprig", "carbon")
 	modelPath, err := defaultModelConfigPath(looprigRoot)
 	if err != nil {
 		t.Fatalf("defaultModelConfigPath: %v", err)
@@ -445,7 +445,7 @@ func TestAcceptanceModelAndInteractivePermissionFilesRemainSeparated(t *testing.
 	if err != nil {
 		t.Fatalf("defaultPermissionsPath: %v", err)
 	}
-	wantModelPath := filepath.Join(home, ".looprig", "coderig", "models.json")
+	wantModelPath := filepath.Join(home, ".looprig", "carbon", "models.json")
 	if modelPath != wantModelPath {
 		t.Fatalf("model path = %q, want %q", modelPath, wantModelPath)
 	}
@@ -453,7 +453,7 @@ func TestAcceptanceModelAndInteractivePermissionFilesRemainSeparated(t *testing.
 		t.Fatalf("model and permission paths are identical: %q", modelPath)
 	}
 	digest := sha256.Sum256([]byte(root))
-	wantPermissionPath := filepath.Join(home, ".looprig", "coderig", "workspaces", hex.EncodeToString(digest[:]), permissionFileName)
+	wantPermissionPath := filepath.Join(home, ".looprig", "carbon", "workspaces", hex.EncodeToString(digest[:]), permissionFileName)
 	if permissionPath != wantPermissionPath {
 		t.Fatalf("permission path = %q, want %q", permissionPath, wantPermissionPath)
 	}
@@ -496,7 +496,7 @@ func TestAcceptanceModelAndInteractivePermissionFilesRemainSeparated(t *testing.
 		t.Fatalf("Authorize(git status): %v", err)
 	}
 	if !resolution.Approved {
-		t.Fatal("interactive approval did not approve the Generic command")
+		t.Fatal("interactive approval did not approve the Carbon command")
 	}
 	if _, err := os.Stat(permissionPath); err != nil {
 		t.Fatalf("interactive approval did not persist hashed workspace permissions: %v", err)
@@ -579,7 +579,7 @@ func TestAcceptanceHeadlessPermissionFileLoads(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = access.Close() })
 	if got := observeGate(t, mustLoopProvenance(t), access.gate, commandRequest(t, root, "git log -n 2")); got != outcomeAllowed {
-		t.Fatalf("assembled headless Generic outcome = %d, want persisted allow", got)
+		t.Fatalf("assembled headless Carbon outcome = %d, want persisted allow", got)
 	}
 	interactivePath, err := defaultPermissionsPath(filepath.Join(elsewhere, ".looprig"), root)
 	if err != nil {
@@ -613,11 +613,11 @@ func TestAcceptanceHeadlessPermissionFileLoads(t *testing.T) {
 }
 
 // TestAcceptanceEgressFailureSurfacedAtAssembly proves an organization-proxy
-// misconfiguration fails CLOSED at CodeRig's session-access assembly (no silent
+// misconfiguration fails CLOSED at Carbon's session-access assembly (no silent
 // direct fallback, no leaked session): a specific NO_PROXY exception alongside an
 // upstream proxy, and a malformed upstream URL, both abort buildHeadlessAccess.
 // The deep proxy connection/auth failure at run time is the sandbox proxy's
-// responsibility; this asserts CodeRig surfaces the fail-closed contract.
+// responsibility; this asserts Carbon surfaces the fail-closed contract.
 func TestAcceptanceEgressFailureSurfacedAtAssembly(t *testing.T) {
 	root := canonicalTempDir(t)
 
@@ -647,7 +647,7 @@ func TestAcceptanceEgressFailureSurfacedAtAssembly(t *testing.T) {
 
 // TestAcceptanceNewRestoreAuthorityParity proves the single assembly path produces
 // the SAME effective authority for two independent opens of the same profile over
-// the same workspace: identical access-config digest and identical Generic policy
+// the same workspace: identical access-config digest and identical Carbon policy
 // revisions. New and restore share this path (openRuntimeAgent), so a restore under
 // the same configuration reconstructs identical authority; the drift rejection is
 // covered by TestRestoreRejectsAccessProfileDrift.
@@ -669,7 +669,7 @@ func TestAcceptanceNewRestoreAuthorityParity(t *testing.T) {
 		t.Errorf("access-config digest differs across identical opens:\n%s\n%s", first.configRev, second.configRev)
 	}
 	if first.policyRev != second.policyRev {
-		t.Errorf("Generic policy revision differs: %q vs %q", first.policyRev, second.policyRev)
+		t.Errorf("Carbon policy revision differs: %q vs %q", first.policyRev, second.policyRev)
 	}
 	if first.profileName != second.profileName {
 		t.Errorf("profile name differs: %q vs %q", first.profileName, second.profileName)

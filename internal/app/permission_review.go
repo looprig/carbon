@@ -9,9 +9,9 @@ import (
 	"github.com/looprig/inference"
 )
 
-// permission_review.go is CodeRig's composition-root wiring for classifier-based
+// permission_review.go is Carbon's composition-root wiring for classifier-based
 // automatic permission review (design doc 2026-07-27 §19-20). It constructs
-// exactly ONE command-safety classifier over CodeRig's shared inference client
+// exactly ONE command-safety classifier over Carbon's shared inference client
 // and the selected named model, wraps it in Harness's
 // gate.PermissionClassifierSet, and selects one of two supported local
 // decision policies. It never adds classifier code to accessGate (toolsets.go)
@@ -20,18 +20,18 @@ import (
 // auto-approves anything.
 
 const (
-	// permissionReviewDefaultPolicyRevision is CodeRig's local decision policy
+	// permissionReviewDefaultPolicyRevision is Carbon's local decision policy
 	// revision for the Codex-compatible default (gate.DefaultPermissionReviewPolicy):
 	// low/medium risk need no authorization evidence, high requires medium.
-	permissionReviewDefaultPolicyRevision = "coderig-permission-review-default-v1"
-	// permissionReviewStrictPolicyRevision is CodeRig's local decision policy
+	permissionReviewDefaultPolicyRevision = "carbon-permission-review-default-v1"
+	// permissionReviewStrictPolicyRevision is Carbon's local decision policy
 	// revision for the strict alternative: automatic approval is capped at LOW
 	// risk (medium and high always need a human), and the minimum authorization
 	// floor at every risk tier is raised to at least the default's. It is
 	// STRICTER than the default at every dimension it changes, never looser,
 	// per design §10's hard-ceiling rule that a consumer may tighten but never
 	// relax.
-	permissionReviewStrictPolicyRevision = "coderig-permission-review-strict-v1"
+	permissionReviewStrictPolicyRevision = "carbon-permission-review-strict-v1"
 )
 
 // PermissionReviewConfigError reports an invalid permission-review Config
@@ -45,9 +45,9 @@ type PermissionReviewConfigError struct {
 
 func (e *PermissionReviewConfigError) Error() string {
 	if e.Cause != nil {
-		return "coderig: invalid permission review configuration (" + e.Reason + "): " + e.Cause.Error()
+		return "carbon: invalid permission review configuration (" + e.Reason + "): " + e.Cause.Error()
 	}
-	return "coderig: invalid permission review configuration (" + e.Reason + ")"
+	return "carbon: invalid permission review configuration (" + e.Reason + ")"
 }
 
 func (e *PermissionReviewConfigError) Unwrap() error { return e.Cause }
@@ -63,7 +63,7 @@ type permissionReviewRegistration struct {
 	policy              gate.PermissionReviewPolicy
 	evidenceAccess      gate.EvidenceAccessEvaluator
 	evidenceContainment gate.EvidenceContainmentVerifier
-	// evidenceObservation is CodeRig's gate.EvidenceObservationVerifier
+	// evidenceObservation is Carbon's gate.EvidenceObservationVerifier
 	// (design §13.4, TOCTOU — Addendum 4, permission_review_observation.go),
 	// bound to the SAME ceiling value evidenceContainment uses. It independently
 	// rechecks every observation a target-sensitive evidence tool recorded
@@ -73,7 +73,7 @@ type permissionReviewRegistration struct {
 	// seams.
 	evidenceObservation gate.EvidenceObservationVerifier
 	evidenceKinds       []string
-	// securityCeiling is CodeRig's consumer-supplied effective security
+	// securityCeiling is Carbon's consumer-supplied effective security
 	// posture (rig.WithPermissionReviewSecurityCeiling), installed into
 	// every registered classifier's ReviewContext/ReviewBasis and every
 	// evidence-tool containment check. It is derived from the EXACT SAME
@@ -85,7 +85,7 @@ type permissionReviewRegistration struct {
 
 // newPermissionReviewRegistration resolves cfg's permission-review selection
 // into a registration. When cfg.PermissionReviewEnabled is false it returns
-// the disabled zero value and no error — CodeRig's default. Permission review
+// the disabled zero value and no error — Carbon's default. Permission review
 // also only ever takes effect when cfg.AccessProfile == AccessTrusted: every
 // other named profile (and the empty default) returns the SAME disabled zero
 // value and no error, no matter how PermissionReviewEnabled became true —
@@ -93,7 +93,7 @@ type permissionReviewRegistration struct {
 // gate is intentionally silent (no error, no log), matching the
 // disabled-by-default case it is indistinguishable from to a caller. When
 // enabled AND trusted, it requires a non-empty cfg.PermissionReviewModel
-// (CodeRig never inherits the Generic Loop's model for the classifier),
+// (Carbon never inherits the Carbon Loop's model for the classifier),
 // constructs ONE command-safety classifier over client and that named model
 // with the classifier's own default policy and standard read-only evidence
 // tools, and selects the default or strict local decision policy per
@@ -102,9 +102,9 @@ type permissionReviewRegistration struct {
 // It never derives, accepts, or threads any independent "security ceiling":
 // the classifier's assessments are eligible only within whatever a request's
 // OWN access-gate binding (access.go/toolsets.go, unchanged by this file)
-// already permits, and CodeRig exposes no knob here that could widen it.
+// already permits, and Carbon exposes no knob here that could widen it.
 //
-// It also builds CodeRig's evidence-tool authorization boundary
+// It also builds Carbon's evidence-tool authorization boundary
 // (permission_review_evidence.go): permissionReviewEvidenceAccess,
 // permissionReviewEvidenceContainment bound to this session's selected
 // AccessProfile as the one trusted security ceiling, and the exact evidence
@@ -161,7 +161,7 @@ func newPermissionReviewRegistration(cfg Config, client inference.Client) (permi
 	}, nil
 }
 
-// permissionReviewPolicyFor selects CodeRig's default or strict local decision
+// permissionReviewPolicyFor selects Carbon's default or strict local decision
 // policy. The strict policy is stricter than the default at EVERY dimension it
 // changes: MaximumAutoRisk drops from high to low (so any medium- or
 // high-risk assessment always needs a human, no matter its reported

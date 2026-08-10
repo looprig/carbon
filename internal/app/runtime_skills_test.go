@@ -33,7 +33,7 @@ func buildSkillTool(t *testing.T, def tool.Definition, root string) []string {
 	return names
 }
 
-func TestGenericSkillDefinitionBinds(t *testing.T) {
+func TestCarbonSkillDefinitionBinds(t *testing.T) {
 	t.Parallel()
 	def := skillDefinitionFor(testSkillLoader())
 	if def == nil {

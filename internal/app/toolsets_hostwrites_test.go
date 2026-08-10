@@ -5,17 +5,17 @@ import (
 	"testing"
 )
 
-// TestGenericToolDefinitionsEnableHostWrites proves genericToolDefinitions
+// TestCarbonToolDefinitionsEnableHostWrites proves carbonToolDefinitions
 // wires WithHostWrites() into WriteFile/EditFile: their advertised
 // descriptions no longer claim workspace-only confinement, and instead
 // document that an absolute path may resolve outside the workspace and that
 // such writes are NOT covered by session checkpoint/undo. Mirrors
-// TestGenericToolDefinitionsEnableHostReads on the read side.
-func TestGenericToolDefinitionsEnableHostWrites(t *testing.T) {
+// TestCarbonToolDefinitionsEnableHostReads on the read side.
+func TestCarbonToolDefinitionsEnableHostWrites(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	set := mustExecutorSet(t, root)
-	defs := genericToolDefinitions(set, nil, nil)
+	defs := carbonToolDefinitions(set, nil, nil)
 
 	for _, tc := range []struct {
 		name           string

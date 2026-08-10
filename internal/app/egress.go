@@ -35,9 +35,9 @@ type EgressRouteError struct {
 
 func (e *EgressRouteError) Error() string {
 	if e.Cause != nil {
-		return "coderig: egress route: " + e.Reason + ": " + e.Cause.Error()
+		return "carbon: egress route: " + e.Reason + ": " + e.Cause.Error()
 	}
-	return "coderig: egress route: " + e.Reason
+	return "carbon: egress route: " + e.Reason
 }
 
 func (e *EgressRouteError) Unwrap() error { return e.Cause }

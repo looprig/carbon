@@ -5,13 +5,13 @@ import (
 	model "github.com/looprig/inference/model"
 )
 
-// Config contains the user-selected CodeRig application modes and the resolved,
+// Config contains the user-selected Carbon application modes and the resolved,
 // session-fixed access configuration. It is the app-level composition input the
 // CLI fills before the Rig is constructed; the access profile cannot change for
 // the lifetime of the session.
 type Config struct {
-	// HomeDir overrides CodeRig's base directory (default ~/.looprig/coderig).
-	// It relocates everything CodeRig itself reads or writes under that root:
+	// HomeDir overrides Carbon's base directory (default ~/.looprig/carbon).
+	// It relocates everything Carbon itself reads or writes under that root:
 	// models.json, mcp.json, workspaces/<hash>/permissions.json, and the
 	// default session-store root (store/).
 	HomeDir string
@@ -21,7 +21,7 @@ type Config struct {
 	ACPChildren *ACPComposition
 	// CollabMCPExecutable is the optional explicit absolute path to the
 	// collaboration MCP proxy. An empty value lets composition discover a
-	// verified coderig-collab-mcp sibling next to the current executable.
+	// verified carbon-collab-mcp sibling next to the current executable.
 	// The path is resolved once before any session is opened and is never
 	// passed to Harness.
 	CollabMCPExecutable string
@@ -39,7 +39,7 @@ type Config struct {
 	// default). It is validated at the CLI boundary before Rig construction.
 	AccessProfile AccessProfile
 	// AccessConfigRev is the secret-free durable digest of the effective access
-	// configuration (access ABI version, selected Generic profile, and the
+	// configuration (access ABI version, selected Carbon profile, and the
 	// non-secret egress route identity and guarantees). Assembly computes it with
 	// accessConfigDigest; the composition root folds it into the configuration
 	// fingerprint so an access-profile or egress-boundary change invalidates a restore. It
@@ -76,7 +76,7 @@ type Config struct {
 	// these transports alongside PrimerCandidates' so a session with an
 	// active or prior delegate on a different transport than the primer can
 	// still restore. NativeACP delegates are not included: they never bind
-	// to a CodeRig-owned loop.Definition.
+	// to a Carbon-owned loop.Definition.
 	DelegateModels []model.Model
 	// PermissionReviewEnabled turns on classifier-based automatic permission
 	// review (off by default — a zero Config never auto-approves anything).
@@ -91,8 +91,8 @@ type Config struct {
 	// profile leaves it silently disabled (newPermissionReviewRegistration).
 	PermissionReviewEnabled bool
 	// PermissionReviewModel is the named model bound to the command-safety
-	// classifier. Required when PermissionReviewEnabled is true; CodeRig never
-	// reuses the Generic Loop's current-loop model for this (the design requires
+	// classifier. Required when PermissionReviewEnabled is true; Carbon never
+	// reuses the Carbon Loop's current-loop model for this (the design requires
 	// an explicit named binding, not implicit inheritance).
 	PermissionReviewModel model.Model
 	// PermissionReviewStrictPolicy selects the stricter of the two supported
@@ -108,8 +108,8 @@ type Config struct {
 type ModelConfigCapabilityError struct{}
 
 func (*ModelConfigCapabilityError) Error() string {
-	return "coderig: model configuration has no configured primer"
+	return "carbon: model configuration has no configured primer"
 }
 
-// ModelFactory returns the secret-free model descriptor shared by CodeRig Loops.
+// ModelFactory returns the secret-free model descriptor shared by Carbon Loops.
 type ModelFactory func() model.Model

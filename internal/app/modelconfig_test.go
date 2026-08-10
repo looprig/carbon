@@ -33,7 +33,7 @@ func TestDefaultModelConfigPath(t *testing.T) {
 			if err != nil {
 				t.Fatalf("defaultModelConfigPath() error = %v", err)
 			}
-			want := filepath.Join(home, ".looprig", "coderig", "models.json")
+			want := filepath.Join(home, ".looprig", "carbon", "models.json")
 			if got != want {
 				t.Errorf("defaultModelConfigPath() = %q, want %q", got, want)
 			}
@@ -69,7 +69,7 @@ func TestDefaultModelConfigPath(t *testing.T) {
 		if got != want {
 			t.Errorf("defaultModelConfigPath(%q) = %q, want %q", overrideRoot, got, want)
 		}
-		if got == filepath.Join(home, ".looprig", "coderig", "models.json") {
+		if got == filepath.Join(home, ".looprig", "carbon", "models.json") {
 			t.Errorf("defaultModelConfigPath(%q) = %q, still resolved the process HOME default", overrideRoot, got)
 		}
 

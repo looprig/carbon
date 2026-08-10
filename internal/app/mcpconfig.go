@@ -10,7 +10,7 @@ import (
 	"sort"
 	"unicode/utf8"
 
-	"github.com/looprig/coderig/internal/catalog/generic"
+	"github.com/looprig/carbon/internal/catalog/carbon"
 	mcpauth "github.com/looprig/mcp/pkg/auth"
 	mcpclient "github.com/looprig/mcp/pkg/client"
 )
@@ -18,7 +18,7 @@ import (
 // mcpConfigFile is the top-level schema of <home>/mcp.json: the exact Claude
 // Code mcpServers format plus one looprig extension field (roles) per
 // server. See design §1.1
-// (docs/plans/2026-08-05-coderig-mcp-and-permission-review-design.md).
+// (docs/plans/2026-08-05-carbon-mcp-and-permission-review-design.md).
 type mcpConfigFile struct {
 	MCPServers map[string]mcpServerConfig `json:"mcpServers"`
 }
@@ -42,7 +42,7 @@ type mcpServerConfig struct {
 // mcpServerConfig entry: a binding name that already passed
 // mcp/pkg/client.Name's rules, the resolved transport kind, that kind's
 // transport configuration (the other kind's fields are left zero), and the
-// normalized, sorted role list, always containing Generic's name.
+// normalized, sorted role list, always containing Carbon's name.
 type mcpServerSpec struct {
 	name    string
 	kind    string
@@ -91,7 +91,7 @@ func (e *MCPConfigError) Error() string {
 	field := boundedModelConfigText(e.Field, maxMCPConfigErrorFieldBytes)
 	cause := boundedModelConfigText(e.Cause, maxMCPConfigErrorCauseBytes)
 
-	message := "coderig: mcp configuration"
+	message := "carbon: mcp configuration"
 	if binding != "" {
 		message += " " + binding
 	}
@@ -274,18 +274,18 @@ func resolveMCPServerKind(name string, cfg mcpServerConfig) (string, error) {
 	}
 }
 
-// normalizeMCPServerRoles validates roles against the closed Generic set,
+// normalizeMCPServerRoles validates roles against the closed Carbon set,
 // rejects unknown values and duplicates, and returns a sorted copy.
-// Nil/empty input resolves directly to the sole Generic role.
+// Nil/empty input resolves directly to the sole Carbon role.
 func normalizeMCPServerRoles(name string, roles []string) ([]string, error) {
 	if len(roles) == 0 {
-		return []string{string(generic.Name)}, nil
+		return []string{string(carbon.Name)}, nil
 	}
 	seen := make(map[string]struct{}, len(roles))
 	normalized := make([]string, 0, len(roles))
 	for i, role := range roles {
 		field := fmt.Sprintf("roles[%d]", i)
-		if role != string(generic.Name) {
+		if role != string(carbon.Name) {
 			return nil, mcpConfigFailure(name, field, fmt.Errorf(
 				"unknown role %q, want generic", role))
 		}
@@ -313,7 +313,7 @@ func copyMCPServerStringMap(src map[string]string) map[string]string {
 
 // loadMCPConfig loads, validates, and normalizes <home>/mcp.json, where home
 // is looprigHome(cfg)'s result (honoring Config.HomeDir the same way every
-// other CodeRig config file under the looprig home does). An absent file
+// other Carbon config file under the looprig home does). An absent file
 // means the mcp.json feature is off entirely: (nil, nil), not an error --
 // the same "absence is not failure" contract loadProductionModels applies to
 // models.json. File hygiene is identical to models.json's (see

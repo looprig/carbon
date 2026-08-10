@@ -7,25 +7,25 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/looprig/coderig/internal/catalog/generic"
+	"github.com/looprig/carbon/internal/catalog/carbon"
 	"github.com/looprig/harness/pkg/loop"
 )
 
-func TestProductionAssemblyUsesOneGenericManagedPrimer(t *testing.T) {
+func TestProductionAssemblyUsesOneCarbonManagedPrimer(t *testing.T) {
 	t.Parallel()
-	definition := genericDef(t, Config{})
-	if got := definition.Name(); got != generic.Name {
-		t.Fatalf("definition name = %q, want %q", got, generic.Name)
+	definition := carbonDef(t, Config{})
+	if got := definition.Name(); got != carbon.Name {
+		t.Fatalf("definition name = %q, want %q", got, carbon.Name)
 	}
 	if got := definition.Delegation().Style; got != loop.DelegationManaged {
 		t.Fatalf("delegation style = %q, want managed", got)
 	}
-	if got := definition.Delegates(); len(got) != 1 || got[0] != generic.Name {
-		t.Fatalf("delegates = %v, want [%q]", got, generic.Name)
+	if got := definition.Delegates(); len(got) != 1 || got[0] != carbon.Name {
+		t.Fatalf("delegates = %v, want [%q]", got, carbon.Name)
 	}
 }
 
-func TestProductionSourceUsesOnlyGenericAgentTopology(t *testing.T) {
+func TestProductionSourceUsesOnlyCarbonAgentTopology(t *testing.T) {
 	t.Parallel()
 
 	_, filename, _, ok := runtime.Caller(0)
@@ -44,7 +44,7 @@ func TestProductionSourceUsesOnlyGenericAgentTopology(t *testing.T) {
 			catalogDirs = append(catalogDirs, entry.Name())
 		}
 	}
-	if len(catalogDirs) != 1 || catalogDirs[0] != "generic" {
+	if len(catalogDirs) != 1 || catalogDirs[0] != "carbon" {
 		t.Fatalf("catalog directories = %v, want only [generic]", catalogDirs)
 	}
 
@@ -71,14 +71,14 @@ func TestProductionSourceUsesOnlyGenericAgentTopology(t *testing.T) {
 	}
 
 	text := source.String()
-	if !strings.Contains(text, `internal/catalog/generic`) {
-		t.Fatal("production does not import the Generic catalog")
+	if !strings.Contains(text, `internal/catalog/carbon`) {
+		t.Fatal("production does not import the Carbon catalog")
 	}
-	if !strings.Contains(text, `AgentName("generic")`) {
+	if !strings.Contains(text, `AgentName("carbon")`) {
 		t.Fatal("production does not define the generic catalog identity")
 	}
-	if !strings.Contains(text, `coderig:generic`) {
-		t.Fatal("production does not stamp coderig:generic")
+	if !strings.Contains(text, `carbon:carbon`) {
+		t.Fatal("production does not stamp carbon:carbon")
 	}
 
 	// These are source-contract sentinels, not runtime compatibility fixtures:
@@ -92,10 +92,10 @@ func TestProductionSourceUsesOnlyGenericAgentTopology(t *testing.T) {
 		"swarmDefinitions",
 		"swarmStores",
 		"delegate_defaults",
-		"coderig:planner",
-		"coderig:builder",
-		"coderig:reviewer",
-		"coderig:operator",
+		"carbon:planner",
+		"carbon:builder",
+		"carbon:reviewer",
+		"carbon:operator",
 	} {
 		if strings.Contains(text, forbidden) {
 			t.Errorf("production contains removed agent/topology symbol %q", forbidden)

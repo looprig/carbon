@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/looprig/coderig/internal/catalog/generic"
+	"github.com/looprig/carbon/internal/catalog/carbon"
 	"github.com/looprig/core/content"
 	"github.com/looprig/harness/pkg/event"
 	"github.com/looprig/inference"
@@ -25,7 +25,7 @@ import (
 // harness Rig/session) and REAL Sandbox execution (Config{AccessProfile:
 // AccessUnconfined}, the one profile that can actually spawn a supervised
 // background process on this Darwin machine today -- see toolsets.go's
-// coderigProfile and process_tools_test.go's mustUnconfinedExecutorSet doc
+// carbonProfile and process_tools_test.go's mustUnconfinedExecutorSet doc
 // comment for why), never a fake process layer. It covers plan scenarios
 // 1-9, 11, and 15 directly; scenarios 10 and 13 are covered here too, but as
 // the Darwin fail-closed CONFINED-profile substitute the task's own Darwin
@@ -111,21 +111,21 @@ func waitForProcessCompleted(t *testing.T, stream event.Subscription, processID 
 	})
 }
 
-// processScriptStep produces the next chunks a scripted Generic-loop turn
+// processScriptStep produces the next chunks a scripted Carbon-loop turn
 // emits, given the PRIOR tool result text (empty for a call's first step).
 type processScriptStep func(prior string) []content.Chunk
 
-// runProcessScript drives steps as a sequence of Generic-loop tool calls
+// runProcessScript drives steps as a sequence of Carbon-loop tool calls
 // within ONE turn (managed_delegation_test.go's managedScript/
 // runManagedTurnObserved pattern: the callback observes the real bound
 // inference.Request, including injected tools and prior tool results) and
-// returns the turn's final text plus every observed event. Generic is the only
+// returns the turn's final text plus every observed event. Carbon is the only
 // loop this fixture's single-loop, non-delegating scripts ever reaches.
 func runProcessScript(t *testing.T, pia *processIntegrationAgent, prompt string, steps ...processScriptStep) (string, []event.Event) {
 	t.Helper()
 	i := 0
 	pia.client.fn = func(_ context.Context, req inference.Request) ([]content.Chunk, error) {
-		if !requestHasRole(req, generic.Name) {
+		if !requestHasRole(req, carbon.Name) {
 			return nil, fmt.Errorf("processScript: unexpected role in request (system=%q)", req.System)
 		}
 		if i >= len(steps) {
@@ -231,7 +231,7 @@ func decodeProcessResults(t *testing.T, text string) processResultsEnvelope {
 
 // TestIntegrationProcessUnchangedForegroundBash proves a plain Bash call
 // (no background, no yield_time_ms) through the SAME session-supervised
-// bashDefinition Task 27 wires into the Generic roster still takes the
+// bashDefinition Task 27 wires into the Carbon roster still takes the
 // legacy synchronous path unchanged: bash/supervised.go's own package doc
 // comment ("a legacy call never reaches this file") means this call never
 // touches the Supervisor at all -- the plain "<output>\n[exit code: N]"

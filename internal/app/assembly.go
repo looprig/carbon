@@ -1,4 +1,4 @@
-// Package app assembles CodeRig's one Generic loop, model/provider, system
+// Package app assembles Carbon's one Carbon loop, model/provider, system
 // prompt, and session composition root.
 package app
 
@@ -9,7 +9,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/looprig/coderig/internal/catalog/generic"
+	"github.com/looprig/carbon/internal/catalog/carbon"
 	"github.com/looprig/harness/pkg/loop"
 	"github.com/looprig/harness/pkg/rig"
 	"github.com/looprig/harness/pkg/session"
@@ -22,13 +22,13 @@ import (
 	"github.com/looprig/tui/sessionadapter"
 )
 
-// skillToolName is the model-facing name of the Skill tool. It MUST equal the Generic
+// skillToolName is the model-facing name of the Skill tool. It MUST equal the Carbon
 // model-facing name used by the Skill definition. The definition and hard-approve
 // rule must agree. A drift fails loudly at loop.Bind,
 // which checks a built tool's Info().Name against its definition's declared name).
 const skillToolName = "Skill"
 
-// managedAgentToolsRevision is included in the Generic policy revision so the
+// managedAgentToolsRevision is included in the Carbon policy revision so the
 // immutable loop fingerprint changes whenever the injected collaboration-tool
 // bundle changes.
 const managedAgentToolsRevision = "agent-tools-v2"
@@ -56,15 +56,15 @@ func initialCodingModeFor(admitted []model.Effort) loop.ModeName {
 }
 
 // The rig-injected managed agent tools prepare empty access requests, so the
-// Generic access gate auto-allows them. Generic is the sole legal delegate and
+// Carbon access gate auto-allows them. Carbon is the sole legal delegate and
 // active primer.
 
-// activePrimerName is Generic, the only loop and initial active primer.
-const activePrimerName = generic.Name
+// activePrimerName is Carbon, the only loop and initial active primer.
+const activePrimerName = carbon.Name
 
-// agentKind is the durable Generic identity stamped onto the session's
+// agentKind is the durable Carbon identity stamped onto the session's
 // configuration fingerprint.
-const agentKind = "coderig:generic"
+const agentKind = "carbon:carbon"
 
 // Agent-spawn safety caps applied to the rig's delegation limits. They are the two
 // independent backstops against a runaway agent tree: delegationSpawnDepth bounds
@@ -72,17 +72,17 @@ const agentKind = "coderig:generic"
 //
 // Depth remains 2: a root primer can spawn one child level, while any child
 // attempting to spawn again is refused by the rig. The same limit applies to
-// Generic's self-delegation is bounded by the same limits.
+// Carbon's self-delegation is bounded by the same limits.
 const (
 	delegationSpawnDepth = 2
 	delegationSpawnQuota = 64
 )
 
-// httpClientTimeout bounds every web request Generic's Fetch/WebSearch tools make, so a hung
+// httpClientTimeout bounds every web request Carbon's Fetch/WebSearch tools make, so a hung
 // endpoint can never block a tool call indefinitely (CLAUDE.md: no unbounded blocking).
 const httpClientTimeout = 30 * time.Second
 
-// newHTTPClient builds the single *http.Client shared by Generic's web tools. It pins an
+// newHTTPClient builds the single *http.Client shared by Carbon's web tools. It pins an
 // explicit overall timeout and the TLS floor to 1.2 (never InsecureSkipVerify).
 func newHTTPClient() *http.Client {
 	return &http.Client{
@@ -93,7 +93,7 @@ func newHTTPClient() *http.Client {
 	}
 }
 
-// LoopDefinitionError reports that the Generic loop.Definition could not be
+// LoopDefinitionError reports that the Carbon loop.Definition could not be
 // assembled (a WithTools/WithPermissionFactory/WithPolicyRevision inconsistency, or a bad
 // name). Agent names which loop failed. It is errors.As-recoverable and exists so the whole
 // construction fails secure (no half-wired topology).
@@ -104,55 +104,55 @@ type LoopDefinitionError struct {
 
 func (e *LoopDefinitionError) Error() string {
 	if e.Cause == nil {
-		return "coderig: cannot define loop " + e.Agent
+		return "carbon: cannot define loop " + e.Agent
 	}
-	return "coderig: cannot define loop " + e.Agent + ": " + e.Cause.Error()
+	return "carbon: cannot define loop " + e.Agent + ": " + e.Cause.Error()
 }
 
 func (e *LoopDefinitionError) Unwrap() error { return e.Cause }
 
-// skillDefinitionFor builds Generic's always-on, workspace-backed Skill
+// skillDefinitionFor builds Carbon's always-on, workspace-backed Skill
 // definition. Workspace skill documents are untrusted and remain subject to
 // the Skill tool's context.load and filesystem.read approval flow.
 func skillDefinitionFor(loader skill.SkillLoader) tool.Definition {
-	agent := generic.Name
+	agent := carbon.Name
 	return tool.NewDefinition(skillToolName, tool.RequiresWorkspace, func(_ context.Context, bind tool.Bindings) ([]tool.InvokableTool, error) {
 		return []tool.InvokableTool{skill.NewSkill(loader, agent, skill.WithWorkspaceRoot(bind.Workspace.Root))}, nil
 	})
 }
 
-// genericDefinition returns CodeRig's sole immutable loop definition. extras is
+// carbonDefinition returns Carbon's sole immutable loop definition. extras is
 // a narrow test probe seam; production passes nil.
-func genericDefinition(client inference.Client, model model.Model, cfg Config, access *sessionAccess, extras []tool.Definition) (loop.Definition, error) {
+func carbonDefinition(client inference.Client, model model.Model, cfg Config, access *sessionAccess, extras []tool.Definition) (loop.Definition, error) {
 	contextPolicy, err := newConversationContextPolicy(model, cfg.PrimerCandidates, cfg.DelegateModels)
 	if err != nil {
 		return loop.Definition{}, err
 	}
-	return genericDefinitionWithContextPolicy(client, model, cfg, contextPolicy, access, extras)
+	return carbonDefinitionWithContextPolicy(client, model, cfg, contextPolicy, access, extras)
 }
 
-// genericDefinitionWithContextPolicy keeps the context policy injectable for
+// carbonDefinitionWithContextPolicy keeps the context policy injectable for
 // focused fingerprint and compaction tests without introducing a roster map.
-func genericDefinitionWithContextPolicy(client inference.Client, model model.Model, cfg Config, contextPolicy conversationContextPolicy, access *sessionAccess, extras []tool.Definition) (loop.Definition, error) {
+func carbonDefinitionWithContextPolicy(client inference.Client, model model.Model, cfg Config, contextPolicy conversationContextPolicy, access *sessionAccess, extras []tool.Definition) (loop.Definition, error) {
 	httpCl := newHTTPClient()
 	runtimeCtx := NewRuntimeContextProvider()
 
 	loader := skill.NewEmbeddedSkillLoader(nil, nil)
-	definitions := append([]tool.Definition(nil), genericToolDefinitions(access.set, httpCl, skillDefinitionFor(loader))...)
+	definitions := append([]tool.Definition(nil), carbonToolDefinitions(access.set, httpCl, skillDefinitionFor(loader))...)
 	definitions = append(definitions, extras...)
 
-	system := contextPolicy.system(generic.SystemPrompt)
+	system := contextPolicy.system(carbon.SystemPrompt)
 	options := []loop.Option{
-		loop.WithName(generic.Name),
-		loop.WithDisplayName(string(generic.Name)),
-		loop.WithDescription(generic.Description),
+		loop.WithName(carbon.Name),
+		loop.WithDisplayName(string(carbon.Name)),
+		loop.WithDescription(carbon.Description),
 		loop.WithInference(client, model),
 		loop.WithSystem(system),
 		loop.WithTools(definitions...),
 		loop.WithAccessGate(access.gate),
 		loop.WithPolicyRevision(contextPolicy.policyRevision(access.policyRev + ":" + managedAgentToolsRevision)),
 		loop.WithRuntimeContext(runtimeCtx),
-		loop.WithDelegates(generic.Name),
+		loop.WithDelegates(carbon.Name),
 		loop.WithDelegation(loop.Delegation{Style: loop.DelegationManaged}),
 		loop.WithModes(codingModes(cfg.PrimerEfforts)...),
 		loop.WithInitialMode(initialCodingModeFor(cfg.PrimerEfforts)),
@@ -160,12 +160,12 @@ func genericDefinitionWithContextPolicy(client inference.Client, model model.Mod
 	options = append(options, contextPolicy.options()...)
 	definition, err := loop.Define(options...)
 	if err != nil {
-		return loop.Definition{}, &LoopDefinitionError{Agent: string(generic.Name), Cause: err}
+		return loop.Definition{}, &LoopDefinitionError{Agent: string(carbon.Name), Cause: err}
 	}
 	return definition, nil
 }
 
-// New constructs the CodeRig headless from one models.json load and returns it
+// New constructs the Carbon headless from one models.json load and returns it
 // as a tui.Agent driven by the configured primer_default.
 func New(ctx context.Context, cfg Config) (tui.Agent, error) {
 	return newWithProductionModelsContextLoader(ctx, cfg, loadProductionModelsWithContext, headlessStores)
@@ -277,7 +277,7 @@ func newWithClientUsingStores(ctx context.Context, client inference.Client, fact
 	}
 	access.diagnostics = append(access.diagnostics, cfg.ACPDiagnostics...)
 	cfg.AccessConfigRev = access.configRev
-	definition, err := genericDefinition(client, factory(), cfg, access, nil)
+	definition, err := carbonDefinition(client, factory(), cfg, access, nil)
 	if err != nil {
 		_ = access.Close()
 		return nil, err
@@ -303,7 +303,7 @@ func newWithClientUsingStores(ctx context.Context, client inference.Client, fact
 // newSessionOverStores is the store-injecting construction seam shared by the headless New
 // path (over the process-shared in-memory store + current checkout) and tests (over an
 // isolated store + a temp root, so parallel session tests never contend on the current
-// checkout's exclusive root lease). It resolves the headless access wiring, builds the Generic
+// checkout's exclusive root lease). It resolves the headless access wiring, builds the Carbon
 // definition, one rig placing root as the exclusive workspace, opens a NEW session, and wraps
 // it as the runtime agent that owns the executor-set closers.
 func newSessionOverStores(ctx context.Context, client inference.Client, factory ModelFactory, cfg Config, stores *sessionStores, root string) (*RuntimeAgent, error) {
@@ -425,7 +425,7 @@ func (a *mcpSessionAssembly) attach(ctx context.Context, sess session.SessionCon
 	a.adopter = adopter
 	active := sess.ActiveLoop()
 	// string(activePrimerName) names the active loop here rather than
-	// reading it back from sess: this depends on CodeRig never calling
+	// reading it back from sess: this depends on Carbon never calling
 	// SetActiveLoop before this point in session construction, so
 	// active.ID() and activePrimerName always name the same Loop
 	// (verified: SetActiveLoop is never called anywhere in internal/app
@@ -452,12 +452,12 @@ func (a *mcpSessionAssembly) close(ctx context.Context) {
 	}
 }
 
-// openRuntimeAgent is CodeRig's single session-assembly path. It resolves the
+// openRuntimeAgent is Carbon's single session-assembly path. It resolves the
 // session-fixed access wiring (interactive or headless), folds its secret-free
 // digest into the config fingerprint, optionally discovers and constructs an MCP
 // Manager from <home>/mcp.json (nil when the file is absent or empty -- every
 // touch point below nil-checks it via mcpSessionAssembly), builds the one
-// Generic definition and one rig over the injected stores, opens (Resume zero) or
+// Carbon definition and one rig over the injected stores, opens (Resume zero) or
 // restores the session, attaches the MCP composition to it, and returns the
 // runtime agent that OWNS the executor-set and MCP closers. Any failure after the
 // access is built closes the partial assembly (MCP composition, then access) so
@@ -489,7 +489,7 @@ func openRuntimeAgent(ctx context.Context, client inference.Client, factory Mode
 		return nil, err
 	}
 
-	definition, err := genericDefinition(client, factory(), cfg, access, nil)
+	definition, err := carbonDefinition(client, factory(), cfg, access, nil)
 	if err != nil {
 		return fail(err)
 	}
@@ -510,7 +510,7 @@ func openRuntimeAgent(ctx context.Context, client inference.Client, factory Mode
 	return newRuntimeAgentWithMCP(adapter, adapter.Controller(), root, access, mcpAssembly.manager, mcpAssembly.adopter, mcpAssembly.recorder, cfg.PrimerAlias, cfg.PrimerEfforts, cfg.PrimerCandidates), nil
 }
 
-// openSessionWithDefinition is CodeRig's single new-or-restore assembly path.
+// openSessionWithDefinition is Carbon's single new-or-restore assembly path.
 // Production and tests differ only in the injected stores, workspace, and selector.
 // permissionReview is the caller-constructed classifier registration (built where
 // the live inference Client is available); its disabled zero value adds no rig

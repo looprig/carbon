@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-// TestProductFamilyEligibility pins CodeRig's automatic Bash-family catalog to
+// TestProductFamilyEligibility pins Carbon's automatic Bash-family catalog to
 // EXACTLY the five safe git subcommands: neighbors and exec-capable prefixes are
 // out.
 func TestProductFamilyEligibility(t *testing.T) {
@@ -168,7 +168,7 @@ func TestHeadlessPermissionConfig(t *testing.T) {
 	}
 
 	// Explicit absolute path passes through unchanged with the catalog attached.
-	explicit := "/etc/coderig/permissions.json"
+	explicit := "/etc/carbon/permissions.json"
 	cfg, err := headlessPermissionConfig(explicit)
 	if err != nil {
 		t.Fatalf("headlessPermissionConfig(%q) error = %v", explicit, err)

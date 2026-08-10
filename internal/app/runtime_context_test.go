@@ -79,13 +79,13 @@ func TestDefaultRuntimeContextProviderBlocks(t *testing.T) {
 			name:  "happy path: date, cwd, branch and status all present",
 			clock: fixedClock(fixed),
 			getwd: func() (string, error) { return "/work/repo", nil },
-			run:   gitRunner("feature/coderig\n", " M a.go\n?? b.go\n", nil, nil),
+			run:   gitRunner("feature/carbon\n", " M a.go\n?? b.go\n", nil, nil),
 			wantContain: []string{
 				"<runtime_context>",
 				"</runtime_context>",
 				"2026-06-22",
 				"/work/repo",
-				"feature/coderig",
+				"feature/carbon",
 				"2", // changed-file count
 			},
 		},

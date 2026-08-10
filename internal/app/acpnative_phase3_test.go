@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/looprig/coderig/internal/catalog/generic"
+	"github.com/looprig/carbon/internal/catalog/carbon"
 	"github.com/looprig/foreignloops/driver"
 	"github.com/looprig/harness/pkg/loop"
 	"github.com/looprig/harness/pkg/tool"
@@ -28,26 +28,26 @@ func TestCompileAgentRuntimeCatalogCompilesNativeProfilesAlongsideGateway(t *tes
 		t.Fatalf("CompileAgentRuntimeCatalog() error = %v", err)
 	}
 
-	genericNative, err := compiled.RuntimeCatalog.ResolveWithExplicitSource(generic.Name, "codex", loop.RuntimeSourceNative, "native-a", model.EffortNone, false)
+	carbonNative, err := compiled.RuntimeCatalog.ResolveWithExplicitSource(carbon.Name, "codex", loop.RuntimeSourceNative, "native-a", model.EffortNone, false)
 	if err != nil {
 		t.Fatalf("resolve explicit native source: %v", err)
 	}
-	if genericNative.Source != loop.RuntimeSourceNative || genericNative.SelectionKind != loop.RuntimeSelectionExplicit || genericNative.ModelAlias != "native-a" || genericNative.Credential != loop.CredentialNativeAuth {
-		t.Fatalf("explicit native resolution = %#v", genericNative)
+	if carbonNative.Source != loop.RuntimeSourceNative || carbonNative.SelectionKind != loop.RuntimeSelectionExplicit || carbonNative.ModelAlias != "native-a" || carbonNative.Credential != loop.CredentialNativeAuth {
+		t.Fatalf("explicit native resolution = %#v", carbonNative)
 	}
-	if genericNative.Target.Name == "" || genericNative.Target.Name == string(genericNative.ModelAlias) {
-		t.Fatalf("explicit native target = %#v, want opaque non-alias identity", genericNative.Target)
+	if carbonNative.Target.Name == "" || carbonNative.Target.Name == string(carbonNative.ModelAlias) {
+		t.Fatalf("explicit native target = %#v, want opaque non-alias identity", carbonNative.Target)
 	}
 
-	genericDefault, err := compiled.RuntimeCatalog.Resolve(generic.Name, "", "", model.EffortNone)
+	carbonDefault, err := compiled.RuntimeCatalog.Resolve(carbon.Name, "", "", model.EffortNone)
 	if err != nil {
 		t.Fatalf("resolve omitted-source gateway default: %v", err)
 	}
-	if genericDefault.AgentHarness != looprigRuntimeHarness || genericDefault.Source != loop.RuntimeSourceNative || genericDefault.Credential != loop.CredentialNativeAuth {
-		t.Fatalf("deterministic resolution = %#v, want looprig/native default", genericDefault)
+	if carbonDefault.AgentHarness != looprigRuntimeHarness || carbonDefault.Source != loop.RuntimeSourceNative || carbonDefault.Credential != loop.CredentialNativeAuth {
+		t.Fatalf("deterministic resolution = %#v, want looprig/native default", carbonDefault)
 	}
 
-	for _, entry := range compiled.RuntimeCatalog.EntriesFor(generic.Name) {
+	for _, entry := range compiled.RuntimeCatalog.EntriesFor(carbon.Name) {
 		if entry.AgentHarness == "claude-code" && entry.Source == loop.RuntimeSourceNative {
 			t.Fatalf("disabled Claude profile created native entry: %#v", entry)
 		}
@@ -75,7 +75,7 @@ func TestProductionNativeModelOptionsCompileExactEffortsAndDefault(t *testing.T)
 	if err != nil {
 		t.Fatalf("CompileAgentRuntimeCatalog() error = %v", err)
 	}
-	entries := compiled.RuntimeCatalog.EntriesFor(generic.Name)
+	entries := compiled.RuntimeCatalog.EntriesFor(carbon.Name)
 	var codex loop.RuntimeCatalogEntry
 	for _, entry := range entries {
 		if entry.AgentHarness == "codex" {
@@ -97,7 +97,7 @@ func TestProductionNativeModelOptionsCompileExactEffortsAndDefault(t *testing.T)
 	if containsACPEffort(option.Efforts, model.EffortNone) {
 		t.Fatalf("native efforts = %v, must not invent EffortNone", option.Efforts)
 	}
-	if _, err := compiled.RuntimeCatalog.ResolveWithExplicitEffort(generic.Name, "codex", option.Alias, model.EffortNone, true); err == nil {
+	if _, err := compiled.RuntimeCatalog.ResolveWithExplicitEffort(carbon.Name, "codex", option.Alias, model.EffortNone, true); err == nil {
 		t.Fatal("explicit EffortNone unexpectedly resolved for a medium/high-only native model")
 	}
 }
@@ -163,7 +163,7 @@ func TestNewACPCompositionDoesNotPreflightOrFilterConfiguredNativeRows(t *testin
 	if calls != 0 {
 		t.Fatalf("ACP preflight callback calls = %d, want zero during composition", calls)
 	}
-	entries := composition.Catalog.RuntimeCatalog.EntriesFor(generic.Name)
+	entries := composition.Catalog.RuntimeCatalog.EntriesFor(carbon.Name)
 	var codex loop.RuntimeCatalogEntry
 	for _, entry := range entries {
 		if entry.AgentHarness == "codex" {
@@ -225,7 +225,7 @@ func TestNewACPCompositionKeepsManagedNativeWithoutLivePreflight(t *testing.T) {
 	if !composition.Catalog.HasProfile("acp/codex") {
 		t.Fatal("managed native profile was removed after successful preflight")
 	}
-	entries := composition.Catalog.RuntimeCatalog.EntriesFor(generic.Name)
+	entries := composition.Catalog.RuntimeCatalog.EntriesFor(carbon.Name)
 	var managed *loop.RuntimeCatalogEntry
 	for i := range entries {
 		if entries[i].AgentHarness == "codex" && entries[i].SelectionKind == loop.RuntimeSelectionHarnessManaged {
@@ -270,7 +270,7 @@ func TestNewACPCompositionKeepsExplicitNativeAliasesWithoutLivePreflight(t *test
 	if len(probes) != 0 {
 		t.Fatalf("explicit native probes = %#v, want no startup probes", probes)
 	}
-	entries := composition.Catalog.RuntimeCatalog.EntriesFor(generic.Name)
+	entries := composition.Catalog.RuntimeCatalog.EntriesFor(carbon.Name)
 	var entry *loop.RuntimeCatalogEntry
 	for i := range entries {
 		if entries[i].AgentHarness == "codex" {
@@ -315,7 +315,7 @@ func TestNewACPCompositionKeepsClaudeNativeAliasesWithoutLivePreflight(t *testin
 	if len(probes) != 0 {
 		t.Fatalf("Claude native probes = %#v, want no startup probes", probes)
 	}
-	entries := composition.Catalog.RuntimeCatalog.EntriesFor(generic.Name)
+	entries := composition.Catalog.RuntimeCatalog.EntriesFor(carbon.Name)
 	var claude *loop.RuntimeCatalogEntry
 	for i := range entries {
 		if entries[i].AgentHarness == "claude-code" {
@@ -338,11 +338,11 @@ func TestACPChildModelAliasesUseNativeSelectionKind(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	managed, err := managedCatalog.RuntimeCatalog.ResolveWithExplicitSource(generic.Name, "codex", loop.RuntimeSourceNative, "", model.EffortNone, false)
+	managed, err := managedCatalog.RuntimeCatalog.ResolveWithExplicitSource(carbon.Name, "codex", loop.RuntimeSourceNative, "", model.EffortNone, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	mainAlias, smallAlias, err := acpChildModelAliases(managedCatalog, generic.Name, "codex", managed)
+	mainAlias, smallAlias, err := acpChildModelAliases(managedCatalog, carbon.Name, "codex", managed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -357,11 +357,11 @@ func TestACPChildModelAliasesUseNativeSelectionKind(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	explicit, err := explicitCatalog.RuntimeCatalog.ResolveWithExplicitSource(generic.Name, "codex", loop.RuntimeSourceNative, "native-a", model.EffortNone, false)
+	explicit, err := explicitCatalog.RuntimeCatalog.ResolveWithExplicitSource(carbon.Name, "codex", loop.RuntimeSourceNative, "native-a", model.EffortNone, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	mainAlias, smallAlias, err = acpChildModelAliases(explicitCatalog, generic.Name, "codex", explicit)
+	mainAlias, smallAlias, err = acpChildModelAliases(explicitCatalog, carbon.Name, "codex", explicit)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -379,7 +379,7 @@ func TestACPChildConfigResolvesManagedNativeWithoutGateway(t *testing.T) {
 		t.Fatal(err)
 	}
 	definition, err := loop.Define(
-		loop.WithName(generic.Name),
+		loop.WithName(carbon.Name),
 		loop.WithInference(&fakeLLM{}, testModel()),
 		loop.WithPolicyRevision("native-phase3"),
 	)

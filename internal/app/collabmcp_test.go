@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/looprig/coderig/internal/catalog/generic"
+	"github.com/looprig/carbon/internal/catalog/carbon"
 	"github.com/looprig/core/content"
 	"github.com/looprig/foreignloops/driver"
 	"github.com/looprig/harness/pkg/foreign"
@@ -20,7 +20,7 @@ import (
 )
 
 func TestResolveCollabMCPExecutableUsesExplicitAbsoluteExecutable(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "coderig-collab-mcp")
+	path := filepath.Join(t.TempDir(), "carbon-collab-mcp")
 	writeExecutable(t, path)
 
 	got, err := resolveCollabMCPExecutableFrom(path, "")
@@ -34,7 +34,7 @@ func TestResolveCollabMCPExecutableUsesExplicitAbsoluteExecutable(t *testing.T) 
 
 func TestResolveCollabMCPExecutableFallsBackToVerifiedSibling(t *testing.T) {
 	dir := t.TempDir()
-	current := filepath.Join(dir, "coderig")
+	current := filepath.Join(dir, "carbon")
 	sibling := filepath.Join(dir, "carbon-collab-mcp")
 	writeExecutable(t, sibling)
 
@@ -84,7 +84,7 @@ func TestResolveCollabMCPExecutableRejectsSymlinkedDefaultSibling(t *testing.T) 
 	if err := os.Symlink(target, sibling); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := resolveCollabMCPExecutableFrom("", filepath.Join(dir, "coderig")); err == nil {
+	if _, err := resolveCollabMCPExecutableFrom("", filepath.Join(dir, "carbon")); err == nil {
 		t.Fatal("resolveCollabMCPExecutableFrom() accepted a symlinked default sibling")
 	}
 }
@@ -108,11 +108,11 @@ func TestResolveCollabMCPExecutableRejectsUnsafeCandidates(t *testing.T) {
 		path    string
 		current string
 	}{
-		{name: "relative explicit", path: "relative/coderig-collab-mcp"},
+		{name: "relative explicit", path: "relative/carbon-collab-mcp"},
 		{name: "missing explicit", path: filepath.Join(dir, "missing")},
 		{name: "non executable explicit", path: plain},
 		{name: "symlink explicit", path: link},
-		{name: "missing sibling", current: filepath.Join(dir, "coderig")},
+		{name: "missing sibling", current: filepath.Join(dir, "carbon")},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -167,7 +167,7 @@ func TestCollabMCPServerForRejectsMissingDescriptor(t *testing.T) {
 func TestCollabMCPSecretsStayOutOfPersistenceAndDiagnostics(t *testing.T) {
 	path := filepath.Join(t.TempDir(), collabMCPExecutableName)
 	writeExecutable(t, path)
-	endpoint := "/private/coderig-collab-" + strings.Repeat("e", 24) + ".sock"
+	endpoint := "/private/carbon-collab-" + strings.Repeat("e", 24) + ".sock"
 	capability := []byte(strings.Repeat("c", collab.CapabilityBytes))
 	token, err := collab.EncodeCapabilityToken(capability)
 	if err != nil {
@@ -203,28 +203,28 @@ func TestCollabMCPSecretsStayOutOfPersistenceAndDiagnostics(t *testing.T) {
 	}
 }
 
-func TestACPMessageAgentCompositionLeavesNativeGenericInProcess(t *testing.T) {
+func TestACPMessageAgentCompositionLeavesNativeCarbonInProcess(t *testing.T) {
 	client := &managedScript{}
 	seenMessageAgent := false
 	client.fn = func(_ context.Context, req inference.Request) ([]content.Chunk, error) {
-		if !requestHasRole(req, generic.Name) {
-			t.Fatalf("native request did not carry Generic identity")
+		if !requestHasRole(req, carbon.Name) {
+			t.Fatalf("native request did not carry Carbon identity")
 		}
 		seenMessageAgent = slices.Contains(toolNamesFromRequest(req), "MessageAgent")
-		return finalText("native Generic complete"), nil
+		return finalText("native Carbon complete"), nil
 	}
 
 	// Supplying the collaboration executable on Config must not turn the native
-	// Generic definition into an ACP child. Its existing managed tool bundle is
+	// Carbon definition into an ACP child. Its existing managed tool bundle is
 	// still built in-process by Harness, including MessageAgent.
 	agent := newTestAgent(t, client, Config{
 		CollabMCPExecutable: filepath.Join(t.TempDir(), collabMCPExecutableName),
 	})
-	if got := runManagedTurn(t, agent, "inspect native collaboration tools"); got != "native Generic complete" {
-		t.Fatalf("native Generic result = %q", got)
+	if got := runManagedTurn(t, agent, "inspect native collaboration tools"); got != "native Carbon complete" {
+		t.Fatalf("native Carbon result = %q", got)
 	}
 	if !seenMessageAgent {
-		t.Fatal("native Generic request omitted in-process MessageAgent")
+		t.Fatal("native Carbon request omitted in-process MessageAgent")
 	}
 }
 
@@ -267,7 +267,7 @@ func TestProductionACPCompositionResolvesCollabMCPOnceBeforeSession(t *testing.T
 }
 
 func TestProductionACPCompositionRejectsUnavailableExplicitCollabMCP(t *testing.T) {
-	_, err := withProductionACPChildren(context.Background(), Config{CollabMCPExecutable: "relative/coderig-collab-mcp"}, configuredProductionModelsForTest("configured-only"))
+	_, err := withProductionACPChildren(context.Background(), Config{CollabMCPExecutable: "relative/carbon-collab-mcp"}, configuredProductionModelsForTest("configured-only"))
 	if err == nil {
 		t.Fatal("withProductionACPChildren() error = nil, want invalid explicit path failure")
 	}
@@ -321,7 +321,7 @@ func TestACPChildConfigInjectsCollabMCPDescriptorForNewAndRestore(t *testing.T) 
 	if err != nil {
 		t.Fatalf("CompileAgentRuntimeCatalog() error = %v", err)
 	}
-	resolved, err := compiled.RuntimeCatalog.ResolveWithExplicitSource(generic.Name, "codex", loop.RuntimeSourceNative, "native", model.EffortNone, true)
+	resolved, err := compiled.RuntimeCatalog.ResolveWithExplicitSource(carbon.Name, "codex", loop.RuntimeSourceNative, "native", model.EffortNone, true)
 	if err != nil {
 		t.Fatalf("ResolveWithExplicitSource() error = %v", err)
 	}
@@ -387,7 +387,7 @@ func TestACPChildConfigRejectsCollabMCPReplacementDrift(t *testing.T) {
 
 func mustResolveNativeACPCollabTask16(t *testing.T, compiled ACPCompiledCatalog) loop.Resolved {
 	t.Helper()
-	resolved, err := compiled.RuntimeCatalog.ResolveWithExplicitSource(generic.Name, "codex", loop.RuntimeSourceNative, "native", model.EffortNone, true)
+	resolved, err := compiled.RuntimeCatalog.ResolveWithExplicitSource(carbon.Name, "codex", loop.RuntimeSourceNative, "native", model.EffortNone, true)
 	if err != nil {
 		t.Fatal(err)
 	}

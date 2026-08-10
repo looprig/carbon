@@ -15,7 +15,7 @@ import (
 const mcpConfigTestSecret = "test-secret-do-not-log"
 
 // validMCPConfigJSON is the design doc's own §1.1 two-server example
-// (docs/plans/2026-08-05-coderig-mcp-and-permission-review-design.md).
+// (docs/plans/2026-08-05-carbon-mcp-and-permission-review-design.md).
 const validMCPConfigJSON = `{
   "mcpServers": {
     "context7": {
@@ -127,7 +127,7 @@ func TestNormalizeMCPServerRejectsFormerRoleNames(t *testing.T) {
 				Type: "stdio", Command: "/bin/sh", Roles: []string{role},
 			})
 			if err == nil {
-				t.Fatalf("normalizeMCPServer(%q) succeeded, want strict Generic-only rejection", role)
+				t.Fatalf("normalizeMCPServer(%q) succeeded, want strict Carbon-only rejection", role)
 			}
 		})
 	}
@@ -574,7 +574,7 @@ func TestLoadMCPConfig(t *testing.T) {
 			t.Fatalf("loadMCPConfig(HomeDir override) specs = %d, want 2", len(specs))
 		}
 
-		// The process HOME default (~/.looprig/coderig/mcp.json) was never written, so
+		// The process HOME default (~/.looprig/carbon/mcp.json) was never written, so
 		// if loadMCPConfig had ignored HomeDir and fallen back to it instead of
 		// honoring the override, this would also return (nil, nil) -- proving
 		// the first call above really did read from the override.

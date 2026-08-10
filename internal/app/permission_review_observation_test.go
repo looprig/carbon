@@ -15,7 +15,7 @@ import (
 )
 
 // permission_review_observation_test.go unit-tests permissionReviewEvidenceObservation,
-// CodeRig's gate.EvidenceObservationVerifier (design §13.4, TOCTOU —
+// Carbon's gate.EvidenceObservationVerifier (design §13.4, TOCTOU —
 // Addendum 4): the fingerprint formula's fidelity against an independently
 // hand-written reference, and VerifyEvidenceObservations' fail-closed
 // recheck behavior in isolation (no live session, no classifier, no
@@ -31,11 +31,11 @@ import (
 // filesystemObservationFingerprint formula DIRECTLY in this test — it does
 // NOT import classifiers' package (that package is `internal` to a sibling
 // module and unimportable from here regardless) and does NOT call
-// CodeRig's own filesystemObservationFingerprint. It is a second,
+// Carbon's own filesystemObservationFingerprint. It is a second,
 // independently typed implementation of the exact same spec, so
 // TestFingerprintMatchesIndependentReferenceFormula is a genuine
 // cross-check of byte-for-byte wire compatibility, not a tautology against
-// CodeRig's own implementation code.
+// Carbon's own implementation code.
 func referenceFilesystemObservationToken(t *testing.T, root, rel string) string {
 	t.Helper()
 	r, err := os.OpenRoot(root)
@@ -113,7 +113,7 @@ func referenceObservationDigest(fields ...string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// TestFingerprintMatchesIndependentReferenceFormula proves CodeRig's own
+// TestFingerprintMatchesIndependentReferenceFormula proves Carbon's own
 // filesystemObservationFingerprint produces the IDENTICAL hex digest the
 // independently hand-written reference formula above does, across a
 // present file, a nested present file, a symlink, and an absent target —

@@ -118,9 +118,9 @@ func TestCoderigProfileExactValues(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(string(tt.name), func(t *testing.T) {
 			t.Parallel()
-			p, err := coderigProfile(tt.name, ws)
+			p, err := carbonProfile(tt.name, ws)
 			if err != nil {
-				t.Fatalf("coderigProfile(%q) error = %v", tt.name, err)
+				t.Fatalf("carbonProfile(%q) error = %v", tt.name, err)
 			}
 			if got := accessAt(t, p, "filesystem.read", ws); got != tt.wsRead {
 				t.Errorf("workspace read = %d, want %d", got, tt.wsRead)
@@ -151,15 +151,15 @@ func TestCoderigProfileExactValues(t *testing.T) {
 	}
 }
 
-// TestUnconfinedRequiresAck proves the acknowledgement CodeRig sets on the
+// TestUnconfinedRequiresAck proves the acknowledgement Carbon sets on the
 // unconfined profile is load-bearing: the same unconfined configuration without
 // it is rejected by sandbox validation.
 func TestUnconfinedRequiresAck(t *testing.T) {
 	t.Parallel()
 	ws := canonicalTempDir(t)
 
-	if _, err := coderigProfile(AccessUnconfined, ws); err != nil {
-		t.Fatalf("coderigProfile(unconfined) error = %v", err)
+	if _, err := carbonProfile(AccessUnconfined, ws); err != nil {
+		t.Fatalf("carbonProfile(unconfined) error = %v", err)
 	}
 	_, err := sandbox.NewProfile(sandbox.ProfileConfig{
 		WorkspaceRoot: ws, WorkspaceRead: sandbox.Allow, WorkspaceWrite: sandbox.Allow,
@@ -175,8 +175,8 @@ func TestUnconfinedRequiresAck(t *testing.T) {
 func TestCoderigProfileRejectsUnknown(t *testing.T) {
 	t.Parallel()
 	ws := canonicalTempDir(t)
-	if _, err := coderigProfile(AccessProfile("write"), ws); err == nil {
-		t.Fatal("coderigProfile(\"write\") = nil error; want rejection")
+	if _, err := carbonProfile(AccessProfile("write"), ws); err == nil {
+		t.Fatal("carbonProfile(\"write\") = nil error; want rejection")
 	}
 }
 
@@ -193,7 +193,7 @@ func TestProductAccessSourceRouting(t *testing.T) {
 		scope string
 	}{
 		{capabilityToolInvoke, "mcp:github:search_issues"},
-		{skill.CapabilityContextLoad, skill.EmbeddedSkillIdentity("generic")},
+		{skill.CapabilityContextLoad, skill.EmbeddedSkillIdentity("carbon")},
 		{skill.CapabilityContextLoad, skill.WorkspaceSkillIdentity("local")},
 	}
 	for _, tc := range gatedCases {
@@ -229,20 +229,20 @@ func TestProductAccessSourceRouting(t *testing.T) {
 	}
 }
 
-// TestAccessConfigDigestDrift proves each of the selected profile, the Generic
+// TestAccessConfigDigestDrift proves each of the selected profile, the Carbon
 // profile, and the egress route contributes to the durable access digest, so
 // any of those changes invalidates a restore; identical inputs are stable.
 func TestAccessConfigDigestDrift(t *testing.T) {
 	t.Parallel()
 	ws := canonicalTempDir(t)
 
-	readOnly, err := coderigProfile(AccessReadOnly, ws)
+	readOnly, err := carbonProfile(AccessReadOnly, ws)
 	if err != nil {
-		t.Fatalf("coderigProfile(readonly): %v", err)
+		t.Fatalf("carbonProfile(readonly): %v", err)
 	}
-	trusted, err := coderigProfile(AccessTrusted, ws)
+	trusted, err := carbonProfile(AccessTrusted, ws)
 	if err != nil {
-		t.Fatalf("coderigProfile(trusted): %v", err)
+		t.Fatalf("carbonProfile(trusted): %v", err)
 	}
 	direct, err := sandbox.NewDirectEgressRoute()
 	if err != nil {
@@ -259,7 +259,7 @@ func TestAccessConfigDigestDrift(t *testing.T) {
 		t.Errorf("identical inputs produced different digests:\n%s\n%s", got, base)
 	}
 	if got := accessConfigDigest(AccessTrusted, trusted, direct); got == base {
-		t.Error("selected/Generic profile change did not invalidate the digest")
+		t.Error("selected/Carbon profile change did not invalidate the digest")
 	}
 	if got := accessConfigDigest(AccessReadOnly, readOnly, upstream); got == base {
 		t.Error("egress route change did not invalidate the digest")

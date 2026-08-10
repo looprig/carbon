@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/looprig/coderig/internal/catalog/generic"
+	"github.com/looprig/carbon/internal/catalog/carbon"
 	"github.com/looprig/core/uuid"
 	"github.com/looprig/fsstore"
 	"github.com/looprig/harness/pkg/loop"
@@ -24,7 +24,7 @@ import (
 	"github.com/looprig/storage/memstore"
 )
 
-// persistence.go is the CodeRig's composition-root wiring for durable session state. The
+// persistence.go is the Carbon's composition-root wiring for durable session state. The
 // rig owns the whole session lifecycle — the single-writer lease, workspace snapshots at
 // quiescence, and offload-blob GC — so this layer only opens the store facades, builds one
 // immutable rig per resolved Open (a fresh rig per config; /clear rebuilds with the same
@@ -37,7 +37,7 @@ import (
 const (
 	offloadGCInterval = 5 * time.Minute
 	offloadGCTimeout  = 60 * time.Second
-	// snapshotTimeout bounds one manually-triggered workspace snapshot. CodeRig never
+	// snapshotTimeout bounds one manually-triggered workspace snapshot. Carbon never
 	// triggers one today (see WithSnapshots below), so this is inert in practice — it
 	// exists only because rig.SnapshotPolicy requires a non-negative value.
 	snapshotTimeout = 60 * time.Second
@@ -47,10 +47,10 @@ const (
 	maxRuntimeManifestIdentifierBytes = 128
 )
 
-const runtimeCatalogRevisionDigestDomain = "looprig/coderig/runtime-catalog-revision/v1"
+const runtimeCatalogRevisionDigestDomain = "looprig/carbon/runtime-catalog-revision/v1"
 
 // DefaultDataDir is the default root for the on-disk session store:
-// ~/.looprig/coderig/store. It fails loud with a typed *StoreInitError if the home
+// ~/.looprig/carbon/store. It fails loud with a typed *StoreInitError if the home
 // directory cannot be resolved. It preserves this exact behavior/signature for
 // compatibility; DefaultDataDirIn is the home-relative form callers holding a resolved
 // Config should prefer.
@@ -59,12 +59,12 @@ func DefaultDataDir() (string, error) {
 	if err != nil {
 		return "", &StoreInitError{Stage: "data-dir", Cause: err}
 	}
-	return DefaultDataDirIn(filepath.Join(home, ".looprig", "coderig"))
+	return DefaultDataDirIn(filepath.Join(home, ".looprig", "carbon"))
 }
 
 // DefaultDataDirIn is the on-disk session store root under an already-resolved
 // looprig base directory: <home>/store. home is looprigHome's result (e.g.
-// ~/.looprig/coderig or Config.HomeDir) — this function does not resolve HOME itself.
+// ~/.looprig/carbon or Config.HomeDir) — this function does not resolve HOME itself.
 func DefaultDataDirIn(home string) (string, error) {
 	return filepath.Join(home, "store"), nil
 }
@@ -86,7 +86,7 @@ type sessionStores struct {
 	// the rig — one more facade over the same backend, not a new call-chain parameter.
 	// buildRigWithRegistrationAndACP only installs rig.WithSessionResourceStorage when this is
 	// non-nil, so its absence changes nothing for a topology that does not declare
-	// tool.RequiresProcessServices. Generic's Bash definition declares it in
+	// tool.RequiresProcessServices. Carbon's Bash definition declares it in
 	// production, so both real assembly paths above always populate this field;
 	// only a topology with a scoped, process-free tool subset can still
 	// legitimately leave it nil.
@@ -114,7 +114,7 @@ func openStores(backend *storage.Composite) (*sessionStores, error) {
 	}, nil
 }
 
-// sessionResourceStorageIdentity is the stable identity CodeRig's session resource-storage
+// sessionResourceStorageIdentity is the stable identity Carbon's session resource-storage
 // provider reports through rig.SessionResourceStorage.Identity. It names the on-disk scheme
 // this provider implements — <data-dir>/resources/<session-id> for persisted sessions, a
 // process-owned temporary base for headless ones — and must change ONLY when that scheme's
@@ -123,10 +123,10 @@ func openStores(backend *storage.Composite) (*sessionStores, error) {
 // or access profile changes (that drift is the rig's own config fingerprint's job, an
 // entirely separate mechanism from this one). Harness's own identity anchor is what actually
 // detects and fails a restore closed on a mismatch (harness internal/sessionruntime's
-// ensureSessionResourceAnchor/validateSessionResourceAnchor); this constant is CodeRig's one
-// input to that check. Bump the version suffix, never reuse it, if CodeRig's resource-storage
+// ensureSessionResourceAnchor/validateSessionResourceAnchor); this constant is Carbon's one
+// input to that check. Bump the version suffix, never reuse it, if Carbon's resource-storage
 // scheme ever changes shape.
-const sessionResourceStorageIdentity = "coderig:session-resource-storage/v1"
+const sessionResourceStorageIdentity = "carbon:session-resource-storage/v1"
 
 // persistedResourceStorageProvider resolves each persisted session's process-resource storage
 // root to <data-dir>/resources/<session-id>, under the SAME data-dir root SessionStoreFactory
@@ -135,8 +135,8 @@ const sessionResourceStorageIdentity = "coderig:session-resource-storage/v1"
 // (SessionResourceStorageProvider's doc requirement) and trivially resolves the SAME
 // path/identity for the same session id across repeated calls, including across a real
 // process restart: a fresh SessionStoreFactory reconstructed over the same dataDir after
-// CodeRig restarts constructs an equal provider by construction, not by any cached state. The
-// resolved path is always a subdirectory of dataDir, which is CodeRig's own state directory
+// Carbon restarts constructs an equal provider by construction, not by any cached state. The
+// resolved path is always a subdirectory of dataDir, which is Carbon's own state directory
 // (DefaultDataDirIn) and structurally independent of any session's workspace root (the
 // checked-out code directory the rig places separately via WithExclusiveWorkspace), so it can
 // never overlap a workspace.
@@ -158,9 +158,9 @@ func (p *persistedResourceStorageProvider) StorageForSession(_ context.Context, 
 var _ rig.SessionResourceStorageProvider = (*persistedResourceStorageProvider)(nil)
 
 // headlessResourceStorageProvider resolves process-resource storage roots for headless
-// CodeRig sessions under ONE process-owned temporary base directory, minted once via
+// Carbon sessions under ONE process-owned temporary base directory, minted once via
 // os.MkdirTemp at construction. It never collides with another concurrently running headless
-// CodeRig process: each process constructs its own provider, and os.MkdirTemp mints a fresh,
+// Carbon process: each process constructs its own provider, and os.MkdirTemp mints a fresh,
 // uniquely named base directory every time. Unlike the persisted provider, it deliberately
 // does NOT promise stability across a real process restart — a fresh process gets a fresh
 // base and so a fresh (and, if a prior run's directory happens to still be on disk, distinct)
@@ -173,13 +173,13 @@ var _ rig.SessionResourceStorageProvider = (*persistedResourceStorageProvider)(n
 // a resume during this run) resolves the identical root, with no cache required. The base
 // directory is intentionally never removed by this type — like the process-shared in-memory
 // store it sits alongside (headlessStores), it is scoped to, and discarded only with, the
-// CodeRig process itself.
+// Carbon process itself.
 type headlessResourceStorageProvider struct {
 	base string
 }
 
 func newHeadlessResourceStorageProvider() (*headlessResourceStorageProvider, error) {
-	base, err := os.MkdirTemp("", "coderig-headless-resources-*")
+	base, err := os.MkdirTemp("", "carbon-headless-resources-*")
 	if err != nil {
 		return nil, &StoreInitError{Stage: "headless-resource-storage", Cause: err}
 	}
@@ -227,9 +227,9 @@ func headlessStores() (*sessionStores, error) {
 }
 
 // agentFingerprintFields assembles the rig-level config-fingerprint inputs that are not
-// part of a loop.Definition: the Generic AgentKind, the always-on workspace skill mode,
+// part of a loop.Definition: the Carbon AgentKind, the always-on workspace skill mode,
 // and the durable access configuration identity. NativePermissionPolicyRev carries the
-// secret-free access digest (access ABI version, selected Generic profile, and
+// secret-free access digest (access ABI version, selected Carbon profile, and
 // the non-secret egress route identity/guarantees) so an access-profile or
 // egress-boundary change invalidates a restore rather than silently
 // resuming with different authority. AppFields additionally surfaces the human-visible profile
@@ -282,7 +282,7 @@ func accessAppFields(profile AccessProfile) map[string]string {
 	return map[string]string{"access_profile": string(profile)}
 }
 
-// buildRig assembles ONE immutable rig from the Generic definition over the given store
+// buildRig assembles ONE immutable rig from the Carbon definition over the given store
 // facades, placing root as the session's EXCLUSIVE workspace (edit-the-open-checkout). The
 // rig owns snapshots-on-idle, delegation limits, the config fingerprint, the per-session
 // security limit, and offload-blob GC. allowMismatch opts a resume into proceeding despite a config
@@ -298,7 +298,7 @@ func buildRig(definition loop.Definition, stores *sessionStores, root string, cf
 }
 
 // buildRigForDelegationCaps is the common assembly path with explicit delegation caps and an
-// explicit permission-review registration. Production callers use buildRig's CodeRig delegation
+// explicit permission-review registration. Production callers use buildRig's Carbon delegation
 // defaults paired with the real registration built from the live inference Client
 // (openSessionWithDefinition); focused tests vary only the delegation limits while
 // retaining the exact production definitions, stores, workspace, and policy wiring.
@@ -322,11 +322,11 @@ func buildRigWithRegistration(definition loop.Definition, stores *sessionStores,
 func buildRigWithRegistrationAndACP(definition loop.Definition, stores *sessionStores, root string, cfg Config, allowMismatch bool, limits rig.DelegationLimits, registration conversationHustleRegistration, permissionReview permissionReviewRegistration, acpChildren *ACPComposition) (*rig.Rig, error) {
 	options := []rig.Option{
 		rig.WithLoops(definition),
-		rig.WithPrimers(string(generic.Name)),
-		rig.WithActivePrimer(string(generic.Name)),
+		rig.WithPrimers(string(carbon.Name)),
+		rig.WithActivePrimer(string(carbon.Name)),
 		rig.WithSessionStore(stores.session),
 		rig.WithExclusiveWorkspace(stores.workspace, root, stores.leaser),
-		// Manual, never OnIdle: CodeRig's exclusive workspace is the user's own persistent
+		// Manual, never OnIdle: Carbon's exclusive workspace is the user's own persistent
 		// local checkout (edit-the-open-checkout), not ephemeral compute that needs a
 		// durable snapshot to survive being torn down — workspacestore's actual design
 		// target (see its package doc). An OnIdle policy archived the ENTIRE tree (no
@@ -458,7 +458,7 @@ func (f *SessionStoreFactory) ensureStoresLocked() (*sessionStores, error) {
 // catalog itself (harness's Catalog.ListSessions) returns entries in ascending session-ID
 // order, an arbitrary-but-deterministic order that carries no time meaning (session IDs are
 // random UUIDs), so the recency ordering this method promises is applied here. The store is
-// shared across every workspace CodeRig has ever been run from (it lives under the looprig
+// shared across every workspace Carbon has ever been run from (it lives under the looprig
 // home directory, not the workspace), so without this scoping every project's session
 // history would bleed into every other project's picker — unlike Claude Code, which scopes
 // its own session history to the current project.
@@ -507,7 +507,7 @@ func currentWorkspaceFingerprint() (string, error) {
 // that recorded no workspace at all (empty WorkspaceRoot never belongs to a DIFFERENT
 // project, so it stays visible rather than being hidden as cross-workspace noise). It
 // matches by suffix rather than reconstructing the exact "<mode>:<root>" fingerprint
-// string, so it stays correct even if harness's placement-mode naming changes — CodeRig
+// string, so it stays correct even if harness's placement-mode naming changes — Carbon
 // only ever opens sessions with fixed exclusive placement, so any fingerprint ending in
 // this exact canonical root is this workspace's session. Filters in place (metas is not
 // reused by the caller afterward).
@@ -540,7 +540,7 @@ func lastActivity(meta sessionstore.SessionMeta) time.Time {
 	return meta.LastActiveAt
 }
 
-// Open builds a fully-persisted CodeRig session from one models.json load.
+// Open builds a fully-persisted Carbon session from one models.json load.
 func (f *SessionStoreFactory) Open(ctx context.Context, sel SessionSelector, cfg Config) (*RuntimeAgent, error) {
 	var client inference.Client
 	var factory ModelFactory
@@ -649,7 +649,7 @@ func (f *SessionStoreFactory) Open(ctx context.Context, sel SessionSelector, cfg
 	return agent, nil
 }
 
-// openWithClient resolves the workspace root, builds the one Generic loop definition and one rig
+// openWithClient resolves the workspace root, builds the one Carbon loop definition and one rig
 // over the shared store, and opens (Resume zero) or restores the session. It is the seam the
 // integration tests drive with an injected fake client. A resume threads
 // sel.AllowConfigMismatch into the rig so a deliberate config change can proceed.
@@ -664,7 +664,7 @@ func (f *SessionStoreFactory) openWithClient(ctx context.Context, client inferen
 	if err != nil {
 		return nil, &WorkspaceRootError{Cause: err}
 	}
-	// Persisted CodeRig is INTERACTIVE: a human at the TUI resolves gates, so the
+	// Persisted Carbon is INTERACTIVE: a human at the TUI resolves gates, so the
 	// access wiring uses the HOME-derived workspace permission store and interactive
 	// gate evaluators. The selected access profile is fixed for the session; the TUI
 	// only displays it (SessionPresenter). New and restore share this one path.

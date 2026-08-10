@@ -1,11 +1,11 @@
 // Command mcpfixture is a minimal, hand-rolled MCP stdio server used only by
-// coderig's own live round-trip integration test
+// carbon's own live round-trip integration test
 // (internal/app/mcp_live_integration_test.go, //go:build integration).
 //
 // It deliberately does NOT use github.com/modelcontextprotocol/go-sdk: the
 // sibling mcp module already depends on that SDK and already tests MCP
 // protocol conformance against it (see mcp/internal/mcptest), and adding it
-// to coderig as well was explicitly declined (coderig's CLAUDE.md requires
+// to carbon as well was explicitly declined (carbon's CLAUDE.md requires
 // approval before any new third-party dependency, even test-only). Coderig's
 // own integration test exists to prove ITS assembly/gating/env-baseline/
 // degradation behavior against a REAL subprocess and REAL newline-delimited
@@ -188,7 +188,7 @@ func handleInitialize(in rpcIn) rpcOut {
 			"tools": map[string]any{},
 		},
 		"serverInfo": map[string]any{
-			"name":    "coderig-mcp-fixture",
+			"name":    "carbon-mcp-fixture",
 			"version": "0.0.1",
 		},
 	}}
@@ -202,7 +202,7 @@ func handleToolsList() rpcOut {
 				"name": "echo",
 				"description": "Echoes back the given text, plus this process's own PATH " +
 					"and CODERIG_MCP_FIXTURE_UNLISTED_TEST_VAR environment values, " +
-					"for coderig's env-baseline integration test.",
+					"for carbon's env-baseline integration test.",
 				"inputSchema": map[string]any{
 					"type": "object",
 					"properties": map[string]any{

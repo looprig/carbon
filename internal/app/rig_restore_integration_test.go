@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/looprig/coderig/internal/catalog/generic"
+	"github.com/looprig/carbon/internal/catalog/carbon"
 	"github.com/looprig/core/content"
 	"github.com/looprig/core/uuid"
 	"github.com/looprig/harness/pkg/event"
@@ -108,10 +108,10 @@ func TestRigRestoreStateWorkspaceAndContinuation(t *testing.T) {
 			restoredEffort = req.Model.Sampling.Effort
 			return finalText("continued on restored delegate"), nil
 		}
-		if requestHasRole(req, generic.Name) {
+		if requestHasRole(req, carbon.Name) {
 			primaryCalls++
 			if primaryCalls == 1 {
-				return startAgentCall("restore-state-child", `{"agent_type":"generic","instructions":"work"}`), nil
+				return startAgentCall("restore-state-child", `{"agent_type":"carbon","instructions":"work"}`), nil
 			}
 			return finalText("generic work complete"), nil
 		}
@@ -135,7 +135,7 @@ func TestRigRestoreStateWorkspaceAndContinuation(t *testing.T) {
 		}
 	}
 	if childID.IsZero() {
-		t.Fatal("managed Generic work did not create a delegate")
+		t.Fatal("managed Carbon work did not create a delegate")
 	}
 	if err := a1.sess.SetActiveLoop(context.Background(), childID); err != nil {
 		t.Fatalf("SetActiveLoop(delegate): %v", err)
@@ -146,7 +146,7 @@ func TestRigRestoreStateWorkspaceAndContinuation(t *testing.T) {
 	}
 	changedModel := controller.Model()
 	changedModel.Name = "restored-state-model"
-	// CodeRig production definitions deliberately declare only their base mode. Selecting that
+	// Carbon production definitions deliberately declare only their base mode. Selecting that
 	// declared mode still traverses the real mode-control boundary without inventing a mode.
 	if err := controller.SetMode(context.Background(), loop.ModeName("")); err != nil {
 		t.Fatalf("SetMode(base): %v", err)
@@ -228,7 +228,7 @@ func TestRigRestoreDelegateOwnership(t *testing.T) {
 			switch step {
 			case 0:
 				step++
-				return startAgentCall("own-start", `{"agent_type":"generic","instructions":"first"}`), nil
+				return startAgentCall("own-start", `{"agent_type":"carbon","instructions":"first"}`), nil
 			case 1:
 				step++
 				return finalText("initial child"), nil
@@ -314,7 +314,7 @@ func TestRigRestoreDelegateOwnership(t *testing.T) {
 }
 
 // TestAgentToolsFSStorePersistence drives two persistent agents through the production
-// CodeRig rig over fsstore. It covers direct-child listing, foreground reuse, and stopping
+// Carbon rig over fsstore. It covers direct-child listing, foreground reuse, and stopping
 // one active child without exposing request correlation IDs.
 func TestAgentToolsFSStorePersistence(t *testing.T) {
 	t.Chdir(t.TempDir())
@@ -374,7 +374,7 @@ func TestAgentToolsFSStorePersistence(t *testing.T) {
 			stateMu.Lock()
 			step++
 			stateMu.Unlock()
-			return startAgentCall("fs-agent-1", `{"agent_type":"generic","instructions":"first","wait_for_response":false}`), nil
+			return startAgentCall("fs-agent-1", `{"agent_type":"carbon","instructions":"first","wait_for_response":false}`), nil
 		case 1:
 			var err error
 			parsed, err := parseAgentHandle(prior)
@@ -390,7 +390,7 @@ func TestAgentToolsFSStorePersistence(t *testing.T) {
 			case <-ctx.Done():
 				return nil, ctx.Err()
 			}
-			return startAgentCall("fs-agent-2", `{"agent_type":"generic","instructions":"second","wait_for_response":false}`), nil
+			return startAgentCall("fs-agent-2", `{"agent_type":"carbon","instructions":"second","wait_for_response":false}`), nil
 		case 2:
 			var err error
 			parsed, err := parseAgentHandle(prior)
@@ -456,8 +456,8 @@ func TestAgentToolsFSStorePersistence(t *testing.T) {
 	}
 }
 
-// TestManagedDelegateDeclaredModeFSStore uses a Generic-only managed topology with
-// the one deliberate test-only difference: the Generic child declares
+// TestManagedDelegateDeclaredModeFSStore uses a Carbon-only managed topology with
+// the one deliberate test-only difference: the Carbon child declares
 // a named mode. It complements the production-definition rejection test by proving a mode
 // is accepted only when present in the target definition.
 func TestManagedDelegateDeclaredModeFSStore(t *testing.T) {
@@ -475,7 +475,7 @@ func TestManagedDelegateDeclaredModeFSStore(t *testing.T) {
 		if strings.Contains(req.System, "mode-test-primary") {
 			primaryCalls++
 			if primaryCalls == 1 {
-				return startAgentCall("declared-mode", `{"agent_type":"generic","instructions":"plan it","agent_mode":"plan"}`), nil
+				return startAgentCall("declared-mode", `{"agent_type":"carbon","instructions":"plan it","agent_mode":"plan"}`), nil
 			}
 			return finalText("declared mode complete"), nil
 		}
@@ -486,11 +486,11 @@ func TestManagedDelegateDeclaredModeFSStore(t *testing.T) {
 	definition := func(t *testing.T) loop.Definition {
 		t.Helper()
 		definition, err := loop.Define(
-			loop.WithName(generic.Name), loop.WithInference(client, testModel()), loop.WithSystem("mode-test-primary"),
+			loop.WithName(carbon.Name), loop.WithInference(client, testModel()), loop.WithSystem("mode-test-primary"),
 			loop.WithAccessGate(approveAllAccessGate{}),
 			loop.WithModes(loop.Mode{Name: "plan"}, loop.Mode{Name: "build", Model: modeModel, Effort: model.EffortHigh}),
 			loop.WithInitialMode("plan"), loop.WithPolicyRevision("mode-test-child-v1"),
-			loop.WithDelegates(generic.Name), loop.WithDelegation(loop.Delegation{Style: loop.DelegationManaged}),
+			loop.WithDelegates(carbon.Name), loop.WithDelegation(loop.Delegation{Style: loop.DelegationManaged}),
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -612,7 +612,7 @@ func TestManagedDelegateUndeclaredModeFSStore(t *testing.T) {
 	client.fn = func(_ context.Context, req inference.Request) ([]content.Chunk, error) {
 		calls++
 		if calls == 1 {
-			return startAgentCall("undeclared-mode", `{"agent_type":"generic","instructions":"must reject","agent_mode":"build"}`), nil
+			return startAgentCall("undeclared-mode", `{"agent_type":"carbon","instructions":"must reject","agent_mode":"build"}`), nil
 		}
 		result = lastToolText(req)
 		return finalText("rejection observed"), nil
@@ -633,7 +633,7 @@ func TestManagedDelegateUndeclaredModeFSStore(t *testing.T) {
 }
 
 // TestRigRestoreSnapshotFailureAdmission composes the actual fsstore session journal and
-// leases with a deterministic failing workspace blob seam. This keeps the complete CodeRig
+// leases with a deterministic failing workspace blob seam. This keeps the complete Carbon
 // topology/bindings while proving the two documented snapshot priorities at admission.
 func TestRigRestoreSnapshotFailureAdmission(t *testing.T) {
 	for _, tc := range []struct {
@@ -657,7 +657,7 @@ func TestRigRestoreSnapshotFailureAdmission(t *testing.T) {
 				return finalText("snapshot turn complete"), nil
 			}}
 			access, cfg := headlessTestAccess(t, Config{}, root)
-			definition, err := genericTestDefinition(client, testModel(), cfg, access)
+			definition, err := carbonTestDefinition(client, testModel(), cfg, access)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -667,8 +667,8 @@ func TestRigRestoreSnapshotFailureAdmission(t *testing.T) {
 			}
 			options := []rig.Option{
 				rig.WithLoops(definition),
-				rig.WithPrimers(string(generic.Name)),
-				rig.WithActivePrimer(string(generic.Name)),
+				rig.WithPrimers(string(carbon.Name)),
+				rig.WithActivePrimer(string(carbon.Name)),
 				rig.WithSessionStore(f.stores.session),
 				rig.WithSessionResourceStorage(f.stores.resourceStorage),
 				rig.WithExclusiveWorkspace(workspace, root, f.stores.leaser),
@@ -783,7 +783,7 @@ func TestProcessAdapterResolverIndependentOfHarnessTransport(t *testing.T) {
 	}
 
 	if a2.access == nil || a2.access.set == nil {
-		t.Fatal("restored RuntimeAgent has no Generic *sandbox.ExecutorSet to resolve against")
+		t.Fatal("restored RuntimeAgent has no Carbon *sandbox.ExecutorSet to resolve against")
 	}
 	resolver := newProcessRunnerResolver(a2.access.set)
 	runner, err := resolver(context.Background(), restoredLoopID)

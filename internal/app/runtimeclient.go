@@ -11,7 +11,7 @@ import (
 	"github.com/looprig/inference/stream"
 )
 
-var errConfiguredRuntimeClientUnavailable = errors.New("coderig: configured runtime client unavailable")
+var errConfiguredRuntimeClientUnavailable = errors.New("carbon: configured runtime client unavailable")
 
 type modelBinding struct {
 	Model  model.Model

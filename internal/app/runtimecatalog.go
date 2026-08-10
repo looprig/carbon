@@ -3,7 +3,7 @@ package app
 import (
 	"fmt"
 
-	"github.com/looprig/coderig/internal/catalog/generic"
+	"github.com/looprig/carbon/internal/catalog/carbon"
 	"github.com/looprig/harness/pkg/loop"
 	"github.com/looprig/inference"
 	model "github.com/looprig/inference/model"
@@ -17,10 +17,10 @@ const (
 	claudeRuntimeDescription                          = "Claude Code ACP harness when its profile is usable."
 )
 
-// GenericRuntimeSource is the private client/model binding used by Generic's
+// CarbonRuntimeSource is the private client/model binding used by Carbon's
 // in-process fallback. It is separate from ACPGatewaySource so a primer-only
 // model cannot accidentally become an ACP row.
-type GenericRuntimeSource struct {
+type CarbonRuntimeSource struct {
 	Alias         loop.ModelAlias
 	Description   string
 	Client        inference.Client
@@ -32,17 +32,17 @@ type GenericRuntimeSource struct {
 // AgentRuntimeCatalogInput is the minimal composition-root input for the
 // complete parent-scoped runtime catalogue. GatewayTargets are the configured
 // delegate-capable targets admitted to both the in-process and ACP choices.
-// PrimerTarget is used only by the in-process Generic choice when no delegate
+// PrimerTarget is used only by the in-process Carbon choice when no delegate
 // target exists; it is never exposed as an ACP model.
 type AgentRuntimeCatalogInput struct {
 	GatewayTargets []ACPGatewaySource
-	PrimerTarget   GenericRuntimeSource
+	PrimerTarget   CarbonRuntimeSource
 	ClaudeSmall    loop.ModelAlias
 	NativeACP      map[string]ACPNativeProfile
 }
 
 // CompileAgentRuntimeCatalog is the one product-level catalogue compiler. It
-// compiles raw optional ACP rows and the ordinary in-process Generic row, then
+// compiles raw optional ACP rows and the ordinary in-process Carbon row, then
 // validates the complete set exactly once. ACP rows are never given a product
 // default: omitted runtime selectors always resolve to looprig/native.
 func CompileAgentRuntimeCatalog(input AgentRuntimeCatalogInput) (ACPCompiledCatalog, error) {
@@ -55,13 +55,13 @@ func CompileAgentRuntimeCatalog(input AgentRuntimeCatalogInput) (ACPCompiledCata
 		return ACPCompiledCatalog{}, err
 	}
 
-	ordinaryOptions, nativeTargets, err := compileGenericRuntimeOptions(raw.gatewayOptions, raw.gatewayTargets, input.PrimerTarget)
+	ordinaryOptions, nativeTargets, err := compileCarbonRuntimeOptions(raw.gatewayOptions, raw.gatewayTargets, input.PrimerTarget)
 	if err != nil {
 		return ACPCompiledCatalog{}, err
 	}
 	entries := make([]loop.RuntimeCatalogEntry, 0, len(raw.entries)+1)
 	entries = append(entries, loop.RuntimeCatalogEntry{
-		AgentType:     generic.Name,
+		AgentType:     carbon.Name,
 		AgentHarness:  looprigRuntimeHarness,
 		Profile:       looprigRuntimeProfile,
 		Description:   looprigRuntimeDescription,
@@ -73,7 +73,7 @@ func CompileAgentRuntimeCatalog(input AgentRuntimeCatalogInput) (ACPCompiledCata
 		Models:        ordinaryOptions,
 	})
 	for _, entry := range raw.entries {
-		entry.AgentType = generic.Name
+		entry.AgentType = carbon.Name
 		entry.Default = false
 		entries = append(entries, cloneACPEntry(entry))
 	}
@@ -98,10 +98,10 @@ func CompileAgentRuntimeCatalog(input AgentRuntimeCatalogInput) (ACPCompiledCata
 	}, nil
 }
 
-// compileGenericRuntimeOptions uses delegate-capable rows for ordinary
-// in-process Generic selection. The primer is the explicit fallback when no
+// compileCarbonRuntimeOptions uses delegate-capable rows for ordinary
+// in-process Carbon selection. The primer is the explicit fallback when no
 // delegate row exists; it is deliberately not passed to the ACP compiler.
-func compileGenericRuntimeOptions(gatewayOptions []loop.RuntimeModelOption, gatewayTargets map[loop.ModelAlias]ACPGatewaySource, primer GenericRuntimeSource) ([]loop.RuntimeModelOption, map[loop.ModelAlias]ACPGatewaySource, error) {
+func compileCarbonRuntimeOptions(gatewayOptions []loop.RuntimeModelOption, gatewayTargets map[loop.ModelAlias]ACPGatewaySource, primer CarbonRuntimeSource) ([]loop.RuntimeModelOption, map[loop.ModelAlias]ACPGatewaySource, error) {
 	if len(gatewayOptions) != 0 {
 		options := cloneRuntimeOptions(gatewayOptions)
 		for index := range options {
@@ -111,7 +111,7 @@ func compileGenericRuntimeOptions(gatewayOptions []loop.RuntimeModelOption, gate
 		return options, cloneGatewayTargets(gatewayTargets), nil
 	}
 	if primer.Alias == "" {
-		return nil, nil, fmt.Errorf("coderig: Generic runtime requires a configured primer")
+		return nil, nil, fmt.Errorf("carbon: Carbon runtime requires a configured primer")
 	}
 	options, targetsByAlias, err := compileACPGatewayRows([]ACPGatewaySource{{
 		Alias:         primer.Alias,
@@ -131,7 +131,7 @@ func compileGenericRuntimeOptions(gatewayOptions []loop.RuntimeModelOption, gate
 	return options, targetsByAlias, nil
 }
 
-func configuredPrimerRuntimeTarget(configured productionModels) GenericRuntimeSource {
+func configuredPrimerRuntimeTarget(configured productionModels) CarbonRuntimeSource {
 	description := ""
 	for _, candidate := range configured.PrimerCandidates {
 		if candidate.Alias == configured.PrimerAlias {
@@ -147,7 +147,7 @@ func configuredPrimerRuntimeTarget(configured productionModels) GenericRuntimeSo
 		// effort admitted by the configured primer.
 		defaultEffort = configured.PrimerEfforts[0]
 	}
-	return GenericRuntimeSource{
+	return CarbonRuntimeSource{
 		Alias:         loop.ModelAlias(configured.PrimerAlias),
 		Description:   description,
 		Client:        configured.PrimerClient,
@@ -167,7 +167,7 @@ func cloneGatewayTargets(input map[loop.ModelAlias]ACPGatewaySource) map[loop.Mo
 	return result
 }
 
-// runtimeHarnessDescription is deliberately CodeRig-owned. It is stable
+// runtimeHarnessDescription is deliberately Carbon-owned. It is stable
 // presentation metadata, not model configuration and not a credential route.
 func runtimeHarnessDescription(harness loop.AgentHarnessName) string {
 	switch harness {

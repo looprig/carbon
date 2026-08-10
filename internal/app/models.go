@@ -7,7 +7,7 @@ import (
 	"github.com/looprig/llm"
 )
 
-// CodeRig owns the secret-free model descriptors it can select explicitly. Each
+// Carbon owns the secret-free model descriptors it can select explicitly. Each
 // descriptor is built with model.CustomModel and checked against the
 // fail-closed provider truth table. Connection secrets bind to the Client and
 // never live on a model descriptor.
@@ -24,7 +24,7 @@ type InvalidDefaultModelError struct {
 }
 
 func (e *InvalidDefaultModelError) Error() string {
-	return "coderig: invalid default model " + strconv.Quote(e.Name) + ": " + e.Cause.Error()
+	return "carbon: invalid default model " + strconv.Quote(e.Name) + ": " + e.Cause.Error()
 }
 
 func (e *InvalidDefaultModelError) Unwrap() error { return e.Cause }
@@ -32,7 +32,7 @@ func (e *InvalidDefaultModelError) Unwrap() error { return e.Cause }
 // mustValidModel runs the fail-closed llm.ValidateModel provider check on a
 // hardcoded model descriptor and returns it unchanged, panicking with an
 // *InvalidDefaultModelError if the descriptor is malformed. It is called at the
-// construction of every CodeRig model descriptor, so a bad descriptor fails loud
+// construction of every Carbon model descriptor, so a bad descriptor fails loud
 // at startup rather than at first provider call.
 func mustValidModel(m model.Model) model.Model {
 	if err := llm.ValidateModel(m); err != nil {
@@ -42,7 +42,7 @@ func mustValidModel(m model.Model) model.Model {
 }
 
 // chutesKimiK26 is the Moonshot Kimi K2.6 model served through Chutes' TEE-attested,
-// OpenAI-compatible tunnel — CodeRig's default model (see model.go). It is the newest
+// OpenAI-compatible tunnel — Carbon's default model (see model.go). It is the newest
 // Kimi Chutes serves (confirmed against llm.chutes.ai /v1/models); the id carries the
 // -TEE suffix every Chutes confidential chute uses. Chutes resolves the model name to a
 // chute at request time, so Name is the value sent on every request; the base is the

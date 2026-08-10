@@ -18,9 +18,9 @@ import (
 
 // testResourceStorageProvider is a throwaway rig.SessionResourceStorageProvider
 // backed by one t.TempDir() base, auto-cleaned by the testing package. It exists
-// because Generic's Bash definition
+// because Carbon's Bash definition
 // tool.RequiresProcessServices, so ANY test that assembles the real production
-// session (genericTestDefinition) and feeds it through buildRig/rig.Define now needs
+// session (carbonTestDefinition) and feeds it through buildRig/rig.Define now needs
 // SOME session-resource-storage provider wired — exactly like production's
 // persistedResourceStorageProvider (persisted sessions) and
 // headlessResourceStorageProvider (headless sessions) already are. A test that
@@ -32,7 +32,7 @@ type testResourceStorageProvider struct{ base string }
 func (p testResourceStorageProvider) StorageForSession(_ context.Context, id uuid.UUID) (rig.SessionResourceStorage, error) {
 	return rig.SessionResourceStorage{
 		Path:     filepath.Join(p.base, id.String()),
-		Identity: "coderig:test-session-resource-storage/v1",
+		Identity: "carbon:test-session-resource-storage/v1",
 	}, nil
 }
 
@@ -75,7 +75,7 @@ type fakeStreamStep struct {
 type fakeLLMScriptError struct{ Operation string }
 
 func (e *fakeLLMScriptError) Error() string {
-	return "coderig test: fake LLM " + e.Operation + " not scripted"
+	return "carbon test: fake LLM " + e.Operation + " not scripted"
 }
 
 // fakeLLM is a controllable inference.Client for tests. Stream and Invoke have
@@ -239,9 +239,9 @@ func newTestAgent(t *testing.T, client inference.Client, cfg Config) *sessionAda
 	t.Helper()
 	root := t.TempDir()
 	access, cfg := headlessTestAccess(t, cfg, root)
-	definition, err := genericTestDefinition(client, testModel(), cfg, access)
+	definition, err := carbonTestDefinition(client, testModel(), cfg, access)
 	if err != nil {
-		t.Fatalf("genericTestDefinition() error = %v", err)
+		t.Fatalf("carbonTestDefinition() error = %v", err)
 	}
 	stores, err := openTestStores(t)
 	if err != nil {

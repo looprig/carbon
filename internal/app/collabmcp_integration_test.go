@@ -13,7 +13,7 @@ import (
 	"testing"
 
 	"github.com/looprig/acp/protocol"
-	"github.com/looprig/coderig/internal/catalog/generic"
+	"github.com/looprig/carbon/internal/catalog/carbon"
 	"github.com/looprig/core/content"
 	"github.com/looprig/core/uuid"
 	"github.com/looprig/harness/pkg/event"
@@ -52,7 +52,7 @@ func (r *collabMCPIntegrationRecorder) capture(services foreign.Services, agentS
 		return collabMCPIntegrationCapture{}, err
 	}
 	if server.Stdio == nil {
-		return collabMCPIntegrationCapture{}, errors.New("coderig test: collaboration descriptor omitted stdio")
+		return collabMCPIntegrationCapture{}, errors.New("carbon test: collaboration descriptor omitted stdio")
 	}
 	stdio := server.Stdio
 	token := services.Broker.Capability()
@@ -156,7 +156,7 @@ func TestCollabMCPIntegrationNewAndRestoredForeignConstruction(t *testing.T) {
 	}
 	started, err := probe.captured().Execute(ctx, tool.DelegateRequest{
 		Operation:       tool.DelegateStart,
-		AgentType:       string(generic.Name),
+		AgentType:       string(carbon.Name),
 		Message:         "exercise collaboration construction",
 		WaitForResponse: false,
 		Runtime:         codexMaxRuntime(),
@@ -209,29 +209,29 @@ func TestCollabMCPIntegrationNewAndRestoredForeignConstruction(t *testing.T) {
 	}
 }
 
-func TestCollabMCPIntegrationNativeGenericRetainsInProcessMessageAgent(t *testing.T) {
+func TestCollabMCPIntegrationNativeCarbonRetainsInProcessMessageAgent(t *testing.T) {
 	requireCollabMCPIntegrationSocket(t)
 	client := &managedScript{}
 	var sawMessageAgent bool
 	client.fn = func(_ context.Context, req inference.Request) ([]content.Chunk, error) {
-		if !requestHasRole(req, generic.Name) {
-			return nil, errors.New("coderig test: native request lost Generic identity")
+		if !requestHasRole(req, carbon.Name) {
+			return nil, errors.New("carbon test: native request lost Carbon identity")
 		}
 		sawMessageAgent = slices.Contains(toolNamesFromRequest(req), "MessageAgent")
-		return finalText("native Generic complete"), nil
+		return finalText("native Carbon complete"), nil
 	}
 
 	// The collaboration executable is deliberately present in Config, but no
-	// foreign child is started. Generic's existing Harness-managed MessageAgent
+	// foreign child is started. Carbon's existing Harness-managed MessageAgent
 	// must remain in its in-process tool roster.
 	path := filepath.Join(t.TempDir(), collabMCPExecutableName)
 	writeExecutable(t, path)
 	agent := newTestAgent(t, client, Config{CollabMCPExecutable: path})
-	if got := runManagedTurn(t, agent, "inspect native collaboration tools"); got != "native Generic complete" {
-		t.Fatalf("native Generic result = %q", got)
+	if got := runManagedTurn(t, agent, "inspect native collaboration tools"); got != "native Carbon complete" {
+		t.Fatalf("native Carbon result = %q", got)
 	}
 	if !sawMessageAgent {
-		t.Fatal("native Generic request omitted the in-process MessageAgent")
+		t.Fatal("native Carbon request omitted the in-process MessageAgent")
 	}
 }
 

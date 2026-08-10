@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/looprig/coderig/internal/catalog/generic"
+	"github.com/looprig/carbon/internal/catalog/carbon"
 	"github.com/looprig/harness/pkg/loop"
 	"github.com/looprig/inference"
 	"github.com/looprig/inference/gateway"
@@ -17,7 +17,7 @@ func TestBuildACPGatewayPlanUsesStrictFixedRoutes(t *testing.T) {
 	t.Parallel()
 	compiled := testACPGatewayCatalog(t)
 
-	claude, err := compiled.RuntimeCatalog.Resolve(generic.Name, "claude-code", "gpt-5.6-luna", model.EffortMax)
+	claude, err := compiled.RuntimeCatalog.Resolve(carbon.Name, "claude-code", "gpt-5.6-luna", model.EffortMax)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +47,7 @@ func TestBuildACPGatewayPlanUsesStrictFixedRoutes(t *testing.T) {
 		t.Fatalf("unknown Claude alias error = %v, want UnknownRouteError", err)
 	}
 
-	codex, err := compiled.RuntimeCatalog.Resolve(generic.Name, "codex", "gpt-5.6-luna", model.EffortMax)
+	codex, err := compiled.RuntimeCatalog.Resolve(carbon.Name, "codex", "gpt-5.6-luna", model.EffortMax)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +78,7 @@ func TestBuildACPGatewayPlanSeparatesClaudeMainAndSmallEffortAliases(t *testing.
 		effort := effort
 		t.Run(string(effort), func(t *testing.T) {
 			t.Parallel()
-			selected, err := compiled.RuntimeCatalog.Resolve(generic.Name, "claude-code", "sonnet-5", effort)
+			selected, err := compiled.RuntimeCatalog.Resolve(carbon.Name, "claude-code", "sonnet-5", effort)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -124,7 +124,7 @@ func TestNewACPGatewayNativeAuthHasNoBinding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolved, err := compiled.RuntimeCatalog.Resolve(generic.Name, "codex", "native-model", model.EffortNone)
+	resolved, err := compiled.RuntimeCatalog.Resolve(carbon.Name, "codex", "native-model", model.EffortNone)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +139,7 @@ func TestNewACPGatewayNativeAuthHasNoBinding(t *testing.T) {
 
 func TestNewACPGatewayCloseIsIdempotent(t *testing.T) {
 	compiled := testACPGatewayCatalog(t)
-	resolved, err := compiled.RuntimeCatalog.Resolve(generic.Name, "codex", "gpt-5.6-luna", model.EffortMax)
+	resolved, err := compiled.RuntimeCatalog.Resolve(carbon.Name, "codex", "gpt-5.6-luna", model.EffortMax)
 	if err != nil {
 		t.Fatal(err)
 	}

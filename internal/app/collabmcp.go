@@ -12,9 +12,9 @@ import (
 	"github.com/looprig/mcp/pkg/collab"
 )
 
-const collabMCPExecutableName = "coderig-collab-mcp"
+const collabMCPExecutableName = "carbon-collab-mcp"
 
-var errCollabMCPExecutableUnavailable = errors.New("coderig: collaboration MCP executable unavailable")
+var errCollabMCPExecutableUnavailable = errors.New("carbon: collaboration MCP executable unavailable")
 
 // verifiedExecutableSnapshot is the immutable path identity captured before a
 // child builder is registered. Every path component is retained: a directory
@@ -32,7 +32,7 @@ type verifiedPathComponent struct {
 
 // resolveCollabMCPExecutable resolves the collaboration MCP process before a
 // session is assembled. An explicit path is authoritative; an empty path uses
-// the sibling of the current CodeRig executable.
+// the sibling of the current Carbon executable.
 func resolveCollabMCPExecutable(configured string) (string, error) {
 	if configured != "" {
 		return resolveCollabMCPExecutableFrom(configured, "")
@@ -163,7 +163,7 @@ func pathComponents(path string) []string {
 }
 
 // collabMCPServerFor builds the one opaque collaboration MCP descriptor for a
-// foreign ACP loop. Harness owns the descriptor authority; CodeRig only maps
+// foreign ACP loop. Harness owns the descriptor authority; Carbon only maps
 // its endpoint and token into the ACP stdio environment.
 func collabMCPServerFor(executable string, descriptor foreign.BrokerDescriptor) (protocol.McpServer, error) {
 	if !cleanAbsolutePath(executable) || !verifiedExecutable(executable) {
@@ -172,11 +172,11 @@ func collabMCPServerFor(executable string, descriptor foreign.BrokerDescriptor) 
 	endpoint := descriptor.Endpoint()
 	capability := descriptor.Capability()
 	if endpoint == "" || len(capability) != collab.CapabilityBytes {
-		return protocol.McpServer{}, errors.New("coderig: collaboration MCP broker unavailable")
+		return protocol.McpServer{}, errors.New("carbon: collaboration MCP broker unavailable")
 	}
 	token, err := collab.EncodeCapabilityToken(capability)
 	if err != nil {
-		return protocol.McpServer{}, errors.New("coderig: collaboration MCP broker unavailable")
+		return protocol.McpServer{}, errors.New("carbon: collaboration MCP broker unavailable")
 	}
 	return protocol.McpServer{Stdio: &protocol.McpServerStdio{
 		Name:    collabMCPExecutableName,

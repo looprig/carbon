@@ -1,4 +1,4 @@
-package generic
+package carbon
 
 import (
 	"encoding/xml"
@@ -10,8 +10,8 @@ type promptSection struct {
 	Items []string `xml:"item"`
 }
 
-const approvedSystemPrompt = `<identity product="CodeRig">
-  <persona>You are Generic, a general-purpose software-engineering agent. Work like a trusted coding partner: direct, technically rigorous, curious, and focused on finishing the user's actual task.</persona>
+const approvedSystemPrompt = `<identity product="Carbon">
+  <persona>You are Carbon, a general-purpose software-engineering agent. Work like a trusted coding partner: direct, technically rigorous, curious, and focused on finishing the user's actual task.</persona>
 
   <intent>
     <item>For requests to answer, explain, review, diagnose, or plan, inspect the relevant evidence and report the result. Do not modify the workspace unless the request also asks for changes.</item>
@@ -39,7 +39,7 @@ const approvedSystemPrompt = `<identity product="CodeRig">
 
   <delegation>
     <item>Delegate only focused work that benefits from independent or parallel execution.</item>
-    <item>Give each Generic subagent a self-contained task, assess its evidence, and synthesize the final result yourself.</item>
+    <item>Give each Carbon subagent a self-contained task, assess its evidence, and synthesize the final result yourself.</item>
     <item>Do not delegate trivial work or duplicate work already in progress.</item>
   </delegation>
 
@@ -115,7 +115,7 @@ func TestIdentity(t *testing.T) {
 		})
 	}
 
-	for _, want := range []string{"Generic", "answer", "change", "verify", "untrusted data", "destructive", "delegate"} {
+	for _, want := range []string{"Carbon", "answer", "change", "verify", "untrusted data", "destructive", "delegate"} {
 		if !strings.Contains(SystemPrompt, want) {
 			t.Errorf("SystemPrompt is missing %q", want)
 		}

@@ -13,7 +13,7 @@ import (
 	"github.com/looprig/tools"
 )
 
-// process_adapter.go is CodeRig's MECHANICAL Sandbox-to-Harness type mapping
+// process_adapter.go is Carbon's MECHANICAL Sandbox-to-Harness type mapping
 // for asynchronous (supervised/background) processes. It follows the exact
 // composition style toolsets.go's grantedExecutor already established for the
 // synchronous command path: a thin value wraps a concrete Sandbox type and
@@ -29,7 +29,7 @@ import (
 // bound to the LoopID Harness supplies at Bind time (via
 // set.For(loopID.String()), the SAME per-Loop executor bashDefinition and
 // accessGate already resolves for that Loop) and wraps it fresh. Task 27 is the
-// first and only caller that threads this resolver into Generic's Bash
+// first and only caller that threads this resolver into Carbon's Bash
 // definition; this file deliberately does not touch toolsets.go's
 // roster-building functions.
 
@@ -37,7 +37,7 @@ import (
 // over set. Each call uses set.For(loopID.String()) exactly once and wraps
 // the returned *sandbox.Executor as a tool.AsyncProcessRunner; a lookup
 // failure (ErrExecutorSetClosed, ErrExecutorLimit, or an invalid key) is
-// returned to the caller unwrapped — CodeRig adds no ProcessError translation
+// returned to the caller unwrapped — Carbon adds no ProcessError translation
 // at this seam, since no process admission has even begun.
 func newProcessRunnerResolver(set *sandbox.ExecutorSet) tools.AsyncProcessRunnerResolver {
 	return func(_ context.Context, loopID uuid.UUID) (tool.AsyncProcessRunner, error) {
@@ -192,7 +192,7 @@ const (
 // with) rather than calling Sandbox's own Process.StreamMode: Sandbox's
 // facade package (github.com/looprig/sandbox) does not re-export a way to
 // construct or compare against sandbox.ProcessStreamMode's values from
-// outside the module in a way CodeRig could otherwise use without importing
+// outside the module in a way Carbon could otherwise use without importing
 // internal/exec directly, which the module boundary forbids. This is not a
 // loss of fidelity: Sandbox's own PrepareProcess documents that a TTY
 // request is "honored with a real platform PTY where one exists... and
@@ -472,7 +472,7 @@ func (p *processAdapter) Resize(ctx context.Context, rows, cols uint16) error {
 func (p *processAdapter) Signal(ctx context.Context, kind tool.ProcessSignal) error {
 	sandboxKind, severity, ok := mapProcessSignal(kind)
 	if !ok {
-		return &tool.ProcessError{Code: tool.ProcessErrorSignalFailed, Cause: fmt.Errorf("coderig: invalid process signal: %d", kind)}
+		return &tool.ProcessError{Code: tool.ProcessErrorSignalFailed, Cause: fmt.Errorf("carbon: invalid process signal: %d", kind)}
 	}
 	if err := p.proc.Signal(ctx, sandboxKind); err != nil {
 		return mapSignalError(err)

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/looprig/coderig/internal/catalog/generic"
+	"github.com/looprig/carbon/internal/catalog/carbon"
 	"github.com/looprig/core/content"
 	"github.com/looprig/core/uuid"
 	"github.com/looprig/harness/pkg/loop"
@@ -18,7 +18,7 @@ import (
 	"github.com/looprig/tools"
 )
 
-// process_tools_test.go covers the Generic session-supervised Bash definition
+// process_tools_test.go covers the Carbon session-supervised Bash definition
 // plus its three argument-free process companions.
 
 // fakeSessionResourceRegistry is a tool.SessionResourceRegistry test double
@@ -115,9 +115,9 @@ func sessionScopedBindingsFor(t *testing.T, sessionID, loopID uuid.UUID, root st
 // set (mustExecutorSet's own cap of 1 executor is too small for those).
 func mustExecutorSetWithCapacity(t *testing.T, root string, max int) *sandbox.ExecutorSet {
 	t.Helper()
-	profile, err := coderigProfile(AccessTrusted, root)
+	profile, err := carbonProfile(AccessTrusted, root)
 	if err != nil {
-		t.Fatalf("coderigProfile: %v", err)
+		t.Fatalf("carbonProfile: %v", err)
 	}
 	set, err := sandbox.NewExecutorSet(profile, sandbox.WithScratchRoot(t.TempDir()), sandbox.WithMaxExecutors(max))
 	if err != nil {
@@ -138,9 +138,9 @@ func mustExecutorSetWithCapacity(t *testing.T, root string, max int) *sandbox.Ex
 // actually spawn a command, use the ordinary mustExecutorSet instead.
 func mustUnconfinedExecutorSet(t *testing.T, root string) *sandbox.ExecutorSet {
 	t.Helper()
-	profile, err := coderigProfile(AccessUnconfined, root)
+	profile, err := carbonProfile(AccessUnconfined, root)
 	if err != nil {
-		t.Fatalf("coderigProfile: %v", err)
+		t.Fatalf("carbonProfile: %v", err)
 	}
 	set, err := sandbox.NewExecutorSet(profile, sandbox.WithScratchRoot(t.TempDir()), sandbox.WithMaxExecutors(4))
 	if err != nil {
@@ -171,8 +171,8 @@ func findDefinitionByName(t *testing.T, defs []tool.Definition, name string) too
 	return nil
 }
 
-// TestProcessToolsGenericRosterContainsBashAndProcessTrioExactlyOnce proves
-// Generic carries Bash, ProcessOutput, ProcessInput, and ProcessStop exactly
+// TestProcessToolsCarbonRosterContainsBashAndProcessTrioExactlyOnce proves
+// Carbon carries Bash, ProcessOutput, ProcessInput, and ProcessStop exactly
 // once, and Bash declares both workspace and process requirements.
 func TestProcessToolsRostersContainBashAndProcessTrioExactlyOnce(t *testing.T) {
 	t.Parallel()
@@ -182,7 +182,7 @@ func TestProcessToolsRostersContainBashAndProcessTrioExactlyOnce(t *testing.T) {
 		name string
 		defs []tool.Definition
 	}{
-		{name: "generic", defs: genericToolDefinitions(set, nil, nil)},
+		{name: "carbon", defs: carbonToolDefinitions(set, nil, nil)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -397,7 +397,7 @@ func TestProcessToolsBashDefinitionRejectsZeroLoopIDBeforeResolverInvoked(t *tes
 	}
 	var invalid *tool.InvalidBindingsError
 	if !errors.As(err, &invalid) {
-		t.Fatalf("Build() error = %T %v, want *tool.InvalidBindingsError (Harness's own binding validation, not coderig's)", err, err)
+		t.Fatalf("Build() error = %T %v, want *tool.InvalidBindingsError (Harness's own binding validation, not carbon's)", err, err)
 	}
 	if calls != 0 {
 		t.Fatalf("resolver called %d times, want 0 -- Harness must reject before the factory/resolver ever runs", calls)
@@ -629,7 +629,7 @@ func TestProcessToolsSiblingLoopsCannotAccessEachOthersHandles(t *testing.T) {
 // LifecycleProcessNotificationsUnsupported} by pkg/rig/lifecycle.go) rejects
 // session construction outright for a loop.Definition explicitly declared
 // on a foreign engine whose tools carry tool.RequiresProcessServices --
-// exactly what genericToolDefinitions' Bash/Process* definitions now do.
+// exactly what carbonToolDefinitions' Bash/Process* definitions now do.
 // This is the SAME rejection mechanism harness's own reviewed test,
 // TestForeignLoopRejectsProcessServices (internal/sessionruntime), exercises
 // via the identical loop.WithEngine construction; this test additionally
@@ -639,9 +639,9 @@ func TestProcessToolsForeignEngineRosterRejectsProcessEnabledTools(t *testing.T)
 	set := mustExecutorSet(t, root)
 
 	definition, err := loop.Define(
-		loop.WithName(generic.Name),
+		loop.WithName(carbon.Name),
 		loop.WithInference(&fakeLLM{}, testModel()),
-		loop.WithTools(genericToolDefinitions(set, nil, nil)...),
+		loop.WithTools(carbonToolDefinitions(set, nil, nil)...),
 		loop.WithEngine(loop.EngineForeignClaude),
 	)
 	if err != nil {

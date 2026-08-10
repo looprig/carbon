@@ -416,7 +416,7 @@ func TestPermissionReviewEvidenceContainmentRejectsMalformedReadRoot(t *testing.
 // TestPermissionReviewEvidenceContainmentNeverPanics feeds a battery of
 // malformed/adversarial requests directly at VerifyEvidenceContainment and
 // requires it to always return an error, never panic — the runtime fails
-// closed on a panic here (design), but this proves CodeRig's implementation
+// closed on a panic here (design), but this proves Carbon's implementation
 // does not rely on that safety net.
 func TestPermissionReviewEvidenceContainmentNeverPanics(t *testing.T) {
 	t.Parallel()

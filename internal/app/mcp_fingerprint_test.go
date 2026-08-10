@@ -41,7 +41,7 @@ func mcpManagerDigest(t *testing.T, specs []mcpServerSpec) string {
 // unchanged, and a zero cfg.MCPConfigRev (no mcp.json, assembly.go's
 // mcpSessionAssembly.configRev's nil-manager case) must leave
 // ExternalCapabilityRev at its zero value -- the "no external capabilities"
-// default every pre-MCP session's fingerprint already had, since CodeRig
+// default every pre-MCP session's fingerprint already had, since Carbon
 // never set this field before this change.
 func TestAgentFingerprintFieldsCarriesMCPConfigRev(t *testing.T) {
 	t.Parallel()
@@ -63,7 +63,7 @@ func TestAgentFingerprintFieldsCarriesMCPConfigRev(t *testing.T) {
 	})
 }
 
-// TestMCPConfigDigestMovesWithRealTopologyChanges proves the digest CodeRig
+// TestMCPConfigDigestMovesWithRealTopologyChanges proves the digest Carbon
 // folds into ExternalCapabilityRev genuinely reacts to the concrete mcp.json
 // changes Task 11's test plan names: a server added, a server's URL
 // changed, and a server's roles changed. Each subtest computes two REAL
@@ -108,12 +108,12 @@ func TestMCPConfigDigestMovesWithRealTopologyChanges(t *testing.T) {
 
 	t.Run("omitted roles equal explicit generic", func(t *testing.T) {
 		t.Parallel()
-		before := []mcpServerSpec{{name: "a", kind: "stdio", command: "/bin/sh", roles: []string{"generic"}}}
+		before := []mcpServerSpec{{name: "a", kind: "stdio", command: "/bin/sh", roles: []string{"carbon"}}}
 		after := []mcpServerSpec{{name: "a", kind: "stdio", command: "/bin/sh", roles: nil}}
 		digestBefore := mcpManagerDigest(t, before)
 		digestAfter := mcpManagerDigest(t, after)
 		if digestBefore != digestAfter {
-			t.Errorf("ConfigDigest() changed between explicit and omitted Generic roles: %q != %q", digestBefore, digestAfter)
+			t.Errorf("ConfigDigest() changed between explicit and omitted Carbon roles: %q != %q", digestBefore, digestAfter)
 		}
 	})
 }
@@ -165,7 +165,7 @@ func TestMCPConfigDigestStableAcrossHeaderValueChange(t *testing.T) {
 // carries no strictness ordinal to compare directionally, so its direction
 // is always unknowable, and AssessDrift's own documented rule is "Warn when
 // direction is unknowable -- fail secure" (harness commit c050a43a, fixing a
-// gap this test's own predecessor discovered and reported). CodeRig's
+// gap this test's own predecessor discovered and reported). Carbon's
 // RestoreDecider (session.DefaultPolicyDecider, per this repo's CLAUDE.md
 // "Permission review" section) rejects whenever
 // event.DriftAssessment.AnyWarn() is true, so a restore where the MCP digest
@@ -194,9 +194,9 @@ func TestMCPConfigFingerprintRestoreBehavior(t *testing.T) {
 	root := t.TempDir()
 
 	access, cfg := headlessTestAccess(t, Config{MCPConfigRev: baselineDigest}, root)
-	definition, err := genericTestDefinition(&fakeLLM{}, testModel(), cfg, access)
+	definition, err := carbonTestDefinition(&fakeLLM{}, testModel(), cfg, access)
 	if err != nil {
-		t.Fatalf("genericTestDefinition() error = %v", err)
+		t.Fatalf("carbonTestDefinition() error = %v", err)
 	}
 	assembly, err := buildRig(definition, stores, root, cfg, false)
 	if err != nil {
@@ -214,9 +214,9 @@ func TestMCPConfigFingerprintRestoreBehavior(t *testing.T) {
 	restoreWith := func(t *testing.T, mcpConfigRev string, allowMismatch bool) error {
 		t.Helper()
 		racc, rcfg := headlessTestAccess(t, Config{MCPConfigRev: mcpConfigRev}, root)
-		rdef, err := genericTestDefinition(&fakeLLM{}, testModel(), rcfg, racc)
+		rdef, err := carbonTestDefinition(&fakeLLM{}, testModel(), rcfg, racc)
 		if err != nil {
-			t.Fatalf("genericTestDefinition() error = %v", err)
+			t.Fatalf("carbonTestDefinition() error = %v", err)
 		}
 		rasm, err := buildRig(rdef, stores, root, rcfg, allowMismatch)
 		if err != nil {
@@ -271,9 +271,9 @@ func TestMCPAbsentConfigRestoresUnaffected(t *testing.T) {
 	if cfg.MCPConfigRev != "" {
 		t.Fatalf("cfg.MCPConfigRev = %q, want \"\" for a Config with no mcp.json", cfg.MCPConfigRev)
 	}
-	definition, err := genericTestDefinition(&fakeLLM{}, testModel(), cfg, access)
+	definition, err := carbonTestDefinition(&fakeLLM{}, testModel(), cfg, access)
 	if err != nil {
-		t.Fatalf("genericTestDefinition() error = %v", err)
+		t.Fatalf("carbonTestDefinition() error = %v", err)
 	}
 	assembly, err := buildRig(definition, stores, root, cfg, false)
 	if err != nil {
@@ -289,9 +289,9 @@ func TestMCPAbsentConfigRestoresUnaffected(t *testing.T) {
 	}
 
 	racc, rcfg := headlessTestAccess(t, Config{}, root)
-	rdef, err := genericTestDefinition(&fakeLLM{}, testModel(), rcfg, racc)
+	rdef, err := carbonTestDefinition(&fakeLLM{}, testModel(), rcfg, racc)
 	if err != nil {
-		t.Fatalf("genericTestDefinition() error = %v", err)
+		t.Fatalf("carbonTestDefinition() error = %v", err)
 	}
 	rasm, err := buildRig(rdef, stores, root, rcfg, false)
 	if err != nil {

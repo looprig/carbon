@@ -1,4 +1,4 @@
-module github.com/looprig/coderig
+module github.com/looprig/carbon
 
 go 1.26.4
 

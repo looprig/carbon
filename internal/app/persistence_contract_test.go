@@ -6,11 +6,11 @@ import (
 	"testing"
 )
 
-// TestPersistenceAssemblyUsesTheSoleGenericDefinition documents the narrow
-// composition boundary: CodeRig assembles one Generic definition directly,
-// with Generic as both the only primer and active primer, and consumes the
+// TestPersistenceAssemblyUsesTheSoleCarbonDefinition documents the narrow
+// composition boundary: Carbon assembles one Carbon definition directly,
+// with Carbon as both the only primer and active primer, and consumes the
 // configured runtime catalogue without compatibility fallbacks.
-func TestPersistenceAssemblyUsesTheSoleGenericDefinition(t *testing.T) {
+func TestPersistenceAssemblyUsesTheSoleCarbonDefinition(t *testing.T) {
 	source, err := os.ReadFile("persistence.go")
 	if err != nil {
 		t.Fatalf("read persistence.go: %v", err)
@@ -27,12 +27,12 @@ func TestPersistenceAssemblyUsesTheSoleGenericDefinition(t *testing.T) {
 	}
 	for _, required := range []string{
 		"WithLoops(definition)",
-		"rig.WithPrimers(string(generic.Name))",
-		"rig.WithActivePrimer(string(generic.Name))",
+		"rig.WithPrimers(string(carbon.Name))",
+		"rig.WithActivePrimer(string(carbon.Name))",
 		"cfg.RuntimeCatalog.HasEntries()",
 	} {
 		if !strings.Contains(text, required) {
-			t.Fatalf("persistence assembly omitted direct Generic contract %q", required)
+			t.Fatalf("persistence assembly omitted direct Carbon contract %q", required)
 		}
 	}
 }

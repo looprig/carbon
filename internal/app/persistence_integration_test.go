@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/looprig/coderig/internal/catalog/generic"
+	"github.com/looprig/carbon/internal/catalog/carbon"
 	"github.com/looprig/core/content"
 	"github.com/looprig/core/uuid"
 	"github.com/looprig/harness/pkg/event"
@@ -224,7 +224,7 @@ func TestNewSessionStoreFactoryOpensAndCloses(t *testing.T) {
 // TestSessionStoreNewSessionBasics proves openWithClient with a ZERO selector builds a NEW
 // persisted session over the shared store: it has a non-zero SessionID (the factory minted +
 // injected it) and, being a fresh session, its cold-repaint backlog carries only the session
-// initialization events (SessionStarted + Generic's LoopStarted event) — no turn or
+// initialization events (SessionStarted + Carbon's LoopStarted event) — no turn or
 // content history to repaint.
 func TestSessionStoreNewSessionBasics(t *testing.T) {
 	f := newIntegrationFactory(t)
@@ -346,21 +346,21 @@ func TestSessionStoreRoundTrip(t *testing.T) {
 	if !hasType(backlog, event.RestoreStarted{}) {
 		t.Errorf("restored all-loop backlog missing RestoreStarted: %v", typeNames(backlog))
 	}
-	if got := primaryLoopAgentName(backlog, a2.ActiveLoopID()); got != generic.Name {
-		t.Errorf("restored active primer LoopStarted AgentName = %q, want %q", got, generic.Name)
+	if got := primaryLoopAgentName(backlog, a2.ActiveLoopID()); got != carbon.Name {
+		t.Errorf("restored active primer LoopStarted AgentName = %q, want %q", got, carbon.Name)
 	}
 
 	drainTurn(t, a2, "continue")
 }
 
-// TestSessionStoreWorkspaceNeverAutoSnapshots proves CodeRig's production wiring takes NO
+// TestSessionStoreWorkspaceNeverAutoSnapshots proves Carbon's production wiring takes NO
 // automatic workspace snapshot (rig.SnapshotManual, not SnapshotOnIdle — persistence.go's
 // buildRigWithRegistrationAndACP): a session that runs a turn to quiescence, closes, and is
 // later resumed does NOT materialize a deleted workspace file back, because no checkpoint
 // was ever taken to materialize FROM. This replaces the old
 // TestSessionStoreWorkspaceRoundTrip, which pinned the opposite (SnapshotOnIdle) behavior —
 // an automatic, unbounded, full-tree (no .git/vendor exclusion) archive on every idle turn,
-// purely so a later restore could verify-and-materialize against it. For CodeRig's actual
+// purely so a later restore could verify-and-materialize against it. For Carbon's actual
 // deployment (the user's own persistent local checkout, not ephemeral compute that needs a
 // snapshot to survive being torn down), that cost real, growing disk with no consumer ever
 // exercising the recovery path, AND that same verification hard-failed the whole restore the

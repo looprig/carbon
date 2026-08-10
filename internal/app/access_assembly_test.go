@@ -6,10 +6,10 @@ import (
 	"testing"
 )
 
-// TestSessionAccessUsesOneGenericExecutorSet proves one session has one access
+// TestSessionAccessUsesOneCarbonExecutorSet proves one session has one access
 // authority. Executor identities remain loop-scoped within that set, while
-// repeated lookups for one Generic loop are memoized.
-func TestSessionAccessUsesOneGenericExecutorSet(t *testing.T) {
+// repeated lookups for one Carbon loop are memoized.
+func TestSessionAccessUsesOneCarbonExecutorSet(t *testing.T) {
 	access, err := buildHeadlessAccess(Config{}, t.TempDir())
 	if err != nil {
 		t.Fatalf("buildHeadlessAccess: %v", err)
@@ -35,14 +35,14 @@ func TestSessionAccessUsesOneGenericExecutorSet(t *testing.T) {
 		t.Fatalf("set.For(generic-loop) repeat: %v", err)
 	}
 	if second != first {
-		t.Fatal("repeated Generic loop ID did not memoize to the same executor")
+		t.Fatal("repeated Carbon loop ID did not memoize to the same executor")
 	}
 	other, err := access.set.For("generic-child-loop")
 	if err != nil {
 		t.Fatalf("set.For(generic-child-loop): %v", err)
 	}
 	if other == first {
-		t.Fatal("different Generic loop IDs resolved to the same executor")
+		t.Fatal("different Carbon loop IDs resolved to the same executor")
 	}
 }
 
@@ -74,9 +74,9 @@ func TestRestoreRejectsAccessProfileDrift(t *testing.T) {
 	root := t.TempDir()
 
 	access, cfg := headlessTestAccess(t, Config{AccessProfile: AccessReadOnly}, root)
-	definition, err := genericTestDefinition(&fakeLLM{}, testModel(), cfg, access)
+	definition, err := carbonTestDefinition(&fakeLLM{}, testModel(), cfg, access)
 	if err != nil {
-		t.Fatalf("genericTestDefinition: %v", err)
+		t.Fatalf("carbonTestDefinition: %v", err)
 	}
 	assembly, err := buildRig(definition, stores, root, cfg, false)
 	if err != nil {
@@ -94,9 +94,9 @@ func TestRestoreRejectsAccessProfileDrift(t *testing.T) {
 	restore := func(t *testing.T, profile AccessProfile) error {
 		t.Helper()
 		racc, rcfg := headlessTestAccess(t, Config{AccessProfile: profile}, root)
-		rdef, err := genericTestDefinition(&fakeLLM{}, testModel(), rcfg, racc)
+		rdef, err := carbonTestDefinition(&fakeLLM{}, testModel(), rcfg, racc)
 		if err != nil {
-			t.Fatalf("genericTestDefinition: %v", err)
+			t.Fatalf("carbonTestDefinition: %v", err)
 		}
 		rasm, err := buildRig(rdef, stores, root, rcfg, false)
 		if err != nil {

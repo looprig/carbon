@@ -5,12 +5,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/looprig/coderig/internal/catalog/generic"
+	"github.com/looprig/carbon/internal/catalog/carbon"
 	"github.com/looprig/harness/pkg/loop"
 	"github.com/looprig/inference/model"
 )
 
-func TestCompileACPRuntimeEntriesProducesNonDefaultGenericRows(t *testing.T) {
+func TestCompileACPRuntimeEntriesProducesNonDefaultCarbonRows(t *testing.T) {
 	target := fixtureGatewaySource("fixture-a", &fakeLLM{})
 	raw, err := compileACPRuntimeEntries(acpCatalogInput{
 		GatewayTargets: []ACPGatewaySource{target},
@@ -23,7 +23,7 @@ func TestCompileACPRuntimeEntriesProducesNonDefaultGenericRows(t *testing.T) {
 		t.Fatalf("raw entries = %#v, want Claude and Codex rows", raw.entries)
 	}
 	for _, entry := range raw.entries {
-		if entry.AgentType != generic.Name || entry.Default {
+		if entry.AgentType != carbon.Name || entry.Default {
 			t.Fatalf("raw ACP entry = %#v, want generic non-default row", entry)
 		}
 	}
@@ -54,13 +54,13 @@ func TestCompileAgentRuntimeCatalogUsesConfiguredTargetsAndDeterministicDefault(
 		t.Fatalf("CompileAgentRuntimeCatalog() error = %v", err)
 	}
 
-	entries := compiled.RuntimeCatalog.EntriesFor(generic.Name)
+	entries := compiled.RuntimeCatalog.EntriesFor(carbon.Name)
 	if len(entries) != 3 {
-		t.Fatalf("Generic entries = %d, want looprig/native plus Claude and Codex rows: %#v", len(entries), entries)
+		t.Fatalf("Carbon entries = %d, want looprig/native plus Claude and Codex rows: %#v", len(entries), entries)
 	}
 	defaults := 0
 	for _, entry := range entries {
-		if entry.AgentType != generic.Name {
+		if entry.AgentType != carbon.Name {
 			t.Fatalf("entry agent type = %q, want generic", entry.AgentType)
 		}
 		if entry.Default {
@@ -75,22 +75,22 @@ func TestCompileAgentRuntimeCatalogUsesConfiguredTargetsAndDeterministicDefault(
 		}
 	}
 	if defaults != 1 {
-		t.Fatalf("Generic defaults = %d, want exactly one: %#v", defaults, entries)
+		t.Fatalf("Carbon defaults = %d, want exactly one: %#v", defaults, entries)
 	}
 
 	for _, harness := range []loop.AgentHarnessName{"claude-code", "codex"} {
 		for _, target := range targets {
-			resolved, err := compiled.RuntimeCatalog.ResolveWithExplicitEffort(generic.Name, harness, target.Alias, target.Efforts[0], true)
+			resolved, err := compiled.RuntimeCatalog.ResolveWithExplicitEffort(carbon.Name, harness, target.Alias, target.Efforts[0], true)
 			if err != nil {
 				t.Errorf("Resolve(%s, %s) error = %v", harness, target.Alias, err)
 				continue
 			}
-			if resolved.AgentType != generic.Name || resolved.AgentHarness != harness || resolved.ModelAlias != target.Alias || resolved.Effort != target.Efforts[0] {
+			if resolved.AgentType != carbon.Name || resolved.AgentHarness != harness || resolved.ModelAlias != target.Alias || resolved.Effort != target.Efforts[0] {
 				t.Errorf("Resolve(%s, %s) = %#v", harness, target.Alias, resolved)
 			}
 		}
 	}
-	resolved, err := compiled.RuntimeCatalog.Resolve(generic.Name, "", "", model.EffortNone)
+	resolved, err := compiled.RuntimeCatalog.Resolve(carbon.Name, "", "", model.EffortNone)
 	if err != nil {
 		t.Fatalf("Resolve(generic default) error = %v", err)
 	}
@@ -98,7 +98,7 @@ func TestCompileAgentRuntimeCatalogUsesConfiguredTargetsAndDeterministicDefault(
 		t.Errorf("Resolve(generic default) = %#v, want looprig/native", resolved)
 	}
 	for _, oldAlias := range []loop.ModelAlias{"fable-5", "sonnet-5", "opus-5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"} {
-		if _, err := compiled.RuntimeCatalog.Resolve(generic.Name, "codex", oldAlias, model.EffortMedium); err == nil {
+		if _, err := compiled.RuntimeCatalog.Resolve(carbon.Name, "codex", oldAlias, model.EffortMedium); err == nil {
 			t.Errorf("unconfigured old alias %q resolved", oldAlias)
 		}
 	}
@@ -106,11 +106,11 @@ func TestCompileAgentRuntimeCatalogUsesConfiguredTargetsAndDeterministicDefault(
 
 func TestCompileAgentRuntimeCatalogDerivesDistinctEffortTargets(t *testing.T) {
 	compiled := compileFixtureACPCatalog(t)
-	low, err := compiled.RuntimeCatalog.ResolveWithExplicitEffort(generic.Name, "codex", "fixture-a", model.EffortLow, true)
+	low, err := compiled.RuntimeCatalog.ResolveWithExplicitEffort(carbon.Name, "codex", "fixture-a", model.EffortLow, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	high, err := compiled.RuntimeCatalog.ResolveWithExplicitEffort(generic.Name, "codex", "fixture-a", model.EffortHigh, true)
+	high, err := compiled.RuntimeCatalog.ResolveWithExplicitEffort(carbon.Name, "codex", "fixture-a", model.EffortHigh, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +145,7 @@ func TestACPGatewayTargetReturnsExactClientAndAuthoritativeEffort(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolved, err := compiled.RuntimeCatalog.ResolveWithExplicitEffort(generic.Name, "codex", "fixture-a", model.EffortHigh, true)
+	resolved, err := compiled.RuntimeCatalog.ResolveWithExplicitEffort(carbon.Name, "codex", "fixture-a", model.EffortHigh, true)
 	if err != nil {
 		t.Fatal(err)
 	}

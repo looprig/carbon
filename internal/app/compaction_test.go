@@ -57,10 +57,10 @@ func TestConversationCompactionContract(t *testing.T) {
 		want string
 	}{
 		{name: "literal prompt", got: conversationCompactionPrompt, want: approvedConversationCompactionPrompt},
-		{name: "prompt revision", got: conversationCompactionPromptRevision, want: "coderig-compaction-prompt-v1"},
+		{name: "prompt revision", got: conversationCompactionPromptRevision, want: "carbon-compaction-prompt-v1"},
 		{name: "parser revision", got: conversationCompactionParserRevision, want: "harness-compaction-parser-v1"},
 		{name: "summary consumption fragment", got: conversationSummaryConsumptionFragment, want: approvedConversationSummaryFragment},
-		{name: "summary consumption revision", got: conversationSummaryConsumptionRevision, want: "coderig-summary-consumption-v1"},
+		{name: "summary consumption revision", got: conversationSummaryConsumptionRevision, want: "carbon-summary-consumption-v1"},
 		{name: "prompt digest", got: conversationCompactionPromptSHA256, want: "0b0ef4a6ec3b25ce5e62ad6fccf5f4de68878aa3aae0ca0e54c1db4430bc8cc9"},
 		{name: "digest matches literal", got: fmt.Sprintf("%x", sha256.Sum256([]byte(conversationCompactionPrompt))), want: conversationCompactionPromptSHA256},
 	}

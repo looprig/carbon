@@ -21,14 +21,14 @@ import (
 	"github.com/looprig/tools/writefile"
 )
 
-// toolsets.go owns CodeRig's direct sandbox assembly: it builds the one
-// session sandbox.ExecutorSet, combined access gate, and standard Generic tool
-// definitions bound to that set. There is no confinement bridge — CodeRig wires
+// toolsets.go owns Carbon's direct sandbox assembly: it builds the one
+// session sandbox.ExecutorSet, combined access gate, and standard Carbon tool
+// definitions bound to that set. There is no confinement bridge — Carbon wires
 // sandbox profiles, harness gate evaluation, and the tools package directly.
 //
 // The four sandbox capability kinds (command.execute, filesystem.read/write,
 // network) route to the session's effective *sandbox.Profile; the two product kinds
-// (tool.invoke, context.load) route to CodeRig's product access source. The bound
+// (tool.invoke, context.load) route to Carbon's product access source. The bound
 // per-Loop executor is the structural gate.GrantIssuer AND the confined command
 // runner, so a minted grant validates against the exact executor that runs the
 // command.
@@ -42,16 +42,16 @@ import (
 // later task threads it into bashDefinition's build closure alongside the
 // existing synchronous grantedExecutor lookup.
 
-// maxReadBytes is CodeRig's per-file in-process read cap applied by the direct
+// maxReadBytes is Carbon's per-file in-process read cap applied by the direct
 // ReadFile tool. Sandbox profile access still governs read
 // authority through the gate; this bound only limits how much a single approved
 // read returns. It is product policy.
 const maxReadBytes int64 = 5 << 20
 
-// familyPolicyRev is the durable revision of CodeRig's automatic Bash-family
+// familyPolicyRev is the durable revision of Carbon's automatic Bash-family
 // eligibility catalog (exactly git log/status/diff/show/push). It folds into the
-// Generic per-Loop policy revision so a catalog change invalidates a restore.
-const familyPolicyRev = "coderig-family:git-log-status-diff-show-push:v1"
+// Carbon per-Loop policy revision so a catalog change invalidates a restore.
+const familyPolicyRev = "carbon-family:git-log-status-diff-show-push:v1"
 
 // executorScratchLimit bounds the number of memoized executor identities in the
 // session's set: every primer/delegate Loop plus every spawnable sub-loop the
@@ -61,9 +61,9 @@ const executorScratchLimit = delegationSpawnQuota + 4
 // errNoLoopProvenance reports that the access gate was consulted outside a live
 // loop step (no provenance), so the per-Loop executor cannot be resolved. It
 // fails closed.
-var errNoLoopProvenance = errors.New("coderig: access gate consulted without loop provenance")
+var errNoLoopProvenance = errors.New("carbon: access gate consulted without loop provenance")
 
-// coderigReadGuard is CodeRig's in-process read guard for the direct read tools.
+// carbonReadGuard is Carbon's in-process read guard for the direct read tools.
 // It denies no path lexically — sandbox profile access is the read-authority
 // source of truth, enforced by the gate on filesystem.read requirements and by
 // the OS for confined commands — and applies the fixed per-file byte cap. This
@@ -74,12 +74,12 @@ var errNoLoopProvenance = errors.New("coderig: access gate consulted without loo
 // reaches the SAME filesystem.read requirement/gate/profile as a spawned Bash
 // command's host reads, so the two never disagree about what a given profile
 // allows.
-type coderigReadGuard struct{}
+type carbonReadGuard struct{}
 
-func (coderigReadGuard) DeniedRead(string) bool { return false }
-func (coderigReadGuard) MaxReadBytes() int64    { return maxReadBytes }
+func (carbonReadGuard) DeniedRead(string) bool { return false }
+func (carbonReadGuard) MaxReadBytes() int64    { return maxReadBytes }
 
-var _ loop.ReadGuard = coderigReadGuard{}
+var _ loop.ReadGuard = carbonReadGuard{}
 
 // grantedExecutor adapts a *sandbox.Executor to the tools package's command
 // runner seams. The executor already satisfies tool.CommandRunner structurally;
@@ -106,7 +106,7 @@ var (
 	_ tool.GrantedRunner = grantedExecutor{}
 )
 
-// accessGate is CodeRig's combined access gate. It satisfies loop.AccessGate and,
+// accessGate is Carbon's combined access gate. It satisfies loop.AccessGate and,
 // per authorized call, resolves the calling loop's own executor from the session
 // executor set (keyed by the live step's Loop ID) and runs one gate
 // evaluator with that executor as the structural grant issuer. Interactive
@@ -146,7 +146,7 @@ var _ loop.AccessGate = (*accessGate)(nil)
 
 // sandboxAccessBindings routes the four sandbox capability kinds to the session's
 // effective profile (the SAME immutable pointer the session executor set enforces)
-// and the two product-owned kinds to CodeRig's product access source.
+// and the two product-owned kinds to Carbon's product access source.
 func sandboxAccessBindings(profile *sandbox.Profile, product gate.AccessSource) []gate.AccessBinding {
 	return []gate.AccessBinding{
 		{Kind: permission.CapabilityCommandExecute, Source: profile},
@@ -158,7 +158,7 @@ func sandboxAccessBindings(profile *sandbox.Profile, product gate.AccessSource) 
 	}
 }
 
-// agentPolicyRevision is Generic's per-Loop durable policy revision: the selected
+// agentPolicyRevision is Carbon's per-Loop durable policy revision: the selected
 // profile name and family catalog revision. It is deliberately
 // WORKSPACE-INDEPENDENT — the workspace root and the full normalized profile
 // (with roots, HOME, and isolation) live in the rig-level access
@@ -167,11 +167,11 @@ func sandboxAccessBindings(profile *sandbox.Profile, product gate.AccessSource) 
 // fingerprint to a placement concern the loop never captures. A selected-profile
 // or family-catalog change still changes this revision.
 func agentPolicyRevision(profile AccessProfile) string {
-	return "coderig-access:generic:" + string(profile) + ":" + familyPolicyRev
+	return "carbon-access:carbon:" + string(profile) + ":" + familyPolicyRev
 }
 
 // bashDefinition builds the workspace-bound, session-supervised Bash
-// definition backed by Generic's per-Loop confined executor for BOTH its
+// definition backed by Carbon's per-Loop confined executor for BOTH its
 // paths. The build closure retains the SAME synchronous
 // set.For(bindings.LoopID.String()) lookup this definition has always used
 // (the SAME instance the access gate resolves as grant issuer for the
@@ -223,12 +223,12 @@ func bashDefinition(set *sandbox.ExecutorSet, resolver tools.AsyncProcessRunnerR
 	})
 }
 
-// genericToolDefinitions builds Generic's complete coding roster: read,
+// carbonToolDefinitions builds Carbon's complete coding roster: read,
 // mutate, session-supervised Bash, background process companions, web, and
 // interaction utilities, plus the optional Skill tool. Every capability routes
 // through the same session executor set.
-func genericToolDefinitions(set *sandbox.ExecutorSet, client *http.Client, skillTool tool.Definition) []tool.Definition {
-	guard := coderigReadGuard{}
+func carbonToolDefinitions(set *sandbox.ExecutorSet, client *http.Client, skillTool tool.Definition) []tool.Definition {
+	guard := carbonReadGuard{}
 	definitions := []tool.Definition{
 		tools.ReadFileDefinition(guard, readfile.WithHostReads()),
 		tools.WriteFileDefinition(writefile.WithHostWrites()),
@@ -286,7 +286,7 @@ func (a *sessionAccess) Close() error {
 // interactive flag (buildSessionAccess with interactive=true).
 func buildHeadlessAccess(cfg Config, root string, explicitPermissionPath ...string) (*sessionAccess, error) {
 	if len(explicitPermissionPath) > 1 {
-		return nil, errors.New("coderig: headless access accepts at most one permission file")
+		return nil, errors.New("carbon: headless access accepts at most one permission file")
 	}
 	permissionPath := ""
 	if len(explicitPermissionPath) == 1 {
@@ -296,7 +296,7 @@ func buildHeadlessAccess(cfg Config, root string, explicitPermissionPath ...stri
 }
 
 // buildSessionAccess constructs the session's fixed access wiring. It builds
-// the selected Generic profile, resolves the parent egress route, opens the
+// the selected Carbon profile, resolves the parent egress route, opens the
 // permission store, and constructs one executor set plus one combined gate.
 // On any partial failure it closes what it already built so no scratch HOME
 // leaks.
@@ -309,7 +309,7 @@ func buildSessionAccessWithPermissionFile(cfg Config, root string, interactive b
 	if err != nil {
 		return nil, err
 	}
-	selected, err := coderigProfile(profileName, root)
+	selected, err := carbonProfile(profileName, root)
 	if err != nil {
 		return nil, err
 	}
@@ -360,7 +360,7 @@ func buildSessionAccessWithPermissionFile(cfg Config, root string, interactive b
 // interactive read/write store at the HOME-derived per-workspace path, or the
 // headless read-only store (an empty rule set with no HOME search). Both satisfy
 // the gate's RuleMatcher; only the interactive store is a RuleWriter. This is
-// the only place CodeRig's ACCESS wiring resolves HOME (via looprigHome), and it
+// the only place Carbon's ACCESS wiring resolves HOME (via looprigHome), and it
 // does so only on the interactive branch — the headless branch never touches it.
 // openRuntimeAgent separately resolves HOME to load <home>/mcp.json
 // (newMCPSessionAssembly, assembly.go), unconditionally on both branches — MCP
@@ -369,7 +369,7 @@ func buildSessionAccessWithPermissionFile(cfg Config, root string, interactive b
 func buildPermissionStore(cfg Config, root string, interactive bool, explicitPermissionPath string) (*permission.Store, []permission.Diagnostic, error) {
 	if interactive {
 		if explicitPermissionPath != "" {
-			return nil, nil, errors.New("coderig: interactive access cannot use an explicit read-only permission file")
+			return nil, nil, errors.New("carbon: interactive access cannot use an explicit read-only permission file")
 		}
 		home, err := looprigHome(cfg)
 		if err != nil {

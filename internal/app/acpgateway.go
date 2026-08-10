@@ -39,23 +39,23 @@ func NewACPGateway(ctx context.Context, catalog ACPCompiledCatalog, resolved loo
 		Authenticate: allowInnerGatewayAuth{},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("coderig: build ACP gateway: %w", err)
+		return nil, fmt.Errorf("carbon: build ACP gateway: %w", err)
 	}
 	server, err := gateway.NewServer(gateway.ServerConfig{Handler: handler})
 	if err != nil {
-		return nil, fmt.Errorf("coderig: create ACP gateway server: %w", err)
+		return nil, fmt.Errorf("carbon: create ACP gateway server: %w", err)
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if err := server.Start(ctx); err != nil {
 		_ = server.Close(context.Background())
-		return nil, fmt.Errorf("coderig: start ACP gateway: %w", err)
+		return nil, fmt.Errorf("carbon: start ACP gateway: %w", err)
 	}
 	baseURL, token, ready := server.Binding()
 	if !ready || baseURL == "" || token == "" {
 		_ = server.Close(context.Background())
-		return nil, fmt.Errorf("coderig: ACP gateway did not become ready")
+		return nil, fmt.Errorf("carbon: ACP gateway did not become ready")
 	}
 	return &ACPGateway{server: server, binding: launch.ProxyBinding{BaseURL: baseURL, Token: token}, plan: plan}, nil
 }
@@ -89,7 +89,7 @@ type acpGatewayPlan struct {
 
 func buildACPGatewayPlan(catalog ACPCompiledCatalog, resolved loop.Resolved) (acpGatewayPlan, error) {
 	if resolved.Credential != loop.CredentialGatewayBacked {
-		return acpGatewayPlan{}, fmt.Errorf("coderig: native-auth runtime has no gateway")
+		return acpGatewayPlan{}, fmt.Errorf("carbon: native-auth runtime has no gateway")
 	}
 	ingress, err := acpGatewayIngress(resolved.AgentHarness)
 	if err != nil {
@@ -109,7 +109,7 @@ func buildACPGatewayPlan(catalog ACPCompiledCatalog, resolved loop.Resolved) (ac
 			resolved.AgentType, resolved.AgentHarness, resolved.SmallModel, model.EffortNone, false,
 		)
 		if err != nil {
-			return acpGatewayPlan{}, fmt.Errorf("coderig: resolve ACP small model: %w", err)
+			return acpGatewayPlan{}, fmt.Errorf("carbon: resolve ACP small model: %w", err)
 		}
 		smallTarget, err := catalog.GatewayTarget(smallResolved)
 		if err != nil {
@@ -145,7 +145,7 @@ func acpGatewayIngress(harness loop.AgentHarnessName) (model.APIFormat, error) {
 	case "codex":
 		return model.APIFormatOpenAIResponses, nil
 	default:
-		return "", fmt.Errorf("coderig: unsupported ACP harness")
+		return "", fmt.Errorf("carbon: unsupported ACP harness")
 	}
 }
 

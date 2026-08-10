@@ -79,7 +79,7 @@ func newProductionACPCompositionWithCollabRequired(_ context.Context, accessProf
 	}
 	root, err := os.Getwd()
 	if err != nil {
-		return nil, fmt.Errorf("coderig: resolve ACP workspace root: %w", err)
+		return nil, fmt.Errorf("carbon: resolve ACP workspace root: %w", err)
 	}
 	catalog, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
 		GatewayTargets: configured.ACP,

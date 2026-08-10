@@ -49,7 +49,7 @@ type defaultRuntimeContextProvider struct {
 
 // NewRuntimeContextProvider returns the default RuntimeContextProvider wired to the
 // real clock (time.Now), the real working directory (os.Getwd), and a bounded,
-// timeout-guarded git runner. The coderig composition root constructs it so
+// timeout-guarded git runner. The carbon composition root constructs it so
 // the engine-generic loop package stays free of os/exec.
 func NewRuntimeContextProvider() loop.RuntimeContextProvider {
 	return &defaultRuntimeContextProvider{

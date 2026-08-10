@@ -117,9 +117,9 @@ type acceptanceCompactionFixtureError struct {
 
 func (e *acceptanceCompactionFixtureError) Error() string {
 	if e.Cause == nil {
-		return "coderig test: invalid compaction fixture field " + e.Field
+		return "carbon test: invalid compaction fixture field " + e.Field
 	}
-	return "coderig test: invalid compaction fixture field " + e.Field + ": " + e.Cause.Error()
+	return "carbon test: invalid compaction fixture field " + e.Field + ": " + e.Cause.Error()
 }
 
 func (e *acceptanceCompactionFixtureError) Unwrap() error { return e.Cause }
@@ -472,9 +472,9 @@ func openAcceptanceAgentWithContextPolicy(t *testing.T, client inference.Client,
 	}
 	root := t.TempDir()
 	access, cfg := headlessTestAccess(t, Config{}, root)
-	definition, err := genericTestDefinitionWithContextPolicy(client, selectedModel, cfg, policy, access)
+	definition, err := carbonTestDefinitionWithContextPolicy(client, selectedModel, cfg, policy, access)
 	if err != nil {
-		t.Fatalf("genericTestDefinitionWithContextPolicy() error = %v", err)
+		t.Fatalf("carbonTestDefinitionWithContextPolicy() error = %v", err)
 	}
 	stores := mustHeadlessTestStores(t)
 	assembly, err := buildRig(definition, stores, root, cfg, false)
@@ -518,7 +518,7 @@ func TestAcceptanceAutomaticThresholdPausesAtSafeBoundary(t *testing.T) {
 			}
 			counterCapability := contextcount.CounterCapability{
 				Transport: contextcount.CounterTransportLocal, Retention: contextcount.RetentionNone,
-				TokenizerRev: "coderig-acceptance-exact-v1", Quality: contextcount.CountQualityExactLocal,
+				TokenizerRev: "carbon-acceptance-exact-v1", Quality: contextcount.CountQualityExactLocal,
 			}
 			counter := &acceptanceContextCounter{counts: []content.TokenCount{65, 20, 20, 20}, capability: counterCapability}
 			agent := openAcceptanceAgentWithContextPolicy(t, client, counter)
@@ -561,7 +561,7 @@ func TestAcceptanceAutomaticThresholdPausesAtSafeBoundary(t *testing.T) {
 type acceptanceFinalizationError struct{}
 
 func (*acceptanceFinalizationError) Error() string {
-	return "coderig test: compaction terminal append failed"
+	return "carbon test: compaction terminal append failed"
 }
 
 type failCompactionTerminalLedger struct {
@@ -629,9 +629,9 @@ func TestAcceptanceCompactionFinalizationFailureFaultsSession(t *testing.T) {
 			}
 			root := t.TempDir()
 			access, cfg := headlessTestAccess(t, Config{}, root)
-			definition, err := genericTestDefinition(client, testModel(), cfg, access)
+			definition, err := carbonTestDefinition(client, testModel(), cfg, access)
 			if err != nil {
-				t.Fatalf("genericTestDefinition() error = %v", err)
+				t.Fatalf("carbonTestDefinition() error = %v", err)
 			}
 			assembly, err := buildRig(definition, stores, root, cfg, false)
 			if err != nil {

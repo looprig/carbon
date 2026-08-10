@@ -7,9 +7,9 @@ type WorkspaceRootError struct{ Cause error }
 
 func (e *WorkspaceRootError) Error() string {
 	if e.Cause == nil {
-		return "coderig: cannot resolve workspace root"
+		return "carbon: cannot resolve workspace root"
 	}
-	return "coderig: cannot resolve workspace root: " + e.Cause.Error()
+	return "carbon: cannot resolve workspace root: " + e.Cause.Error()
 }
 
 func (e *WorkspaceRootError) Unwrap() error { return e.Cause }
@@ -26,9 +26,9 @@ type StoreInitError struct {
 
 func (e *StoreInitError) Error() string {
 	if e.Cause == nil {
-		return "coderig: cannot open session store (" + e.Stage + ")"
+		return "carbon: cannot open session store (" + e.Stage + ")"
 	}
-	return "coderig: cannot open session store (" + e.Stage + "): " + e.Cause.Error()
+	return "carbon: cannot open session store (" + e.Stage + "): " + e.Cause.Error()
 }
 
 func (e *StoreInitError) Unwrap() error { return e.Cause }
@@ -37,4 +37,4 @@ func (e *StoreInitError) Unwrap() error { return e.Cause }
 // reached its terminal Close state.
 type StoreClosedError struct{}
 
-func (*StoreClosedError) Error() string { return "coderig: session store factory is closed" }
+func (*StoreClosedError) Error() string { return "carbon: session store factory is closed" }

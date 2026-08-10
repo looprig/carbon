@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/looprig/coderig/internal/catalog/generic"
+	"github.com/looprig/carbon/internal/catalog/carbon"
 	"github.com/looprig/core/content"
 	"github.com/looprig/core/uuid"
 	"github.com/looprig/harness/pkg/event"
@@ -87,7 +87,7 @@ func TestPersistedOpenRoutesNativeAgentThroughRuntimeClientAcrossRestore(t *test
 	var childID string
 	parentStep := 0
 	primer.fn = func(_ context.Context, req inference.Request) ([]content.Chunk, error) {
-		if !requestHasRole(req, generic.Name) {
+		if !requestHasRole(req, carbon.Name) {
 			return nil, fmt.Errorf("primer client received non-parent request")
 		}
 		switch phase {
@@ -95,7 +95,7 @@ func TestPersistedOpenRoutesNativeAgentThroughRuntimeClientAcrossRestore(t *test
 			switch parentStep {
 			case 0:
 				parentStep++
-				return startAgentCall("persisted-native-start", `{"agent_type":"generic","instructions":"initial","model":"persisted-delegate","effort":"low"}`), nil
+				return startAgentCall("persisted-native-start", `{"agent_type":"carbon","instructions":"initial","model":"persisted-delegate","effort":"low"}`), nil
 			case 1:
 				parentStep++
 				return finalText("initial parent complete"), nil
@@ -149,12 +149,12 @@ func TestPersistedOpenRoutesNativeAgentThroughRuntimeClientAcrossRestore(t *test
 		t.Fatalf("initial Close() error = %v", err)
 	}
 	for _, raw := range observed {
-		if started, ok := raw.(event.LoopStarted); ok && started.AgentName == generic.Name {
+		if started, ok := raw.(event.LoopStarted); ok && started.AgentName == carbon.Name {
 			childID = started.LoopID.String()
 		}
 	}
 	if childID == "" {
-		t.Fatal("initial native start emitted no Generic child")
+		t.Fatal("initial native start emitted no Carbon child")
 	}
 
 	phase = "restored"
@@ -256,7 +256,7 @@ func TestSetModelCrossProviderSwitchSurvivesRestore(t *testing.T) {
 func TestProductionOpenRejectsInvalidModelsBeforeOpeningPersistence(t *testing.T) {
 	home := t.TempDir()
 	setProcessHome(t, home)
-	modelsPath := filepath.Join(home, ".looprig", "coderig", "models.json")
+	modelsPath := filepath.Join(home, ".looprig", "carbon", "models.json")
 	if err := os.MkdirAll(filepath.Dir(modelsPath), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -286,7 +286,7 @@ func TestRestoreRejectsModelConfigRevisionDrift(t *testing.T) {
 	ctx := context.Background()
 
 	openAccess, openCfg := headlessTestAccess(t, Config{ModelConfigRev: "model-rev-a"}, root)
-	definition, err := genericTestDefinition(&fakeLLM{}, testModel(), openCfg, openAccess)
+	definition, err := carbonTestDefinition(&fakeLLM{}, testModel(), openCfg, openAccess)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,7 +305,7 @@ func TestRestoreRejectsModelConfigRevisionDrift(t *testing.T) {
 
 	restore := func(revision string) error {
 		restoreAccess, restoreCfg := headlessTestAccess(t, Config{ModelConfigRev: revision}, root)
-		restoreDefinition, err := genericTestDefinition(&fakeLLM{}, testModel(), restoreCfg, restoreAccess)
+		restoreDefinition, err := carbonTestDefinition(&fakeLLM{}, testModel(), restoreCfg, restoreAccess)
 		if err != nil {
 			return err
 		}
@@ -340,7 +340,7 @@ func TestBuildRigRegistersConversationCompaction(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			definition := genericDef(t, tt.cfg)
+			definition := carbonDef(t, tt.cfg)
 			stores := mustHeadlessTestStores(t)
 			if _, err := buildRig(definition, stores, t.TempDir(), tt.cfg, false); err != nil {
 				t.Fatalf("buildRig() error = %v", err)
@@ -379,7 +379,7 @@ func TestInvalidCompactionCompositionDoesNotOpenSession(t *testing.T) {
 				}
 				policy.compaction.CounterPolicy = loop.CounterPolicyUnknown
 				access, cfg := headlessTestAccess(t, Config{}, t.TempDir())
-				_, err = genericTestDefinitionWithContextPolicy(&fakeLLM{}, testModel(), cfg, policy, access)
+				_, err = carbonTestDefinitionWithContextPolicy(&fakeLLM{}, testModel(), cfg, policy, access)
 				return err
 			},
 			wantType: func(err error) bool {
@@ -390,7 +390,7 @@ func TestInvalidCompactionCompositionDoesNotOpenSession(t *testing.T) {
 		{
 			name: "invalid hustle registration",
 			attempt: func(t *testing.T, stores *sessionStores) error {
-				definition := genericDef(t, Config{})
+				definition := carbonDef(t, Config{})
 				_, err := buildRigWithRegistration(
 					definition, stores, t.TempDir(), Config{}, false,
 					rig.DelegationLimits{Depth: delegationSpawnDepth, Quota: delegationSpawnQuota},
@@ -486,7 +486,7 @@ func TestCompactionWiringSurvivesHeadlessNewRestoreAndClear(t *testing.T) {
 				t.Fatalf("headless Close() error = %v", err)
 			}
 
-			definition := genericDef(t, tt.cfg)
+			definition := carbonDef(t, tt.cfg)
 			// Restore folds the SAME workspace-derived access digest as the original open
 			// (new and restore over the same checkout produce the same digest), so the
 			// rig-level fingerprint matches.
@@ -589,9 +589,9 @@ func TestHeadlessNewAndRestoreRoundTrip(t *testing.T) {
 	}
 
 	access, restoreCfg := headlessTestAccess(t, Config{}, root)
-	definition, err := genericTestDefinition(&fakeLLM{}, newModelFactory()(), restoreCfg, access)
+	definition, err := carbonTestDefinition(&fakeLLM{}, newModelFactory()(), restoreCfg, access)
 	if err != nil {
-		t.Fatalf("genericTestDefinition error = %v", err)
+		t.Fatalf("carbonTestDefinition error = %v", err)
 	}
 	assembly, err := buildRig(definition, stores, root, restoreCfg, false)
 	if err != nil {
@@ -628,7 +628,7 @@ func TestDefaultDataDir(t *testing.T) {
 	if err != nil {
 		t.Skipf("no home directory available: %v", err)
 	}
-	if want := filepath.Join(home, ".looprig", "coderig", "store"); got != want {
+	if want := filepath.Join(home, ".looprig", "carbon", "store"); got != want {
 		t.Errorf("DefaultDataDir() = %q, want %q", got, want)
 	}
 }
@@ -657,7 +657,7 @@ func TestDefaultDataDirIn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DefaultDataDir: %v", err)
 	}
-	fromIn, err := DefaultDataDirIn(filepath.Join(home, ".looprig", "coderig"))
+	fromIn, err := DefaultDataDirIn(filepath.Join(home, ".looprig", "carbon"))
 	if err != nil {
 		t.Fatalf("DefaultDataDirIn: %v", err)
 	}
@@ -876,14 +876,14 @@ func TestSessionStoreFactoryCloseAndListAreSerialized(t *testing.T) {
 }
 
 // ModelFactory is a plain func type; this compile-time assertion documents its shape: it
-// yields the Generic session's shared, secret-free model.Model identity (no system, no secret).
+// yields the Carbon session's shared, secret-free model.Model identity (no system, no secret).
 var _ ModelFactory = func() model.Model {
 	return model.Model{}
 }
 
 // --- Session resource-storage composition (persisted + headless providers) ---
 //
-// No CodeRig Loop definition declares tool.RequiresProcessServices today (that lands with the
+// No Carbon Loop definition declares tool.RequiresProcessServices today (that lands with the
 // process-supervision tools themselves, a later task), so these tests exercise the two
 // providers directly and, where the actual harness restore/identity-anchor behavior is what
 // is under test, over a minimal standalone rig assembled with a probe loop.Definition that
@@ -924,7 +924,7 @@ func processResourceStorageDefinition(t *testing.T) loop.Definition {
 	return definition
 }
 
-// processResourceStorageRig assembles a standalone rig (independent of the production Generic
+// processResourceStorageRig assembles a standalone rig (independent of the production Carbon
 // topology) over store with provider installed as its session resource-storage provider.
 func processResourceStorageRig(t *testing.T, store *sessionstore.Store, provider rig.SessionResourceStorageProvider) *rig.Rig {
 	t.Helper()
@@ -954,7 +954,7 @@ func pathHasRootPrefix(path, root string) bool {
 }
 
 // identityOverrideProvider wraps another provider, substituting its own Identity while
-// preserving the wrapped provider's Path. It simulates CodeRig's own resource-storage scheme
+// preserving the wrapped provider's Path. It simulates Carbon's own resource-storage scheme
 // changing shape (a version bump to sessionResourceStorageIdentity) without needing to
 // actually touch the package constant.
 type identityOverrideProvider struct {
@@ -1013,7 +1013,7 @@ func TestProcessResourceRootOutsideWorkspace(t *testing.T) {
 
 // TestProcessResourceRootStableAcrossRestore proves the persisted provider resolves the SAME
 // path and identity for the same session id across two INDEPENDENTLY constructed provider
-// instances over the same data dir — simulating a real CodeRig process restart, where a fresh
+// instances over the same data dir — simulating a real Carbon process restart, where a fresh
 // SessionStoreFactory rebuilds a fresh provider carrying no in-memory state from the prior
 // run — and that a real RestoreSession succeeds using the second instance for a session opened
 // with the first.
@@ -1063,7 +1063,7 @@ func TestProcessResourceRootStableAcrossRestore(t *testing.T) {
 
 // TestProcessResourceRootIdentityMismatchFailsRestore proves that if the resource-storage
 // identity a session was opened with ever differs from what a later restore's provider
-// reports for the same session id and path — exactly what would happen if CodeRig's own
+// reports for the same session id and path — exactly what would happen if Carbon's own
 // on-disk resource-storage scheme changed shape without a migration — harness's own identity
 // anchor rejects the restore. It also proves the CONVERSE: restoring again with the original,
 // undrifted identity succeeds, so the failure above is really about the identity mismatch and
@@ -1102,7 +1102,7 @@ func TestProcessResourceRootIdentityMismatchFailsRestore(t *testing.T) {
 	// specific *sessionruntime.SessionResourceStorageError and its identity_mismatch Kind
 	// live in harness's internal/sessionruntime and so cannot be errors.As'd from outside
 	// the harness module. RestoreLoopFailed plus the wrapped cause's "identity_mismatch"
-	// text is the most precise assertion available to a coderig-level test.
+	// text is the most precise assertion available to a carbon-level test.
 	var restoreError *session.RestoreError
 	if !errors.As(restoreErr, &restoreError) || restoreError.Kind != session.RestoreLoopFailed {
 		t.Fatalf("RestoreSession() error = %T %v, want *session.RestoreError{Kind: RestoreLoopFailed}", restoreErr, restoreErr)
@@ -1122,7 +1122,7 @@ func TestProcessResourceRootIdentityMismatchFailsRestore(t *testing.T) {
 }
 
 // TestHeadlessProcessResourceRootsAreIsolated proves two independently constructed headless
-// providers — simulating two concurrently running headless CodeRig processes — never resolve
+// providers — simulating two concurrently running headless Carbon processes — never resolve
 // overlapping resource roots, even for the identical session id, and that two different
 // session ids within the SAME provider get distinct subdirectories of its one shared base.
 func TestHeadlessProcessResourceRootsAreIsolated(t *testing.T) {
@@ -1154,7 +1154,7 @@ func TestHeadlessProcessResourceRootsAreIsolated(t *testing.T) {
 		t.Fatalf("second.StorageForSession() error = %v", err)
 	}
 	if firstStorage.Path == secondStorage.Path {
-		t.Fatalf("two independent headless providers (simulating two concurrently running headless CodeRig processes) resolved the SAME resource root %q for the same session id, want distinct process-owned bases", firstStorage.Path)
+		t.Fatalf("two independent headless providers (simulating two concurrently running headless Carbon processes) resolved the SAME resource root %q for the same session id, want distinct process-owned bases", firstStorage.Path)
 	}
 	if pathHasRootPrefix(secondStorage.Path, first.base) || pathHasRootPrefix(firstStorage.Path, second.base) {
 		t.Fatalf("headless provider roots overlap: first=%q (base %q) second=%q (base %q)", firstStorage.Path, first.base, secondStorage.Path, second.base)

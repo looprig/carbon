@@ -12,7 +12,7 @@ import (
 	"github.com/looprig/harness/pkg/tool"
 )
 
-// permission_review_evidence.go is CodeRig's implementation of the two
+// permission_review_evidence.go is Carbon's implementation of the two
 // read-only, trusted-caller seams a registered permission classifier's
 // evidence tools run under (design §13.1, harness/pkg/gate/evidence.go):
 // gate.EvidenceAccessEvaluator and gate.EvidenceContainmentVerifier. Both are
@@ -34,16 +34,16 @@ import (
 // caller blindly) before answering AccessAllow. The REAL per-target security
 // decision — whether the requirement's resolved target actually lives inside
 // the review's own workspace root, and whether this review's security
-// ceiling matches what CodeRig expects — is permissionReviewEvidenceContainment's
+// ceiling matches what Carbon expects — is permissionReviewEvidenceContainment's
 // job, run as an INDEPENDENT second check alongside the evidence tools' own
 // syscall-level *os.Root confinement (classifiers/internal/evidence): defense
 // in depth, not the only line of defense.
 
-// permissionReviewEvidenceAccess is CodeRig's gate.EvidenceAccessEvaluator.
+// permissionReviewEvidenceAccess is Carbon's gate.EvidenceAccessEvaluator.
 // It is stateless and safe for concurrent use.
 type permissionReviewEvidenceAccess struct{}
 
-// newPermissionReviewEvidenceAccess returns CodeRig's evidence access
+// newPermissionReviewEvidenceAccess returns Carbon's evidence access
 // evaluator.
 func newPermissionReviewEvidenceAccess() permissionReviewEvidenceAccess {
 	return permissionReviewEvidenceAccess{}
@@ -60,10 +60,10 @@ func newPermissionReviewEvidenceAccess() permissionReviewEvidenceAccess {
 // AccessFor is consulted for the surrounding request.
 func (permissionReviewEvidenceAccess) AccessFor(requirement tool.Requirement) (uint8, error) {
 	if strings.TrimSpace(requirement.Kind) == "" {
-		return gate.AccessDeny, errors.New("coderig: evidence requirement has no kind")
+		return gate.AccessDeny, errors.New("carbon: evidence requirement has no kind")
 	}
 	if requirement.GrantClass != "" || requirement.GrantTarget != "" || len(requirement.Candidates) != 0 {
-		return gate.AccessDeny, errors.New("coderig: evidence requirement unexpectedly carries grant semantics")
+		return gate.AccessDeny, errors.New("carbon: evidence requirement unexpectedly carries grant semantics")
 	}
 	return gate.AccessAllow, nil
 }
@@ -73,14 +73,14 @@ var _ gate.EvidenceAccessEvaluator = permissionReviewEvidenceAccess{}
 // Sentinel containment errors. They are unexported and carry no request
 // content, matching this file's fail-closed, secret-free error discipline.
 var (
-	errEvidenceContainmentAmbiguous = errors.New("coderig: evidence requirement target could not be unambiguously resolved within the review workspace")
-	errEvidenceContainmentEscape    = errors.New("coderig: evidence requirement target resolves outside the review workspace")
-	errEvidenceContainmentCeiling   = errors.New("coderig: evidence review security ceiling does not match this session")
+	errEvidenceContainmentAmbiguous = errors.New("carbon: evidence requirement target could not be unambiguously resolved within the review workspace")
+	errEvidenceContainmentEscape    = errors.New("carbon: evidence requirement target resolves outside the review workspace")
+	errEvidenceContainmentCeiling   = errors.New("carbon: evidence review security ceiling does not match this session")
 )
 
-// permissionReviewEvidenceContainment is CodeRig's gate.EvidenceContainmentVerifier.
+// permissionReviewEvidenceContainment is Carbon's gate.EvidenceContainmentVerifier.
 // ceiling is the ONE security-ceiling value this session's evidence reviews
-// may ever present (CodeRig's selected AccessProfile name — the same
+// may ever present (Carbon's selected AccessProfile name — the same
 // effective-ceiling representation accessConfigDigest/access.go already
 // folds into the session's durable access identity); any other value fails
 // closed rather than being compared with a string-ordering heuristic. It is
@@ -89,7 +89,7 @@ type permissionReviewEvidenceContainment struct {
 	ceiling string
 }
 
-// newPermissionReviewEvidenceContainment returns CodeRig's evidence
+// newPermissionReviewEvidenceContainment returns Carbon's evidence
 // containment verifier bound to ceiling (the session's selected access
 // profile name). An empty ceiling is accepted structurally but VerifyEvidenceContainment
 // then fails closed for every call, since an unconfigured expected ceiling
@@ -201,7 +201,7 @@ func verifyRequirementContainment(canonicalRoot string, requirement tool.Require
 // from a requirement's Match field, WITHOUT trusting that an evidence tool
 // already validated it (design's "the runtime does not infer containment
 // from the generic, tool-owned Requirement.Scope or Requirement.Match
-// strings" — this is CodeRig's OWN re-validation, defense in depth against a
+// strings" — this is Carbon's OWN re-validation, defense in depth against a
 // buggy or compromised tool). "" and "." both mean "the workspace root
 // itself" (the real filesystem/git evidence tools use exactly this
 // convention — see classifiers/internal/evidence/path.go's
@@ -270,7 +270,7 @@ func canonicalizeWithinRoot(canonicalRoot, candidate string) (string, error) {
 	}
 }
 
-// evidenceCeilingFor returns the ONE SecurityCeiling value CodeRig's
+// evidenceCeilingFor returns the ONE SecurityCeiling value Carbon's
 // permission-review evidence containment verifier trusts for profile: the
 // selected AccessProfile's name, defaulting exactly like access.go's own
 // buildSessionAccess does when profile is unset. It is the single source

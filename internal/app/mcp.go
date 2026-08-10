@@ -6,7 +6,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/looprig/coderig/internal/catalog/generic"
+	"github.com/looprig/carbon/internal/catalog/carbon"
 	"github.com/looprig/harness/pkg/event"
 	"github.com/looprig/harness/pkg/gate"
 	"github.com/looprig/harness/pkg/session"
@@ -57,7 +57,7 @@ func mcpDefinitions(specs []mcpServerSpec) ([]mcpharness.Binding, error) {
 // Both failure points here -- transport construction and Binding.Validate --
 // already return errors from the mcp module's own *client.Error family,
 // which is secret-free and bounded by that module's own discipline. They
-// are wrapped in coderig's own *MCPConfigError anyway, naming spec.name as
+// are wrapped in carbon's own *MCPConfigError anyway, naming spec.name as
 // Binding, for two reasons: transport.New's own errors are built with an
 // empty Binding (every transport's New always calls client.NewError with
 // binding ""), so without this wrap a caller could not tell which server
@@ -73,7 +73,7 @@ func mcpBindingFor(spec mcpServerSpec) (mcpharness.Binding, error) {
 	}
 	roles := spec.roles
 	if len(roles) == 0 {
-		roles = []string{string(generic.Name)}
+		roles = []string{string(carbon.Name)}
 	}
 
 	binding := mcpharness.Binding{
@@ -208,7 +208,7 @@ func mcpHeadersFrom(headers map[string]string) []mcpauth.Header {
 // returns). It is late-binding: the mcpharness.Manager this feeds is built
 // before the session exists -- ConfigDigest must enter the rig fingerprint
 // before rig.NewSession is even called (design
-// docs/plans/2026-08-05-coderig-mcp-and-permission-review-design.md
+// docs/plans/2026-08-05-carbon-mcp-and-permission-review-design.md
 // section 1.2.3) -- so there is necessarily a window in which an
 // elicitation could arrive with nowhere to go. Bind installs the host once
 // the session is live (Task 10's job, not this one's); before that, and
@@ -399,7 +399,7 @@ var _ mcpharness.EventPublisher = (*mcpEventPublisher)(nil)
 // growing further.
 const maxMCPNoticeBacklog = 256
 
-// mcpNoticeRecorder is coderig's mcpharness.Reporter: a bounded, in-memory,
+// mcpNoticeRecorder is carbon's mcpharness.Reporter: a bounded, in-memory,
 // always-usable sink for the adapter's own notices (tool-name collisions,
 // adoption failures, and so on -- see mcpharness.NoticeKind).
 //

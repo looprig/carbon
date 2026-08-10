@@ -30,7 +30,7 @@ import (
 // permission_review_integration_test.go is Task 24's end-to-end permission
 // review coverage, upgraded by the Phase 6 spec-compliance review's follow-up
 // task once all THREE cross-cutting Harness blockers it found were fixed. It
-// builds real CodeRig sessions (real toolsets.go access/gate wiring, a real
+// builds real Carbon sessions (real toolsets.go access/gate wiring, a real
 // confined sh -c executor, a real Bash tool call) with a real classifier
 // registration built through newPermissionReviewRegistration — the exact
 // composition production uses — and drives them through the
@@ -41,8 +41,8 @@ import (
 // Harness's per-turn permission-review-context capture
 // (internal/loopruntime/turn.go's turnConfig.reviewContext) was never
 // populated by any production code path, so a live classifier round trip
-// could not be triggered through CodeRig's public composition at all — every
-// scenario that would ideally prove "the classifier said X and CodeRig
+// could not be triggered through Carbon's public composition at all — every
+// scenario that would ideally prove "the classifier said X and Carbon
 // auto-approved" had to fall back to a weaker proxy (a hand-built
 // gate.PermissionReviewSubject fed straight to gate.EvaluatePermissionAssessment,
 // or the real human RespondGate path standing in for the classifier path). All
@@ -54,7 +54,7 @@ import (
 //   - audit-publish (Phase 6 Finding 1, commit 9eae9681): PermissionReviewStarted/
 //     Completed now durably publish through Hub.PublishInternalEventChecked
 //     instead of unconditionally failing and faulting the session.
-//   - security ceiling (Phase 6 Finding 2, commit bed51463): CodeRig now
+//   - security ceiling (Phase 6 Finding 2, commit bed51463): Carbon now
 //     supplies its OWN AccessProfile-derived ceiling via
 //     rig.WithPermissionReviewSecurityCeiling (wired in
 //     newPermissionReviewRegistration/permission_review.go's options()),
@@ -72,9 +72,9 @@ import (
 // "the strict policy rejects a medium-risk assessment" is a pure policy
 // question, not a review-context question).
 
-// ---- fixtures: fake Generic inference client (drives a real Bash call) --
+// ---- fixtures: fake Carbon inference client (drives a real Bash call) --
 
-// bashScript is a deterministic fake inference.Client driving ONE Generic
+// bashScript is a deterministic fake inference.Client driving ONE Carbon
 // turn that calls Bash exactly once with command, then answers with a final
 // text message once it observes the tool's own result text containing
 // marker. It never branches on delegation (these scenarios never delegate),
@@ -182,7 +182,7 @@ func (c *scriptedClassifierClient) Stream(context.Context, inference.Request) (*
 
 // classifierInputBasis mirrors internal/wire's private input wire shape
 // (classifiers/internal/wire/input.go) just enough to read the one nested
-// object CodeRig's fixture needs to echo back.
+// object Carbon's fixture needs to echo back.
 type classifierInputEnvelope struct {
 	Basis json.RawMessage `json:"basis"`
 }
@@ -207,7 +207,7 @@ func newScriptedClassifierClient() *scriptedClassifierClient {
 
 // ---- fixtures: real session construction over an isolated store ----------
 
-// permissionReviewIntegrationAgent builds a REAL CodeRig session (an
+// permissionReviewIntegrationAgent builds a REAL Carbon session (an
 // isolated in-memory store + throwaway workspace, exactly newTestAgent's
 // isolation contract) over the production assembly path
 // (buildRigForDelegationCaps), with permissionReview installed exactly as
@@ -225,7 +225,7 @@ func permissionReviewIntegrationAgent(t *testing.T, cfg Config, client inference
 }
 
 // permissionReviewIntegrationAgentWithClassifier is permissionReviewIntegrationAgent
-// generalized to accept a SEPARATE classifier inference client from Generic's
+// generalized to accept a SEPARATE classifier inference client from Carbon's
 // own inference client. permissionReviewIntegrationAgent (above) reuses the
 // SAME client for both paths — fine for every scenario that never
 // drives the classifier to a genuine terminal outcome (its Hustle either
@@ -233,7 +233,7 @@ func permissionReviewIntegrationAgent(t *testing.T, cfg Config, client inference
 // harmlessly and leaves the gate for a human) — but a LIVE scenario that
 // asserts a real classifier verdict needs the classifier's OWN scripted
 // wire-contract client (scriptedClassifierClient or a purpose-built
-// variant), distinct from the Generic Bash-driving script, since the two
+// variant), distinct from the Carbon Bash-driving script, since the two
 // see structurally different request/response shapes.
 func permissionReviewIntegrationAgentWithClassifier(t *testing.T, cfg Config, agentClient, classifierClient inference.Client, interactive bool) *RuntimeAgent {
 	t.Helper()
@@ -259,9 +259,9 @@ func permissionReviewIntegrationAgentWithClassifierUsingAccessProfile(t *testing
 	t.Cleanup(func() { _ = access.Close() })
 	cfg.AccessConfigRev = access.configRev
 
-	definition, err := genericTestDefinition(agentClient, testModel(), cfg, access)
+	definition, err := carbonTestDefinition(agentClient, testModel(), cfg, access)
 	if err != nil {
-		t.Fatalf("genericTestDefinition() error = %v", err)
+		t.Fatalf("carbonTestDefinition() error = %v", err)
 	}
 	permissionReview, err := newPermissionReviewRegistration(cfg, classifierClient)
 	if err != nil {
@@ -293,7 +293,7 @@ func permissionReviewIntegrationAgentWithClassifierUsingAccessProfile(t *testing
 
 // readOnlyReviewConfig is the shared Config for every scenario that needs a
 // Gated (not Allowed) Bash command: AccessReadOnly makes Command sandbox.Gated
-// (coderigProfile, access.go), so a Bash call always needs an approval.
+// (carbonProfile, access.go), so a Bash call always needs an approval.
 func readOnlyReviewConfig(enabled bool, strict bool) Config {
 	cfg := Config{AccessProfile: AccessReadOnly}
 	if enabled {
@@ -420,9 +420,9 @@ func mustTurnDone(t *testing.T, terminal event.Event) {
 }
 
 // mustExecutedExactlyOnce proves the Bash command genuinely, successfully
-// executed exactly once: exactly 2 Generic inference round trips (the
+// executed exactly once: exactly 2 Carbon inference round trips (the
 // initial Bash tool_use call, then the one post-execution follow-up), AND
-// the tool result CodeRig's real confined executor returned actually
+// the tool result Carbon's real confined executor returned actually
 // contains the command's own unique marker text — not merely that some
 // result came back (a denial or error message would also produce exactly 2
 // calls, so the call count alone is not sufficient; confirmed by swapping a
@@ -436,7 +436,7 @@ func mustExecutedExactlyOnce(t *testing.T, client *bashScript) {
 	marker := client.marker
 	client.mu.Unlock()
 	if calls != 2 {
-		t.Fatalf("Generic inference calls = %d, want exactly 2 (one Bash call, one post-execution follow-up)", calls)
+		t.Fatalf("Carbon inference calls = %d, want exactly 2 (one Bash call, one post-execution follow-up)", calls)
 	}
 	if !strings.Contains(observed, marker) {
 		t.Fatalf("observed tool result text = %q, want it to contain the real command's own marker %q (a denial or error would still produce 2 calls, but not this text)", observed, marker)
@@ -448,13 +448,13 @@ func mustExecutedExactlyOnce(t *testing.T, client *bashScript) {
 // ================================================================
 
 // TestPermissionReviewSafeCommandEligibleUnderRegisteredPolicy proves, using
-// CodeRig's OWN registered decision policy (exactly what
+// Carbon's OWN registered decision policy (exactly what
 // newPermissionReviewRegistration builds for a live session), that a
 // low-risk allow assessment for a routine, read-only command is Eligible —
 // the decision that (once Harness's reviewContext gap closes) would drive a
 // real auto-approval. It uses gate.EvaluatePermissionAssessment directly,
 // mirroring Task 23's own permission_review_test.go pattern, because a live
-// classifier round trip cannot be triggered through CodeRig's public
+// classifier round trip cannot be triggered through Carbon's public
 // composition today (see file scope note).
 func TestPermissionReviewSafeCommandEligibleUnderRegisteredPolicy(t *testing.T) {
 	t.Parallel()
@@ -489,7 +489,7 @@ func TestPermissionReviewSafeCommandEligibleUnderRegisteredPolicy(t *testing.T) 
 // OTHER half of "safe command auto-approved once": once a gate resolves
 // Approve (the SAME one-shot action a classifier-originated response would
 // ever produce — gate.ApprovalApprove, never "always"), the underlying Bash
-// tool actually executes, through CodeRig's real confined executor, EXACTLY
+// tool actually executes, through Carbon's real confined executor, EXACTLY
 // once — not zero, not twice. The session has a real classifier registered
 // throughout, proving its mere presence does not change ordinary approved
 // execution.
@@ -533,7 +533,7 @@ func TestPermissionReviewSafeCommandExecutesExactlyOnceOnApproval(t *testing.T) 
 // gate.ResponseFromClassifier provenance — WITHOUT any test code ever
 // calling RespondGate. This single scenario exercises all three Phase 6
 // fixes together: the classifier is genuinely reachable from Submit() at
-// all; its ReviewContext now carries CodeRig's real security ceiling
+// all; its ReviewContext now carries Carbon's real security ceiling
 // instead of Harness's dead sentinel (Finding 2 — TestPermissionReviewEvidenceLookupLiveClassifierCallSucceeds
 // below is the one that actually exercises an evidence-tool call against
 // that ceiling); and the PermissionReviewCompleted audit event this review
@@ -573,7 +573,7 @@ func TestPermissionReviewSafeCommandAutoApprovedEndToEnd(t *testing.T) {
 
 	// Bug #1 regression check: a session that faulted while durably
 	// publishing the first review's audit trail would never reach a second,
-	// ordinary auto-approved turn. Reset the Generic script's observation
+	// ordinary auto-approved turn. Reset the Carbon script's observation
 	// state (mustExecutedExactlyOnce compares against THIS turn's own call
 	// count/observed text, mirroring TestPermissionReviewApprovalNeverPersistsAutoAlwaysRule's
 	// reset-between-submits pattern) and drive a second turn on the SAME
@@ -596,7 +596,7 @@ func TestPermissionReviewSafeCommandAutoApprovedEndToEnd(t *testing.T) {
 // exact call that failed closed unconditionally before the Phase 6 Finding 2
 // SecurityCeiling fix); round 2 observes the tool's REAL result text
 // (captured via lastToolText, the same helper managed_delegation_test.go's
-// bashScript-driven scenarios use for Generic's own tool results) and
+// bashScript-driven scenarios use for Carbon's own tool results) and
 // echoes the classifier's basis back into a low-risk allow verdict, reusing
 // echoingClassifierAllowResponse unchanged.
 type evidenceLookupClassifierClient struct {
@@ -662,11 +662,11 @@ func (c *evidenceLookupClassifierClient) Stream(context.Context, inference.Reque
 // hand-built gate.EvidenceContainmentPolicy. Before the SecurityCeiling fix
 // (commit bed51463), EVERY real evidence-tool call failed closed
 // unconditionally, because Harness stamped a fixed sentinel into
-// ReviewContext.SecurityCeiling that could never equal CodeRig's own
+// ReviewContext.SecurityCeiling that could never equal Carbon's own
 // AccessProfile-derived ceiling. This test drives a real command-safety
 // classifier's Hustle to genuinely call the real evidence_filesystem_stat
 // tool — through the real hustleruntime evidence runner, the real
-// permissionReviewEvidenceAccess/permissionReviewEvidenceContainment CodeRig
+// permissionReviewEvidenceAccess/permissionReviewEvidenceContainment Carbon
 // wires via rig.WithPermissionReviewEvidence, and the real *os.Root-confined
 // filesystem tool implementation from
 // github.com/looprig/classifiers/internal/evidence — and asserts the REAL
@@ -833,14 +833,14 @@ func (c *symlinkSwapClassifierClient) Stream(context.Context, inference.Request)
 //
 // Before this addendum, verifyPermissionReviewObservations either did not
 // exist (no observation was ever recorded, so nothing was ever rechecked)
-// or CodeRig had not yet wired rig.WithPermissionReviewObservations (an
+// or Carbon had not yet wired rig.WithPermissionReviewObservations (an
 // observation recorded with no verifier configured ALSO fails closed per
 // gates.go's own doc comment — but only once a consumer's verifier exists
 // to be missing). Either way, the swap above would have been invisible: the
 // classifier's allow recommendation would have auto-approved the gate
 // regardless of what the target actually was by the time of approval —
 // exactly the vulnerability design §13.4 describes. This test proves
-// CodeRig's real permissionReviewEvidenceObservation (wired through
+// Carbon's real permissionReviewEvidenceObservation (wired through
 // newPermissionReviewRegistration/permission_review.go's options(), exactly
 // as production assembles it) now catches it: the gate does NOT resolve
 // through the classifier, stays open, and is still perfectly answerable by
@@ -1002,7 +1002,7 @@ func TestPermissionReviewClassifierRegisteredSessionConstructsAndExecutesTools(t
 }
 
 // TestPermissionReviewEvidenceKindsMatchClassifierRequirement proves
-// CodeRig's registration wires the EXACT evidence-kind allowlist
+// Carbon's registration wires the EXACT evidence-kind allowlist
 // commandsafety.RequiredEvidenceKinds() reports — never a hand-copied list —
 // into the same rig.WithPermissionReviewEvidence call
 // TestPermissionReviewClassifierRegisteredSessionConstructsAndExecutesTools
@@ -1037,13 +1037,13 @@ func TestPermissionReviewEvidenceKindsMatchClassifierRequirement(t *testing.T) {
 // ================================================================
 
 // TestPermissionReviewEvidenceLookupAccessAndContainmentApproveRealTargets
-// drives CodeRig's REAL evidence access/containment values — exactly what
+// drives Carbon's REAL evidence access/containment values — exactly what
 // newPermissionReviewRegistration wires into rig.WithPermissionReviewEvidence
 // for a live session — against a realistic evidence lookup: a classifier
 // checking whether a deletion target exists (an evidence_filesystem_stat-shaped
 // Requirement) against a REAL temp workspace, for both an EXISTING file and a
 // MISSING one. This proves the evidence-authorization pipeline the two
-// Harness addenda unblocked genuinely works in CodeRig's own composition
+// Harness addenda unblocked genuinely works in Carbon's own composition
 // (see file scope note for why this cannot additionally be driven through a
 // live classifier round trip today).
 func TestPermissionReviewEvidenceLookupAccessAndContainmentApproveRealTargets(t *testing.T) {
@@ -1093,7 +1093,7 @@ func TestPermissionReviewEvidenceLookupAccessAndContainmentApproveRealTargets(t 
 
 	// A deletion target OUTSIDE the review workspace must still be refused, even
 	// though the classifier's OWN evidence tools would already reject it — this
-	// is CodeRig's independent second check (defense in depth).
+	// is Carbon's independent second check (defense in depth).
 	outside := canonicalTempDir(t)
 	requirement := tool.Requirement{Kind: "evidence.filesystem.stat", Scope: root, Match: outside + "/secret.txt", Description: "stat outside target"}
 	req := tool.Request{Requirements: []tool.Requirement{requirement}}
@@ -1142,7 +1142,7 @@ func TestPermissionReviewHumanAnswersWhileClassifierRegistered(t *testing.T) {
 
 // TestPermissionReviewNeedsHumanIneligibleUnderRegisteredPolicy proves, at
 // the same decision-policy level as scenario 1's positive case, that a
-// needs_human recommendation is NEVER eligible under CodeRig's registered
+// needs_human recommendation is NEVER eligible under Carbon's registered
 // policy, regardless of risk/authorization — the local decision that would
 // leave a real gate open for a human, once Harness's reviewContext gap
 // closes.
@@ -1218,7 +1218,7 @@ func TestPermissionReviewGateStaysOpenAndHumanAnswerableWithoutAutoResolution(t 
 
 // TestPermissionReviewCriticalRiskNeverEligible proves the hard ceiling
 // (design's absolute rule: critical risk is never eligible, full stop) holds
-// under BOTH of CodeRig's registered policies, even for an assessment that
+// under BOTH of Carbon's registered policies, even for an assessment that
 // reports the maximum possible authorization and an allow recommendation —
 // the one case an authorization-threshold check alone could mistakenly
 // admit.
@@ -1267,7 +1267,7 @@ func TestPermissionReviewCriticalRiskNeverEligible(t *testing.T) {
 // Scenario 7: stale basis.
 // ================================================================
 
-// TestPermissionReviewStaleBasisRejectedByPolicyEvaluation proves CodeRig's
+// TestPermissionReviewStaleBasisRejectedByPolicyEvaluation proves Carbon's
 // registered policy evaluation rejects an assessment computed against a
 // basis that no longer matches the live subject (a classifier's answer that
 // arrived after something about the review moved on) as a basis mismatch,
@@ -1352,7 +1352,7 @@ func TestPermissionReviewLateResponseAfterHumanResolutionIsDroppedNotDoubleProce
 // gate.ResponseFromClassifier could ever carry, since respondFromClassifier
 // has no action parameter (harness/internal/sessionruntime/review_race_test.go's
 // own proof) — never persists a durable "approve always" rule. It resubmits
-// the EXACT SAME command a second time (echo is not in CodeRig's automatic
+// the EXACT SAME command a second time (echo is not in Carbon's automatic
 // family catalog — permissions.go — so the ONLY rule "Approve always for this
 // workspace" could ever have offered here is an EXACT-command one, matching
 // TestAcceptanceFamilyAndExactApprovalFlow's "git commit" case): if the first
@@ -1414,9 +1414,9 @@ func TestPermissionReviewApprovalNeverPersistsAutoAlwaysRule(t *testing.T) {
 // (internal/sessionruntime/review_race_test.go), which proves a classifier
 // response reaches the EXACT SAME dispatchGateCommand -> loop ->
 // gate.Evaluator.Resolve execution path a human approval does. That test
-// establishes the two paths converge; this test proves CodeRig's OWN
+// establishes the two paths converge; this test proves Carbon's OWN
 // composition (real toolsets.go accessGate, real sandbox.ExecutorSet, real `sh
-// -c` execution) reaches that shared path with no CodeRig-side shortcut or
+// -c` execution) reaches that shared path with no Carbon-side shortcut or
 // bypass: the tool only runs because a real grant was minted through the
 // real gate.Evaluator, evidenced by the command's REAL stdout coming back on
 // the next inference request, not merely because a response was accepted.
@@ -1452,7 +1452,7 @@ func TestPermissionReviewApprovalReachesRealExecutorGrantPath(t *testing.T) {
 // TestPermissionReviewDisabledConfigMatchesPreFeatureBuildRig proves that
 // Config.PermissionReviewEnabled == false (the default) produces a
 // registration that is byte-for-byte interchangeable with the OLD path every
-// pre-Task-23 CodeRig call site still uses (buildRig, which always assembles
+// pre-Task-23 Carbon call site still uses (buildRig, which always assembles
 // with the disabled zero permissionReviewRegistration): a session opened
 // through buildRig can be restored through buildRigForDelegationCaps with an
 // explicitly-disabled registration, and vice versa, with ZERO drift changes
@@ -1467,12 +1467,12 @@ func TestPermissionReviewDisabledConfigMatchesPreFeatureBuildRig(t *testing.T) {
 	}
 	root := t.TempDir()
 	access, cfg := headlessTestAccess(t, Config{}, root)
-	definition, err := genericTestDefinition(&fakeLLM{}, testModel(), cfg, access)
+	definition, err := carbonTestDefinition(&fakeLLM{}, testModel(), cfg, access)
 	if err != nil {
-		t.Fatalf("genericTestDefinition() error = %v", err)
+		t.Fatalf("carbonTestDefinition() error = %v", err)
 	}
 
-	// Open with the OLD path (buildRig — every pre-Task-23 CodeRig call site).
+	// Open with the OLD path (buildRig — every pre-Task-23 Carbon call site).
 	oldAssembly, err := buildRig(definition, stores, root, cfg, false)
 	if err != nil {
 		t.Fatalf("buildRig() error = %v", err)
@@ -1499,9 +1499,9 @@ func TestPermissionReviewDisabledConfigMatchesPreFeatureBuildRig(t *testing.T) {
 	if options := disabled.options(); len(options) != 0 {
 		t.Fatalf("disabled.options() = %d options, want 0", len(options))
 	}
-	definition2, err := genericTestDefinition(&fakeLLM{}, testModel(), cfg, access)
+	definition2, err := carbonTestDefinition(&fakeLLM{}, testModel(), cfg, access)
 	if err != nil {
-		t.Fatalf("genericTestDefinition() error = %v", err)
+		t.Fatalf("carbonTestDefinition() error = %v", err)
 	}
 	newAssembly, err := buildRigForDelegationCaps(
 		definition2, stores, root, cfg, false,

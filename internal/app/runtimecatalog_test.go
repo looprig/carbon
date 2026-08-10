@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/looprig/coderig/internal/catalog/generic"
+	"github.com/looprig/carbon/internal/catalog/carbon"
 	"github.com/looprig/core/content"
 	"github.com/looprig/harness/pkg/identity"
 	"github.com/looprig/harness/pkg/loop"
@@ -14,16 +14,16 @@ import (
 	"github.com/looprig/inference/stream"
 )
 
-func TestCompileAgentRuntimeCatalogContainsOnlyGenericWithInProcessDefault(t *testing.T) {
+func TestCompileAgentRuntimeCatalogContainsOnlyCarbonWithInProcessDefault(t *testing.T) {
 	targets := runtimeCatalogTargets()
 	compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{GatewayTargets: targets})
 	if err != nil {
 		t.Fatalf("CompileAgentRuntimeCatalog() error = %v", err)
 	}
 
-	entries := compiled.RuntimeCatalog.EntriesFor(generic.Name)
+	entries := compiled.RuntimeCatalog.EntriesFor(carbon.Name)
 	if len(entries) != 2 {
-		t.Fatalf("Generic entries = %d, want ordinary and codex rows: %#v", len(entries), entries)
+		t.Fatalf("Carbon entries = %d, want ordinary and codex rows: %#v", len(entries), entries)
 	}
 	defaults := 0
 	for _, entry := range entries {
@@ -35,9 +35,9 @@ func TestCompileAgentRuntimeCatalogContainsOnlyGenericWithInProcessDefault(t *te
 		}
 	}
 	if defaults != 1 {
-		t.Fatalf("Generic defaults = %d, want exactly one: %#v", defaults, entries)
+		t.Fatalf("Carbon defaults = %d, want exactly one: %#v", defaults, entries)
 	}
-	// Legacy identities are rejection fixtures: the compiled catalog is Generic-only.
+	// Legacy identities are rejection fixtures: the compiled catalog is Carbon-only.
 	for _, legacy := range []identity.AgentName{"planner", "builder", "reviewer"} {
 		if got := compiled.RuntimeCatalog.EntriesFor(legacy); got != nil {
 			t.Fatalf("legacy entries for %q = %#v, want nil", legacy, got)
@@ -55,9 +55,9 @@ func TestCompileAgentRuntimeCatalogKeepsACPChoicesExplicitAndNonDefault(t *testi
 		t.Fatalf("CompileAgentRuntimeCatalog() error = %v", err)
 	}
 
-	entries := compiled.RuntimeCatalog.EntriesFor(generic.Name)
+	entries := compiled.RuntimeCatalog.EntriesFor(carbon.Name)
 	if len(entries) != 3 {
-		t.Fatalf("Generic entries = %d, want ordinary plus two ACP rows: %#v", len(entries), entries)
+		t.Fatalf("Carbon entries = %d, want ordinary plus two ACP rows: %#v", len(entries), entries)
 	}
 	for _, entry := range entries {
 		switch entry.AgentHarness {
@@ -76,7 +76,7 @@ func TestCompileAgentRuntimeCatalogKeepsACPChoicesExplicitAndNonDefault(t *testi
 	}
 
 	for _, harness := range []loop.AgentHarnessName{"codex", "claude-code"} {
-		resolved, err := compiled.RuntimeCatalog.Resolve(generic.Name, harness, targets[0].Alias, targets[0].Efforts[0])
+		resolved, err := compiled.RuntimeCatalog.Resolve(carbon.Name, harness, targets[0].Alias, targets[0].Efforts[0])
 		if err != nil {
 			t.Fatalf("Resolve(%q) error = %v", harness, err)
 		}
@@ -84,7 +84,7 @@ func TestCompileAgentRuntimeCatalogKeepsACPChoicesExplicitAndNonDefault(t *testi
 			t.Fatalf("Resolve(%q) = %#v", harness, resolved)
 		}
 	}
-	resolved, err := compiled.RuntimeCatalog.Resolve(generic.Name, "", "", model.EffortNone)
+	resolved, err := compiled.RuntimeCatalog.Resolve(carbon.Name, "", "", model.EffortNone)
 	if err != nil {
 		t.Fatalf("default Resolve() error = %v", err)
 	}
@@ -99,17 +99,17 @@ func TestCompileAgentRuntimeCatalogUsesPrimerOnlyForInProcessFallback(t *testing
 	if err != nil {
 		t.Fatalf("CompileAgentRuntimeCatalog() error = %v", err)
 	}
-	entries := compiled.RuntimeCatalog.EntriesFor(generic.Name)
+	entries := compiled.RuntimeCatalog.EntriesFor(carbon.Name)
 	if len(entries) != 1 || !entries[0].Default || entries[0].AgentHarness != looprigRuntimeHarness {
-		t.Fatalf("Generic entries = %#v, want one in-process default", entries)
+		t.Fatalf("Carbon entries = %#v, want one in-process default", entries)
 	}
 	if len(entries[0].Models) != 1 || entries[0].Models[0].Alias != primer.Alias {
 		t.Fatalf("ordinary fallback models = %#v, want primer only", entries[0].Models)
 	}
-	if got := compiled.RuntimeCatalog.EntriesFor(generic.Name); len(got) != 1 {
+	if got := compiled.RuntimeCatalog.EntriesFor(carbon.Name); len(got) != 1 {
 		t.Fatalf("primer fallback leaked ACP rows: %#v", got)
 	}
-	resolved, err := compiled.RuntimeCatalog.Resolve(generic.Name, "", "", model.EffortNone)
+	resolved, err := compiled.RuntimeCatalog.Resolve(carbon.Name, "", "", model.EffortNone)
 	if err != nil {
 		t.Fatalf("Resolve() error = %v", err)
 	}
@@ -124,12 +124,12 @@ func TestCompileAgentRuntimeCatalogEntriesAreDeterministic(t *testing.T) {
 	if first.RuntimeCatalog.Digest() != second.RuntimeCatalog.Digest() {
 		t.Fatalf("catalog digest changed with input order: %s != %s", first.RuntimeCatalog.Digest(), second.RuntimeCatalog.Digest())
 	}
-	if !reflect.DeepEqual(first.RuntimeCatalog.EntriesFor(generic.Name), second.RuntimeCatalog.EntriesFor(generic.Name)) {
+	if !reflect.DeepEqual(first.RuntimeCatalog.EntriesFor(carbon.Name), second.RuntimeCatalog.EntriesFor(carbon.Name)) {
 		t.Fatal("catalog entries changed with input order")
 	}
 }
 
-func TestCompileAgentRuntimeCatalogHasOneGenericEntryPerProfile(t *testing.T) {
+func TestCompileAgentRuntimeCatalogHasOneCarbonEntryPerProfile(t *testing.T) {
 	target := runtimeCatalogTargets()[0]
 	compiled, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
 		GatewayTargets: []ACPGatewaySource{target},
@@ -141,18 +141,18 @@ func TestCompileAgentRuntimeCatalogHasOneGenericEntryPerProfile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CompileAgentRuntimeCatalog() error = %v", err)
 	}
-	entries := compiled.RuntimeCatalog.EntriesFor(generic.Name)
+	entries := compiled.RuntimeCatalog.EntriesFor(carbon.Name)
 	seen := make(map[loop.RuntimeProfileName]struct{}, len(entries))
 	for _, entry := range entries {
 		if _, duplicate := seen[entry.Profile]; duplicate {
-			t.Fatalf("duplicate Generic runtime profile %q: %#v", entry.Profile, entries)
+			t.Fatalf("duplicate Carbon runtime profile %q: %#v", entry.Profile, entries)
 		}
 		seen[entry.Profile] = struct{}{}
 	}
 	if len(entries) != 3 {
-		t.Fatalf("Generic entries = %d, want looprig/native plus one Claude and one Codex ACP entry: %#v", len(entries), entries)
+		t.Fatalf("Carbon entries = %d, want looprig/native plus one Claude and one Codex ACP entry: %#v", len(entries), entries)
 	}
-	codex, err := compiled.RuntimeCatalog.ResolveWithExplicitSource(generic.Name, "codex", loop.RuntimeSourceNative, "native-a", model.EffortNone, false)
+	codex, err := compiled.RuntimeCatalog.ResolveWithExplicitSource(carbon.Name, "codex", loop.RuntimeSourceNative, "native-a", model.EffortNone, false)
 	if err != nil {
 		t.Fatalf("Resolve explicit native Codex model: %v", err)
 	}
@@ -171,9 +171,9 @@ func TestCompileAgentRuntimeCatalogFiltersUnavailableACPWithoutRepairingDefault(
 	if err != nil {
 		t.Fatal(err)
 	}
-	entries := filtered.RuntimeCatalog.EntriesFor(generic.Name)
+	entries := filtered.RuntimeCatalog.EntriesFor(carbon.Name)
 	if len(entries) != 1 || entries[0].AgentHarness != looprigRuntimeHarness || !entries[0].Default {
-		t.Fatalf("filtered entries = %#v, want ordinary Generic default only", entries)
+		t.Fatalf("filtered entries = %#v, want ordinary Carbon default only", entries)
 	}
 }
 
@@ -197,8 +197,8 @@ func runtimeCatalogTargets() []ACPGatewaySource {
 	}
 }
 
-func runtimeCatalogPrimer() GenericRuntimeSource {
-	return GenericRuntimeSource{
+func runtimeCatalogPrimer() CarbonRuntimeSource {
+	return CarbonRuntimeSource{
 		Alias: "primer", Description: "Configured primer.", Client: &runtimeCatalogClient{},
 		Model:         model.CustomModel("openai", model.APIFormatOpenAIResponses, "", "primer", model.WithTools(), model.WithThinking()),
 		DefaultEffort: model.EffortMedium, Efforts: []model.Effort{model.EffortLow, model.EffortMedium},

@@ -41,8 +41,8 @@ import (
 // mcp/internal/mcptest is that module's OWN fixture, built on
 // github.com/modelcontextprotocol/go-sdk -- and it is an `internal` package
 // of a different module, so it is not importable here regardless. Adding the
-// go-sdk to coderig itself as a new test-only dependency was explicitly
-// declined (coderig's CLAUDE.md requires approval before any new third-party
+// go-sdk to carbon itself as a new test-only dependency was explicitly
+// declined (carbon's CLAUDE.md requires approval before any new third-party
 // dependency). Coderig's own integration surface is its assembly/gating/
 // env-baseline/degradation behavior, not MCP protocol conformance -- that is
 // the mcp module's job, already covered by its own test suite -- so a
@@ -55,7 +55,7 @@ import (
 // for reference while building this file): a real `go build` into a
 // t.TempDir()-scoped binary, once per top-level test (cheap after the first,
 // via Go's build cache).
-const mcpFixturePkg = "github.com/looprig/coderig/internal/app/testdata/mcpfixture"
+const mcpFixturePkg = "github.com/looprig/carbon/internal/app/testdata/mcpfixture"
 
 // mcpFixtureBuildTimeout bounds the fixture's build. A cold build is well
 // under a second (it has no dependencies beyond the standard library); this
@@ -96,7 +96,7 @@ func buildMCPFixture(t *testing.T) string {
 	return out
 }
 
-// mcpFixtureModuleRoot returns coderig's own module root, asking the go tool
+// mcpFixtureModuleRoot returns carbon's own module root, asking the go tool
 // rather than walking up from this file's path.
 func mcpFixtureModuleRoot(ctx context.Context) (string, error) {
 	cmd := exec.CommandContext(ctx, "go", "env", "GOMOD") // #nosec G204 -- fixed argv, no external input
@@ -187,7 +187,7 @@ func waitMCPBindingReady(t *testing.T, agent *RuntimeAgent, binding string, time
 }
 
 // mcpEchoScript is a deterministic fake inference.Client driving ONE
-// Generic turn that calls one named tool exactly once with argsJSON, then
+// Carbon turn that calls one named tool exactly once with argsJSON, then
 // answers with a final text message once it observes the tool's own result
 // text. It mirrors permission_review_integration_test.go's bashScript
 // (same file, //go:build integration, so that type is already compiled
@@ -531,19 +531,19 @@ func TestMCPLiveStdioFirstInvokeHeadlessDeniesWithTypedApprovalRequired(t *testi
 }
 
 // ================================================================
-// Assertion 3: a Generic-only binding is hidden from legacy role names. The
+// Assertion 3: a Carbon-only binding is hidden from legacy role names. The
 // legacy names below are intentional rejection fixtures.
 // ================================================================
 
-// TestMCPLiveStdioGenericOnlyVisibility proves Visibility restriction against
-// a real, live-connected binding: explicit Generic visibility reaches the
-// active Generic primer, while former role names remain hidden. It uses
+// TestMCPLiveStdioCarbonOnlyVisibility proves Visibility restriction against
+// a real, live-connected binding: explicit Carbon visibility reaches the
+// active Carbon primer, while former role names remain hidden. It uses
 // Manager.SessionTools directly because the initial discovery populates the
 // live catalog before any later adoption refresh is involved.
-func TestMCPLiveStdioGenericOnlyVisibility(t *testing.T) {
+func TestMCPLiveStdioCarbonOnlyVisibility(t *testing.T) {
 	fixture := buildMCPFixture(t)
 	home := t.TempDir()
-	writeLiveMCPConfig(t, home, "fixture", mcpLiveServerSpec{Command: fixture, Roles: []string{"generic"}})
+	writeLiveMCPConfig(t, home, "fixture", mcpLiveServerSpec{Command: fixture, Roles: []string{"carbon"}})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -554,7 +554,7 @@ func TestMCPLiveStdioGenericOnlyVisibility(t *testing.T) {
 	primerLoopID := agent.sess.ActiveLoop().ID()
 	primerDefs := agent.mgr.SessionTools(primerLoopID, string(activePrimerName))
 	if len(primerDefs) != 1 || len(primerDefs[0].ProducedToolNames()) != 1 || primerDefs[0].ProducedToolNames()[0] != "mcp__fixture__echo" {
-		t.Fatalf("SessionTools(primer) = %+v, want exactly [mcp__fixture__echo] (Generic visibility)", primerDefs)
+		t.Fatalf("SessionTools(primer) = %+v, want exactly [mcp__fixture__echo] (Carbon visibility)", primerDefs)
 	}
 
 	// Any fresh, non-colliding loop id works here: Visibility's Named()
@@ -586,7 +586,7 @@ func TestMCPLiveStdioGenericOnlyVisibility(t *testing.T) {
 //
 // This test manually replicates openRuntimeAgent's own composition (the
 // same private helpers it calls, in the same order -- buildSessionAccess,
-// newMCPSessionAssembly, genericTestDefinition, newPermissionReviewRegistration,
+// newMCPSessionAssembly, carbonTestDefinition, newPermissionReviewRegistration,
 // openSessionWithDefinition, mcpSessionAssembly.attach) instead of calling
 // it directly, for one reason: it needs to Subscribe() to the session's
 // events BEFORE attach() runs Start() and the dead binding's connect
@@ -623,9 +623,9 @@ func TestMCPLiveStdioDeadServerDegradesSessionOpen(t *testing.T) {
 	cfg.MCPConfigRev = mcpAssembly.configRev()
 
 	client := &fakeLLM{}
-	definition, err := genericTestDefinition(client, testModel(), cfg, access)
+	definition, err := carbonTestDefinition(client, testModel(), cfg, access)
 	if err != nil {
-		t.Fatalf("genericTestDefinition() error = %v", err)
+		t.Fatalf("carbonTestDefinition() error = %v", err)
 	}
 	permissionReview, err := newPermissionReviewRegistration(cfg, client)
 	if err != nil {
