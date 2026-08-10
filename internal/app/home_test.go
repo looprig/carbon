@@ -14,7 +14,7 @@ func TestLooprigHome(t *testing.T) {
 			t.Fatal(err)
 		}
 		home, _ := os.UserHomeDir()
-		if got != filepath.Join(home, ".looprig", "coderig") {
+		if got != filepath.Join(home, ".looprig", "carbon") {
 			t.Fatalf("got %q", got)
 		}
 	})
@@ -61,7 +61,7 @@ func TestLooprigHomeIsolatedFromRealHOME(t *testing.T) {
 	// The decisive assertion: looprigHome(Config{}) must resolve to exactly
 	// the isolated directory TestMain created, not wherever the real
 	// developer machine's HOME points.
-	want := filepath.Join(testIsolatedHome, ".looprig", "coderig")
+	want := filepath.Join(testIsolatedHome, ".looprig", "carbon")
 	if got != want {
 		t.Fatalf("looprigHome(Config{}) = %q, want %q (TestMain's isolated HOME)", got, want)
 	}

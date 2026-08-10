@@ -35,7 +35,7 @@ func TestResolveCollabMCPExecutableUsesExplicitAbsoluteExecutable(t *testing.T) 
 func TestResolveCollabMCPExecutableFallsBackToVerifiedSibling(t *testing.T) {
 	dir := t.TempDir()
 	current := filepath.Join(dir, "coderig")
-	sibling := filepath.Join(dir, collabMCPExecutableName)
+	sibling := filepath.Join(dir, "carbon-collab-mcp")
 	writeExecutable(t, sibling)
 
 	got, err := resolveCollabMCPExecutableFrom("", current)

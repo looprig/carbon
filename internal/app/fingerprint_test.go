@@ -407,13 +407,13 @@ func TestAgentFingerprintFields(t *testing.T) {
 		{
 			name: "runtime skills always on",
 			cfg:  Config{},
-			want: rig.ConfigFingerprintFields{AgentKind: "coderig:generic", RuntimeSkills: true},
+			want: rig.ConfigFingerprintFields{AgentKind: "carbon:carbon", RuntimeSkills: true},
 		},
 		{
 			name: "access profile and digest fold in",
 			cfg:  Config{AccessProfile: AccessTrusted, AccessConfigRev: "coderig-access-v1:deadbeef"},
 			want: rig.ConfigFingerprintFields{
-				AgentKind:                 "coderig:generic",
+				AgentKind:                 "carbon:carbon",
 				RuntimeSkills:             true,
 				NativePermissionPolicyRev: "coderig-access-v1:deadbeef",
 				AppFields:                 map[string]string{"access_profile": "trusted"},
@@ -423,7 +423,7 @@ func TestAgentFingerprintFields(t *testing.T) {
 			name: "model configuration digest folds in",
 			cfg:  Config{ModelConfigRev: "coderig-models-v1:deadbeef"},
 			want: rig.ConfigFingerprintFields{
-				AgentKind:         "coderig:generic",
+				AgentKind:         "carbon:carbon",
 				RuntimeSkills:     true,
 				RuntimeCatalogRev: "coderig-models-v1:deadbeef",
 			},
@@ -548,11 +548,11 @@ func TestAccessConfigInvalidatesFingerprintFields(t *testing.T) {
 // TestAgentKindFormat pins the Generic AgentKind used in the fingerprint.
 func TestAgentKindFormat(t *testing.T) {
 	t.Parallel()
-	want := "coderig:generic"
+	want := "carbon:carbon"
 	if agentKind != want {
 		t.Errorf("agentKind = %q, want %q", agentKind, want)
 	}
-	if agentKind != "coderig:generic" {
-		t.Errorf("agentKind = %q, want %q", agentKind, "coderig:generic")
+	if agentKind != "carbon:carbon" {
+		t.Errorf("agentKind = %q, want %q", agentKind, "carbon:carbon")
 	}
 }

@@ -28,7 +28,7 @@ const validMCPConfigJSON = `{
       "command": "npx",
       "args": ["-y", "@upstash/context7-mcp"],
       "env": { "FOO": "bar" },
-      "roles": ["generic"]
+		"roles": ["carbon"]
     }
   }
 }`
@@ -74,8 +74,8 @@ func TestNormalizeMCPConfigHappyPath(t *testing.T) {
 	if context7.command != "" || context7.args != nil || context7.env != nil {
 		t.Errorf("context7 stdio fields leaked into http spec: %+v", context7)
 	}
-	if got := strings.Join(context7.roles, ","); got != "generic" {
-		t.Errorf("context7.roles = %v, want [generic]", context7.roles)
+	if got := strings.Join(context7.roles, ","); got != "carbon" {
+		t.Errorf("context7.roles = %v, want [carbon]", context7.roles)
 	}
 
 	if docsLocal.name != "docs-local" {
@@ -96,8 +96,8 @@ func TestNormalizeMCPConfigHappyPath(t *testing.T) {
 	if docsLocal.url != "" || docsLocal.headers != nil {
 		t.Errorf("docsLocal http fields leaked into stdio spec: %+v", docsLocal)
 	}
-	if got := strings.Join(docsLocal.roles, ","); got != "generic" {
-		t.Errorf("docsLocal.roles = %v, want [generic]", docsLocal.roles)
+	if got := strings.Join(docsLocal.roles, ","); got != "carbon" {
+		t.Errorf("docsLocal.roles = %v, want [carbon]", docsLocal.roles)
 	}
 }
 
@@ -230,8 +230,8 @@ func TestNormalizeMCPConfigRejectsInvalidServers(t *testing.T) {
 
 		// Legacy role is a rejection fixture; roles accepts only generic.
 		{name: "legacy role is unknown", binding: "docs", mutate: func(c *mcpServerConfig) { c.Roles = []string{"planner"} }},
-		{name: "duplicate roles", binding: "docs", mutate: func(c *mcpServerConfig) { c.Roles = []string{"generic", "generic"} }},
-		{name: "padded role is unknown", binding: "docs", mutate: func(c *mcpServerConfig) { c.Roles = []string{"generic "} }},
+		{name: "duplicate roles", binding: "docs", mutate: func(c *mcpServerConfig) { c.Roles = []string{"carbon", "carbon"} }},
+		{name: "padded role is unknown", binding: "docs", mutate: func(c *mcpServerConfig) { c.Roles = []string{"carbon "} }},
 	}
 
 	for _, tt := range tests {
@@ -553,8 +553,8 @@ func TestLoadMCPConfig(t *testing.T) {
 		if docsLocal.name != "docs-local" || docsLocal.kind != "stdio" || docsLocal.command != "npx" {
 			t.Errorf("specs[1] = %+v", docsLocal)
 		}
-		if strings.Join(docsLocal.roles, ",") != "generic" {
-			t.Errorf("specs[1].roles = %v, want [generic]", docsLocal.roles)
+		if strings.Join(docsLocal.roles, ",") != "carbon" {
+			t.Errorf("specs[1].roles = %v, want [carbon]", docsLocal.roles)
 		}
 	})
 

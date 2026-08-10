@@ -157,8 +157,8 @@ var _ tui.Agent = (*orderingAgent)(nil)
 // TestRunPreservesPublicIdentity pins the process-facing name independently from the rig's
 // internal Generic identity.
 func TestRunPreservesPublicIdentity(t *testing.T) {
-	if bannerName != "CodeRig" {
-		t.Errorf("bannerName = %q, want %q", bannerName, "CodeRig")
+	if bannerName != "Carbon" {
+		t.Errorf("bannerName = %q, want %q", bannerName, "Carbon")
 	}
 }
 

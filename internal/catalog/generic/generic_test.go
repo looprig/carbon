@@ -56,8 +56,8 @@ func (s promptSection) text() string {
 func TestIdentity(t *testing.T) {
 	t.Parallel()
 
-	if Name != "generic" {
-		t.Fatalf("Name = %q, want generic", Name)
+	if Name != "carbon" {
+		t.Fatalf("Name = %q, want carbon", Name)
 	}
 	if strings.TrimSpace(Description) == "" {
 		t.Fatal("Description is empty")
@@ -83,8 +83,8 @@ func TestIdentity(t *testing.T) {
 	if root.XMLName.Local != "identity" {
 		t.Fatalf("root element = %q, want identity", root.XMLName.Local)
 	}
-	if root.Product != "CodeRig" {
-		t.Fatalf("product = %q, want CodeRig", root.Product)
+	if root.Product != "Carbon" {
+		t.Fatalf("product = %q, want Carbon", root.Product)
 	}
 	if strings.TrimSpace(root.Persona) == "" {
 		t.Fatal("persona is empty")
