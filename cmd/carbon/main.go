@@ -43,7 +43,7 @@ const (
 
 // cliFlags is the parsed CLI invocation: whether to list sessions and exit (--list), which
 // session to resume (--resume <uuid>; zero = new session), the session store root
-// (--data-dir; empty = the ~/.looprig/store default), the selected access profile
+// (--data-dir; empty = the ~/.looprig/carbon/store default), the selected access profile
 // (--access-profile readonly|trusted|unconfined; default readonly), and the explicit
 // unconfined acknowledgement (--acknowledge-unconfined; required to select unconfined). There
 // is no positional agent name because Carbon is one fixed Rig.
@@ -379,7 +379,7 @@ func run(ctx context.Context, args []string, out, errOut io.Writer) int {
 	}
 	cfg.HomeDir = home
 
-	// Resolve the store root: the explicit --data-dir, or the ~/.looprig/store default
+	// Resolve the store root: the explicit --data-dir, or the ~/.looprig/carbon/store default
 	// (relative to cfg's resolved home directory).
 	dataDir := flags.dataDir
 	if dataDir == "" {

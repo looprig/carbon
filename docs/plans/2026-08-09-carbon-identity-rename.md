@@ -2,7 +2,7 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Publish a standalone CodeRig `v0.18.0`, rename the complete product and sole agent identity to Carbon, and publish Carbon `v0.1.0` without compatibility or migration code.
+**Goal:** Publish a standalone CodeRig `v0.18.1`, rename the complete product and sole agent identity to Carbon, and publish Carbon `v0.1.0` without compatibility or migration code.
 
 **Architecture:** Release every unpublished dependency in dependency order, then prove CodeRig resolves with `GOWORK=off` and no local replacements before tagging it. Preserve that Git ancestry while changing the local worktree, module, command, agent, state, MCP helper, ecosystem references, and remote to Carbon; publish a Carbon-specific MCP release before the final standalone Carbon release.
 
@@ -72,14 +72,14 @@ Check local and remote refs for:
 secrets/v0.1.0
 credentials/v0.1.0
 inference/v0.9.0
-llm/v0.13.0
+llm/v0.13.1
 acp/v0.2.0
 harness/v0.22.0
 mcp/v0.5.0
-foreignloops/v0.2.0
+foreignloops/v0.2.1
 tools/v0.9.0
 tui/v0.14.0
-coderig/v0.18.0
+coderig/v0.18.1
 mcp/v0.6.0
 carbon/v0.1.0
 ```
@@ -268,7 +268,7 @@ Commit only `go.mod` and `go.sum` as
 reviewed release branch into `main`, push `main`, create annotated `v0.9.0`,
 push the tag, and verify remote refs.
 
-### Task 5: Complete and release LLM `v0.13.0`
+### Task 5: Complete and release LLM `v0.13.1`
 
 **Files:**
 - Preserve/modify: `/Users/ipotter/code/looprig/llm/providers/openai/client.go`
@@ -352,9 +352,9 @@ repository's Makefile lint/security gates with `GOWORK=off`.
 
 Expected: PASS and a clean worktree after the dependency commit.
 
-**Step 7: Publish `v0.13.0`**
+**Step 7: Publish `v0.13.1`**
 
-Push `main`, create annotated `v0.13.0`, push it, and verify the remote branch
+Push `main`, create annotated `v0.13.1`, push it, and verify the remote branch
 and peeled tag.
 
 ### Task 6: Release Harness `v0.22.0`
@@ -456,7 +456,7 @@ Expected: PASS and the executable is still named `coderig-collab-mcp`.
 Run MCP's full default/integration/security/cross-build gates. Commit release
 metadata, push `main`, publish annotated `v0.5.0`, and verify remote refs.
 
-### Task 9: Release Tools `v0.9.0`, Foreignloops `v0.2.0`, and TUI `v0.14.0`
+### Task 9: Release Tools `v0.9.0`, Foreignloops `v0.2.1`, and TUI `v0.14.0`
 
 **Files:**
 - Modify: `/Users/ipotter/code/looprig/tools/go.mod`
@@ -491,7 +491,7 @@ release suite, commit, push, and publish annotated `v0.14.0`.
 Use `git ls-remote` for every branch and annotated tag from Tasks 6-9. Do not
 start CodeRig adoption until all expected refs match the tested commits.
 
-### Task 10: Make CodeRig standalone and publish `v0.18.0`
+### Task 10: Make CodeRig standalone from the verified `v0.18.1` baseline
 
 **Files:**
 - Modify: `/Users/ipotter/code/looprig/coderig/go.mod`
@@ -509,11 +509,11 @@ github.com/looprig/acp v0.2.0
 github.com/looprig/classifiers v0.1.2
 github.com/looprig/core v0.5.0
 github.com/looprig/credentials v0.1.0
-github.com/looprig/foreignloops v0.2.0
-github.com/looprig/fsstore v0.3.1
+github.com/looprig/foreignloops v0.2.1
+github.com/looprig/fsstore v0.3.2
 github.com/looprig/harness v0.22.0
 github.com/looprig/inference v0.9.0
-github.com/looprig/llm v0.13.0
+github.com/looprig/llm v0.13.1
 github.com/looprig/mcp v0.5.0
 github.com/looprig/sandbox v0.7.0
 github.com/looprig/secrets v0.1.0
@@ -559,7 +559,7 @@ Run:
 ```bash
 git add go.mod go.sum
 git diff --cached --check
-git commit -m "build(coderig): prepare v0.18.0 release"
+git commit -m "build(coderig): prepare v0.18.1 release"
 ```
 
 Do not add `docs/superpowers/`.
@@ -568,15 +568,15 @@ Do not add `docs/superpowers/`.
 
 Repeat Steps 2-3. Record the verified commit ID.
 
-**Step 6: Push CodeRig and publish `v0.18.0`**
+**Step 6: Push CodeRig and publish `v0.18.1`**
 
 Run:
 
 ```bash
 git push origin main
-git tag -a v0.18.0 -m "coderig v0.18.0"
-git push origin v0.18.0
-git ls-remote origin refs/heads/main refs/tags/v0.18.0 'refs/tags/v0.18.0^{}'
+git tag -a v0.18.1 -m "coderig v0.18.1"
+git push origin v0.18.1
+git ls-remote origin refs/heads/main refs/tags/v0.18.1 'refs/tags/v0.18.1^{}'
 ```
 
 Expected: branch and peeled tag match the verified release commit.
@@ -584,7 +584,7 @@ Expected: branch and peeled tag match the verified release commit.
 **Step 7: Prove remote-only consumption**
 
 In a fresh `/private/tmp` directory outside the workspace, run a remote module
-download/build or `go install github.com/looprig/coderig/cmd/coderig@v0.18.0`
+download/build or `go install github.com/looprig/coderig/cmd/coderig@v0.18.1`
 with fresh module/build caches.
 
 Expected: success without any sibling checkout.
@@ -637,7 +637,9 @@ Do not push this commit to the CodeRig remote.
 
 **Files/directories:**
 - Rename: `/Users/ipotter/code/looprig/coderig/` to `/Users/ipotter/code/looprig/carbon/`
-- Modify Git config: `carbon/.git/config`
+- Modify common repository configuration via `git -C carbon remote set-url`.
+  The linked worktree's `carbon/.git` is a pointer to the durable common Git
+  directory under `.worktrees/carbon-main-baseline`.
 - Modify: `/Users/ipotter/code/looprig/go.work`
 
 **Step 1: Record linked worktrees**
@@ -836,11 +838,14 @@ module URLs, paths, examples, and commands with Carbon forms. In reusable
 modules, prefer neutral "product composition root" wording when the reference
 is not truly Carbon-specific.
 
-**Step 3: Rewrite checked-out historical documents**
+**Step 3: Review checked-out historical documents**
 
-Apply the same product mapping to first-party `docs/plans`, `docs/specs`, and
-verification records in the active checkout. Do not touch `.git` objects,
-vendored third-party sources, or linked worktrees outside the active workspace.
+Apply the same product mapping to active first-party `docs/specs` and
+verification records in the active checkout. Preserve genuinely historical
+`docs/plans` records and the approved rename mapping when rewriting would
+destroy former/current evidence; list those exclusions in the Task 16 audit.
+Do not touch `.git` objects, vendored third-party sources, the archive tree, or
+linked worktrees outside the active workspace.
 
 **Step 4: Update boundary tests first, then production metadata**
 
@@ -870,14 +875,16 @@ Run from the workspace root:
 
 ```bash
 rg -n -i --hidden \
-  --glob '!**/.git/**' \
-  --glob '!**/.worktrees/**' \
-  --glob '!**/vendor/**' \
-  --glob '!go.work.sum' \
+	--glob '!**/.git/**' \
+	--glob '!**/.worktrees/**' \
+	--glob '!**/vendor/**' \
+	--glob '!**/docs/plans/**' \
+	--glob '!zarchive/**' \
+	--glob '!go.work.sum' \
   'coderig|code[ _-]?rig|github\.com/looprig/coderig|\.looprig/coderig'
 ```
 
-Expected: no first-party active-tree results. Classify every result rather than
+Expected: no first-party active runtime/source results. Classify every result rather than
 blindly excluding it. The reviewed exclusions are the two rename-plan files
 themselves (their former/current mapping is normative), historical reusable
 Harness fingerprint vectors and the v1 replay fixture (their serialized
@@ -885,8 +892,9 @@ values are byte-level compatibility contracts), the preserved
 `CODERIG_COLLAB_ENDPOINT`/`CODERIG_COLLAB_TOKEN` environment names (the MCP
 wire contract), and the retired-module string in `tools/dependency_test.go`
 (a regression guard that must continue to reject the former import path).
-Historical plans outside the active Carbon design and implementation record
-are reviewed as documents, but are not runtime identity surfaces.
+Historical plans outside the active Carbon design and implementation record,
+and the archived `zarchive/` tree, are reviewed as documents but are not
+runtime identity surfaces.
 
 **Step 2: Audit Generic product-agent remnants**
 
@@ -972,15 +980,32 @@ Run:
 
 ```bash
 git status --short
-git log --oneline --decorate v0.18.0..HEAD
-git diff --stat v0.18.0..HEAD
+git show-ref --verify refs/heads/main refs/heads/feat/carbon-v010-rebased
+git merge-base --is-ancestor v0.18.1 HEAD
+git log --oneline --decorate v0.18.1..feat/carbon-v010-rebased
+git diff --stat v0.18.1..feat/carbon-v010-rebased
 git tag --sort=-v:refname | head -20
 ```
 
-Expected: the rename commits are reviewed, the worktree is clean except for no
-untracked files, and local CodeRig tags exist only locally.
+Expected: `feat/carbon-v010-rebased` is a descendant of corrected CodeRig
+`v0.18.1`, the rename commits are reviewed, and the active Carbon worktree is
+clean except for no untracked files. The old baseline `main` ref remains
+preserved until the explicit promotion below.
 
-**Step 2: Push Carbon main without tags**
+**Step 2: Promote the reviewed Carbon tip to `main`, then push without tags**
+
+The old baseline worktree owns the local `main` ref, so promote it explicitly
+without force-pushing or losing the pre-rename tip:
+
+```bash
+git -C /Users/ipotter/code/looprig/.worktrees/carbon-main-baseline branch baseline/pre-carbon-promotion main
+git -C /Users/ipotter/code/looprig/.worktrees/carbon-main-baseline switch --detach main
+git -C /Users/ipotter/code/looprig/carbon branch --ff-only main feat/carbon-v010-rebased
+git -C /Users/ipotter/code/looprig/carbon switch main
+test "$(git -C /Users/ipotter/code/looprig/carbon rev-parse HEAD)" = "$(git -C /Users/ipotter/code/looprig/carbon rev-parse main)"
+```
+
+Verify `git -C carbon log -1 --oneline` is the reviewed tip, then run:
 
 Run exactly:
 
@@ -1029,7 +1054,7 @@ root metadata.
 Report:
 
 - every published module tag and verified commit;
-- CodeRig `v0.18.0` remote proof;
+- CodeRig `v0.18.1` remote proof;
 - MCP `v0.5.0` and `v0.6.0` boundary;
 - Carbon `v0.1.0` remote proof;
 - exact default, race, integration, security, and cross-build results;

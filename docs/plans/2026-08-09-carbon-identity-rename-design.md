@@ -5,7 +5,7 @@
 
 ## Goal
 
-Publish CodeRig `v0.18.0` as a standalone consumable release, then make a
+Publish CodeRig `v0.18.1` as a standalone consumable release, then make a
 greenfield breaking rename of the complete product identity from CodeRig's
 Generic agent to Carbon. Carbon begins a new release line at `v0.1.0` in the
 new `github.com/looprig/carbon` repository.
@@ -18,7 +18,8 @@ fallback to a CodeRig path.
 
 ## Principles
 
-1. CodeRig `v0.18.0` is a real release, not an archival tag. Its module must
+1. CodeRig `v0.18.1` is the verified fix-forward release, not an archival tag.
+   Its module must
    resolve, build, and test with `GOWORK=off` and no local sibling `replace`
    directives.
 2. Publish dependencies before dependents. Every version written into a
@@ -63,7 +64,7 @@ and expose APIs used by current CodeRig. Release them in this order:
 | Module | Release | Required dependency adoption |
 |---|---|---|
 | Inference | `v0.9.0` | Credentials `v0.1.0`, Secrets `v0.1.0` |
-| LLM | `v0.13.0` | Inference `v0.9.0`, Credentials `v0.1.0`, Secrets `v0.1.0` |
+| LLM | `v0.13.1` | Inference `v0.9.0`, Credentials `v0.1.0`, Secrets `v0.1.0` |
 
 Remove the Credentials and Secrets development replacements before each
 release. Other local development replacements must not affect a standalone
@@ -74,7 +75,7 @@ LLM currently has uncommitted changes in
 `providers/openai/client.go` and `providers/openai/options.go`. They add a
 caller-owned round-tripper option and appear related to the credential-backed
 transport work. Preserve them, review them with the surrounding tests, and
-include them in `v0.13.0` only after focused and full verification. Do not
+include them in `v0.13.1` only after focused and full verification. Do not
 discard or overwrite them.
 
 ### Runtime and presentation releases
@@ -87,7 +88,7 @@ Publish these reviewed heads after their prerequisites:
 | ACP | `v0.2.0` | Model/effort selection and ordered steering APIs |
 | Harness | `v0.22.0` | Durable foreign collaboration and scoped broker services |
 | MCP | `v0.5.0` | CodeRig collaboration MCP server and proxy |
-| Foreignloops | `v0.2.0` | ACP selection, steering, and scoped foreign services |
+| Foreignloops | `v0.2.1` | ACP selection, steering, and scoped foreign services |
 | Tools | `v0.9.0` | Contained absolute Bash working directories |
 | TUI | `v0.14.0` | Current runtime presentation and StartAgent behavior |
 
@@ -126,13 +127,13 @@ After all gates pass:
 
 1. Commit the release dependency adoption.
 2. Push CodeRig `main` to `git@github.com:looprig/coderig.git` without force.
-3. Create annotated tag `v0.18.0` on the verified commit.
-4. Push only `v0.18.0`.
+3. Create annotated tag `v0.18.1` on the verified commit.
+4. Push only `v0.18.1`.
 5. Verify remote `main`, the peeled annotated tag, and an independent module
    fetch/build.
 
 No Carbon runtime, package, command, or product-identity implementation changes
-may enter CodeRig `v0.18.0`. The approved Carbon design and implementation plan
+may enter CodeRig `v0.18.1`. The approved Carbon design and implementation plan
 are release documentation and may be present in that tag.
 
 ## Git Transition
@@ -148,7 +149,7 @@ Change the product repository's `origin` to:
 git@github.com:looprig/carbon.git
 ```
 
-The old CodeRig repository remains the immutable home of CodeRig `v0.18.0`.
+The old CodeRig repository remains the immutable home of CodeRig `v0.18.1`.
 Carbon receives the shared commit ancestry through its `main` branch, followed
 by explicit Carbon rename commits. Do not push CodeRig tags to Carbon. Push
 Carbon `main` and Carbon's annotated `v0.1.0` tag only after the complete rename
@@ -222,7 +223,7 @@ generic.
 
 ## Companion MCP Release
 
-CodeRig `v0.18.0` uses MCP `v0.5.0` and the executable
+CodeRig `v0.18.1` uses MCP `v0.5.0` and the executable
 `coderig-collab-mcp`. Carbon requires a second MCP release:
 
 1. Rename the command directory and process diagnostics to
@@ -249,18 +250,22 @@ Update active workspace metadata from `coderig` to `carbon`, including:
 - reusable-module examples and comments that name the product;
 - build scripts, CI comments, command examples, and release documentation.
 
-Historical design and implementation documents in the checked-out source tree
-are rewritten too, because the requested Carbon tree should have no stale
-product identity. This is an intentional new-tree cleanup, not a Git history
-rewrite.
+Active source documentation, specifications, verification records, and
+product-facing guides are rewritten because the requested Carbon tree should
+have no stale runtime identity. Genuinely historical plans remain historical
+records when rewriting them would destroy the former/current evidence; the
+audit names those exclusions explicitly. The approved rename design and
+implementation plan intentionally retain their former/current mapping. This
+is an intentional new-tree cleanup, not a Git history rewrite.
 
 Reusable modules should prefer neutral wording when the text describes a
 generic consumer seam. Use Carbon only for a real product-specific example.
 
 The active-tree stale-reference gate excludes `.git`, vendored snapshots that
 must remain byte-for-byte tied to an upstream release, generated third-party
-artifacts, and external linked worktrees. All first-party checked-out source,
-tests, and documentation are in scope.
+artifacts, the archive tree, historical plans, and external linked worktrees.
+Active first-party checked-out source, tests, and product-facing documentation
+remain in scope, with exact compatibility exceptions recorded by the audit.
 
 ## State and Compatibility
 
@@ -319,9 +324,9 @@ verified.
 1. Secrets `v0.1.0` and Credentials `v0.1.0` exist remotely and resolve without
    local replacements.
 2. Every required release-train tag exists remotely in dependency order.
-3. CodeRig `v0.18.0` contains no local sibling replacements and independently
+3. CodeRig `v0.18.1` contains no local sibling replacements and independently
    builds/tests from remote modules.
-4. CodeRig remote `main` and `v0.18.0` point to the verified final CodeRig
+4. CodeRig remote `main` and `v0.18.1` point to the verified final CodeRig
    commit.
 5. Carbon's module, command, binary, prompt, loop, state, durable identity, MCP
    role, companion process, docs, and Git remote use Carbon naming.
