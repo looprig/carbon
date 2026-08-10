@@ -1,10 +1,10 @@
-# Carbon Modularization Implementation Plan
+# CodeRig Modularization Implementation Plan
 
 > Execute this plan without commits or pushes until the user explicitly requests them.
 
-**Goal:** Rename SWE to Carbon, move reusable session, tool, and confinement machinery into their proper modules, and reduce Carbon to explicit Loop definitions plus one Rig assembly path.
+**Goal:** Rename SWE to CodeRig, move reusable session, tool, and confinement machinery into their proper modules, and reduce CodeRig to explicit Loop definitions plus one Rig assembly path.
 
-**Architecture:** Harness remains the core runtime and owns only core delegation and workspace contracts. The optional tools module supplies one definition per standard tool. Confinement bridges those definitions to sandbox enforcement. CLI owns the session-to-TUI adapter. Carbon imports these modules and owns only coding prompts, Loop rosters, modes, model defaults, application flags, and Rig assembly.
+**Architecture:** Harness remains the core runtime and owns only core delegation and workspace contracts. The optional tools module supplies one definition per standard tool. Confinement bridges those definitions to sandbox enforcement. CLI owns the session-to-TUI adapter. CodeRig imports these modules and owns only coding prompts, Loop rosters, modes, model defaults, application flags, and Rig assembly.
 
 **Technology:** Go 1.26, looprig harness, inference, storage backends, Bubble Tea CLI, looprig sandbox.
 
@@ -123,31 +123,31 @@
 5. Keep strict failure as the default and gated fallback explicit.
 6. Run the full module race suite.
 
-## Task 8: Rename the repository and product to Carbon
+## Task 8: Rename the repository and product to CodeRig
 
 **Files:**
 
-- Rename directory: `swe/` to `carbon/`
-- Modify: `carbon/go.mod`
-- Rename: `carbon/cmd/swe/` to `carbon/cmd/carbon/`
-- Rename or flatten: `carbon/swarms/swe/`
-- Modify: `carbon/Makefile`
+- Rename directory: `swe/` to `coderig/`
+- Modify: `coderig/go.mod`
+- Rename: `coderig/cmd/swe/` to `coderig/cmd/coderig/`
+- Rename or flatten: `coderig/swarms/swe/`
+- Modify: `coderig/Makefile`
 - Modify: live package comments, prompts, errors, banners, tests, and README
 - Modify local git remote URL
 
-1. Rename the working directory and module path to `github.com/looprig/carbon`.
-2. Rename the command and binary to `carbon`.
+1. Rename the working directory and module path to `github.com/looprig/coderig`.
+2. Rename the command and binary to `coderig`.
 3. Rename live product identity, error prefixes, prompt identity, fingerprints, and current revision strings.
 4. Leave historical plan documents unchanged.
 5. Update the local `origin` URL without pushing.
 6. Run `rg` excluding historical plans to prove no current SWE names remain.
 
-## Task 9: Simplify Carbon Loop definitions
+## Task 9: Simplify CodeRig Loop definitions
 
 **Files:**
 
-- Delete: Carbon Registry implementation and tests
-- Delete: Carbon ModelCatalog implementation and tests
+- Delete: CodeRig Registry implementation and tests
+- Delete: CodeRig ModelCatalog implementation and tests
 - Delete: `agents/internal/leafrig`
 - Modify: operator and reviewer Loop construction
 - Modify: greeting and model construction
@@ -161,11 +161,11 @@
 7. Declare meaningful Loop modes and `inference.Effort` directly on definitions.
 8. Verify the reviewer binds no mutating tool and the operator receives the intended roster.
 
-## Task 10: Unify Carbon session construction
+## Task 10: Unify CodeRig session construction
 
 **Files:**
 
-- Modify: Carbon assembly and persistence files
+- Modify: CodeRig assembly and persistence files
 - Modify: command entry point
 - Delete: duplicate headless construction seams and tests that only preserve them
 
@@ -174,7 +174,7 @@
 3. Make production supply fsstore and tests supply memstore.
 4. Use `sessionadapter.New` or `sessionadapter.Restore` only after the same Rig assembly completes.
 5. Keep a headless convenience wrapper only if it delegates directly to the shared path.
-6. Run Carbon unit and integration race tests.
+6. Run CodeRig unit and integration race tests.
 
 ## Task 11: Update live ecosystem references
 
@@ -184,7 +184,7 @@
 - Modify: current central consumer documents
 - Modify carefully: current `web` and `www` content only where changes do not overwrite user work
 
-1. Replace live SWE repository and command references with Carbon.
+1. Replace live SWE repository and command references with CodeRig.
 2. Add tools and confinement to the package map.
 3. Do not edit historical plan documents.
 4. Inspect dirty website diffs before touching overlapping files.
@@ -193,7 +193,7 @@
 ## Task 12: Cross-module verification
 
 1. Run `gofmt` for changed Go packages.
-2. Run `go test -race ./...` in harness, tools, CLI, confinement, and Carbon.
+2. Run `go test -race ./...` in harness, tools, CLI, confinement, and CodeRig.
 3. Run each available lint target.
 4. Run dependency-boundary tests.
 5. Run `git status --short` in every affected repository.
@@ -211,7 +211,7 @@
 - Modify: `tui/docs/specs/session-adapter.md`
 - Rename: `harness/pkg/security limit/` to `harness/pkg/security/`
 - Modify: Harness command, event, session, tool-binding, Rig, and runtime APIs
-- Modify: `tools`, `confinement`, `carbon`, `looprig`, `web`, and `www` consumers
+- Modify: `tools`, `confinement`, `coderig`, `looprig`, `web`, and `www` consumers
 
 1. Add compile-time tests for the desired root `tui`, `runtime.Run`,
    `sessionadapter.Adapter`, and `security.Limit` APIs and verify they fail while
