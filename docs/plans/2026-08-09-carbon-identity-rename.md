@@ -156,7 +156,7 @@ Run:
 git push -u origin main
 git tag -a v0.1.0 -m "secrets v0.1.0"
 git push origin v0.1.0
-git ls-remote origin refs/heads/main refs/tags/v0.1.0 'refs/tags/v0.1.0^{}'
+git -C "$carbon_tag_repo" ls-remote origin refs/heads/main refs/tags/v0.1.0 'refs/tags/v0.1.0^{}'
 ```
 
 Expected: remote `main` and the peeled annotated tag resolve to the verified
@@ -314,7 +314,7 @@ assert that a request traverses that stub rather than the default transport.
 Run:
 
 ```bash
-GOWORK=off GOCACHE=/private/tmp/llm-v0130-gocache go test -race ./providers/openai -count=1
+GOWORK=off GOCACHE=/private/tmp/llm-v0131-gocache go test -race ./providers/openai -count=1
 ```
 
 Expected: PASS after the preserved implementation is complete.
@@ -530,8 +530,8 @@ Run:
 
 ```bash
 test -z "$(rg '^replace github.com/looprig/' go.mod || true)"
-GOWORK=off GOMODCACHE=/private/tmp/coderig-v0180-modcache GOCACHE=/private/tmp/coderig-v0180-gocache go mod verify
-GOWORK=off GOMODCACHE=/private/tmp/coderig-v0180-modcache GOCACHE=/private/tmp/coderig-v0180-gocache go test -race -count=1 ./...
+GOWORK=off GOMODCACHE=/private/tmp/coderig-v0181-modcache GOCACHE=/private/tmp/coderig-v0181-gocache go mod verify
+GOWORK=off GOMODCACHE=/private/tmp/coderig-v0181-modcache GOCACHE=/private/tmp/coderig-v0181-gocache go test -race -count=1 ./...
 ```
 
 Expected: no replacement output and all tests pass from remote modules.
@@ -541,8 +541,8 @@ Expected: no replacement output and all tests pass from remote modules.
 Run:
 
 ```bash
-GOWORK=off GOCACHE=/private/tmp/coderig-v0180-gocache go test -tags integration -race -count=1 ./...
-GOWORK=off GOCACHE=/private/tmp/coderig-v0180-gocache make secure
+GOWORK=off GOCACHE=/private/tmp/coderig-v0181-gocache go test -tags integration -race -count=1 ./...
+GOWORK=off GOCACHE=/private/tmp/coderig-v0181-gocache make secure
 CGO_ENABLED=0 GOWORK=off go build -trimpath ./...
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOWORK=off go build -trimpath ./...
 CGO_ENABLED=0 GOOS=windows GOARCH=amd64 GOWORK=off go build -trimpath ./...
@@ -923,6 +923,7 @@ Run targeted searches in Carbon:
 
 ```bash
 rg -n --hidden \
+  --no-ignore \
   --glob '!**/.git/**' \
   --glob '!**/.worktrees/**' \
   --glob '!**/vendor/**' \
@@ -1007,12 +1008,12 @@ Expected: PASS.
 Run:
 
 ```bash
-git status --short
-git show-ref --verify refs/heads/main refs/heads/feat/carbon-v010-rebased
-git merge-base --is-ancestor v0.18.1 HEAD
-git log --oneline --decorate v0.18.1..feat/carbon-v010-rebased
-git diff --stat v0.18.1..feat/carbon-v010-rebased
-git tag --sort=-v:refname | head -20
+git -C /Users/ipotter/code/looprig/carbon status --short
+git -C /Users/ipotter/code/looprig/carbon show-ref --verify refs/heads/main refs/heads/feat/carbon-v010-rebased
+git -C /Users/ipotter/code/looprig/carbon merge-base --is-ancestor v0.18.1 HEAD
+git -C /Users/ipotter/code/looprig/carbon log --oneline --decorate v0.18.1..feat/carbon-v010-rebased
+git -C /Users/ipotter/code/looprig/carbon diff --stat v0.18.1..feat/carbon-v010-rebased
+git -C /Users/ipotter/code/looprig/carbon tag --sort=-v:refname | head -20
 ```
 
 Expected: `feat/carbon-v010-rebased` is a descendant of corrected CodeRig
@@ -1036,12 +1037,17 @@ git -C /Users/ipotter/code/looprig/carbon switch main
 test "$(git -C /Users/ipotter/code/looprig/carbon rev-parse HEAD)" = "$(git -C /Users/ipotter/code/looprig/carbon rev-parse main)"
 ```
 
-Verify `git -C carbon log -1 --oneline` is the reviewed tip, then run:
+Verify `git -C /Users/ipotter/code/looprig/carbon log -1 --oneline` is the
+reviewed tip, confirm the Carbon remote and remote branch OID, then run:
 
 Run exactly:
 
 ```bash
-git push -u origin main
+carbon_tip=$(git -C /Users/ipotter/code/looprig/carbon rev-parse main)
+test "$(git -C /Users/ipotter/code/looprig/carbon remote get-url origin)" = "git@github.com:looprig/carbon.git"
+test "$(git -C /Users/ipotter/code/looprig/carbon rev-parse main)" = "$carbon_tip"
+test "$(git -C /Users/ipotter/code/looprig/carbon ls-remote origin refs/heads/main | awk '{print $1}')" = "$carbon_tip"
+git -C /Users/ipotter/code/looprig/carbon push -u origin main
 ```
 
 Do not use `--tags`, `--follow-tags`, or mirror push.
@@ -1072,7 +1078,7 @@ contains no inherited CodeRig tag refs.
 
 **Step 4: Prove no CodeRig tags were pushed**
 
-Run `git ls-remote --tags origin`.
+Run `git -C /Users/ipotter/code/looprig/carbon ls-remote --tags origin`.
 
 Expected: Carbon remote contains `v0.1.0` and no CodeRig release tags.
 
