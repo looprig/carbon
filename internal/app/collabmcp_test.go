@@ -254,7 +254,7 @@ func TestNewACPCompositionRegistersServicesAwareBuildersForCollabMCP(t *testing.
 func TestProductionACPCompositionResolvesCollabMCPOnceBeforeSession(t *testing.T) {
 	path := filepath.Join(t.TempDir(), collabMCPExecutableName)
 	writeExecutable(t, path)
-	cfg, err := withProductionACPChildren(nil, Config{CollabMCPExecutable: path}, configuredProductionModelsForTest("configured-only"))
+	cfg, err := withProductionACPChildren(context.Background(), Config{CollabMCPExecutable: path}, configuredProductionModelsForTest("configured-only"))
 	if err != nil {
 		t.Fatalf("withProductionACPChildren() error = %v", err)
 	}
@@ -267,7 +267,7 @@ func TestProductionACPCompositionResolvesCollabMCPOnceBeforeSession(t *testing.T
 }
 
 func TestProductionACPCompositionRejectsUnavailableExplicitCollabMCP(t *testing.T) {
-	_, err := withProductionACPChildren(nil, Config{CollabMCPExecutable: "relative/coderig-collab-mcp"}, configuredProductionModelsForTest("configured-only"))
+	_, err := withProductionACPChildren(context.Background(), Config{CollabMCPExecutable: "relative/coderig-collab-mcp"}, configuredProductionModelsForTest("configured-only"))
 	if err == nil {
 		t.Fatal("withProductionACPChildren() error = nil, want invalid explicit path failure")
 	}
@@ -284,7 +284,7 @@ func TestProductionACPCompositionFailsClosedWhenCollabMCPIsMissing(t *testing.T)
 	}
 	t.Setenv(acpClaudeExecutableEnv, canonicalExecutable)
 	t.Setenv(acpCodexExecutableEnv, canonicalExecutable)
-	_, err = withProductionACPChildren(nil, Config{}, configuredProductionModelsForTest("configured-only"))
+	_, err = withProductionACPChildren(context.Background(), Config{}, configuredProductionModelsForTest("configured-only"))
 	if err == nil {
 		t.Fatal("withProductionACPChildren() succeeded without the collaboration MCP sibling")
 	}
@@ -296,7 +296,7 @@ func TestProductionACPCompositionKeepsNoACPSetupWithoutCollabMCP(t *testing.T) {
 	configured.ClaudeSmall = ""
 	configured.PrimerAlias = "configured-only"
 	configured.PrimerEfforts = []model.Effort{model.EffortNone}
-	cfg, err := withProductionACPChildren(nil, Config{}, configured)
+	cfg, err := withProductionACPChildren(context.Background(), Config{}, configured)
 	if err != nil {
 		t.Fatalf("withProductionACPChildren() error = %v", err)
 	}

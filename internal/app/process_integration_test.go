@@ -767,41 +767,37 @@ func runConfinedSupervisedBashAttempt(t *testing.T, markerPath string) bashSuper
 }
 
 // TestIntegrationProcessGrantDeniedUnderConfinedProfile is the Darwin
-// substitute for scenario 10.
+// substitute for scenario 10. Darwin now supports best-effort supervised
+// starts, while the missing host-write grant still denies the mutation.
 func TestIntegrationProcessGrantDeniedUnderConfinedProfile(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "grant-denied.marker")
 	result := runConfinedSupervisedBashAttempt(t, marker)
 
-	if result.Error != "lifetime_enforcement_unavailable" {
-		t.Fatalf("confined background attempt = %+v, want error lifetime_enforcement_unavailable", result)
-	}
-	if result.ProcessID != "" || result.Status != "" {
-		t.Fatalf("confined background attempt = %+v, want no process_id/status alongside the error", result)
+	if result.Error != "" || result.ProcessID == "" || result.Status != "running" || !result.Backgrounded {
+		t.Fatalf("confined background attempt = %+v, want a successful running supervised handoff", result)
 	}
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
-		t.Fatalf("marker file exists after a rejected confined spawn (a grant or process leaked through): stat err = %v", err)
+		t.Fatalf("marker file exists without a host-write grant: stat err = %v", err)
 	}
 }
 
 // TestIntegrationProcessLiveManifestNeverCreatedUnderConfinedProfile is the
-// Darwin substitute for scenario 13: it additionally waits past the
-// command's own sleep window to rule out a DELAYED marker/spawn slipping
-// through asynchronously after the tool call itself already reported
-// failure.
+// Darwin substitute for scenario 13. It additionally waits past the command's
+// own sleep window to prove that the successful best-effort handoff cannot
+// create a marker without the missing host-write grant.
 func TestIntegrationProcessLiveManifestNeverCreatedUnderConfinedProfile(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "delayed.marker")
 	result := runConfinedSupervisedBashAttempt(t, marker)
 
-	if result.Error != "lifetime_enforcement_unavailable" {
-		t.Fatalf("confined background attempt = %+v, want error lifetime_enforcement_unavailable", result)
+	if result.Error != "" || result.ProcessID == "" || result.Status != "running" || !result.Backgrounded {
+		t.Fatalf("confined background attempt = %+v, want a successful running supervised handoff", result)
 	}
 
 	// The attempted command was `touch <marker> && sleep 1`; wait past that
-	// window so a delayed/async spawn that somehow survived rejection would
-	// have had time to create it.
+	// window so a delayed/async host write would have had time to create it.
 	time.Sleep(1500 * time.Millisecond)
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
-		t.Fatalf("delayed marker file appeared after a rejected confined spawn: stat err = %v", err)
+		t.Fatalf("delayed marker file appeared without a host-write grant: stat err = %v", err)
 	}
 }
 

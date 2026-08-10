@@ -64,20 +64,12 @@ func withProductionACPChildren(ctx context.Context, cfg Config, configured produ
 	return cfg, nil
 }
 
-func newProductionACPComposition(ctx context.Context, accessProfile AccessProfile, configured productionModels) (*ACPComposition, error) {
-	return newProductionACPCompositionWithCollabRequired(ctx, accessProfile, configured, "", true)
-}
-
 // newProductionACPCompositionWithPreflight is retained as a lower-level test
 // seam for callers that used to inject a live probe. The callback is ignored:
 // startup now performs only static checks and defers ACP availability to the
 // selected child launch.
 func newProductionACPCompositionWithPreflight(_ context.Context, accessProfile AccessProfile, configured productionModels, _ func(context.Context, ACPExecutableProbe) ACPPreflightResult) (*ACPComposition, error) {
 	return newProductionACPCompositionWithCollabRequired(context.Background(), accessProfile, configured, "", false)
-}
-
-func newProductionACPCompositionWithCollab(_ context.Context, accessProfile AccessProfile, configured productionModels, collabExecutable string) (*ACPComposition, error) {
-	return newProductionACPCompositionWithCollabRequired(context.Background(), accessProfile, configured, collabExecutable, true)
 }
 
 func newProductionACPCompositionWithCollabRequired(_ context.Context, accessProfile AccessProfile, configured productionModels, collabExecutable string, requireCollabMCP bool) (*ACPComposition, error) {

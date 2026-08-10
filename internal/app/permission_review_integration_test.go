@@ -237,8 +237,22 @@ func permissionReviewIntegrationAgent(t *testing.T, cfg Config, client inference
 // see structurally different request/response shapes.
 func permissionReviewIntegrationAgentWithClassifier(t *testing.T, cfg Config, agentClient, classifierClient inference.Client, interactive bool) *RuntimeAgent {
 	t.Helper()
+	return permissionReviewIntegrationAgentWithClassifierUsingAccessProfile(t, cfg, cfg.AccessProfile, agentClient, classifierClient, interactive)
+}
+
+// permissionReviewIntegrationAgentWithClassifierUsingAccessProfile keeps the
+// review registration's trusted-profile configuration separate from the
+// command-gate fixture profile. AccessTrusted intentionally allows Bash's
+// command requirement, while these three live scenarios need that requirement
+// to remain Gated so the published command-safety review path can be exercised.
+// This is test-only assembly; production always uses one resolved profile for
+// both access evaluation and permission-review registration.
+func permissionReviewIntegrationAgentWithClassifierUsingAccessProfile(t *testing.T, cfg Config, accessProfile AccessProfile, agentClient, classifierClient inference.Client, interactive bool) *RuntimeAgent {
+	t.Helper()
 	root := t.TempDir()
-	access, err := buildSessionAccess(cfg, root, interactive)
+	accessCfg := cfg
+	accessCfg.AccessProfile = accessProfile
+	access, err := buildSessionAccess(accessCfg, root, interactive)
 	if err != nil {
 		t.Fatalf("buildSessionAccess() error = %v", err)
 	}
@@ -531,8 +545,8 @@ func TestPermissionReviewSafeCommandAutoApprovedEndToEnd(t *testing.T) {
 	const marker = "auto-approved-marker-7f3c1a"
 	agentClient := &bashScript{command: "echo " + marker, marker: marker}
 	classifierClient := newScriptedClassifierClient()
-	cfg := readOnlyReviewConfig(true, false)
-	agent := permissionReviewIntegrationAgentWithClassifier(t, cfg, agentClient, classifierClient, true)
+	cfg := Config{AccessProfile: AccessTrusted, PermissionReviewEnabled: true, PermissionReviewModel: permissionReviewTestModel()}
+	agent := permissionReviewIntegrationAgentWithClassifierUsingAccessProfile(t, cfg, AccessReadOnly, agentClient, classifierClient, true)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -667,8 +681,8 @@ func TestPermissionReviewEvidenceLookupLiveClassifierCallSucceeds(t *testing.T) 
 
 	agentClient := &bashScript{command: "echo evidence-lookup-exec-marker", marker: "evidence-lookup-exec-marker"}
 	classifierClient := &evidenceLookupClassifierClient{statPath: relPath}
-	cfg := readOnlyReviewConfig(true, false)
-	agent := permissionReviewIntegrationAgentWithClassifier(t, cfg, agentClient, classifierClient, true)
+	cfg := Config{AccessProfile: AccessTrusted, PermissionReviewEnabled: true, PermissionReviewModel: permissionReviewTestModel()}
+	agent := permissionReviewIntegrationAgentWithClassifierUsingAccessProfile(t, cfg, AccessReadOnly, agentClient, classifierClient, true)
 	writeEvidenceFile(t, agent.root, relPath, fileBody)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -838,8 +852,8 @@ func TestPermissionReviewObservationSymlinkSwapBlocksAutoApprovalEndToEnd(t *tes
 
 	agentClient := &bashScript{command: "echo toctou-swap-marker", marker: "toctou-swap-marker"}
 	classifierClient := &symlinkSwapClassifierClient{statPath: relPath}
-	cfg := readOnlyReviewConfig(true, false)
-	agent := permissionReviewIntegrationAgentWithClassifier(t, cfg, agentClient, classifierClient, true)
+	cfg := Config{AccessProfile: AccessTrusted, PermissionReviewEnabled: true, PermissionReviewModel: permissionReviewTestModel()}
+	agent := permissionReviewIntegrationAgentWithClassifierUsingAccessProfile(t, cfg, AccessReadOnly, agentClient, classifierClient, true)
 	classifierClient.root = agent.root
 	writeEvidenceFile(t, agent.root, relPath, fileBody)
 

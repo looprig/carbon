@@ -712,7 +712,7 @@ func writeMigratedModelConfigV2ToV3WithHooks(path string, hooks modelConfigMigra
 }
 
 func syncModelConfigMigrationDirectory(path string) error {
-	directory, err := os.Open(path)
+	directory, err := os.Open(path) // #nosec G304 -- path is the validated model-config directory used for the durability sync
 	if err != nil {
 		return err
 	}
