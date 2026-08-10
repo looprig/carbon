@@ -774,6 +774,15 @@ verified separately in the Carbon package tests.
 
 Expected: failures name `coderig-collab-mcp`.
 
+Historical evidence exception: the focused assertion was reconstructed after
+the immutable `v0.6.0` tag was published (MCP commit `d748243` follows tagged
+commit `6953730`). To preserve the tag boundary, the assertion was applied
+only to disposable `git archive` trees: it failed against `v0.5.0` with
+`DefaultServerName = "coderig-collab-mcp"` and passed against `v0.6.0` with
+`DefaultServerName = "carbon-collab-mcp"`. The active MCP follow-up checkout
+retains the test; do not rewrite `v0.6.0` or create `v0.6.1` solely to restore
+the historical test commit.
+
 **Step 2: Rename the command and literals**
 
 Use targeted `sed` replacement from `coderig-collab-mcp` to
