@@ -131,7 +131,9 @@ After all gates pass:
 5. Verify remote `main`, the peeled annotated tag, and an independent module
    fetch/build.
 
-No Carbon changes may enter CodeRig `v0.18.0`.
+No Carbon runtime, package, command, or product-identity implementation changes
+may enter CodeRig `v0.18.0`. The approved Carbon design and implementation plan
+are release documentation and may be present in that tag.
 
 ## Git Transition
 
