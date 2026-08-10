@@ -992,9 +992,13 @@ Expected: PASS.
 
 **Step 3: Run workspace and website verification**
 
-Run root layout/dependency tests, `go work sync` followed by the workspace's
-non-mutating verification targets, and the website's documented build/test
-command.
+Run root layout/dependency tests, then run `go work sync` only after a clean
+manifest preflight. Capture `git status --short` for `go.work`, `go.work.sum`,
+and every managed module's `go.mod`/`go.sum` before synchronization; after
+`go work sync`, inspect every changed manifest individually. Do not stage an
+unexpected sibling change or claim the workspace gate passed until each diff
+is reviewed. Then run the workspace's non-mutating verification targets and
+the website's documented build/test command.
 
 Expected: PASS. Review `go.work.sum` separately and commit it only if the root
 repository intentionally tracks the required change.
@@ -1057,7 +1061,7 @@ Run exactly:
 carbon_tip=$(git -C /Users/ipotter/code/looprig/carbon rev-parse main)
 test "$(git -C /Users/ipotter/code/looprig/carbon remote get-url origin)" = "git@github.com:looprig/carbon.git"
 test "$(git -C /Users/ipotter/code/looprig/carbon rev-parse main)" = "$carbon_tip"
-git -C /Users/ipotter/code/looprig/carbon push -u origin main
+git -c push.followTags=false -C /Users/ipotter/code/looprig/carbon push -u origin main
 test "$(git -C /Users/ipotter/code/looprig/carbon ls-remote origin refs/heads/main | awk '{print $1}')" = "$carbon_tip"
 ```
 
