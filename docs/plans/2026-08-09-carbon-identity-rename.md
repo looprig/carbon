@@ -478,7 +478,7 @@ annotated `v0.9.0`.
 Remove local replacements and require ACP `v0.2.0`, Harness `v0.22.0`,
 Inference `v0.9.0`, Storage `v0.3.1`, and Core `v0.5.0`. Refresh vendor data,
 run steering/restore focused tests and the full release suite, commit, push,
-and publish annotated `v0.2.0`.
+and publish annotated `v0.2.1`.
 
 **Step 3: Release TUI**
 
@@ -859,9 +859,13 @@ Expected: PASS after metadata changes.
 
 **Step 5: Commit by repository**
 
-Create narrow local commits in each affected repository. Push only release
-repositories already authorized by this plan. Leave documentation-only sibling
-commits local unless the user separately authorizes their remote push.
+Create narrow local commits in each affected repository, including the outer
+workspace's intended `go.work`, registry, boundary-test, and active-document
+changes. Stage only the intended root files; preserve unrelated pre-existing
+`.gitignore` changes and environment-local untracked skill files. Push only
+release repositories already authorized by this plan. Leave
+documentation-only sibling commits local unless the user separately
+authorizes their remote push.
 
 ### Task 16: Exhaustive stale-identity audit
 
@@ -901,7 +905,13 @@ runtime identity surfaces.
 Run targeted searches in Carbon:
 
 ```bash
-rg -n --hidden --glob '!**/.git/**' --glob '!**/.worktrees/**' --glob '!vendor/**' '\bGeneric\b|"generic"|generic\.Name|internal/catalog/generic' carbon
+rg -n --hidden \
+  --glob '!**/.git/**' \
+  --glob '!**/.worktrees/**' \
+  --glob '!**/vendor/**' \
+  --glob '!**/docs/plans/**' \
+  --glob '!zarchive/**' \
+  '\bGeneric\b|"generic"|generic\.Name|internal/catalog/generic' carbon
 ```
 
 Expected: no product-agent result. Ordinary generic terminology and
@@ -1000,7 +1010,10 @@ without force-pushing or losing the pre-rename tip:
 ```bash
 git -C /Users/ipotter/code/looprig/.worktrees/carbon-main-baseline branch baseline/pre-carbon-promotion main
 git -C /Users/ipotter/code/looprig/.worktrees/carbon-main-baseline switch --detach main
-git -C /Users/ipotter/code/looprig/carbon branch --ff-only main feat/carbon-v010-rebased
+main_before=$(git -C /Users/ipotter/code/looprig/carbon rev-parse main)
+carbon_tip=$(git -C /Users/ipotter/code/looprig/carbon rev-parse feat/carbon-v010-rebased)
+git -C /Users/ipotter/code/looprig/carbon merge-base --is-ancestor "$main_before" "$carbon_tip"
+git -C /Users/ipotter/code/looprig/carbon update-ref refs/heads/main "$carbon_tip" "$main_before"
 git -C /Users/ipotter/code/looprig/carbon switch main
 test "$(git -C /Users/ipotter/code/looprig/carbon rev-parse HEAD)" = "$(git -C /Users/ipotter/code/looprig/carbon rev-parse main)"
 ```

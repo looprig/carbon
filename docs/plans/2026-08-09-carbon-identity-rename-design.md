@@ -155,9 +155,13 @@ by explicit Carbon rename commits. Do not push CodeRig tags to Carbon. Push
 Carbon `main` and Carbon's annotated `v0.1.0` tag only after the complete rename
 and standalone verification pass.
 
-Do not rewrite commit messages or historical Git objects. Historical files in
-Carbon's checked-out tree are rewritten as ordinary new changes, while their
-old versions remain inspectable in earlier commits.
+Do not rewrite commit messages or historical Git objects. Active source
+documentation, specifications, verification records, and product-facing guides
+in Carbon's checked-out tree are rewritten as ordinary new changes, while their
+old versions remain inspectable in earlier commits. Genuinely historical
+plans remain historical records when rewriting them would destroy former/current
+evidence; the approved rename design and implementation plan intentionally
+retain that mapping.
 
 ## Identity Contract
 
