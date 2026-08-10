@@ -1046,8 +1046,8 @@ Run exactly:
 carbon_tip=$(git -C /Users/ipotter/code/looprig/carbon rev-parse main)
 test "$(git -C /Users/ipotter/code/looprig/carbon remote get-url origin)" = "git@github.com:looprig/carbon.git"
 test "$(git -C /Users/ipotter/code/looprig/carbon rev-parse main)" = "$carbon_tip"
-test "$(git -C /Users/ipotter/code/looprig/carbon ls-remote origin refs/heads/main | awk '{print $1}')" = "$carbon_tip"
 git -C /Users/ipotter/code/looprig/carbon push -u origin main
+test "$(git -C /Users/ipotter/code/looprig/carbon ls-remote origin refs/heads/main | awk '{print $1}')" = "$carbon_tip"
 ```
 
 Do not use `--tags`, `--follow-tags`, or mirror push.
@@ -1069,7 +1069,7 @@ git -C "$carbon_tag_repo" remote add origin git@github.com:looprig/carbon.git
 git -C "$carbon_tag_repo" tag -a v0.1.0 -m "carbon v0.1.0"
 git -C "$carbon_tag_repo" push origin v0.1.0
 test "$(git -C /Users/ipotter/code/looprig/carbon rev-parse refs/tags/v0.1.0)" = "$coderig_tag_before"
-git ls-remote origin refs/heads/main refs/tags/v0.1.0 'refs/tags/v0.1.0^{}'
+git -C "$carbon_tag_repo" ls-remote origin refs/heads/main refs/tags/v0.1.0 'refs/tags/v0.1.0^{}'
 ```
 
 Expected: Carbon remote `main` and the peeled tag match the verified commit,
