@@ -902,6 +902,10 @@ wire contract), and the retired-module string in `tools/dependency_test.go`
 The immutable published MCP `v0.6.0` tag may retain non-runtime CodeRig
 comments; its active checkout is reviewed, but the tag is not rewritten and no
 unplanned `v0.6.1` is created solely for comment changes.
+The Carbon MCP configuration test at
+`internal/app/mcpconfig_test.go` intentionally retains a former
+`generic` role rejection fixture; it proves that the retired role is rejected
+and is not an active product identity.
 Historical plans outside the active Carbon design and implementation record,
 and the archived `zarchive/` tree, are reviewed as documents but are not
 runtime identity surfaces.
@@ -920,8 +924,9 @@ rg -n --hidden \
   '\bGeneric\b|"generic"|generic\.Name|internal/catalog/generic' carbon
 ```
 
-Expected: no product-agent result. Ordinary generic terminology and
-`generic-list-go` may remain only after explicit review.
+Expected: no product-agent result beyond the explicitly reviewed former-role
+rejection fixture above. Ordinary generic terminology and `generic-list-go`
+may remain only after explicit review.
 
 **Step 3: Verify paths and Git identity**
 
@@ -1034,17 +1039,29 @@ git push -u origin main
 
 Do not use `--tags`, `--follow-tags`, or mirror push.
 
-**Step 3: Create and push Carbon's first tag**
+**Step 3: Create and push Carbon's first tag without inherited tag refs**
 
-Run:
+The shared Git ancestry inherits CodeRig's local `v0.1.0` tag ref, and the
+execution rules forbid deleting or moving it. Create the Carbon annotated tag
+in an isolated repository that fetches only the already-promoted Carbon
+`main` branch:
 
 ```bash
-git tag -a v0.1.0 -m "carbon v0.1.0"
-git push origin v0.1.0
+coderig_tag_before=$(git -C /Users/ipotter/code/looprig/carbon rev-parse refs/tags/v0.1.0)
+carbon_tag_repo=$(mktemp -d /private/tmp/carbon-tag.XXXXXX)
+git -C "$carbon_tag_repo" init
+git -C "$carbon_tag_repo" fetch --no-tags /Users/ipotter/code/looprig/carbon main
+git -C "$carbon_tag_repo" switch --detach FETCH_HEAD
+git -C "$carbon_tag_repo" remote add origin git@github.com:looprig/carbon.git
+git -C "$carbon_tag_repo" tag -a v0.1.0 -m "carbon v0.1.0"
+git -C "$carbon_tag_repo" push origin v0.1.0
+test "$(git -C /Users/ipotter/code/looprig/carbon rev-parse refs/tags/v0.1.0)" = "$coderig_tag_before"
 git ls-remote origin refs/heads/main refs/tags/v0.1.0 'refs/tags/v0.1.0^{}'
 ```
 
-Expected: Carbon remote `main` and the peeled tag match the verified commit.
+Expected: Carbon remote `main` and the peeled tag match the verified commit,
+the inherited local CodeRig tag is unchanged, and the isolated tag repository
+contains no inherited CodeRig tag refs.
 
 **Step 4: Prove no CodeRig tags were pushed**
 
