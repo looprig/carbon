@@ -765,9 +765,12 @@ refactor: rename CodeRig and Generic to Carbon
 - Modify: `mcp/pkg/collab/protocol.go`
 - Modify: product-specific MCP comments/docs/tests returned by `rg`
 
-**Step 1: Confirm Carbon helper tests are RED**
+**Step 1: Add MCP boundary tests and confirm they are RED**
 
-Run the test changes from Task 11 against unchanged MCP production code.
+Add the MCP-side default-server-name and command-identity assertions in
+`mcp/pkg/server/server_test.go`, then run those tests against unchanged MCP
+production code. The Carbon-side helper lookup expectation from Task 11 is
+verified separately in the Carbon package tests.
 
 Expected: failures name `coderig-collab-mcp`.
 
