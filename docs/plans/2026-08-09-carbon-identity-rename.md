@@ -156,7 +156,7 @@ Run:
 git push -u origin main
 git tag -a v0.1.0 -m "secrets v0.1.0"
 git push origin v0.1.0
-git -C "$carbon_tag_repo" ls-remote origin refs/heads/main refs/tags/v0.1.0 'refs/tags/v0.1.0^{}'
+git ls-remote origin refs/heads/main refs/tags/v0.1.0 'refs/tags/v0.1.0^{}'
 ```
 
 Expected: remote `main` and the peeled annotated tag resolve to the verified
