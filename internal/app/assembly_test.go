@@ -142,6 +142,9 @@ func TestNewSessionHasCarbonAsSoleActivePrimer(t *testing.T) {
 	if !ok {
 		t.Fatalf("sole root loop = %v, want %q", roots, carbon.Name)
 	}
+	if rootLoop.DisplayName != carbon.DisplayName {
+		t.Fatalf("root loop display name = %q, want %q", rootLoop.DisplayName, carbon.DisplayName)
+	}
 	if agent.ActiveLoopID() != rootLoop.LoopID {
 		t.Fatalf("ActiveLoopID() = %v, want Carbon root %v", agent.ActiveLoopID(), rootLoop.LoopID)
 	}

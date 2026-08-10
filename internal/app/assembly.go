@@ -144,7 +144,7 @@ func carbonDefinitionWithContextPolicy(client inference.Client, model model.Mode
 	system := contextPolicy.system(carbon.SystemPrompt)
 	options := []loop.Option{
 		loop.WithName(carbon.Name),
-		loop.WithDisplayName(string(carbon.Name)),
+		loop.WithDisplayName(carbon.DisplayName),
 		loop.WithDescription(carbon.Description),
 		loop.WithInference(client, model),
 		loop.WithSystem(system),

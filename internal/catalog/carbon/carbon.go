@@ -6,6 +6,9 @@ import "github.com/looprig/harness/pkg/identity"
 // Name is the Carbon agent's immutable attribution name.
 const Name = identity.AgentName("carbon")
 
+// DisplayName is the human-facing Carbon persona label.
+const DisplayName = "Carbon"
+
 // Description is the one-line summary shown in delegation catalogs and greetings.
 const Description = "Investigates, implements, tests, reviews, and verifies software-engineering work end to end."
 
