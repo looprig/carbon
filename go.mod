@@ -9,21 +9,21 @@ tool (
 )
 
 require (
-	github.com/looprig/acp v0.2.1
-	github.com/looprig/classifiers v0.1.3
+	github.com/looprig/acp v0.2.2
+	github.com/looprig/classifiers v0.1.4
 	github.com/looprig/core v0.5.1
 	github.com/looprig/credentials v0.1.0
-	github.com/looprig/foreignloops v0.2.2
+	github.com/looprig/foreignloops v0.2.3
 	github.com/looprig/fsstore v0.3.2
-	github.com/looprig/harness v0.24.0
-	github.com/looprig/inference v0.9.1
+	github.com/looprig/harness v0.24.2
+	github.com/looprig/inference v0.9.2
 	github.com/looprig/llm v0.13.2
-	github.com/looprig/mcp v0.6.1
-	github.com/looprig/sandbox v0.8.0
+	github.com/looprig/mcp v0.6.2
+	github.com/looprig/sandbox v0.8.1
 	github.com/looprig/secrets v0.1.0
 	github.com/looprig/storage v0.3.1
-	github.com/looprig/tools v0.9.1
-	github.com/looprig/tui v0.15.0
+	github.com/looprig/tools v0.9.2
+	github.com/looprig/tui v0.15.1
 	golang.org/x/sys v0.47.0
 )
 

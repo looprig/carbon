@@ -1,0 +1,39 @@
+# Binaries
+/bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Go build artifacts
+*.test
+*.out
+
+# Environment & secrets
+.env
+.env.*
+*.pem
+*.key
+
+# Editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Git worktrees
+.worktrees/
+
+# Claude Code project settings
+.claude/
+
+# Migration review provenance (Codex review outputs) — keep locally, don't commit
+/scripts/migration/codex_review_*
+
+# Vendored dependency tree — committed in full and built offline (-mod=vendor).
+# The global ignores above (*.pem, *.key, .env.*, *.test, *.out, ...) otherwise
+# silently drop vendored files (e.g. go-tdx-guest's embedded trusted_root.pem),
+# yielding a tree that fails `go build`/`go test` from a clean checkout. This
+# negation must stay LAST so it re-includes everything under vendor/.
+!/vendor/**

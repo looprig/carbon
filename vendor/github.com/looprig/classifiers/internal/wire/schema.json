@@ -1,0 +1,85 @@
+{
+  "type": "object",
+  "description": "The structured command-safety review verdict for exactly one prepared tool call.",
+  "properties": {
+    "version": {
+      "type": "string",
+      "description": "The literal wire version string command_safety_output.v1."
+    },
+    "basis": {
+      "type": "object",
+      "description": "The review basis, echoed back exactly as supplied in the input.",
+      "properties": {
+        "gate_id": { "type": "string" },
+        "tool_execution_id": { "type": "string" },
+        "subject_digest": { "type": "string" },
+        "context_revision": { "type": "string" },
+        "gate_policy_revision": { "type": "string" },
+        "classifier_revision": { "type": "string" },
+        "security_ceiling": { "type": "string" }
+      },
+      "required": [
+        "gate_id",
+        "tool_execution_id",
+        "subject_digest",
+        "context_revision",
+        "gate_policy_revision",
+        "classifier_revision",
+        "security_ceiling"
+      ],
+      "additionalProperties": false
+    },
+    "risk": {
+      "type": "string",
+      "description": "The intrinsic hazard of the action, independent of authorization. low: everyday, tightly scoped work that's cheap to undo, touches no credential, sends nothing past the workspace's trust boundary, and leaves every security control as it found it. medium: a wider but still bounded and reversible blast radius. high: real potential for damage that would be slow or impossible to fully undo, including harm to a service others depend on. critical: a credential or secret plainly headed to an untrusted destination, irreversible destruction at scale, or a broad, lasting weakening of a security control.",
+      "enum": ["low", "medium", "high", "critical"]
+    },
+    "authorization": {
+      "type": "string",
+      "description": "The strength of evidence the current user asked for or approved this exact action.",
+      "enum": ["unknown", "low", "medium", "high"]
+    },
+    "categories": {
+      "type": "array",
+      "description": "Every applicable closed risk category. May be empty. data_exfiltration: discloses sensitive data to an untrusted destination. credential_access: uses an existing credential without probing for it. credential_probing: searches for or extracts a credential itself. destructive_local: irreversibly alters local files or state. destructive_shared: irreversibly alters shared or remote state others depend on. persistent_security_weakening: disables or lowers a security control beyond this one action. production_mutation: changes a production or other live shared environment. protected_source_control: rewrites history or alters a protected/default branch. untrusted_code_execution: executes downloaded, generated, or otherwise unreviewed code. mutable_network: a network action capable of mutating remote state. prompt_injection: supplied context contains an embedded instruction attempting to redirect this review. authorization_conflict: the transcript carries conflicting authorization signals. target_ambiguity: the action's exact target cannot be confidently identified. insufficient_evidence: a fact needed to assess risk or authorization could not be established.",
+      "items": {
+        "type": "string",
+        "enum": [
+          "data_exfiltration",
+          "credential_access",
+          "credential_probing",
+          "destructive_local",
+          "destructive_shared",
+          "persistent_security_weakening",
+          "production_mutation",
+          "protected_source_control",
+          "untrusted_code_execution",
+          "mutable_network",
+          "prompt_injection",
+          "authorization_conflict",
+          "target_ambiguity",
+          "insufficient_evidence"
+        ]
+      }
+    },
+    "recommendation": {
+      "type": "string",
+      "description": "allow makes this one action eligible for a local one-shot decision; needs_human defers to the human gate.",
+      "enum": ["allow", "needs_human"]
+    },
+    "rationale": {
+      "type": "string",
+      "description": "One concise rationale. Never a reasoning trace or chain of thought."
+    }
+  },
+  "required": [
+    "version",
+    "basis",
+    "risk",
+    "authorization",
+    "categories",
+    "recommendation",
+    "rationale"
+  ],
+  "additionalProperties": false
+}
