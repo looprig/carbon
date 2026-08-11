@@ -121,6 +121,44 @@ func TestCarbonDefinitionRuntimeContextDiscoversCurrentWorkspaceSkills(t *testin
 	}
 }
 
+func TestCarbonDefinitionRuntimeSkillCatalogUsesSessionAccessWorkspace(t *testing.T) {
+	accessRoot := t.TempDir()
+	bindRoot := t.TempDir()
+	cwdRoot := t.TempDir()
+	writeProductionCatalogFixture(t, accessRoot, "access-skill", "Metadata from session access.")
+	writeProductionCatalogFixture(t, bindRoot, "bind-decoy", "Metadata from definition binding.")
+	writeProductionCatalogFixture(t, cwdRoot, "cwd-decoy", "Metadata from process cwd.")
+	t.Chdir(cwdRoot)
+
+	access, cfg := headlessTestAccess(t, Config{}, accessRoot)
+	definition, err := carbonDefinition(&fakeLLM{}, testModel(), cfg, access, nil)
+	if err != nil {
+		t.Fatalf("carbonDefinition() error = %v", err)
+	}
+	bound, err := definition.Bind(context.Background(), sessionScopedBindingsFor(
+		t,
+		mustUUID(t),
+		mustUUID(t),
+		bindRoot,
+		&fakeSessionResourceRegistry{dir: t.TempDir()},
+	))
+	if err != nil {
+		t.Fatalf("definition.Bind() error = %v", err)
+	}
+
+	text := soleText(t, bound.RuntimeContext().Blocks(context.Background()))
+	for _, want := range []string{"<name>access-skill</name>", "<description>Metadata from session access.</description>"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("runtime context missing access-root metadata %q:\n%s", want, text)
+		}
+	}
+	for _, decoy := range []string{"bind-decoy", "Metadata from definition binding.", "cwd-decoy", "Metadata from process cwd."} {
+		if strings.Contains(text, decoy) {
+			t.Errorf("runtime context contains decoy metadata %q:\n%s", decoy, text)
+		}
+	}
+}
+
 func TestRuntimeSkillCatalogForAccessDoesNotFallbackWithoutWorkspace(t *testing.T) {
 	for name, access := range map[string]*sessionAccess{
 		"nil access":      nil,
