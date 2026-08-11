@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"strings"
@@ -134,8 +135,8 @@ func TestDefaultRuntimeContextProviderSkillCatalogBoundsAreAtomic(t *testing.T) 
 	metas := make([]skill.SkillMeta, maxRuntimeSkillEntries+10)
 	for i := range metas {
 		metas[i] = skill.SkillMeta{
-			Name:        fmt.Sprintf("%03d-%s", i, strings.Repeat("n", maxRuntimeSkillNameBytes)),
-			Description: strings.Repeat("é", maxRuntimeSkillDescriptionBytes),
+			Name:        fmt.Sprintf("%03d-&%s", i, strings.Repeat("n", maxRuntimeSkillNameBytes)),
+			Description: strings.Repeat("<&>é", maxRuntimeSkillDescriptionBytes),
 		}
 	}
 	p := &defaultRuntimeContextProvider{
@@ -159,15 +160,31 @@ func TestDefaultRuntimeContextProviderSkillCatalogBoundsAreAtomic(t *testing.T) 
 	if !utf8.ValidString(text) {
 		t.Fatal("bounded catalog output is not valid UTF-8")
 	}
-	firstNameStart := strings.Index(text, "<name>") + len("<name>")
-	firstNameEnd := strings.Index(text[firstNameStart:], "</name>") + firstNameStart
-	if got := len(text[firstNameStart:firstNameEnd]); got != maxRuntimeSkillNameBytes {
-		t.Errorf("rendered name bytes = %d, want %d", got, maxRuntimeSkillNameBytes)
+	sectionStart := strings.Index(text, "<available_skills>")
+	sectionEnd := strings.Index(text, "</available_skills>") + len("</available_skills>")
+	section := text[sectionStart:sectionEnd]
+	if !strings.Contains(section, "&amp;") || !strings.Contains(section, "&lt;") || !strings.Contains(section, "&gt;") {
+		t.Fatalf("bounded catalog lost escaped entities:\n%s", section)
 	}
-	firstDescriptionStart := strings.Index(text, "<description>") + len("<description>")
-	firstDescriptionEnd := strings.Index(text[firstDescriptionStart:], "</description>") + firstDescriptionStart
-	if got := len(text[firstDescriptionStart:firstDescriptionEnd]); got > maxRuntimeSkillDescriptionBytes {
-		t.Errorf("rendered description bytes = %d, want <= %d", got, maxRuntimeSkillDescriptionBytes)
+	var decoded struct {
+		Skills []struct {
+			Name        string `xml:"name"`
+			Description string `xml:"description"`
+		} `xml:"skill"`
+	}
+	if err := xml.Unmarshal([]byte(section), &decoded); err != nil {
+		t.Fatalf("bounded catalog is not complete XML: %v\n%s", err, section)
+	}
+	if len(decoded.Skills) != entries {
+		t.Fatalf("decoded entries = %d, want every one of %d rendered entries", len(decoded.Skills), entries)
+	}
+	for i, entry := range decoded.Skills {
+		if entry.Name == "" || len(entry.Name) > maxRuntimeSkillNameBytes || !utf8.ValidString(entry.Name) {
+			t.Errorf("decoded skill[%d] name = %q (%d bytes), want non-empty valid UTF-8 <= %d bytes", i, entry.Name, len(entry.Name), maxRuntimeSkillNameBytes)
+		}
+		if entry.Description == "" || len(entry.Description) > maxRuntimeSkillDescriptionBytes || !utf8.ValidString(entry.Description) {
+			t.Errorf("decoded skill[%d] description = %q (%d bytes), want non-empty valid UTF-8 <= %d bytes", i, entry.Description, len(entry.Description), maxRuntimeSkillDescriptionBytes)
+		}
 	}
 }
 

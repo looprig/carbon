@@ -32,16 +32,102 @@ const workspaceSkillBody = "WORKSPACE-SKILL-MARKER: project-local checklist"
 // writeWorkspaceSkill writes a valid <root>/.skills/<name>/SKILL.md (frontmatter + body) and
 // returns name.
 func writeWorkspaceSkill(t *testing.T, root, name string) string {
+	return writeWorkspaceSkillWithDescription(t, root, name, "A project-local workspace skill.")
+}
+
+func writeWorkspaceSkillWithDescription(t *testing.T, root, name, description string) string {
 	t.Helper()
 	dir := filepath.Join(root, ".skills", name)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("MkdirAll(%q) error = %v", dir, err)
 	}
-	doc := "---\nname: " + name + "\ndescription: A project-local workspace skill.\n---\n\n# Local\n\n" + workspaceSkillBody + "\n"
+	doc := "---\nname: " + name + "\ndescription: " + description + "\n---\n\n# Local\n\n" + workspaceSkillBody + "\n"
 	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(doc), 0o600); err != nil {
 		t.Fatalf("WriteFile(SKILL.md) error = %v", err)
 	}
 	return name
+}
+
+func TestRuntimeSkillCatalogRefreshesAcrossRestore(t *testing.T) {
+	dataDir, root := t.TempDir(), t.TempDir()
+	t.Chdir(root)
+	const (
+		name           = "restore-catalog"
+		oldDescription = "Metadata before session close."
+		newDescription = "Metadata changed after session close."
+	)
+	writeWorkspaceSkillWithDescription(t, root, name, oldDescription)
+
+	phase := "initial"
+	var initialRuntimeContext, restoredRuntimeContext string
+	client := &managedScript{}
+	client.fn = func(_ context.Context, req inference.Request) ([]content.Chunk, error) {
+		for _, message := range req.Messages {
+			user, ok := message.(*content.UserMessage)
+			if !ok {
+				continue
+			}
+			for _, block := range user.Blocks {
+				text, ok := block.(*content.TextBlock)
+				if ok && strings.HasPrefix(text.Text, "<runtime_context>") {
+					if phase == "restored" {
+						restoredRuntimeContext = text.Text
+					} else {
+						initialRuntimeContext = text.Text
+					}
+				}
+			}
+		}
+		return finalText(phase + " catalog turn"), nil
+	}
+
+	f1, err := NewSessionStoreFactory(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a1, err := f1.openWithClient(context.Background(), client, newModelFactory(), SessionSelector{}, Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sid := a1.SessionID()
+	if got := runManagedTurn(t, a1, "record initial catalog"); got != "initial catalog turn" {
+		t.Fatalf("initial turn = %q", got)
+	}
+	for _, want := range []string{"<name>" + name + "</name>", "<description>" + oldDescription + "</description>"} {
+		if !strings.Contains(initialRuntimeContext, want) {
+			t.Fatalf("initial runtime context missing %q:\n%s", want, initialRuntimeContext)
+		}
+	}
+	if err := a1.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := f1.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	writeWorkspaceSkillWithDescription(t, root, name, newDescription)
+	phase = "restored"
+	f2, err := NewSessionStoreFactory(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = f2.Close() })
+	a2, err := f2.openWithClient(context.Background(), client, newModelFactory(), SessionSelector{Resume: sid}, Config{})
+	if err != nil {
+		t.Fatalf("restore without config-mismatch override: %v", err)
+	}
+	t.Cleanup(func() { _ = a2.Close(context.Background()) })
+	if got := runManagedTurn(t, a2, "observe changed catalog"); got != "restored catalog turn" {
+		t.Fatalf("restored turn = %q", got)
+	}
+	for _, want := range []string{"<name>" + name + "</name>", "<description>" + newDescription + "</description>"} {
+		if !strings.Contains(restoredRuntimeContext, want) {
+			t.Errorf("restored runtime context missing %q:\n%s", want, restoredRuntimeContext)
+		}
+	}
+	if strings.Contains(restoredRuntimeContext, oldDescription) {
+		t.Fatalf("restored runtime context retained stale metadata:\n%s", restoredRuntimeContext)
+	}
 }
 
 func TestRuntimeSkillsWorkspaceLoadGatedEndToEnd(t *testing.T) {
