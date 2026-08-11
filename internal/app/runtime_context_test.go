@@ -236,6 +236,29 @@ func TestDefaultRuntimeContextProviderSkillCatalogIsFreshAndNilSafe(t *testing.T
 	}
 }
 
+func TestDefaultRuntimeContextProviderMissingSkillsDirectoryIsOrdinaryRuntimeContext(t *testing.T) {
+	t.Parallel()
+
+	workspace := t.TempDir() // deliberately has no .skills directory
+	p := &defaultRuntimeContextProvider{
+		clock: fixedClock(time.Date(2026, time.August, 11, 0, 0, 0, 0, time.UTC)),
+		getwd: func() (string, error) { return workspace, nil },
+		run:   gitRunner("", "", fakeGitError{msg: "not a repository"}, nil),
+		catalog: func() []skill.SkillMeta {
+			return skill.DiscoverWorkspaceSkills(workspace)
+		},
+	}
+
+	text := soleText(t, p.Blocks(context.Background()))
+	want := "<runtime_context>\ndate: 2026-08-11\ncwd: " + workspace + "\n</runtime_context>"
+	if text != want {
+		t.Fatalf("Blocks() with missing .skills = %q, want ordinary runtime block %q", text, want)
+	}
+	if strings.Contains(text, "<available_skills>") {
+		t.Fatalf("Blocks() with missing .skills rendered a catalog: %q", text)
+	}
+}
+
 // soleText extracts the single TextBlock the provider must return, failing the
 // test otherwise. It centralizes the "exactly one TextBlock" contract.
 func soleText(t *testing.T, blocks []content.Block) string {
