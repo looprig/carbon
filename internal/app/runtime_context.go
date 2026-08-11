@@ -3,15 +3,19 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/xml"
 	"io"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/looprig/core/content"
 	"github.com/looprig/harness/pkg/loop"
+	"github.com/looprig/tools/skill"
 )
 
 const (
@@ -24,6 +28,14 @@ const (
 	// maxRuntimeStatusFiles caps the per-file lines we enumerate from status
 	// before collapsing to a count, keeping the block compact.
 	maxRuntimeStatusFiles = 20
+	// maxRuntimeSkillEntries caps the number of metadata records rendered even
+	// when an injected catalog returns more than workspace discovery normally can.
+	maxRuntimeSkillEntries = 32
+	// maxRuntimeSkillNameBytes and maxRuntimeSkillDescriptionBytes bound cleaned,
+	// unescaped UTF-8 metadata. Rendering is rune-safe; escaping may expand it,
+	// and the aggregate runtime-context ceiling remains authoritative.
+	maxRuntimeSkillNameBytes        = 128
+	maxRuntimeSkillDescriptionBytes = 512
 	// maxRuntimeContextBytes is the hard ceiling on the rendered block text, a
 	// final guard so the volatile tail can never bloat the context window.
 	maxRuntimeContextBytes = 4 << 10 // 4 KiB
@@ -42,9 +54,10 @@ type runtimeCommandRunner func(ctx context.Context, name string, args ...string)
 // (date/cwd/git) from injected seams. Every field is a seam so tests are
 // deterministic and the impl never touches the real clock, cwd, or git directly.
 type defaultRuntimeContextProvider struct {
-	clock func() time.Time
-	getwd func() (string, error)
-	run   runtimeCommandRunner
+	clock   func() time.Time
+	getwd   func() (string, error)
+	run     runtimeCommandRunner
+	catalog func() []skill.SkillMeta
 }
 
 // NewRuntimeContextProvider returns the default RuntimeContextProvider wired to the
@@ -63,6 +76,8 @@ func NewRuntimeContextProvider() loop.RuntimeContextProvider {
 // contract: the date is always present; cwd and git degrade silently (omitted)
 // when their seam fails — Blocks never returns an error and never panics.
 func (p *defaultRuntimeContextProvider) Blocks(ctx context.Context) []content.Block {
+	const closeTag = "</runtime_context>"
+
 	var b strings.Builder
 	b.WriteString("<runtime_context>\n")
 	b.WriteString("date: ")
@@ -77,16 +92,120 @@ func (p *defaultRuntimeContextProvider) Blocks(ctx context.Context) []content.Bl
 
 	p.writeGit(ctx, &b)
 
-	// Bound the body BEFORE the close tag, reserving room for it, so even a
-	// pathological body yields a well-formed <runtime_context>…</runtime_context>
-	// Phase 2 can still recognize. The per-component caps above make this a
-	// last-resort guard, not the primary bound.
-	const closeTag = "</runtime_context>"
-	body := b.String()
-	if max := maxRuntimeContextBytes - len(closeTag); len(body) > max {
-		body = body[:max]
+	// Bound the pre-catalog body first, on a UTF-8 boundary. Catalog records are
+	// then admitted only as whole escaped entries with room for both close tags.
+	bodyLimit := maxRuntimeContextBytes - len(closeTag)
+	body := truncateUTF8Bytes(b.String(), bodyLimit)
+	b.Reset()
+	b.WriteString(body)
+	p.writeSkillCatalog(&b, bodyLimit)
+
+	return []content.Block{&content.TextBlock{Text: b.String() + closeTag}}
+}
+
+type runtimeSkillMeta struct {
+	name        string
+	description string
+}
+
+func (p *defaultRuntimeContextProvider) writeSkillCatalog(b *strings.Builder, bodyLimit int) {
+	if p.catalog == nil {
+		return
 	}
-	return []content.Block{&content.TextBlock{Text: body + closeTag}}
+
+	raw := p.catalog()
+	if len(raw) == 0 {
+		return
+	}
+	metas := make([]runtimeSkillMeta, 0, len(raw))
+	for _, meta := range raw {
+		name := strings.TrimSpace(normalizeXMLText(meta.Name))
+		description := strings.TrimSpace(normalizeXMLText(meta.Description))
+		if name == "" || description == "" {
+			continue
+		}
+		metas = append(metas, runtimeSkillMeta{name: name, description: description})
+	}
+	if len(metas) == 0 {
+		return
+	}
+	sort.Slice(metas, func(i, j int) bool {
+		if metas[i].name != metas[j].name {
+			return metas[i].name < metas[j].name
+		}
+		return metas[i].description < metas[j].description
+	})
+
+	const sectionOpen = "\n<available_skills>\n"
+	const sectionClose = "</available_skills>\n"
+	remaining := bodyLimit - b.Len()
+	if remaining < len(sectionOpen)+len(sectionClose) {
+		return
+	}
+	var section strings.Builder
+	section.WriteString(sectionOpen)
+	rendered := 0
+	lastName := ""
+	for _, meta := range metas {
+		if meta.name == lastName {
+			continue
+		}
+		lastName = meta.name
+		if rendered == maxRuntimeSkillEntries {
+			break
+		}
+		entry := renderRuntimeSkill(meta)
+		if section.Len()+len(entry)+len(sectionClose) > remaining {
+			continue
+		}
+		section.WriteString(entry)
+		rendered++
+	}
+	if rendered == 0 {
+		return
+	}
+	section.WriteString(sectionClose)
+	b.WriteString(section.String())
+}
+
+func renderRuntimeSkill(meta runtimeSkillMeta) string {
+	name := escapeXMLText(truncateUTF8Bytes(meta.name, maxRuntimeSkillNameBytes))
+	description := escapeXMLText(truncateUTF8Bytes(meta.description, maxRuntimeSkillDescriptionBytes))
+	return "<skill>\n<name>" + name + "</name>\n<description>" + description + "</description>\n</skill>\n"
+}
+
+func normalizeXMLText(s string) string {
+	s = strings.ToValidUTF8(s, "")
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if r == '\t' || r == '\n' || r == '\r' ||
+			r >= 0x20 && r <= 0xD7FF ||
+			r >= 0xE000 && r <= 0xFFFD ||
+			r >= 0x10000 && r <= 0x10FFFF {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+func truncateUTF8Bytes(s string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	if len(s) <= limit {
+		return s
+	}
+	for limit > 0 && !utf8.RuneStart(s[limit]) {
+		limit--
+	}
+	return s[:limit]
+}
+
+func escapeXMLText(s string) string {
+	var b strings.Builder
+	_ = xml.EscapeText(&b, []byte(s))
+	return b.String()
 }
 
 // writeGit appends the git branch + status summary, degrading silently: a failed

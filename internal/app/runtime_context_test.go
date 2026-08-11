@@ -3,12 +3,15 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/looprig/core/content"
 	"github.com/looprig/harness/pkg/loop"
+	"github.com/looprig/tools/skill"
 )
 
 // fakeGitError is a typed error for the runner seam's failure paths in tests.
@@ -40,6 +43,196 @@ func gitRunner(branch, status string, branchErr, statusErr error) runtimeCommand
 		default:
 			return nil, fakeGitError{msg: "unexpected git subcommand"}
 		}
+	}
+}
+
+func TestDefaultRuntimeContextProviderRendersSkillCatalog(t *testing.T) {
+	t.Parallel()
+
+	p := &defaultRuntimeContextProvider{
+		clock: fixedClock(time.Date(2026, time.August, 11, 0, 0, 0, 0, time.UTC)),
+		getwd: func() (string, error) { return "/work/repo", nil },
+		run:   gitRunner("main\n", "", nil, nil),
+		catalog: func() []skill.SkillMeta {
+			return []skill.SkillMeta{
+				{Name: "zeta", Description: "Zeta description."},
+				{Name: "alpha", Description: "Alpha description."},
+			}
+		},
+	}
+
+	text := soleText(t, p.Blocks(context.Background()))
+	want := `<runtime_context>
+date: 2026-08-11
+cwd: /work/repo
+git branch: main
+git status: clean
+
+<available_skills>
+<skill>
+<name>alpha</name>
+<description>Alpha description.</description>
+</skill>
+<skill>
+<name>zeta</name>
+<description>Zeta description.</description>
+</skill>
+</available_skills>
+</runtime_context>`
+	if text != want {
+		t.Fatalf("Blocks() text =\n%s\nwant:\n%s", text, want)
+	}
+	if strings.Contains(text, "representative secret skill body") {
+		t.Fatal("Blocks() leaked a skill body")
+	}
+}
+
+func TestDefaultRuntimeContextProviderSkillCatalogEscapesAndDeduplicates(t *testing.T) {
+	t.Parallel()
+
+	p := &defaultRuntimeContextProvider{
+		clock: fixedClock(time.Date(2026, time.August, 11, 0, 0, 0, 0, time.UTC)),
+		getwd: func() (string, error) { return "", errors.New("no cwd") },
+		run:   gitRunner("", "", fakeGitError{msg: "no git"}, nil),
+		catalog: func() []skill.SkillMeta {
+			return []skill.SkillMeta{
+				{Name: "duplicate", Description: "Zeta winner must lose."},
+				{Name: "escape</name><forged>", Description: "use <care> & caution\x00\x01\xff"},
+				{Name: "duplicate", Description: "Alpha winner."},
+				{Name: "", Description: "missing name"},
+				{Name: "missing-description", Description: ""},
+			}
+		},
+	}
+
+	text := soleText(t, p.Blocks(context.Background()))
+	if got := strings.Count(text, "<name>duplicate</name>"); got != 1 {
+		t.Fatalf("duplicate rendered %d times, want once:\n%s", got, text)
+	}
+	for _, want := range []string{
+		"<description>Alpha winner.</description>",
+		"<name>escape&lt;/name&gt;&lt;forged&gt;</name>",
+		"<description>use &lt;care&gt; &amp; caution</description>",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("catalog missing escaped deterministic content %q:\n%s", want, text)
+		}
+	}
+	for _, absent := range []string{"Zeta winner must lose.", "<forged>", "\x00", "\x01", "\xff", "missing name", "missing-description"} {
+		if strings.Contains(text, absent) {
+			t.Errorf("catalog contains unsafe or invalid content %q:\n%s", absent, text)
+		}
+	}
+	if !utf8.ValidString(text) {
+		t.Fatal("catalog output is not valid UTF-8")
+	}
+}
+
+func TestDefaultRuntimeContextProviderSkillCatalogBoundsAreAtomic(t *testing.T) {
+	t.Parallel()
+
+	metas := make([]skill.SkillMeta, maxRuntimeSkillEntries+10)
+	for i := range metas {
+		metas[i] = skill.SkillMeta{
+			Name:        fmt.Sprintf("%03d-%s", i, strings.Repeat("n", maxRuntimeSkillNameBytes)),
+			Description: strings.Repeat("é", maxRuntimeSkillDescriptionBytes),
+		}
+	}
+	p := &defaultRuntimeContextProvider{
+		clock:   fixedClock(time.Date(2026, time.August, 11, 0, 0, 0, 0, time.UTC)),
+		getwd:   func() (string, error) { return "/work/repo", nil },
+		run:     gitRunner("main\n", "", nil, nil),
+		catalog: func() []skill.SkillMeta { return metas },
+	}
+
+	text := soleText(t, p.Blocks(context.Background()))
+	entries := strings.Count(text, "<skill>")
+	if entries == 0 || entries > maxRuntimeSkillEntries || entries >= len(metas) {
+		t.Fatalf("rendered entries = %d, want 1..%d and fewer than %d", entries, maxRuntimeSkillEntries, len(metas))
+	}
+	if strings.Count(text, "<available_skills>") != 1 || strings.Count(text, "</available_skills>") != 1 {
+		t.Fatalf("catalog section is not whole and singular:\n%s", text)
+	}
+	if len(text) > maxRuntimeContextBytes || !strings.HasSuffix(text, "</available_skills>\n</runtime_context>") {
+		t.Fatalf("bounded output lost a closing tag (len %d):\n%s", len(text), text)
+	}
+	if !utf8.ValidString(text) {
+		t.Fatal("bounded catalog output is not valid UTF-8")
+	}
+	firstNameStart := strings.Index(text, "<name>") + len("<name>")
+	firstNameEnd := strings.Index(text[firstNameStart:], "</name>") + firstNameStart
+	if got := len(text[firstNameStart:firstNameEnd]); got != maxRuntimeSkillNameBytes {
+		t.Errorf("rendered name bytes = %d, want %d", got, maxRuntimeSkillNameBytes)
+	}
+	firstDescriptionStart := strings.Index(text, "<description>") + len("<description>")
+	firstDescriptionEnd := strings.Index(text[firstDescriptionStart:], "</description>") + firstDescriptionStart
+	if got := len(text[firstDescriptionStart:firstDescriptionEnd]); got > maxRuntimeSkillDescriptionBytes {
+		t.Errorf("rendered description bytes = %d, want <= %d", got, maxRuntimeSkillDescriptionBytes)
+	}
+}
+
+func TestDefaultRuntimeContextProviderSkillCatalogCapsEntryCount(t *testing.T) {
+	t.Parallel()
+
+	metas := make([]skill.SkillMeta, maxRuntimeSkillEntries+10)
+	for i := range metas {
+		metas[i] = skill.SkillMeta{Name: fmt.Sprintf("skill-%03d", i), Description: "d"}
+	}
+	p := &defaultRuntimeContextProvider{
+		clock:   fixedClock(time.Date(2026, time.August, 11, 0, 0, 0, 0, time.UTC)),
+		getwd:   func() (string, error) { return "", errors.New("no cwd") },
+		run:     gitRunner("", "", fakeGitError{msg: "no git"}, nil),
+		catalog: func() []skill.SkillMeta { return metas },
+	}
+
+	text := soleText(t, p.Blocks(context.Background()))
+	if got := strings.Count(text, "<skill>"); got != maxRuntimeSkillEntries {
+		t.Fatalf("rendered entries = %d, want explicit cap %d", got, maxRuntimeSkillEntries)
+	}
+}
+
+func TestDefaultRuntimeContextProviderSkillCatalogPreservesUTF8AndClosesRuntimeAtTotalLimit(t *testing.T) {
+	t.Parallel()
+
+	p := &defaultRuntimeContextProvider{
+		clock: fixedClock(time.Date(2026, time.August, 11, 0, 0, 0, 0, time.UTC)),
+		getwd: func() (string, error) { return "", errors.New("no cwd") },
+		run:   gitRunner(strings.Repeat("é", maxRuntimeContextBytes), "", nil, nil),
+		catalog: func() []skill.SkillMeta {
+			return []skill.SkillMeta{{Name: "omitted", Description: "no partial section"}}
+		},
+	}
+
+	text := soleText(t, p.Blocks(context.Background()))
+	if len(text) > maxRuntimeContextBytes || !utf8.ValidString(text) || !strings.HasSuffix(text, "</runtime_context>") {
+		t.Fatalf("total bound produced invalid output: len=%d utf8=%v suffix=%v", len(text), utf8.ValidString(text), strings.HasSuffix(text, "</runtime_context>"))
+	}
+	if strings.Contains(text, "<available_skills>") || strings.Contains(text, "</available_skills>") {
+		t.Fatalf("catalog was partially rendered when it did not fit:\n%s", text)
+	}
+}
+
+func TestDefaultRuntimeContextProviderSkillCatalogIsFreshAndNilSafe(t *testing.T) {
+	t.Parallel()
+
+	base := defaultRuntimeContextProvider{
+		clock: fixedClock(time.Date(2026, time.August, 11, 0, 0, 0, 0, time.UTC)),
+		getwd: func() (string, error) { return "", errors.New("no cwd") },
+		run:   gitRunner("", "", fakeGitError{msg: "no git"}, nil),
+	}
+	if text := soleText(t, base.Blocks(context.Background())); strings.Contains(text, "<available_skills>") {
+		t.Fatalf("nil catalog seam rendered a section:\n%s", text)
+	}
+
+	calls := 0
+	base.catalog = func() []skill.SkillMeta {
+		calls++
+		return []skill.SkillMeta{{Name: fmt.Sprintf("fresh-%d", calls), Description: "current metadata"}}
+	}
+	first := soleText(t, base.Blocks(context.Background()))
+	second := soleText(t, base.Blocks(context.Background()))
+	if calls != 2 || !strings.Contains(first, "fresh-1") || strings.Contains(first, "fresh-2") || !strings.Contains(second, "fresh-2") || strings.Contains(second, "fresh-1") {
+		t.Fatalf("catalog seam was not queried fresh per Blocks call: calls=%d\nfirst=%s\nsecond=%s", calls, first, second)
 	}
 }
 
