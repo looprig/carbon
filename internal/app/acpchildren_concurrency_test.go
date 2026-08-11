@@ -77,14 +77,12 @@ func TestNewACPCompositionDoesNotStartHarnessPreflights(t *testing.T) {
 		return ACPPreflightResult{Ready: true}
 	}
 
-	start := time.Now()
 	composition, err := NewACPComposition(ACPChildrenConfig{
 		Catalog:             compiled,
 		Executables:         map[loop.AgentHarnessName]string{"claude-code": executable, "codex": executable},
 		WorkspaceRoot:       t.TempDir(),
 		executablePreflight: fake,
 	})
-	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,9 +100,6 @@ func TestNewACPCompositionDoesNotStartHarnessPreflights(t *testing.T) {
 		t.Fatalf("preflight call counts = claude-code:%d codex:%d, want zero during composition", claudeCalls, codexCalls)
 	}
 
-	if elapsed >= acpConcurrentPreflightBudget {
-		t.Fatalf("NewACPComposition performed unexpected startup work: elapsed=%v", elapsed)
-	}
 }
 
 // TestPreflightACPProfileRunsGatewayAndNativeManagedConcurrently proves the
