@@ -135,7 +135,7 @@ func carbonDefinition(client inference.Client, model model.Model, cfg Config, ac
 // focused fingerprint and compaction tests without introducing a roster map.
 func carbonDefinitionWithContextPolicy(client inference.Client, model model.Model, cfg Config, contextPolicy conversationContextPolicy, access *sessionAccess, extras []tool.Definition) (loop.Definition, error) {
 	httpCl := newHTTPClient()
-	runtimeCtx := NewRuntimeContextProvider()
+	runtimeCtx := newRuntimeContextProvider(runtimeSkillCatalogForAccess(access))
 
 	loader := skill.NewEmbeddedSkillLoader(nil, nil)
 	definitions := append([]tool.Definition(nil), carbonToolDefinitions(access.set, httpCl, skillDefinitionFor(loader))...)
@@ -163,6 +163,16 @@ func carbonDefinitionWithContextPolicy(client inference.Client, model model.Mode
 		return loop.Definition{}, &LoopDefinitionError{Agent: string(carbon.Name), Cause: err}
 	}
 	return definition, nil
+}
+
+func runtimeSkillCatalogForAccess(access *sessionAccess) func() []skill.SkillMeta {
+	if access == nil || access.workspace == "" {
+		return nil
+	}
+	workspace := access.workspace
+	return func() []skill.SkillMeta {
+		return skill.DiscoverWorkspaceSkills(workspace)
+	}
 }
 
 // New constructs the Carbon headless from one models.json load and returns it

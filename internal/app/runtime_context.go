@@ -65,10 +65,15 @@ type defaultRuntimeContextProvider struct {
 // timeout-guarded git runner. The carbon composition root constructs it so
 // the engine-generic loop package stays free of os/exec.
 func NewRuntimeContextProvider() loop.RuntimeContextProvider {
+	return newRuntimeContextProvider(nil)
+}
+
+func newRuntimeContextProvider(catalog func() []skill.SkillMeta) loop.RuntimeContextProvider {
 	return &defaultRuntimeContextProvider{
-		clock: time.Now,
-		getwd: os.Getwd,
-		run:   runGitCommand,
+		clock:   time.Now,
+		getwd:   os.Getwd,
+		run:     runGitCommand,
+		catalog: catalog,
 	}
 }
 
