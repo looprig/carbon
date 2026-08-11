@@ -90,6 +90,15 @@ func validateSkillName(name string) error {
 // *MalformedSkillError; an absent file → *SkillNotFoundError. A root that cannot
 // be opened is returned wrapped.
 func loadWorkspaceSkill(root, name string) (tool.SkillArtifact, error) {
+	return loadWorkspaceSkillMetadata(root, name, nil)
+}
+
+// loadWorkspaceSkillMetadata is the shared secure workspace read behind body
+// loading and metadata discovery. When metaOut is non-nil, it receives the
+// parsed frontmatter from the same bounded snapshot used to build the artifact.
+// Keeping this seam private prevents callers from obtaining a body through the
+// metadata-only discovery API while avoiding a second parser or filesystem path.
+func loadWorkspaceSkillMetadata(root, name string, metaOut *SkillMeta) (tool.SkillArtifact, error) {
 	if err := validateSkillName(name); err != nil {
 		return tool.SkillArtifact{}, err
 	}
@@ -107,6 +116,13 @@ func loadWorkspaceSkill(root, name string) (tool.SkillArtifact, error) {
 		return tool.SkillArtifact{}, &SkillNotFoundError{Name: name, Err: err}
 	}
 	defer func() { _ = osRoot.Close() }()
+	return loadWorkspaceSkillAtRoot(osRoot, relPath, relPath, name, metaOut)
+}
+
+// loadWorkspaceSkillAtRoot reads one already-validated skill path through an
+// anchored root. artifactPath is the workspace-relative path recorded on the
+// body-loading artifact; openPath is relative to osRoot.
+func loadWorkspaceSkillAtRoot(osRoot *os.Root, openPath, artifactPath, name string, metaOut *SkillMeta) (tool.SkillArtifact, error) {
 
 	// Lstat the final component WITHOUT following it. os.Root follows in-root
 	// symlinks, so a link whose target stays inside the root would otherwise be
@@ -116,7 +132,7 @@ func loadWorkspaceSkill(root, name string) (tool.SkillArtifact, error) {
 	// every non-regular target up front (before the Open below) is also what
 	// prevents a FIFO at the skill path from BLOCKING the Open indefinitely (a
 	// denial-of-service an untrusted workspace could otherwise mount).
-	li, err := osRoot.Lstat(relPath)
+	li, err := osRoot.Lstat(openPath)
 	if err != nil {
 		return tool.SkillArtifact{}, classifyFSError(name, err)
 	}
@@ -139,7 +155,7 @@ func loadWorkspaceSkill(root, name string) (tool.SkillArtifact, error) {
 	// immediately instead of blocking; the descriptor's own Stat below then
 	// re-validates a regular file, so a swapped-in non-regular target is rejected,
 	// not read.
-	f, err := osRoot.OpenFile(relPath, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	f, err := osRoot.OpenFile(openPath, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return tool.SkillArtifact{}, classifyFSError(name, err)
 	}
@@ -173,7 +189,7 @@ func loadWorkspaceSkill(root, name string) (tool.SkillArtifact, error) {
 	// what was approved to what executes — execution reuses Body, never a re-open.
 	sum := sha256.Sum256(raw)
 
-	_, body, err := parseSkill(raw)
+	meta, body, err := parseSkill(raw)
 	if err != nil {
 		// Stamp the now-known name onto the parser's name-less MalformedSkillError.
 		var me *MalformedSkillError
@@ -182,10 +198,13 @@ func loadWorkspaceSkill(root, name string) (tool.SkillArtifact, error) {
 		}
 		return tool.SkillArtifact{}, err
 	}
+	if metaOut != nil {
+		*metaOut = meta
+	}
 
 	return tool.SkillArtifact{
 		Workspace: true,
-		RelPath:   relPath,
+		RelPath:   artifactPath,
 		Size:      int64(len(raw)),
 		SHA256:    hex.EncodeToString(sum[:]),
 		Body:      body,

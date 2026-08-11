@@ -145,8 +145,8 @@ github.com/looprig/secrets v0.1.0 h1:YmDlIGNuP3X1Nihjb4N23NIXKRxQzePjx7SBFDED1ps
 github.com/looprig/secrets v0.1.0/go.mod h1:aENJw340bY5iNwOkanyYkp8i8R/X5DSiL6eKXfrbxKU=
 github.com/looprig/storage v0.3.1 h1:b42G4Yz/+zRgt3f/P3WL3IhyKq9uAHCptLmf2Vy1bz0=
 github.com/looprig/storage v0.3.1/go.mod h1:XFmY3ihCxJIycwLAqn1vMluTAqlbwD3uov2/ocJDyBM=
-github.com/looprig/tools v0.9.2 h1:sMXk5+kN8SZCOnri8RyU8oc5X4IsO4CTnFm2g13gfmA=
-github.com/looprig/tools v0.9.2/go.mod h1:jXkCHRNP+6ErCwTYvjhWE3NzW3Nu5RSocezWCUevDqQ=
+github.com/looprig/tools v0.10.0 h1:TZxMBgQKwtCWEwVrFdECU2Lgi82s/J3jaKw/mf/VAQE=
+github.com/looprig/tools v0.10.0/go.mod h1:jXkCHRNP+6ErCwTYvjhWE3NzW3Nu5RSocezWCUevDqQ=
 github.com/looprig/tui v0.15.1 h1:1R7gF10JKiT3c9n7gi787Q+Ve2mwjtHnNMkXnvUawAs=
 github.com/looprig/tui v0.15.1/go.mod h1:3TLYBEW+o4389XcNCTlAUz0o+OLNwW6rfFTcFxLXjBU=
 github.com/lucasb-eyer/go-colorful v1.4.1 h1:1EO+WB73+EH8EVbzlrG3KLAfEypQWVHIBqlTf+2hNss=

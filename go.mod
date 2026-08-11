@@ -22,7 +22,7 @@ require (
 	github.com/looprig/sandbox v0.8.1
 	github.com/looprig/secrets v0.1.0
 	github.com/looprig/storage v0.3.1
-	github.com/looprig/tools v0.9.2
+	github.com/looprig/tools v0.10.0
 	github.com/looprig/tui v0.15.1
 	golang.org/x/sys v0.47.0
 )

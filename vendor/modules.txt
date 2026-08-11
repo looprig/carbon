@@ -420,7 +420,7 @@ github.com/looprig/secrets/local
 ## explicit; go 1.25.8
 github.com/looprig/storage
 github.com/looprig/storage/memstore
-# github.com/looprig/tools v0.9.2
+# github.com/looprig/tools v0.10.0
 ## explicit; go 1.26.4
 github.com/looprig/tools
 github.com/looprig/tools/askuser
