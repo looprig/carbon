@@ -473,8 +473,8 @@ type foldResult struct {
 	// DerivedPrefix counts the leading messages in Msgs that are a
 	// compaction-generated summary rather than genuine human-authored
 	// conversation. It is 1 immediately after the last CompactionCommitted
-	// in the folded sequence replaces Msgs with its Summary (a
-	// model-generated *content.UserMessage), and 0 if no compaction has ever
+	// in the folded sequence replaces Msgs with [Summary, Retained...] (where
+	// Summary is a model-generated *content.UserMessage), and 0 if no compaction has ever
 	// committed — see loopruntime.RestoredState.DerivedPrefix's doc comment
 	// for why this must be threaded through to a restored loop.
 	DerivedPrefix int
@@ -859,11 +859,14 @@ func foldLoop(events []event.Event) foldResult {
 				hasAutomaticBasis = true
 			}
 		case event.CompactionCommitted:
-			msgs = content.AgenticMessages{e.Summary}
+			replacement := make(content.AgenticMessages, 0, 1+len(e.Retained))
+			replacement = append(replacement, e.Summary)
+			replacement = append(replacement, e.Retained...)
+			msgs = cloneCompactionMessages(replacement)
 			// e.Summary is the compaction Hustle's model-generated summary
-			// (wrapped as a *content.UserMessage), not genuine human input,
-			// and it now IS the entirety of msgs — see foldResult.DerivedPrefix's
-			// doc comment.
+			// (wrapped as a *content.UserMessage), not genuine human input. The
+			// retained suffix follows as genuine conversation; see
+			// foldResult.DerivedPrefix's doc comment.
 			derivedPrefix = 1
 			contextMeasurement = e.PostContext
 			hasContext = true

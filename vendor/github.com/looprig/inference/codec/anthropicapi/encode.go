@@ -37,24 +37,37 @@ func buildMessagesRequest(req inference.Request, stream bool) (messagesRequest, 
 
 	system := req.System
 	var messages []anthropicMessage
-	for _, conv := range req.Messages {
+	committedSourceMessages := len(req.Messages) - req.TransientMessages
+	committedEncodedMessages := 0
+	transientSystemMessageNonEmpty := false
+	for index, conv := range req.Messages {
 		switch m := conv.(type) {
 		case *content.SystemMessage:
 			// Anthropic has no in-thread system role: fold system text into the
 			// top-level `system` field, preserving order after Request.System.
-			system = appendSystem(system, textOf(m.Blocks))
+			systemText := textOf(m.Blocks)
+			if index >= committedSourceMessages && systemText != "" {
+				transientSystemMessageNonEmpty = true
+			}
+			system = appendSystem(system, systemText)
 		case *content.UserMessage:
 			blocks, err := encodeBlocks(m.Blocks)
 			if err != nil {
 				return messagesRequest{}, err
 			}
 			messages = append(messages, anthropicMessage{Role: roleUser, Content: blocks})
+			if index < committedSourceMessages {
+				committedEncodedMessages++
+			}
 		case *content.AIMessage:
 			blocks, err := encodeBlocks(m.Blocks)
 			if err != nil {
 				return messagesRequest{}, err
 			}
 			messages = append(messages, anthropicMessage{Role: roleAssistant, Content: blocks})
+			if index < committedSourceMessages {
+				committedEncodedMessages++
+			}
 		case *content.ToolResultMessage:
 			block, err := encodeToolResult(m)
 			if err != nil {
@@ -64,6 +77,9 @@ func buildMessagesRequest(req inference.Request, stream bool) (messagesRequest, 
 			// block is a tool_result. IsError is a first-class field here (unlike
 			// the OpenAI dialect), so ToolResultMessage.IsError passes through.
 			messages = append(messages, anthropicMessage{Role: roleUser, Content: []anthropicBlock{block}})
+			if index < committedSourceMessages {
+				committedEncodedMessages++
+			}
 		default:
 			return messagesRequest{}, &UnsupportedConversationError{Conversation: fmt.Sprintf("%T", conv)}
 		}
@@ -125,8 +141,10 @@ func buildMessagesRequest(req inference.Request, stream bool) (messagesRequest, 
 		r.TopP = sampling.TopP
 	}
 
-	if req.Model.Caps.PromptCaching {
-		applyCacheBreakpoints(&r)
+	// A non-empty transient SystemMessage folds into the top-level system
+	// prefix, so caching either breakpoint would include transient context.
+	if req.Model.Caps.PromptCaching && !transientSystemMessageNonEmpty {
+		applyCacheBreakpoints(&r, committedEncodedMessages)
 	}
 
 	return r, nil
@@ -135,16 +153,18 @@ func buildMessagesRequest(req inference.Request, stream bool) (messagesRequest, 
 // applyCacheBreakpoints marks the codec's two ephemeral cache_control
 // breakpoints: one on the system prompt (which caches tools + system, since
 // tools render before system in Anthropic's prefix order) and one on the last
-// cacheable block of the last message, so multi-turn requests accrue
-// incremental cache hits. A thinking block cannot carry cache_control, so the
-// message breakpoint walks back to the nearest non-thinking block. At most two
-// breakpoints are emitted, well under the wire limit of four.
-func applyCacheBreakpoints(r *messagesRequest) {
+// cacheable block of the committed message history, so multi-turn requests
+// accrue incremental cache hits without marking transient runtime messages.
+// A thinking block cannot carry cache_control, so the message breakpoint walks
+// back to the nearest non-thinking block. At most two breakpoints are emitted,
+// well under the wire limit of four.
+func applyCacheBreakpoints(r *messagesRequest, committedMessages int) {
 	if r.System != nil {
 		r.System.Cache = true
 	}
-	for i := len(r.Messages) - 1; i >= 0; i-- {
-		blocks := r.Messages[i].Content
+	committed := r.Messages[:committedMessages]
+	for i := len(committed) - 1; i >= 0; i-- {
+		blocks := committed[i].Content
 		for j := len(blocks) - 1; j >= 0; j-- {
 			if blocks[j].Type == blockTypeThinking {
 				continue

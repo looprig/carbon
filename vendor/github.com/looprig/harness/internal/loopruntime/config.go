@@ -57,7 +57,7 @@ func resolveMode(bound loop.BoundDefinition, modeName loop.ModeName) (runtimeCon
 	resolved := runtimeConfig{
 		Client: bound.Client(), Model: model, System: loop.EffectiveSystem(bound.System(), mode.Instructions), DrainTimeout: bound.DrainTimeout(),
 		AgentName: bound.Name(), Engine: bound.Engine(), RuntimeContext: bound.RuntimeContext(),
-		Tools: ToolSet{Access: bound.Access(), Registry: mode.Tools, Middlewares: bound.Middlewares(), MaxToolIterations: limits.Iterations, MaxToolCallsPerTurn: limits.Calls, MaxParallelToolCalls: limits.Parallel},
+		Tools: ToolSet{Access: bound.Access(), Registry: mode.Tools, Middlewares: bound.Middlewares(), MaxToolIterations: limits.Iterations, MaxToolCallsPerTurn: limits.Calls, MaxParallelToolCalls: limits.Parallel, MaxToolResultBytes: limits.ResultBytes},
 	}
 	if output, configured := bound.OutputSchema(); configured {
 		resolved.Output = cloneOutputSchema(output)

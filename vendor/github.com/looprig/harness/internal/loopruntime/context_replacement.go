@@ -68,18 +68,14 @@ func prepareActorContextReplacement(
 // state.msgsDerivedPrefix is set to 1 here: committed.Summary is a
 // model-generated compaction summary (the compaction Hustle's LLM call
 // output, wrapped as a *content.UserMessage — never something a human
-// typed), and it becomes the ENTIRE new state.msgs. Without this, the next
-// turn's installActiveTurn would clone it into cfg.base with no marker at
-// all, and capturePermissionReviewContext (review_context.go) would credit
-// it with gate.ReviewContextOriginUser — genuine human authorization — for
-// every LATER turn, or after a restore whose folded history begins with
-// this exact summary (see loopState.msgsDerivedPrefix's own doc comment).
+// typed). Retained messages follow it as genuine conversation, so only the
+// summary is excluded from user-authority provenance on later turns/restores.
 func (p actorContextReplacement) apply(state *loopState, committed event.CompactionCommitted) {
 	tracker := p.tracker
 	tracker.basis = committed.PostContext.Basis
 	tracker.measurement = committed.PostContext
 	tracker.hasMeasurement = true
-	state.msgs = content.AgenticMessages{cloneUserMessage(committed.Summary)}
+	state.msgs = append(content.AgenticMessages{cloneUserMessage(committed.Summary)}, cloneRetainedMessages(committed.Retained)...)
 	state.msgsDerivedPrefix = 1
 	state.context = committed.PostContext
 	state.hasContext = true
@@ -88,6 +84,9 @@ func (p actorContextReplacement) apply(state *loopState, committed event.Compact
 
 type turnContextReplacement struct {
 	Summary *content.UserMessage
+	// Retained is private actor-owned replacement material carried across the turn
+	// handoff; the canonical compaction event also persists its own deep clone.
+	Retained content.AgenticMessages
 }
 
 // applyTurnContextReplacement is the private turn-goroutine half of the actor
@@ -103,6 +102,6 @@ type turnContextReplacement struct {
 func applyTurnContextReplacement(config *turnConfig, state *turnState, replacement turnContextReplacement) {
 	config.base = content.AgenticMessages{}
 	config.baseDerivedPrefix = 0
-	state.msgs = content.AgenticMessages{cloneUserMessage(replacement.Summary)}
+	state.msgs = append(content.AgenticMessages{cloneUserMessage(replacement.Summary)}, cloneRetainedMessages(replacement.Retained)...)
 	state.derivedUserPrefix = 1
 }

@@ -156,4 +156,11 @@ A few event groups carry extra structure worth knowing about:
   (`Starting`/`Ready`/`Degraded`/`Failed`/`Closed`).
 - **`CompactionStarted` / `CompactionCommitted` / `CompactionRejected`**
   — per-loop context compaction lifecycle, with the context basis
-  (revision, through-event-id) the compactor ran against.
+  (revision, through-event-id) the compactor ran against. `CompactionCommitted`
+  may carry the additive, backward-compatible `Retained` field: the exact
+  user-anchored suffix protected by selection, including structurally complete
+  tool-use/result pairs. On restore, the conversation becomes
+  `[Summary, Retained...]`; the summary is the one derived message
+  (`DerivedPrefix == 1`), while human-authored retained content keeps its
+  provenance. Older events omit `Retained` and therefore restore as
+  summary-only.

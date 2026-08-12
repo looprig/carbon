@@ -11,6 +11,7 @@ const (
 	defaultMaxToolIterations    = 25
 	defaultMaxToolCallsPerTurn  = 100
 	defaultMaxParallelToolCalls = 8
+	minToolResultBytes          = 256
 )
 
 // ModeName identifies a predeclared loop mode. The empty name identifies the base mode.
@@ -18,9 +19,10 @@ type ModeName string
 
 // ToolLimits bounds tool activity during one turn.
 type ToolLimits struct {
-	Iterations int
-	Calls      int
-	Parallel   int
+	Iterations  int
+	Calls       int
+	Parallel    int
+	ResultBytes int
 }
 
 // Mode declares a validated alternative to a definition's base inference settings.
@@ -77,6 +79,9 @@ func resolveLimits(base, override ToolLimits) ToolLimits {
 	if override.Parallel > 0 {
 		result.Parallel = override.Parallel
 	}
+	if override.ResultBytes > 0 {
+		result.ResultBytes = override.ResultBytes
+	}
 	return result
 }
 
@@ -94,5 +99,6 @@ func defaultLimits(limits ToolLimits) ToolLimits {
 }
 
 func invalidLimits(limits ToolLimits) bool {
-	return limits.Iterations < 0 || limits.Calls < 0 || limits.Parallel < 0
+	return limits.Iterations < 0 || limits.Calls < 0 || limits.Parallel < 0 ||
+		limits.ResultBytes < 0 || (limits.ResultBytes > 0 && limits.ResultBytes < minToolResultBytes)
 }

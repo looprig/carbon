@@ -24,29 +24,33 @@ const (
 // CompactionPolicy is the complete explicit policy installed by WithCompaction.
 // Harness supplies no timeout or threshold defaults.
 type CompactionPolicy struct {
-	Automatic        bool
-	CounterPolicy    CounterPolicy
-	CompactAt        event.BasisPoints
-	RearmBelow       event.BasisPoints
-	ReservedOutput   content.TokenCount
-	SafetyMargin     content.TokenCount
-	MaxSummaryTokens content.TokenCount
-	CountTimeout     time.Duration
-	Hustle           hustle.Name
+	Automatic          bool
+	CounterPolicy      CounterPolicy
+	CompactAt          event.BasisPoints
+	RearmBelow         event.BasisPoints
+	KeepRecentSegments int
+	KeepRecentTokens   content.TokenCount
+	ReservedOutput     content.TokenCount
+	SafetyMargin       content.TokenCount
+	MaxSummaryTokens   content.TokenCount
+	CountTimeout       time.Duration
+	Hustle             hustle.Name
 }
 
 // CompactionPolicyField identifies one rejected policy dimension.
 type CompactionPolicyField string
 
 const (
-	CompactionFieldCounterPolicy    CompactionPolicyField = "CounterPolicy"
-	CompactionFieldCompactAt        CompactionPolicyField = "CompactAt"
-	CompactionFieldRearmBelow       CompactionPolicyField = "RearmBelow"
-	CompactionFieldReservedOutput   CompactionPolicyField = "ReservedOutput"
-	CompactionFieldSafetyMargin     CompactionPolicyField = "SafetyMargin"
-	CompactionFieldMaxSummaryTokens CompactionPolicyField = "MaxSummaryTokens"
-	CompactionFieldCountTimeout     CompactionPolicyField = "CountTimeout"
-	CompactionFieldHustle           CompactionPolicyField = "Hustle"
+	CompactionFieldCounterPolicy      CompactionPolicyField = "CounterPolicy"
+	CompactionFieldCompactAt          CompactionPolicyField = "CompactAt"
+	CompactionFieldRearmBelow         CompactionPolicyField = "RearmBelow"
+	CompactionFieldKeepRecentSegments CompactionPolicyField = "KeepRecentSegments"
+	CompactionFieldKeepRecentTokens   CompactionPolicyField = "KeepRecentTokens"
+	CompactionFieldReservedOutput     CompactionPolicyField = "ReservedOutput"
+	CompactionFieldSafetyMargin       CompactionPolicyField = "SafetyMargin"
+	CompactionFieldMaxSummaryTokens   CompactionPolicyField = "MaxSummaryTokens"
+	CompactionFieldCountTimeout       CompactionPolicyField = "CountTimeout"
+	CompactionFieldHustle             CompactionPolicyField = "Hustle"
 )
 
 // CompactionPolicyError reports invalid explicit compaction configuration.
@@ -68,6 +72,12 @@ func (e *CompactionPolicyError) Unwrap() error { return e.Cause }
 // Validate checks the policy against already-validated, I/O-free counter
 // metadata. It never calls CountContext.
 func (p CompactionPolicy) Validate(capability contextcount.CounterCapability) error {
+	if p.KeepRecentSegments <= 0 {
+		return &CompactionPolicyError{Field: CompactionFieldKeepRecentSegments}
+	}
+	if p.KeepRecentTokens <= 0 {
+		return &CompactionPolicyError{Field: CompactionFieldKeepRecentTokens}
+	}
 	if p.ReservedOutput == 0 {
 		return &CompactionPolicyError{Field: CompactionFieldReservedOutput}
 	}

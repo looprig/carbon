@@ -73,6 +73,7 @@ const (
 	FieldRejectReason       FieldName = "RejectReason"
 	FieldWaiterCommandIDs   FieldName = "WaiterCommandIDs"
 	FieldSummary            FieldName = "Summary"
+	FieldRetained           FieldName = "Retained"
 	FieldPostContext        FieldName = "PostContext"
 	FieldCommittedEventID   FieldName = "CommittedEventID"
 	FieldSource             FieldName = "Source"

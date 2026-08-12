@@ -539,7 +539,7 @@ func runTurn(ctx context.Context, cfg turnConfig, ts turnState) event.Event {
 			return event.TurnFailed{TurnIndex: ts.index, Err: reviewErr}
 		}
 		for _, r := range results {
-			trm := toolResultMessage(r)
+			trm := toolResultMessage(r, cfg.tools.MaxToolResultBytes)
 			st.msgs = append(st.msgs, trm)
 		}
 		// The step is now COMPLETE (AIMessage finalized AND its tool results appended).
@@ -589,9 +589,16 @@ func runTurn(ctx context.Context, cfg turnConfig, ts turnState) event.Event {
 }
 
 func turnInferenceRequest(cfg turnConfig, state turnState, runtimeTail *content.UserMessage, output turnOutputPlan) inference.Request {
+	messages := requestMessages(cfg.base, state.msgs, runtimeTail)
+	transientMessages := 0
+	if runtimeTail != nil {
+		transientMessages = 1
+	}
 	return output.apply(inference.Request{
-		Model: cfg.model.Clone(), System: cfg.system,
-		Messages: requestMessages(cfg.base, state.msgs, runtimeTail),
+		Model:             cfg.model.Clone(),
+		System:            cfg.system,
+		Messages:          messages,
+		TransientMessages: transientMessages,
 	})
 }
 
@@ -834,13 +841,13 @@ func validToolCall(b content.ToolUseBlock) bool {
 }
 
 // toolResultMessage wraps one tool result into a ToolResultMessage carrying the
-// flattened result text (flattenToText is REUSED from runner.go: TextBlocks pass
-// through; non-text → "[unsupported …]" placeholder; empty → "error: empty
-// result"), the originating tool_use id (so the model pairs result↔call), and the
-// result's error flag (so the message-level IsError survives into committed history
-// instead of being dropped).
-func toolResultMessage(r result) *content.ToolResultMessage {
-	text := flattenToText(r.Content)
+// bounded flattened result text (flattenToText is REUSED from runner.go: TextBlocks
+// pass through; non-text → "[unsupported …]" placeholder; empty → "error: empty
+// result"; shaping happens only after flattening), the originating tool_use id (so
+// the model pairs result↔call), and the result's error flag (so the message-level
+// IsError survives into committed history instead of being dropped).
+func toolResultMessage(r result, maxBytes int) *content.ToolResultMessage {
+	text := shapeToolResultText(flattenToText(r.Content), maxBytes)
 	return &content.ToolResultMessage{
 		Message:   content.Message{Role: content.RoleTool, Blocks: []content.Block{&content.TextBlock{Text: text}}},
 		ToolUseID: r.ToolUseID,

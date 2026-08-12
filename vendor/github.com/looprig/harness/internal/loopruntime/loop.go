@@ -1047,8 +1047,18 @@ func runLoop(cfg loopConfig, state loopState) {
 			return false
 		}
 		disposition.Attempt = attempt
+		var selectedCandidate compactionExecutionCandidate
+		preRejectReason := event.CompactRejectUnspecified
+		if candidate != nil {
+			selectedCandidate, preRejectReason = selectCompactionExecutionCandidate(*candidate, config.Compaction)
+			candidate = &selectedCandidate
+			if preRejectReason != event.CompactRejectUnspecified {
+				rejected := rejectedCompactionResult(preRejectReason)
+				disposition.preRejected = &rejected
+			}
+		}
 		hookCtx := operationCtx
-		if candidate != nil && config.Hooks.Handles(hook.OperationCompaction) {
+		if preRejectReason == event.CompactRejectUnspecified && candidate != nil && config.Hooks.Handles(hook.OperationCompaction) {
 			maxSummaryTokens := content.TokenCount(0)
 			if config.Compaction != nil {
 				maxSummaryTokens = config.Compaction.MaxSummaryTokens
@@ -1164,7 +1174,7 @@ func runLoop(cfg loopConfig, state loopState) {
 		preparationCtx, cancelPreparation := context.WithCancel(ctx)
 		preparation := idleCompactionPreparation{
 			attemptID: attemptID, basis: basis, generation: state.contextGeneration,
-			cancel: cancelPreparation,
+			derivedPrefix: state.msgsDerivedPrefix, cancel: cancelPreparation,
 			request: inference.Request{
 				Model: state.effective.model.Clone(), System: state.effective.system,
 				Messages: cloneMessages(transcript),
@@ -1185,7 +1195,8 @@ func runLoop(cfg loopConfig, state loopState) {
 				preparation: prepared,
 				candidate: compactionExecutionCandidate{
 					Measurement: measurement, Request: request, RuntimeRevision: runtimeRevision,
-					Transcript: cloneMessages(prepared.transcript), InferenceCapability: prepared.inferenceCapability,
+					Transcript: cloneMessages(prepared.transcript), derivedPrefix: prepared.derivedPrefix,
+					InferenceCapability: prepared.inferenceCapability,
 				},
 				err: err,
 			}
@@ -1483,8 +1494,11 @@ func runLoop(cfg loopConfig, state loopState) {
 							return &contextCompactionOutcomeError{AttemptID: measured.attemptID}
 						}
 						return &contextReplacementDirective{
-							AttemptID:   measured.attemptID,
-							Replacement: turnContextReplacement{Summary: cloneUserMessage(disposition.replacement.Summary)},
+							AttemptID: measured.attemptID,
+							Replacement: turnContextReplacement{
+								Summary:  cloneUserMessage(disposition.replacement.Summary),
+								Retained: cloneRetainedMessages(disposition.replacement.Retained),
+							},
 						}
 					default:
 						return &contextCompactionAwaitError{AttemptID: measured.attemptID}
@@ -2828,7 +2842,8 @@ func runLoop(cfg loopConfig, state loopState) {
 			executionCandidate := compactionExecutionCandidate{
 				Measurement: result.measurement, Request: result.request.request,
 				RuntimeTail: result.request.runtimeTail, RuntimeRevision: result.request.runtimeContextRevision,
-				Transcript: cloneMessages(state.msgs), InferenceCapability: state.effective.inferenceCapability,
+				Transcript: cloneMessages(state.msgs), derivedPrefix: state.msgsDerivedPrefix,
+				InferenceCapability: state.effective.inferenceCapability,
 			}
 			if compactions.pendingAtBoundary() {
 				pending := compactions.pendingAttempt()
@@ -3008,7 +3023,10 @@ func runLoop(cfg loopConfig, state loopState) {
 					continue
 				}
 				replacementPlan.apply(&state, committed)
-				turnReplacement = &turnContextReplacement{Summary: cloneUserMessage(committed.Summary)}
+				turnReplacement = &turnContextReplacement{
+					Summary:  cloneUserMessage(committed.Summary),
+					Retained: cloneRetainedMessages(committed.Retained),
+				}
 			}
 			compactions.complete(outcome.attemptID)
 			rejection, rejected := terminal.(event.CompactionRejected)

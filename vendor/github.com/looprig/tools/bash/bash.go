@@ -8,13 +8,13 @@
 package bash
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/looprig/harness/pkg/loop"
@@ -59,8 +59,9 @@ const maxBashTimeout = 120 * time.Second
 const defaultBashTimeout = 30 * time.Second
 
 // maxBashOutputBytes caps the COMBINED stdout+stderr capture so a chatty command
-// cannot exhaust memory or flood the model context. Output beyond this is dropped
-// and a truncation notice is appended.
+// cannot exhaust memory or flood the model context. The retained data is a fixed
+// head plus rolling tail; omitted bytes are replaced by a marker outside this
+// retained-data ceiling.
 const maxBashOutputBytes = 32 * 1024 // 32 KiB
 
 // bashShell and bashShellFlag are the interpreter and flag for the documented
@@ -438,8 +439,8 @@ func adaptRunnerResult(ctx context.Context, outBytes []byte, exitCode int, err e
 }
 
 // runShellCommand runs `sh -c command` in dir, capturing COMBINED stdout+stderr
-// capped at maxBashOutputBytes (the cappedBuffer drops bytes past the cap and
-// records the overflow). It returns (output, exitCode, timedOut, startErr):
+// capped at maxBashOutputBytes (the cappedBuffer retains the beginning and end
+// around any overflow). It returns (output, exitCode, timedOut, startErr):
 //   - timedOut is true when ctx's deadline fired (the process was killed);
 //   - startErr is non-nil only when sh could not be started (structural);
 //   - a non-zero exit code is returned WITHOUT a startErr (a normal result).
@@ -485,47 +486,110 @@ func formatBashResult(output string, exitCode int) string {
 	return body + "[exit code: " + strconv.Itoa(exitCode) + "]"
 }
 
-// cappedBuffer is an io.Writer that accumulates up to limit bytes and then drops
-// the rest, remembering whether anything was dropped. It is used as BOTH the
-// stdout and stderr sink so the two streams are interleaved into one capped
-// combined buffer (a write past the cap is silently truncated, never panics).
+// cappedBuffer is an io.Writer that retains a fixed head and rolling tail within
+// limit bytes. It is used as BOTH the stdout and stderr sink so the two streams
+// are interleaved into one capped combined buffer. Writes past the cap are
+// silently truncated, never panics, and total records all observed bytes.
 type cappedBuffer struct {
-	buf       bytes.Buffer
-	limit     int
-	truncated bool
+	mu    sync.Mutex
+	head  []byte
+	tail  []byte
+	limit int
+	total int64
 }
 
-// Write appends as many bytes of p as fit under limit, marking truncated if any
-// were dropped. It always reports len(p) written (the producer must not see a
-// short write / error) so the command keeps running to completion.
+// Write retains the first half of the stream and the latest second half. It
+// always reports len(p), nil (the producer must not see a short write/error) so
+// the command keeps running to completion.
 func (c *cappedBuffer) Write(p []byte) (int, error) {
-	remaining := c.limit - c.buf.Len()
-	if remaining <= 0 {
-		if len(p) > 0 {
-			c.truncated = true
+	written := len(p)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.total += int64(len(p))
+	headLimit, tailLimit := cappedBufferHalves(c.limit)
+	if len(c.head) < headLimit {
+		n := headLimit - len(c.head)
+		if n > len(p) {
+			n = len(p)
 		}
-		return len(p), nil
+		if n > 0 {
+			c.head = appendExactCapacity(c.head, p[:n])
+			p = p[n:]
+		}
 	}
-	if len(p) > remaining {
-		c.buf.Write(p[:remaining])
-		c.truncated = true
-		return len(p), nil
-	}
-	c.buf.Write(p)
-	return len(p), nil
+	c.tail = appendRollingTail(c.tail, p, tailLimit)
+	return written, nil
 }
 
 // cappedString returns the captured output, appending a single truncation notice
-// line when bytes were dropped past the cap.
+// line when bytes were dropped past the cap. The notice is outside the retained
+// byte ceiling so callers can distinguish a complete capture from a truncated
+// one without sacrificing either end of the output.
 func (c *cappedBuffer) cappedString() string {
-	s := c.buf.String()
-	if c.truncated {
-		if s != "" && s[len(s)-1] != '\n' {
-			s += "\n"
-		}
-		s += "[output truncated at " + strconv.Itoa(c.limit) + " bytes]"
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	limit := c.limit
+	if limit < 0 {
+		limit = 0
 	}
-	return s
+	if c.total <= int64(limit) {
+		return string(c.head) + string(c.tail)
+	}
+	omitted := c.total - int64(len(c.head)+len(c.tail))
+	marker := "[output truncated: omitted " + strconv.FormatInt(omitted, 10) + " of " + strconv.FormatInt(c.total, 10) + " bytes]"
+	return string(c.head) + "\n" + marker + "\n" + string(c.tail)
+}
+
+// cappedBufferHalves splits the retained-data ceiling between the fixed head
+// and rolling tail. An odd byte goes to the tail so the tail never has less
+// capacity than the head; negative limits behave as zero.
+func cappedBufferHalves(limit int) (head, tail int) {
+	if limit <= 0 {
+		return 0, 0
+	}
+	head = limit / 2
+	return head, limit - head
+}
+
+// appendExactCapacity appends p without allowing its backing array to grow
+// beyond the bytes being retained. This keeps the buffer's memory bounded even
+// when a producer writes many small chunks.
+func appendExactCapacity(dst, p []byte) []byte {
+	if len(p) == 0 {
+		return dst
+	}
+	required := len(dst) + len(p)
+	if cap(dst) < required {
+		next := make([]byte, len(dst), required)
+		copy(next, dst)
+		dst = next
+	}
+	return append(dst, p...)
+}
+
+// appendRollingTail appends p while retaining only the latest limit bytes.
+// Discarding is done in place; no ring-buffer dependency or unbounded append is
+// needed when a single write is larger than the tail.
+func appendRollingTail(tail, p []byte, limit int) []byte {
+	if limit <= 0 || len(p) == 0 {
+		return tail
+	}
+	if len(p) >= limit {
+		if cap(tail) < limit {
+			tail = make([]byte, limit)
+		} else {
+			tail = tail[:limit]
+		}
+		copy(tail, p[len(p)-limit:])
+		return tail
+	}
+	if overflow := len(tail) + len(p) - limit; overflow > 0 {
+		copy(tail, tail[overflow:])
+		tail = tail[:len(tail)-overflow]
+	}
+	return appendExactCapacity(tail, p)
 }
 
 // compile-time assertions: BashTool is an InvokableTool and Auditable. It is

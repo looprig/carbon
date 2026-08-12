@@ -16,6 +16,7 @@ type ToolSet struct {
 	MaxToolIterations    int
 	MaxToolCallsPerTurn  int
 	MaxParallelToolCalls int
+	MaxToolResultBytes   int
 }
 
 const (
@@ -45,9 +46,17 @@ func resolveMaxParallelToolCalls(n int) int {
 	return n
 }
 
+func resolveMaxToolResultBytes(n int) int {
+	if n < 0 {
+		return 0
+	}
+	return n
+}
+
 func resolveToolSetCaps(ts ToolSet) ToolSet {
 	ts.MaxToolIterations = resolveMaxToolIterations(ts.MaxToolIterations)
 	ts.MaxToolCallsPerTurn = resolveMaxToolCallsPerTurn(ts.MaxToolCallsPerTurn)
 	ts.MaxParallelToolCalls = resolveMaxParallelToolCalls(ts.MaxParallelToolCalls)
+	ts.MaxToolResultBytes = resolveMaxToolResultBytes(ts.MaxToolResultBytes)
 	return ts
 }

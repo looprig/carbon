@@ -1,18 +1,20 @@
 package loopruntime
 
 import (
+	"github.com/looprig/core/content"
 	"github.com/looprig/core/uuid"
 	"github.com/looprig/harness/pkg/event"
 )
 
 // cloneCompactionTerminal gives one terminal graph a new owner. It copies the
-// mutable waiter backing array and, for a commit, the complete summary message
-// graph; scalar identity and measurement values copy by value.
+// mutable waiter backing array and, for a commit, the complete summary and
+// retained message graphs; scalar identity and measurement values copy by value.
 func cloneCompactionTerminal(value event.Event, attemptID event.CompactAttemptID) (event.Event, error) {
 	switch terminal := value.(type) {
 	case event.CompactionCommitted:
 		terminal.WaiterCommandIDs = append([]uuid.UUID(nil), terminal.WaiterCommandIDs...)
 		terminal.Summary = cloneUserMessage(terminal.Summary)
+		terminal.Retained = cloneRetainedMessages(terminal.Retained)
 		return terminal, nil
 	case event.CompactionRejected:
 		terminal.WaiterCommandIDs = append([]uuid.UUID(nil), terminal.WaiterCommandIDs...)
@@ -22,4 +24,11 @@ func cloneCompactionTerminal(value event.Event, attemptID event.CompactAttemptID
 			Kind: CompactionFinalizationTerminalClone, AttemptID: attemptID,
 		}
 	}
+}
+
+func cloneRetainedMessages(messages content.AgenticMessages) content.AgenticMessages {
+	if messages == nil {
+		return nil
+	}
+	return cloneMessages(messages)
 }

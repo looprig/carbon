@@ -15,15 +15,15 @@ require (
 	github.com/looprig/credentials v0.1.0
 	github.com/looprig/foreignloops v0.2.3
 	github.com/looprig/fsstore v0.3.2
-	github.com/looprig/harness v0.24.2
-	github.com/looprig/inference v0.9.2
+	github.com/looprig/harness v0.25.0
+	github.com/looprig/inference v0.10.0
 	github.com/looprig/llm v0.13.2
 	github.com/looprig/mcp v0.6.2
 	github.com/looprig/sandbox v0.8.1
 	github.com/looprig/secrets v0.1.0
 	github.com/looprig/storage v0.3.1
-	github.com/looprig/tools v0.10.0
-	github.com/looprig/tui v0.15.1
+	github.com/looprig/tools v0.10.1
+	github.com/looprig/tui v0.15.2
 	golang.org/x/sys v0.47.0
 )
 

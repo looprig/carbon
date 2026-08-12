@@ -28,6 +28,7 @@ type compactionAdapter struct {
 	runner      compactionHustleRunner
 	name        hustle.Name
 	loopID      uuid.UUID
+	inputBytes  int
 	outputBytes int
 }
 
@@ -48,6 +49,18 @@ func (e *compactionAdapterError) Error() string {
 	return "sessionruntime: invalid compaction adapter field " + string(e.Field)
 }
 
+// CompactionInputTooLargeError reports a serialized compaction request that
+// remains over the bound after every old tool-result body has been omitted.
+// User and assistant prose is protected and is never removed to make a fit.
+type CompactionInputTooLargeError struct {
+	Limit int
+	Size  int
+}
+
+func (*CompactionInputTooLargeError) Error() string {
+	return "sessionruntime: compaction input exceeds serialized byte limit"
+}
+
 func newCompactionAdapter(runner compactionHustleRunner, descriptor hustle.DefinitionDescriptor, loopID uuid.UUID) (*compactionAdapter, error) {
 	if nilInterfaceValue(runner) {
 		return nil, &compactionAdapterError{Field: compactionAdapterFieldRunner}
@@ -59,7 +72,8 @@ func newCompactionAdapter(runner compactionHustleRunner, descriptor hustle.Defin
 		return nil, &compactionAdapterError{Field: compactionAdapterFieldLoopID}
 	}
 	return &compactionAdapter{
-		runner: runner, name: descriptor.Name, loopID: loopID, outputBytes: descriptor.Limits.OutputBytes,
+		runner: runner, name: descriptor.Name, loopID: loopID,
+		inputBytes: descriptor.Limits.InputBytes, outputBytes: descriptor.Limits.OutputBytes,
 	}, nil
 }
 
@@ -108,7 +122,7 @@ func (a *compactionAdapter) CompactAndFinalize(ctx context.Context, input loop.C
 	if finalizer == nil {
 		return &compactionAdapterError{Field: compactionAdapterFieldFinalizer}
 	}
-	raw, err := marshalCompactionInput(input)
+	raw, err := marshalCompactionInputWithin(input, a.inputBytes)
 	if err != nil {
 		return err
 	}
@@ -216,6 +230,177 @@ func marshalCompactionInput(input loop.CompactionInput) (json.RawMessage, error)
 		RequestFingerprint: hex.EncodeToString(input.RequestFingerprint[:]), Transcript: transcript,
 		MaxSummaryTokens: input.MaxSummaryTokens,
 	})
+}
+
+const compactionOldToolResultStub = "[old tool result omitted for compaction]"
+
+// marshalCompactionInputWithin fits only the disposable bodies of old tool
+// results. Every candidate is remarshal-tested against the exact serialized
+// byte limit; no estimate or byte budget adjustment is used.
+func marshalCompactionInputWithin(input loop.CompactionInput, inputBytes int) (json.RawMessage, error) {
+	raw, err := marshalCompactionInput(input)
+	if err != nil {
+		return nil, err
+	}
+	if inputBytes > 0 && len(raw) <= inputBytes {
+		return raw, nil
+	}
+	if inputBytes <= 0 {
+		return nil, &CompactionInputTooLargeError{Limit: inputBytes, Size: len(raw)}
+	}
+
+	cloned := cloneCompactionInput(input)
+	for _, message := range cloned.Transcript {
+		toolResult, ok := message.(*content.ToolResultMessage)
+		if !ok || toolResult == nil || len(toolResult.Blocks) == 0 {
+			continue
+		}
+		originalBlocks := toolResult.Blocks
+		toolResult.Blocks = []content.Block{&content.TextBlock{Text: compactionOldToolResultStub}}
+		candidate, marshalErr := marshalCompactionInput(cloned)
+		if marshalErr != nil {
+			return nil, marshalErr
+		}
+		// Compare the complete JSON candidate, not the body strings: escaping,
+		// metadata, and wrapper structure all contribute to the actual limit.
+		// A short result can make the fixed stub larger, so do not commit a
+		// non-shrinking candidate; leave the clone unchanged and try the next
+		// chronological result.
+		if len(candidate) >= len(raw) {
+			toolResult.Blocks = originalBlocks
+			continue
+		}
+		raw = candidate
+		if len(raw) <= inputBytes {
+			return raw, nil
+		}
+	}
+	return nil, &CompactionInputTooLargeError{Limit: inputBytes, Size: len(raw)}
+}
+
+func cloneCompactionInput(input loop.CompactionInput) loop.CompactionInput {
+	cloned := input
+	cloned.Transcript = cloneCompactionMessages(input.Transcript)
+	return cloned
+}
+
+func cloneCompactionMessages(messages content.AgenticMessages) content.AgenticMessages {
+	if messages == nil {
+		return nil
+	}
+	cloned := make(content.AgenticMessages, len(messages))
+	for index, message := range messages {
+		cloned[index] = cloneCompactionMessage(message)
+	}
+	return cloned
+}
+
+func cloneCompactionMessage(message content.Conversation) content.Conversation {
+	switch typed := message.(type) {
+	case *content.UserMessage:
+		if typed == nil {
+			return (*content.UserMessage)(nil)
+		}
+		return &content.UserMessage{Message: cloneCompactionMessageValue(typed.Message)}
+	case *content.AIMessage:
+		if typed == nil {
+			return (*content.AIMessage)(nil)
+		}
+		cloned := &content.AIMessage{Message: cloneCompactionMessageValue(typed.Message)}
+		if typed.Usage != nil {
+			usage := *typed.Usage
+			cloned.Usage = &usage
+		}
+		return cloned
+	case *content.SystemMessage:
+		if typed == nil {
+			return (*content.SystemMessage)(nil)
+		}
+		return &content.SystemMessage{Message: cloneCompactionMessageValue(typed.Message)}
+	case *content.ToolResultMessage:
+		if typed == nil {
+			return (*content.ToolResultMessage)(nil)
+		}
+		return &content.ToolResultMessage{
+			Message: cloneCompactionMessageValue(typed.Message), ToolUseID: typed.ToolUseID, IsError: typed.IsError,
+		}
+	default:
+		return nil
+	}
+}
+
+func cloneCompactionMessageValue(message content.Message) content.Message {
+	return content.Message{Role: message.Role, Blocks: cloneCompactionBlocks(message.Blocks)}
+}
+
+func cloneCompactionBlocks(blocks []content.Block) []content.Block {
+	if blocks == nil {
+		return nil
+	}
+	cloned := make([]content.Block, len(blocks))
+	for index, block := range blocks {
+		cloned[index] = cloneCompactionBlock(block)
+	}
+	return cloned
+}
+
+func cloneCompactionBlock(block content.Block) content.Block {
+	switch typed := block.(type) {
+	case *content.TextBlock:
+		if typed == nil {
+			return (*content.TextBlock)(nil)
+		}
+		return &content.TextBlock{Text: typed.Text}
+	case *content.ImageBlock:
+		if typed == nil {
+			return (*content.ImageBlock)(nil)
+		}
+		return &content.ImageBlock{
+			MediaType: typed.MediaType,
+			Source:    content.ImageSource{URL: typed.Source.URL, Data: cloneCompactionBytes(typed.Source.Data)},
+		}
+	case *content.AudioBlock:
+		if typed == nil {
+			return (*content.AudioBlock)(nil)
+		}
+		return &content.AudioBlock{MediaType: typed.MediaType, Data: cloneCompactionBytes(typed.Data)}
+	case *content.DocumentBlock:
+		if typed == nil {
+			return (*content.DocumentBlock)(nil)
+		}
+		return &content.DocumentBlock{
+			MediaType: typed.MediaType, Name: typed.Name, Data: cloneCompactionBytes(typed.Data), Text: typed.Text,
+		}
+	case *content.ThinkingBlock:
+		if typed == nil {
+			return (*content.ThinkingBlock)(nil)
+		}
+		return &content.ThinkingBlock{
+			Thinking: typed.Thinking, Signature: typed.Signature,
+			ProviderState: cloneCompactionBytes(typed.ProviderState), ProviderStateFormat: typed.ProviderStateFormat,
+		}
+	case *content.ToolUseBlock:
+		if typed == nil {
+			return (*content.ToolUseBlock)(nil)
+		}
+		return &content.ToolUseBlock{ID: typed.ID, Name: typed.Name, Input: cloneCompactionBytes(typed.Input)}
+	case *content.ToolResultBlock:
+		if typed == nil {
+			return (*content.ToolResultBlock)(nil)
+		}
+		return &content.ToolResultBlock{
+			ToolUseID: typed.ToolUseID, Content: cloneCompactionBlocks(typed.Content), IsError: typed.IsError,
+		}
+	default:
+		return nil
+	}
+}
+
+func cloneCompactionBytes(value []byte) []byte {
+	if value == nil {
+		return nil
+	}
+	return append([]byte(nil), value...)
 }
 
 func unmarshalCompactionInput(raw []byte) (loop.CompactionInput, error) {

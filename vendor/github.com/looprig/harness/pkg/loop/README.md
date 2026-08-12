@@ -156,6 +156,21 @@ mutually-exclusive alternative — observe occupancy without compacting.
 Both require a `contextcount.ContextCounter` and a compatible
 `inference.Client`; `Define` validates the binding.
 
+`KeepRecentSegments` and `KeepRecentTokens` bound the suffix protected from
+compaction. Segments are the newest complete user-anchored portions of the
+conversation. `KeepRecentTokens` uses a deterministic estimate (where
+selection needs one: `ceil(JSON bytes / 4)`) over the original, unprojected
+messages; it is best-effort. The newest complete segment is retained even when
+its estimate exceeds the token target, and the cut moves earlier when needed
+to keep a complete tool-use/result pair together. The retained suffix may
+therefore exceed either configured target.
+
+Before invoking the compactor, the runtime counts the actual retained-tail
+context (including a live runtime tail when present) and checks it, the summary
+budget, and the request `InputLimit`. An over-limit retained tail publishes
+`CompactionRejected` with `CompactRejectRetainedTailTooLarge` without invoking
+the compactor LLM.
+
 ### Concurrency contract
 
 The actor's `Commands` channel is **unbuffered** — sends block until the

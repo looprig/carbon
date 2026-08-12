@@ -182,13 +182,14 @@ type contextCountResult struct {
 // idle manual attempt is counted off-actor. Tool definitions are resolved from
 // the frozen registry by the worker because Tool.Info may block.
 type idleCompactionPreparation struct {
-	attemptID  event.CompactAttemptID
-	basis      event.ContextBasis
-	generation uint64
-	cancel     context.CancelFunc
-	request    inference.Request
-	tools      ToolSet
-	transcript content.AgenticMessages
+	attemptID     event.CompactAttemptID
+	basis         event.ContextBasis
+	generation    uint64
+	derivedPrefix int
+	cancel        context.CancelFunc
+	request       inference.Request
+	tools         ToolSet
+	transcript    content.AgenticMessages
 
 	// inferenceCapability is snapshotted from state.effective.inferenceCapability on the
 	// actor goroutine, synchronously, at the same point model/system are captured into

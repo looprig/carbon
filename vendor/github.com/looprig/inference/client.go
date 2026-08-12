@@ -28,21 +28,41 @@ const (
 
 // Request is the provider-neutral inference request. It carries a secret-free
 // Model descriptor for this turn, the per-agent System prompt, the message
-// thread, the exposed tools, an optional structured Output contract, and an
-// optional per-call sampling Override (nil means use Model.Sampling).
+// thread, the count of trailing transient messages, the exposed tools, an
+// optional structured Output contract, and an optional per-call sampling
+// Override (nil means use Model.Sampling).
 type Request struct {
-	Model      model.Model
-	System     string
-	Messages   content.AgenticMessages
-	Tools      []Tool
-	Output     *OutputSchema
-	ToolChoice ToolChoice
-	Override   *model.Sampling
+	Model             model.Model
+	System            string
+	Messages          content.AgenticMessages
+	TransientMessages int
+	Tools             []Tool
+	Output            *OutputSchema
+	ToolChoice        ToolChoice
+	Override          *model.Sampling
+}
+
+// InvalidTransientMessagesError reports a transient-message count that falls
+// outside the request's message slice.
+type InvalidTransientMessagesError struct {
+	Transient int
+	Messages  int
+}
+
+func (e *InvalidTransientMessagesError) Error() string {
+	return "inference: transient message count is outside request messages"
 }
 
 // ValidateRequestFeatures validates provider-neutral request feature
 // combinations before a codec attempts to encode them.
 func ValidateRequestFeatures(req Request) error {
+	if req.TransientMessages < 0 || req.TransientMessages > len(req.Messages) {
+		return &InvalidTransientMessagesError{
+			Transient: req.TransientMessages,
+			Messages:  len(req.Messages),
+		}
+	}
+
 	switch req.ToolChoice {
 	case ToolChoiceAuto:
 	case ToolChoiceRequired:
