@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/looprig/acp/protocol"
+	"github.com/looprig/sandbox"
 )
 
 const (
@@ -49,6 +50,7 @@ var testIsolatedHome string
 // effect of `go test`. See home_test.go's TestLooprigHomeIsolatedFromRealHOME
 // for the isolation proof.
 func TestMain(m *testing.M) {
+	sandbox.Init()
 	switch os.Getenv("PATH") {
 	case task33ACPHelperPath, task33NativeClaudeACPHelperPath, task33NativeCodexACPHelperPath:
 		os.Exit(runTask33ACPHelper())
