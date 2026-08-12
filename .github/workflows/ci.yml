@@ -55,6 +55,14 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
+      - name: enable hosted Linux sandbox capabilities
+        run: |
+          # Ubuntu 24.04 restricts unprivileged user namespaces via AppArmor.
+          # These are the same hosted-runner preparations used by Sandbox CI.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          sudo sysctl -w kernel.unprivileged_userns_clone=1 || true
+          sudo modprobe nf_conntrack || true
+          sudo modprobe nf_tables || true
       - name: go test -race (default suite)
         run: go test -race -count=1 ./...
       - name: go test -tags integration -race (supervised commands end to end)

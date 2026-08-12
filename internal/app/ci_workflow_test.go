@@ -48,6 +48,19 @@ func TestCILintBuildUsesScopedFormatCheck(t *testing.T) {
 		}
 	}
 
+	linux := jobs["test-linux"]
+	capabilityStep := workflowStep(t, linux, "enable hosted Linux sandbox capabilities")
+	for _, command := range []string{
+		"sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true",
+		"sudo sysctl -w kernel.unprivileged_userns_clone=1 || true",
+		"sudo modprobe nf_conntrack || true",
+		"sudo modprobe nf_tables || true",
+	} {
+		if !strings.Contains(capabilityStep, command) {
+			t.Fatalf("test-linux capability step must retain %q; step:\n%s", command, capabilityStep)
+		}
+	}
+
 	assertNoDanglingNeeds(t, jobs)
 }
 
