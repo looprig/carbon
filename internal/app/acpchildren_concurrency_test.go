@@ -11,19 +11,9 @@ import (
 	model "github.com/looprig/inference/model"
 )
 
-// acpPreflightSleep is the deterministic per-call delay used by the fakes
-// below. It is small enough to keep the suite fast but large enough that
-// scheduling jitter cannot plausibly account for the sequential-vs-
-// concurrent gap being measured (a sequential pair takes roughly 2x this,
-// a concurrent pair roughly 1x).
+// acpPreflightSleep is the deterministic per-call delay used by the
+// composition-only fake below.
 const acpPreflightSleep = 50 * time.Millisecond
-
-// acpConcurrentPreflightBudget is the generous upper bound asserted for a
-// truly concurrent pair of acpPreflightSleep-length preflights. It sits well
-// under the ~100ms a sequential pair would take, and well above the ~50ms a
-// concurrent pair actually takes, so ordinary CI scheduling jitter cannot
-// flip the assertion.
-const acpConcurrentPreflightBudget = 90 * time.Millisecond
 
 // testACPMinimalGatewayCatalog compiles a catalog with exactly one
 // gateway-backed model alias shared by both harnesses, so preflighting
@@ -130,11 +120,24 @@ func TestPreflightACPProfileRunsGatewayAndNativeManagedConcurrently(t *testing.T
 
 	var mu sync.Mutex
 	calls := make(map[loop.CredentialMode]int)
-	fake := func(_ context.Context, probe ACPExecutableProbe) ACPPreflightResult {
+	bothStarted := make(chan struct{})
+	var signalBothStarted sync.Once
+	fake := func(ctx context.Context, probe ACPExecutableProbe) ACPPreflightResult {
 		mu.Lock()
 		calls[probe.Credential]++
+		if calls[loop.CredentialGatewayBacked]+calls[loop.CredentialNativeAuth] == 2 {
+			signalBothStarted.Do(func() { close(bothStarted) })
+		}
 		mu.Unlock()
-		time.Sleep(acpPreflightSleep)
+
+		// Neither call may finish until both have started. A sequential
+		// implementation therefore cannot satisfy the barrier and fails via
+		// the bounded context instead of relying on scheduler-sensitive timing.
+		select {
+		case <-bothStarted:
+		case <-ctx.Done():
+			return ACPPreflightResult{}
+		}
 		if probe.Credential == loop.CredentialGatewayBacked {
 			return ACPPreflightResult{Ready: true, AdvertisedModels: []string{"shared-model"}}
 		}
@@ -146,9 +149,9 @@ func TestPreflightACPProfileRunsGatewayAndNativeManagedConcurrently(t *testing.T
 		executablePreflight: fake,
 	}
 
-	start := time.Now()
-	decision := preflightACPProfile(context.Background(), config, "claude-code", fake)
-	elapsed := time.Since(start)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	decision := preflightACPProfile(ctx, config, "claude-code", fake)
 
 	if !decision.gatewayReady || !decision.nativeManagedReady {
 		t.Fatalf("expected both gateway and native-managed preflight to succeed: %#v", decision)
@@ -158,12 +161,5 @@ func TestPreflightACPProfileRunsGatewayAndNativeManagedConcurrently(t *testing.T
 	mu.Unlock()
 	if gatewayCalls != 1 || nativeCalls != 1 {
 		t.Fatalf("preflight call counts = gateway:%d native:%d, want exactly one each", gatewayCalls, nativeCalls)
-	}
-
-	if elapsed >= acpConcurrentPreflightBudget {
-		t.Fatalf(
-			"preflightACPProfile ran the gateway and native-managed preflights sequentially: elapsed=%v, want well under %v (2x%v sequential sum)",
-			elapsed, acpConcurrentPreflightBudget, acpPreflightSleep,
-		)
 	}
 }
