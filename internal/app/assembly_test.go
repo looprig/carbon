@@ -122,6 +122,23 @@ func TestCarbonDefinitionCompactionComposition(t *testing.T) {
 	if !ok || policy != conversationCompactionPolicy() {
 		t.Fatalf("CompactionPolicy() = %+v, configured=%v, want Carbon policy", policy, ok)
 	}
+	bound, err := definition.Bind(context.Background(), sessionScopedBindingsFor(
+		t, uuid.UUID{1}, uuid.UUID{2}, root,
+		&fakeSessionResourceRegistry{dir: t.TempDir()},
+	))
+	if err != nil {
+		t.Fatalf("definition.Bind() error = %v", err)
+	}
+	if got, want := bound.ToolLimits().ResultBytes, 50*1024; got != want {
+		t.Errorf("assembled loop tool result limit = %d, want %d", got, want)
+	}
+	boundCompaction, ok := bound.CompactionPolicy()
+	if !ok {
+		t.Fatal("assembled loop compaction policy not configured")
+	}
+	if boundCompaction.KeepRecentSegments != 2 || boundCompaction.KeepRecentTokens != 8_000 {
+		t.Errorf("assembled loop compaction keep values = segments %d, tokens %d, want 2, 8000", boundCompaction.KeepRecentSegments, boundCompaction.KeepRecentTokens)
+	}
 }
 
 func TestNewSessionHasCarbonAsSoleActivePrimer(t *testing.T) {

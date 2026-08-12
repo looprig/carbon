@@ -115,14 +115,25 @@ func TestCompactionCompositionFingerprintSensitivityAndSecretExclusion(t *testin
 		wantEqual    bool
 	}{
 		{name: "client credential excluded", client: &fakeLLM{credential: "secret-b"}, policy: basePolicy, registration: baseRegistration, wantEqual: true},
+		{name: "tool result limit", client: &fakeLLM{}, policy: func() conversationContextPolicy { value := basePolicy; value.toolLimits.ResultBytes++; return value }(), registration: baseRegistration},
 		{name: "compaction policy", client: &fakeLLM{}, policy: func() conversationContextPolicy { value := basePolicy; value.compaction.CompactAt--; return value }(), registration: baseRegistration},
+		{name: "recent segment keep policy", client: &fakeLLM{}, policy: func() conversationContextPolicy {
+			value := basePolicy
+			value.compaction.KeepRecentSegments++
+			return value
+		}(), registration: baseRegistration},
+		{name: "recent token keep policy", client: &fakeLLM{}, policy: func() conversationContextPolicy {
+			value := basePolicy
+			value.compaction.KeepRecentTokens++
+			return value
+		}(), registration: baseRegistration},
 		{name: "summary revision", client: &fakeLLM{}, policy: func() conversationContextPolicy {
 			value := basePolicy
 			value.summaryRevision = "carbon-summary-consumption-v2"
 			return value
 		}(), registration: baseRegistration},
 		{name: "hustle prompt revision", client: &fakeLLM{}, policy: basePolicy, registration: conversationHustleRegistration{definition: compactionDefinitionForFingerprint(t, "carbon-compaction-prompt-v2", conversationCompactionParserRevision), limits: baseRegistration.limits}},
-		{name: "hustle parser revision", client: &fakeLLM{}, policy: basePolicy, registration: conversationHustleRegistration{definition: compactionDefinitionForFingerprint(t, conversationCompactionPromptRevision, "harness-compaction-parser-v2"), limits: baseRegistration.limits}},
+		{name: "hustle parser revision", client: &fakeLLM{}, policy: basePolicy, registration: conversationHustleRegistration{definition: compactionDefinitionForFingerprint(t, conversationCompactionPromptRevision, "harness-compaction-parser-v3"), limits: baseRegistration.limits}},
 		{name: "hustle lane limits", client: &fakeLLM{}, policy: basePolicy, registration: func() conversationHustleRegistration {
 			value := baseRegistration
 			value.limits.AuditTimeout += time.Second

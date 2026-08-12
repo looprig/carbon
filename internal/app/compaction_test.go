@@ -14,6 +14,7 @@ import (
 	"github.com/looprig/harness/pkg/hustle"
 	"github.com/looprig/harness/pkg/loop"
 	"github.com/looprig/harness/pkg/rig"
+	"github.com/looprig/harness/pkg/tool"
 	"github.com/looprig/inference/contextcount"
 )
 
@@ -58,7 +59,7 @@ func TestConversationCompactionContract(t *testing.T) {
 	}{
 		{name: "literal prompt", got: conversationCompactionPrompt, want: approvedConversationCompactionPrompt},
 		{name: "prompt revision", got: conversationCompactionPromptRevision, want: "carbon-compaction-prompt-v1"},
-		{name: "parser revision", got: conversationCompactionParserRevision, want: "harness-compaction-parser-v1"},
+		{name: "parser revision", got: conversationCompactionParserRevision, want: "harness-compaction-parser-v2"},
 		{name: "summary consumption fragment", got: conversationSummaryConsumptionFragment, want: approvedConversationSummaryFragment},
 		{name: "summary consumption revision", got: conversationSummaryConsumptionRevision, want: "carbon-summary-consumption-v1"},
 		{name: "prompt digest", got: conversationCompactionPromptSHA256, want: "0b0ef4a6ec3b25ce5e62ad6fccf5f4de68878aa3aae0ca0e54c1db4430bc8cc9"},
@@ -159,6 +160,7 @@ func TestConversationCompactionPolicy(t *testing.T) {
 				want := loop.CompactionPolicy{
 					Automatic: true, CounterPolicy: loop.CounterPolicyAllowConservative,
 					CompactAt: 8_000, RearmBelow: 6_000,
+					KeepRecentSegments: 2, KeepRecentTokens: content.TokenCount(8_000),
 					ReservedOutput: content.TokenCount(16_384), SafetyMargin: content.TokenCount(8_192),
 					MaxSummaryTokens: content.TokenCount(4_096), CountTimeout: 2 * time.Second,
 					Hustle: hustle.Name("context.compact"),
@@ -174,6 +176,78 @@ func TestConversationCompactionPolicy(t *testing.T) {
 			}
 			if target.Field != tt.wantField {
 				t.Errorf("Field = %q, want %q", target.Field, tt.wantField)
+			}
+		})
+	}
+}
+
+func TestConversationContextPolicyOptionsInstallDefaults(t *testing.T) {
+	t.Parallel()
+
+	policy, err := newConversationContextPolicy(testModel(), nil, nil)
+	if err != nil {
+		t.Fatalf("newConversationContextPolicy() error = %v", err)
+	}
+	if got, want := policy.toolLimits, (loop.ToolLimits{ResultBytes: 50 * 1024}); got != want {
+		t.Errorf("conversationContextPolicy.toolLimits = %+v, want %+v", got, want)
+	}
+	definition, err := loop.Define(append([]loop.Option{
+		loop.WithName("policy-test"),
+		loop.WithInference(&fakeLLM{}, testModel()),
+	}, policy.options()...)...)
+	if err != nil {
+		t.Fatalf("loop.Define() error = %v", err)
+	}
+	bound, err := definition.Bind(context.Background(), tool.Bindings{
+		SessionID: uuid.UUID{1},
+		LoopID:    uuid.UUID{2},
+	})
+	if err != nil {
+		t.Fatalf("definition.Bind() error = %v", err)
+	}
+	if got, want := bound.ToolLimits(), (loop.ToolLimits{Iterations: 25, Calls: 100, Parallel: 8, ResultBytes: 50 * 1024}); got != want {
+		t.Errorf("bound.ToolLimits() = %+v, want %+v", got, want)
+	}
+	gotCompaction, ok := bound.CompactionPolicy()
+	if !ok {
+		t.Fatal("bound.CompactionPolicy() not configured")
+	}
+	if gotCompaction.KeepRecentSegments != 2 || gotCompaction.KeepRecentTokens != content.TokenCount(8_000) {
+		t.Errorf("bound.CompactionPolicy() keep values = segments %d, tokens %d, want 2, 8000", gotCompaction.KeepRecentSegments, gotCompaction.KeepRecentTokens)
+	}
+}
+
+func TestConversationContextPolicyRejectsInvalidToolLimits(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		limits loop.ToolLimits
+	}{
+		{name: "negative result bytes", limits: loop.ToolLimits{ResultBytes: -1}},
+		{name: "result bytes below minimum", limits: loop.ToolLimits{ResultBytes: 255}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			policy, err := newConversationContextPolicy(testModel(), nil, nil)
+			if err != nil {
+				t.Fatalf("newConversationContextPolicy() error = %v", err)
+			}
+			policy.toolLimits = tt.limits
+			root := t.TempDir()
+			access, cfg := headlessTestAccess(t, Config{}, root)
+			_, err = carbonTestDefinitionWithContextPolicy(&fakeLLM{}, testModel(), cfg, policy, access)
+			if err == nil {
+				t.Fatal("carbonTestDefinitionWithContextPolicy() error = nil, want invalid tool limits")
+			}
+			var definitionErr *loop.DefinitionError
+			if !errors.As(err, &definitionErr) {
+				t.Fatalf("error = %T %v, want *loop.DefinitionError", err, err)
+			}
+			if definitionErr.Kind != loop.DefinitionInvalidToolLimits {
+				t.Fatalf("DefinitionError.Kind = %q, want %q", definitionErr.Kind, loop.DefinitionInvalidToolLimits)
 			}
 		})
 	}

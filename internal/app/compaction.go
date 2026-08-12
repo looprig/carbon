@@ -16,7 +16,7 @@ import (
 const (
 	conversationCompactionName                hustle.Name = "context.compact"
 	conversationCompactionPromptRevision                  = "carbon-compaction-prompt-v1"
-	conversationCompactionParserRevision                  = "harness-compaction-parser-v1"
+	conversationCompactionParserRevision                  = "harness-compaction-parser-v2"
 	conversationSummaryConsumptionRevision                = "carbon-summary-consumption-v1"
 	conversationCompactionPromptSHA256                    = "0b0ef4a6ec3b25ce5e62ad6fccf5f4de68878aa3aae0ca0e54c1db4430bc8cc9"
 	conversationCompactionTimeout                         = 90 * time.Second
@@ -62,6 +62,7 @@ type conversationContextPolicy struct {
 	counter         contextcount.ContextCounter
 	capability      contextcount.InferenceCapability
 	transports      []loop.ContextTransport
+	toolLimits      loop.ToolLimits
 	compaction      loop.CompactionPolicy
 	summaryFragment string
 	summaryRevision string
@@ -99,6 +100,7 @@ func newConversationContextPolicy(model model.Model, primerCandidates []PrimerCa
 		counter:         inferencePolicy.ContextCounter(),
 		capability:      inferencePolicy.InferenceCapability(),
 		transports:      transports,
+		toolLimits:      loop.ToolLimits{ResultBytes: 50 * 1024},
 		compaction:      compaction,
 		summaryFragment: conversationSummaryConsumptionFragment,
 		summaryRevision: conversationSummaryConsumptionRevision,
@@ -112,6 +114,7 @@ func (p conversationContextPolicy) options() []loop.Option {
 		loop.WithContextCounter(p.counter),
 		loop.WithInferenceCapability(p.capability),
 		loop.WithContextTransports(p.transports...),
+		loop.WithToolLimits(p.toolLimits),
 		loop.WithCompaction(p.compaction),
 	}
 }
@@ -145,15 +148,17 @@ func newConversationCompactionDefinition() (hustle.Definition, error) {
 // policy. Harness validates it against each loop's fixed counter capability.
 func conversationCompactionPolicy() loop.CompactionPolicy {
 	return loop.CompactionPolicy{
-		Automatic:        true,
-		CounterPolicy:    loop.CounterPolicyAllowConservative,
-		CompactAt:        event.BasisPoints(8_000),
-		RearmBelow:       event.BasisPoints(6_000),
-		ReservedOutput:   content.TokenCount(16_384),
-		SafetyMargin:     content.TokenCount(8_192),
-		MaxSummaryTokens: content.TokenCount(4_096),
-		CountTimeout:     2 * time.Second,
-		Hustle:           conversationCompactionName,
+		Automatic:          true,
+		CounterPolicy:      loop.CounterPolicyAllowConservative,
+		CompactAt:          event.BasisPoints(8_000),
+		RearmBelow:         event.BasisPoints(6_000),
+		KeepRecentSegments: 2,
+		KeepRecentTokens:   content.TokenCount(8_000),
+		ReservedOutput:     content.TokenCount(16_384),
+		SafetyMargin:       content.TokenCount(8_192),
+		MaxSummaryTokens:   content.TokenCount(4_096),
+		CountTimeout:       2 * time.Second,
+		Hustle:             conversationCompactionName,
 	}
 }
 
