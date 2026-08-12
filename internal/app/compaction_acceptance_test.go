@@ -5,14 +5,17 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/looprig/core/content"
+	"github.com/looprig/core/uuid"
 	"github.com/looprig/harness/pkg/event"
 	"github.com/looprig/harness/pkg/loop"
+	"github.com/looprig/harness/pkg/tool"
 	"github.com/looprig/inference"
 	contextcount "github.com/looprig/inference/contextcount"
 	model "github.com/looprig/inference/model"
@@ -156,6 +159,21 @@ func acceptanceEventsUntil(t *testing.T, stream event.Subscription, stop func(ev
 	}
 }
 
+type acceptanceSubmitter interface {
+	Submit(context.Context, []content.Block) (uuid.UUID, error)
+}
+
+func acceptanceSubmitTurn(t *testing.T, agent acceptanceSubmitter, stream event.Subscription, text string) []event.Event {
+	t.Helper()
+	if _, err := agent.Submit(context.Background(), []content.Block{&content.TextBlock{Text: text}}); err != nil {
+		t.Fatalf("Submit(%q) error = %v", text, err)
+	}
+	return acceptanceEventsUntil(t, stream, func(ev event.Event) bool {
+		_, ok := ev.(event.TurnDone)
+		return ok
+	})
+}
+
 func acceptanceMessageText(t *testing.T, message content.Conversation) string {
 	t.Helper()
 	var blocks []content.Block
@@ -164,8 +182,10 @@ func acceptanceMessageText(t *testing.T, message content.Conversation) string {
 		blocks = typed.Blocks
 	case *content.AIMessage:
 		blocks = typed.Blocks
+	case *content.ToolResultMessage:
+		blocks = typed.Blocks
 	default:
-		t.Fatalf("message = %T, want user or assistant", message)
+		t.Fatalf("message = %T, want user, assistant, or tool result", message)
 	}
 	if len(blocks) != 1 {
 		t.Fatalf("message blocks = %d, want 1", len(blocks))
@@ -175,6 +195,342 @@ func acceptanceMessageText(t *testing.T, message content.Conversation) string {
 		t.Fatalf("message block = %T, want *content.TextBlock", blocks[0])
 	}
 	return text.Text
+}
+
+type acceptanceOversizedTool struct {
+	output string
+}
+
+func (acceptanceOversizedTool) Info(context.Context) (*tool.ToolInfo, error) {
+	return &tool.ToolInfo{
+		Name:   "CompactionFixtureTool",
+		Desc:   "returns a bounded-test fixture payload",
+		Schema: json.RawMessage(`{"type":"object"}`),
+	}, nil
+}
+
+func (acceptanceOversizedTool) PrepareCall(_ context.Context, _ uuid.UUID, _ string) (tool.Request, tool.PreparedArtifact, error) {
+	return tool.Request{ToolName: "CompactionFixtureTool", Summary: "fixture output"}, nil, nil
+}
+
+func (t acceptanceOversizedTool) InvokableRun(context.Context, string) (*tool.ToolResult, error) {
+	return tool.TextResult(t.output), nil
+}
+
+func acceptanceOversizedToolDefinition(output string) tool.Definition {
+	return tool.NewDefinition("CompactionFixtureTool", 0, func(context.Context, tool.Bindings) ([]tool.InvokableTool, error) {
+		return []tool.InvokableTool{acceptanceOversizedTool{output: output}}, nil
+	})
+}
+
+func openAcceptanceAgentWithAdditionalTools(t *testing.T, client inference.Client, extras ...tool.Definition) (*sessionAdapter, *sessionStores) {
+	t.Helper()
+	root := t.TempDir()
+	access, cfg := headlessTestAccess(t, Config{}, root)
+	definition, err := carbonTestDefinitionWithAdditionalTools(client, testModel(), cfg, access, extras)
+	if err != nil {
+		t.Fatalf("carbonTestDefinitionWithAdditionalTools() error = %v", err)
+	}
+	stores := mustHeadlessTestStores(t)
+	assembly, err := buildRig(definition, stores, root, cfg, false)
+	if err != nil {
+		t.Fatalf("buildRig() error = %v", err)
+	}
+	controller, err := assembly.NewSession(context.Background())
+	if err != nil {
+		t.Fatalf("NewSession() error = %v", err)
+	}
+	agent, err := newSessionAdapter(context.Background(), controller, stores.session, false)
+	if err != nil {
+		t.Fatalf("newSessionAdapter() error = %v", err)
+	}
+	t.Cleanup(func() { _ = agent.Close(context.Background()) })
+	return agent, stores
+}
+
+func acceptanceTurnMessages(events []event.Event) content.AgenticMessages {
+	var messages content.AgenticMessages
+	for _, ev := range events {
+		switch typed := ev.(type) {
+		case event.TurnStarted:
+			messages = append(messages, typed.Message)
+		case event.StepDone:
+			messages = append(messages, typed.Messages...)
+		}
+	}
+	return messages
+}
+
+func acceptanceMessagesJSON(t *testing.T, messages content.AgenticMessages) []string {
+	t.Helper()
+	encoded := make([]string, len(messages))
+	for i, message := range messages {
+		raw, err := json.Marshal(message)
+		if err != nil {
+			t.Fatalf("json.Marshal(message[%d]) error = %v", i, err)
+		}
+		encoded[i] = string(raw)
+	}
+	return encoded
+}
+
+func acceptanceFindToolResult(t *testing.T, request inference.Request) string {
+	t.Helper()
+	for _, message := range request.Messages {
+		if typed, ok := message.(*content.ToolResultMessage); ok {
+			return acceptanceMessageText(t, typed)
+		}
+	}
+	t.Fatalf("request has no tool result: %d messages", len(request.Messages))
+	return ""
+}
+
+func acceptanceRuntimeMessageCount(t *testing.T, request inference.Request) int {
+	t.Helper()
+	count := 0
+	for _, message := range request.Messages {
+		if acceptanceMessageContainsRuntimeContext(message) {
+			count++
+		}
+	}
+	return count
+}
+
+func acceptanceRuntimeMessageJSON(t *testing.T, request inference.Request) string {
+	t.Helper()
+	for _, message := range request.Messages {
+		if acceptanceMessageContainsRuntimeContext(message) {
+			raw, err := json.Marshal(message)
+			if err != nil {
+				t.Fatalf("json.Marshal(runtime request message) error = %v", err)
+			}
+			return string(raw)
+		}
+	}
+	t.Fatalf("request has no runtime context message")
+	return ""
+}
+
+func acceptanceMessageContainsRuntimeContext(message content.Conversation) bool {
+	var blocks []content.Block
+	switch typed := message.(type) {
+	case *content.UserMessage:
+		blocks = typed.Blocks
+	case *content.AIMessage:
+		blocks = typed.Blocks
+	case *content.SystemMessage:
+		blocks = typed.Blocks
+	case *content.ToolResultMessage:
+		blocks = typed.Blocks
+	default:
+		return false
+	}
+	for _, block := range blocks {
+		text, ok := block.(*content.TextBlock)
+		if ok && text != nil && strings.Contains(text.Text, "<runtime_context>") {
+			return true
+		}
+	}
+	return false
+}
+
+// TestAcceptanceCompactionProjectsHeadAndRetainsExactTail drives the real
+// Carbon composition through a tool continuation, three completed user
+// segments, and manual compaction. It deliberately compares the journal's
+// unprojected retained suffix with the model-facing projected transcript: the
+// two are different contracts and must stay different.
+func TestAcceptanceCompactionProjectsHeadAndRetainsExactTail(t *testing.T) {
+	t.Parallel()
+	const (
+		summary     = `<conversation_summary><goal>summary-only authority</goal><constraints/><decisions/><state>old head reduced</state><open_items>keep retained users genuine</open_items></conversation_summary>`
+		headMarker  = "OLD-HEAD-PROSE"
+		bodyMarker  = "TOOL-BODY-UNIQUE-MIDDLE"
+		tailMarker  = "TOOL-TAIL-MARKER"
+		rawThinking = "RAW-THINKING-MUST-NOT-REACH-SUMMARY"
+	)
+	toolHead := "TOOL-HEAD-MARKER\n"
+	toolOutput := toolHead + strings.Repeat("body filler ", 7000) + bodyMarker + strings.Repeat(" body filler", 7000) + "\n" + tailMarker
+	if len(toolOutput) <= 50*1024 {
+		t.Fatalf("fixture tool output = %d bytes, want larger than Carbon's 50KiB result limit", len(toolOutput))
+	}
+	client := &fakeLLM{
+		streamSteps: []fakeStreamStep{
+			{chunks: []content.Chunk{
+				&content.ThinkingChunk{Thinking: rawThinking},
+				&content.ToolUseChunk{Index: 0, ID: "compaction-fixture-tool-1", Name: "CompactionFixtureTool", InputJSON: `{}`},
+			}},
+			{chunks: []content.Chunk{&content.TextChunk{Text: headMarker + " final"}}},
+			{chunks: []content.Chunk{&content.TextChunk{Text: "RETAINED-ASSISTANT-ONE"}}},
+			{chunks: []content.Chunk{&content.TextChunk{Text: "RETAINED-ASSISTANT-TWO"}}},
+			{chunks: []content.Chunk{&content.TextChunk{Text: "RETAINED-ASSISTANT-TWO"}}},
+		},
+		invokeSteps: []fakeInvokeStep{{respond: acceptanceCompactionResponse(summary, content.Usage{InputTokens: 17, OutputTokens: 3})}},
+	}
+	agent, _ := openAcceptanceAgentWithAdditionalTools(t, client, acceptanceOversizedToolDefinition(toolOutput))
+	stream, err := agent.Subscribe(event.EventFilter{Ephemeral: event.LoopScope{All: true}, Enduring: event.LoopScope{All: true}})
+	if err != nil {
+		t.Fatalf("Subscribe() error = %v", err)
+	}
+	defer func() { _ = stream.Close() }()
+
+	firstEvents := acceptanceSubmitTurn(t, agent, stream, "OLD-HEAD-USER")
+	streamRequests, _ := client.capturedRequests()
+	if len(streamRequests) < 2 {
+		t.Fatalf("first tool turn captured %d stream requests, want initial and tool-continuation requests", len(streamRequests))
+	}
+	continuation := streamRequests[1]
+	toolText := acceptanceFindToolResult(t, continuation)
+	if len(toolText) > 50*1024 {
+		t.Errorf("Carbon-shaped tool result = %d bytes, want <= 50KiB", len(toolText))
+	}
+	if len(toolText) >= len(toolOutput) {
+		t.Errorf("Carbon-shaped tool result = %d bytes, want bounded below raw %d-byte output", len(toolText), len(toolOutput))
+	}
+	for _, marker := range []string{toolHead, tailMarker, "[tool output truncated:"} {
+		if !strings.Contains(toolText, marker) {
+			t.Errorf("Carbon-shaped tool result missing %q: %q", marker, toolText[:min(len(toolText), 256)])
+		}
+	}
+	if strings.Contains(toolText, bodyMarker) {
+		t.Errorf("Carbon-shaped tool result retained middle-only marker %q", bodyMarker)
+	}
+	if got := acceptanceRuntimeMessageCount(t, continuation); got != 1 {
+		t.Errorf("tool continuation runtime context count = %d, want 1", got)
+	}
+	if got := acceptanceRuntimeMessageJSON(t, continuation); strings.Count(got, "runtime_context") != 2 {
+		t.Errorf("tool continuation runtime context marker count = %d, want one opening/closing pair", strings.Count(got, "runtime_context"))
+	}
+	firstJournal := acceptanceMessagesJSON(t, acceptanceTurnMessages(firstEvents))
+	firstJoined := strings.Join(firstJournal, "\n")
+	if !strings.Contains(firstJoined, "OLD-HEAD-USER") || !strings.Contains(firstJoined, headMarker) || !strings.Contains(firstJoined, rawThinking) {
+		t.Errorf("first unprojected journal = %q, want old-head prose and raw thinking before projection", firstJoined)
+	}
+
+	retainedOneEvents := acceptanceSubmitTurn(t, agent, stream, "RETAINED-USER-ONE")
+	retainedTwoEvents := acceptanceSubmitTurn(t, agent, stream, "RETAINED-USER-TWO")
+	wantRetained := append(acceptanceTurnMessages(retainedOneEvents), acceptanceTurnMessages(retainedTwoEvents)...)
+	wantRetainedJSON := acceptanceMessagesJSON(t, wantRetained)
+
+	idle, ok := agent.Controller().(interface{ WaitIdle(context.Context) error })
+	if !ok {
+		t.Fatal("session controller does not expose WaitIdle")
+	}
+	idleCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := idle.WaitIdle(idleCtx); err != nil {
+		t.Fatalf("WaitIdle() error = %v", err)
+	}
+	if _, err := agent.CompactToLoop(context.Background(), agent.ActiveLoopID()); err != nil {
+		t.Fatalf("CompactToLoop() error = %v", err)
+	}
+	compactionEvents := acceptanceEventsUntil(t, stream, func(ev event.Event) bool {
+		_, ok := ev.(event.CompactionCommitted)
+		return ok
+	})
+	committed := compactionEvents[len(compactionEvents)-1].(event.CompactionCommitted)
+	if err := event.ValidateEvent(committed); err != nil {
+		t.Fatalf("CompactionCommitted validation error = %v", err)
+	}
+	if got := acceptanceMessageText(t, committed.Summary); got != summary {
+		t.Errorf("committed summary = %q, want fixture summary", got)
+	}
+	gotRetainedJSON := acceptanceMessagesJSON(t, committed.Retained)
+	if !reflect.DeepEqual(gotRetainedJSON, wantRetainedJSON) {
+		t.Errorf("committed Retained = %v, want exact unprojected newest two segments %v", gotRetainedJSON, wantRetainedJSON)
+	}
+	if strings.Contains(strings.Join(gotRetainedJSON, "\n"), "summary-only authority") {
+		t.Error("summary content was injected into committed Retained")
+	}
+	for i := range committed.Retained {
+		if committed.Retained[i] == wantRetained[i] {
+			t.Errorf("committed Retained[%d] aliases source event message", i)
+		}
+	}
+	if committed.PostContext.Basis.Revision != committed.Basis.Revision+1 || committed.PostContext.Basis.ThroughEventID != committed.EventID {
+		t.Errorf("PostContext basis = %+v, want revision %d through committed event %s", committed.PostContext.Basis, committed.Basis.Revision+1, committed.EventID)
+	}
+
+	streamRequests, invokeRequests := client.capturedRequests()
+	if len(invokeRequests) != 1 {
+		t.Fatalf("captured Invoke requests = %d, want exactly one compaction request", len(invokeRequests))
+	}
+	invoke := invokeRequests[0]
+	if invoke.System != conversationCompactionPrompt || len(invoke.Tools) != 0 {
+		t.Errorf("compaction Invoke system/tools = %q/%d, want Carbon prompt/no tools", invoke.System, len(invoke.Tools))
+	}
+	inputText := acceptanceMessageText(t, invoke.Messages[0])
+	if got := len([]byte(inputText)); got > conversationCompactionInputBytes {
+		t.Errorf("serialized compaction adapter input = %d bytes, want <= configured hustle InputBytes %d", got, conversationCompactionInputBytes)
+	}
+	var input acceptanceCompactionInput
+	if err := json.Unmarshal([]byte(inputText), &input); err != nil {
+		t.Fatalf("compaction input JSON error = %v", err)
+	}
+	if len(input.Transcript) == 0 {
+		t.Fatal("compaction transcript is empty")
+	}
+	projected := strings.Join(rawMessagesAsStrings(input.Transcript), "\n")
+	if !strings.Contains(projected, "OLD-HEAD-USER") || !strings.Contains(projected, headMarker) {
+		t.Errorf("projected compaction transcript = %q, want selected old head/user prose", projected)
+	}
+	for _, marker := range []string{"TOOL-HEAD-MARKER", tailMarker, "[tool result truncated for compaction:"} {
+		if !strings.Contains(projected, marker) {
+			t.Errorf("projected compaction transcript missing %q", marker)
+		}
+	}
+	if strings.Contains(projected, rawThinking) {
+		t.Errorf("projected compaction transcript leaked raw thinking payload %q", rawThinking)
+	}
+	if !strings.Contains(projected, "[thinking omitted for compaction]") {
+		t.Error("projected compaction transcript lacks typed thinking placeholder")
+	}
+	for _, excluded := range []string{"RETAINED-USER-ONE", "RETAINED-ASSISTANT-ONE", "RETAINED-USER-TWO", "RETAINED-ASSISTANT-TWO"} {
+		if strings.Contains(projected, excluded) {
+			t.Errorf("projected compaction transcript included retained newest-segment text %q", excluded)
+		}
+	}
+	if got := acceptanceRuntimeMessageJSON(t, streamRequests[0]); got != acceptanceRuntimeMessageJSON(t, streamRequests[1]) {
+		t.Error("tool continuation changed or duplicated the runtime context marker")
+	}
+
+	postEvents := acceptanceSubmitTurn(t, agent, stream, "POST-COMPACTION-USER")
+	if done := postEvents[len(postEvents)-1].(event.TurnDone); acceptanceMessageText(t, done.Message) != "RETAINED-ASSISTANT-TWO" {
+		t.Errorf("post-compaction TurnDone = %q, want scripted response", acceptanceMessageText(t, done.Message))
+	}
+	streamRequests, _ = client.capturedRequests()
+	next := streamRequests[len(streamRequests)-1]
+	if next.TransientMessages != 1 {
+		t.Errorf("next request TransientMessages = %d, want 1 runtime tail", next.TransientMessages)
+	}
+	if got := acceptanceRuntimeMessageCount(t, next); got != 1 {
+		t.Errorf("next request runtime context count = %d, want 1", got)
+	}
+	expectedNext := append(content.AgenticMessages{committed.Summary}, wantRetained...)
+	expectedNext = append(expectedNext, &content.UserMessage{Message: content.Message{Role: content.RoleUser, Blocks: []content.Block{&content.TextBlock{Text: "POST-COMPACTION-USER"}}}})
+	if len(next.Messages) != len(expectedNext)+1 {
+		t.Fatalf("next request messages = %d, want %d plus runtime context", len(next.Messages), len(expectedNext)+1)
+	}
+	for i, expected := range expectedNext {
+		gotJSON, err := json.Marshal(next.Messages[i])
+		if err != nil {
+			t.Fatalf("json.Marshal(next.Messages[%d]) error = %v", i, err)
+		}
+		wantJSON, err := json.Marshal(expected)
+		if err != nil {
+			t.Fatalf("json.Marshal(expected next message[%d]) error = %v", i, err)
+		}
+		if !bytes.Equal(gotJSON, wantJSON) {
+			t.Errorf("next request message[%d] = %s, want %s", i, gotJSON, wantJSON)
+		}
+	}
+}
+
+func rawMessagesAsStrings(messages []json.RawMessage) []string {
+	values := make([]string, len(messages))
+	for i, message := range messages {
+		values[i] = string(message)
+	}
+	return values
 }
 
 func TestAcceptanceManualCompactionUsesOneShotAndResetsNextContext(t *testing.T) {
@@ -193,6 +549,8 @@ func TestAcceptanceManualCompactionUsesOneShotAndResetsNextContext(t *testing.T)
 			client := &fakeLLM{
 				streamSteps: []fakeStreamStep{
 					{chunks: []content.Chunk{&content.TextChunk{Text: "first reply"}}, result: &stream.StreamResult{Usage: &turnUsage}},
+					{chunks: []content.Chunk{&content.TextChunk{Text: "retained reply one"}}},
+					{chunks: []content.Chunk{&content.TextChunk{Text: "retained reply two"}}},
 					{chunks: []content.Chunk{&content.TextChunk{Text: "second reply"}}, result: &stream.StreamResult{Usage: &secondUsage}},
 				},
 				invokeSteps: []fakeInvokeStep{{respond: acceptanceCompactionResponse(summary, compactionUsage)}},
@@ -217,6 +575,8 @@ func TestAcceptanceManualCompactionUsesOneShotAndResetsNextContext(t *testing.T)
 			if firstDone.Usage != turnUsage || acceptanceMessageText(t, firstDone.Message) != "first reply" {
 				t.Errorf("first TurnDone = usage %+v message %q, want ordinary stream result", firstDone.Usage, acceptanceMessageText(t, firstDone.Message))
 			}
+			acceptanceSubmitTurn(t, agent, stream, "retained user one")
+			acceptanceSubmitTurn(t, agent, stream, "retained user two")
 			idle, ok := agent.Controller().(interface{ WaitIdle(context.Context) error })
 			if !ok {
 				t.Fatal("session controller does not expose WaitIdle")
@@ -244,21 +604,15 @@ func TestAcceptanceManualCompactionUsesOneShotAndResetsNextContext(t *testing.T)
 				}
 			}
 
-			if _, err := agent.Submit(context.Background(), []content.Block{&content.TextBlock{Text: "second user"}}); err != nil {
-				t.Fatalf("second Submit() error = %v", err)
-			}
-			secondEvents := acceptanceEventsUntil(t, stream, func(ev event.Event) bool {
-				_, ok := ev.(event.TurnDone)
-				return ok
-			})
+			secondEvents := acceptanceSubmitTurn(t, agent, stream, "second user")
 			secondDone := secondEvents[len(secondEvents)-1].(event.TurnDone)
 			if secondDone.Usage != secondUsage {
 				t.Errorf("second TurnDone usage = %+v, want %+v", secondDone.Usage, secondUsage)
 			}
 
 			streamRequests, invokeRequests := client.capturedRequests()
-			if len(streamRequests) != 2 || len(invokeRequests) != 1 {
-				t.Fatalf("captured Stream/Invoke requests = %d/%d, want 2/1", len(streamRequests), len(invokeRequests))
+			if len(streamRequests) != 4 || len(invokeRequests) != 1 {
+				t.Fatalf("captured Stream/Invoke requests = %d/%d, want 4/1", len(streamRequests), len(invokeRequests))
 			}
 			invoke := invokeRequests[0]
 			if invoke.System != conversationCompactionPrompt || len(invoke.Tools) != 0 || invoke.Model.Key() != streamRequests[0].Model.Key() {
@@ -276,11 +630,18 @@ func TestAcceptanceManualCompactionUsesOneShotAndResetsNextContext(t *testing.T)
 				t.Errorf("compaction transcript = %s, want exact completed first turn", input.Transcript)
 			}
 			var nextTexts []string
-			for _, message := range streamRequests[1].Messages {
+			for _, message := range streamRequests[3].Messages {
 				nextTexts = append(nextTexts, acceptanceMessageText(t, message))
 			}
-			if len(nextTexts) != 3 || nextTexts[0] != summary || nextTexts[1] != "second user" || !strings.HasPrefix(nextTexts[2], "<runtime_context>") {
-				t.Errorf("next request context = %q, want summary, new user input, then fresh runtime context", nextTexts)
+			wantNext := []string{summary, "retained user one", "retained reply one", "retained user two", "retained reply two", "second user"}
+			if len(nextTexts) != len(wantNext)+1 || !strings.HasPrefix(nextTexts[len(nextTexts)-1], "<runtime_context>") {
+				t.Errorf("next request context = %q, want retained tail plus new user and fresh runtime context", nextTexts)
+			} else {
+				for i, want := range wantNext {
+					if nextTexts[i] != want {
+						t.Errorf("next request message[%d] = %q, want %q", i, nextTexts[i], want)
+					}
+				}
 			}
 			if firstDone.Usage == compactionUsage || secondDone.Usage == compactionUsage {
 				t.Error("compaction Invoke usage leaked into ordinary turn accounting")
@@ -304,7 +665,11 @@ func TestAcceptanceCompactionRejectsEveryXMLFailureDomain(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			turnUsage := content.Usage{OutputTokens: 1}
 			client := &fakeLLM{
-				streamSteps: []fakeStreamStep{{chunks: []content.Chunk{&content.TextChunk{Text: "reply"}}, result: &stream.StreamResult{Usage: &turnUsage}}},
+				streamSteps: []fakeStreamStep{
+					{chunks: []content.Chunk{&content.TextChunk{Text: "reply"}}, result: &stream.StreamResult{Usage: &turnUsage}},
+					{chunks: []content.Chunk{&content.TextChunk{Text: "retained reply one"}}},
+					{chunks: []content.Chunk{&content.TextChunk{Text: "retained reply two"}}},
+				},
 				invokeSteps: []fakeInvokeStep{{respond: acceptanceCompactionResponse(tt.summary, content.Usage{OutputTokens: 1})}},
 			}
 			agent, _ := openAcceptanceAgentWithClient(t, client)
@@ -317,6 +682,8 @@ func TestAcceptanceCompactionRejectsEveryXMLFailureDomain(t *testing.T) {
 				t.Fatalf("Submit() error = %v", err)
 			}
 			acceptanceEventsUntil(t, stream, func(ev event.Event) bool { _, ok := ev.(event.TurnDone); return ok })
+			acceptanceSubmitTurn(t, agent, stream, "retained user one")
+			acceptanceSubmitTurn(t, agent, stream, "retained user two")
 			if _, err := agent.CompactToLoop(context.Background(), agent.ActiveLoopID()); err != nil {
 				t.Fatalf("CompactToLoop() error = %v", err)
 			}
@@ -345,6 +712,8 @@ func TestAcceptanceCompactionExecutionFailureIsSoft(t *testing.T) {
 			client := &fakeLLM{
 				streamSteps: []fakeStreamStep{
 					{chunks: []content.Chunk{&content.TextChunk{Text: "before"}}},
+					{chunks: []content.Chunk{&content.TextChunk{Text: "retained reply one"}}},
+					{chunks: []content.Chunk{&content.TextChunk{Text: "retained reply two"}}},
 					{chunks: []content.Chunk{&content.TextChunk{Text: "after"}}},
 				},
 				invokeSteps: []fakeInvokeStep{{err: &acceptanceInferenceError{Message: "provider unavailable"}}},
@@ -359,6 +728,8 @@ func TestAcceptanceCompactionExecutionFailureIsSoft(t *testing.T) {
 				t.Fatalf("first Submit() error = %v", err)
 			}
 			acceptanceEventsUntil(t, stream, func(ev event.Event) bool { _, ok := ev.(event.TurnDone); return ok })
+			acceptanceSubmitTurn(t, agent, stream, "retained user one")
+			acceptanceSubmitTurn(t, agent, stream, "retained user two")
 			if _, err := agent.CompactToLoop(context.Background(), agent.ActiveLoopID()); err != nil {
 				t.Fatalf("CompactToLoop() error = %v", err)
 			}
@@ -388,7 +759,11 @@ func TestAcceptanceCompactionUsesModelChangedBeforeAttempt(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			client := &fakeLLM{
-				streamSteps: []fakeStreamStep{{chunks: []content.Chunk{&content.TextChunk{Text: "reply"}}}},
+				streamSteps: []fakeStreamStep{
+					{chunks: []content.Chunk{&content.TextChunk{Text: "reply"}}},
+					{chunks: []content.Chunk{&content.TextChunk{Text: "retained reply one"}}},
+					{chunks: []content.Chunk{&content.TextChunk{Text: "retained reply two"}}},
+				},
 				invokeSteps: []fakeInvokeStep{{respond: acceptanceCompactionResponse(summary, content.Usage{OutputTokens: 1})}},
 			}
 			agent, _ := openAcceptanceAgentWithClient(t, client)
@@ -401,6 +776,8 @@ func TestAcceptanceCompactionUsesModelChangedBeforeAttempt(t *testing.T) {
 				t.Fatalf("Submit() error = %v", err)
 			}
 			acceptanceEventsUntil(t, stream, func(ev event.Event) bool { _, ok := ev.(event.TurnDone); return ok })
+			acceptanceSubmitTurn(t, agent, stream, "retained user one")
+			acceptanceSubmitTurn(t, agent, stream, "retained user two")
 			handle, ok := agent.Controller().Loop(agent.ActiveLoopID())
 			if !ok {
 				t.Fatal("active loop handle not found")
@@ -509,6 +886,8 @@ func TestAcceptanceAutomaticThresholdPausesAtSafeBoundary(t *testing.T) {
 			client := &fakeLLM{
 				streamSteps: []fakeStreamStep{
 					{chunks: []content.Chunk{&content.TextChunk{Text: "first reply"}}},
+					{chunks: []content.Chunk{&content.TextChunk{Text: "retained reply one"}}},
+					{chunks: []content.Chunk{&content.TextChunk{Text: "retained reply two"}}},
 					{chunks: []content.Chunk{&content.TextChunk{Text: "second reply"}}, entered: secondStreamEntered},
 				},
 				invokeSteps: []fakeInvokeStep{{
@@ -520,15 +899,21 @@ func TestAcceptanceAutomaticThresholdPausesAtSafeBoundary(t *testing.T) {
 				Transport: contextcount.CounterTransportLocal, Retention: contextcount.RetentionNone,
 				TokenizerRev: "carbon-acceptance-exact-v1", Quality: contextcount.CountQualityExactLocal,
 			}
-			counter := &acceptanceContextCounter{counts: []content.TokenCount{65, 20, 20, 20}, capability: counterCapability}
+			// The first five measurements cover the pre/post admission checks for
+			// the first two complete turns and the third turn's initial request.
+			// Only the third turn's post-check crosses the threshold, after three
+			// user-anchored segments exist for KeepRecentSegments=2 to retain.
+			counter := &acceptanceContextCounter{counts: []content.TokenCount{20, 20, 20, 20, 20, 65, 20, 20, 20}, capability: counterCapability}
 			agent := openAcceptanceAgentWithContextPolicy(t, client, counter)
 			stream, err := agent.Subscribe(event.EventFilter{Ephemeral: event.LoopScope{All: true}, Enduring: event.LoopScope{All: true}})
 			if err != nil {
 				t.Fatalf("Subscribe() error = %v", err)
 			}
 			defer func() { _ = stream.Close() }()
-			if _, err := agent.Submit(context.Background(), []content.Block{&content.TextBlock{Text: "first"}}); err != nil {
-				t.Fatalf("first Submit() error = %v", err)
+			acceptanceSubmitTurn(t, agent, stream, "first")
+			acceptanceSubmitTurn(t, agent, stream, "retained user one")
+			if _, err := agent.Submit(context.Background(), []content.Block{&content.TextBlock{Text: "retained user two"}}); err != nil {
+				t.Fatalf("third Submit() error = %v", err)
 			}
 			select {
 			case <-invokeEntered:
@@ -621,7 +1006,11 @@ func TestAcceptanceCompactionFinalizationFailureFaultsSession(t *testing.T) {
 			}
 			stores.resourceStorage = testResourceStorageProvider{base: t.TempDir()}
 			client := &fakeLLM{
-				streamSteps: []fakeStreamStep{{chunks: []content.Chunk{&content.TextChunk{Text: "reply"}}}},
+				streamSteps: []fakeStreamStep{
+					{chunks: []content.Chunk{&content.TextChunk{Text: "reply"}}},
+					{chunks: []content.Chunk{&content.TextChunk{Text: "retained reply one"}}},
+					{chunks: []content.Chunk{&content.TextChunk{Text: "retained reply two"}}},
+				},
 				invokeSteps: []fakeInvokeStep{{
 					respond: acceptanceCompactionResponse(summary, content.Usage{OutputTokens: 1}),
 					entered: invokeEntered, release: invokeRelease,
@@ -655,6 +1044,8 @@ func TestAcceptanceCompactionFinalizationFailureFaultsSession(t *testing.T) {
 				t.Fatalf("Submit() error = %v", err)
 			}
 			acceptanceEventsUntil(t, stream, func(ev event.Event) bool { _, ok := ev.(event.TurnDone); return ok })
+			acceptanceSubmitTurn(t, agent, stream, "retained user one")
+			acceptanceSubmitTurn(t, agent, stream, "retained user two")
 			ledger.arm()
 			if _, err := agent.CompactToLoop(context.Background(), agent.ActiveLoopID()); err != nil {
 				t.Fatalf("CompactToLoop() error = %v", err)
