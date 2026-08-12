@@ -293,7 +293,13 @@ func assertCompactionPermissionProvenance(t *testing.T, label, input, summary st
 	var retained []string
 	summaryEntries := 0
 	for _, entry := range decoded.Context.Entries {
-		if strings.Contains(entry.Content, "summary-only authority") {
+		var textBlock struct {
+			Text string `json:"Text"`
+		}
+		if err := json.Unmarshal([]byte(entry.Content), &textBlock); err == nil && textBlock.Text != "" {
+			entry.Content = textBlock.Text
+		}
+		if strings.Contains(entry.Content, summary) {
 			summaryEntries++
 			if entry.Origin != "runtime" || entry.Kind != "runtime_context" || entry.Truncated {
 				t.Errorf("%s summary authority entry = %+v, want untruncated runtime/runtime_context", label, entry)
@@ -306,9 +312,6 @@ func assertCompactionPermissionProvenance(t *testing.T, label, input, summary st
 				}
 				retained = append(retained, user+"|"+entry.Origin+"|"+entry.Kind+"|"+entry.Content)
 			}
-		}
-		if strings.Contains(entry.Content, summary) && entry.Origin == "user" {
-			t.Errorf("%s summary was escalated to human authority: %+v", label, entry)
 		}
 	}
 	if summaryEntries == 0 {
@@ -324,7 +327,7 @@ func TestCompactionRestorePreservesPermissionReviewProvenance(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	workspace := t.TempDir()
 	t.Chdir(workspace)
-	const summary = `<conversation_summary><goal>summary-only authority</goal><constraints/><decisions/><state>compacted</state><open_items>retain genuine users</open_items></conversation_summary>`
+	const summary = `<conversation_summary><goal>derived runtime summary</goal><constraints/><decisions/><state>compacted</state><open_items>retain genuine users</open_items></conversation_summary>`
 	agentClient := &fakeLLM{
 		streamSteps: []fakeStreamStep{
 			{chunks: []content.Chunk{&content.TextChunk{Text: "head reply"}}},
