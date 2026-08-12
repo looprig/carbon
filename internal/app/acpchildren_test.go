@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -82,16 +83,83 @@ func TestNewACPCompositionCapturesEffectiveACPPosture(t *testing.T) {
 	}
 }
 
+func TestACPPostureMatrixExecutableRequiresExplicitHarnessOptIn(t *testing.T) {
+	tests := []struct {
+		name          string
+		harness       loop.AgentHarnessName
+		envName       string
+		wellKnownName string
+	}{
+		{name: "codex", harness: "codex", envName: acpPostureCodexExecutableEnv, wellKnownName: "codex-acp"},
+		{name: "claude-code", harness: "claude-code", envName: acpPostureClaudeExecutableEnv, wellKnownName: "claude-code-acp"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			incompatible := filepath.Join(t.TempDir(), string(tt.harness)+"-acp")
+			writeFakeACPExecutable(t, incompatible)
+			t.Setenv("PATH", filepath.Dir(incompatible))
+			t.Setenv(tt.envName, "")
+			discovered, err := exec.LookPath(tt.wellKnownName)
+			if err != nil || filepath.Clean(discovered) != incompatible {
+				t.Fatalf("incompatible PATH executable discovery = %q, %v; want %q", discovered, err, incompatible)
+			}
+
+			fixture, err := os.Executable()
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, external := acpPostureMatrixExecutable(t, tt.harness)
+			if got != fixture || external {
+				t.Fatalf("default posture executable = %q, external=%v; want fixture %q despite incompatible PATH executable", got, external, fixture)
+			}
+
+			t.Setenv(tt.envName, incompatible)
+			got, external = acpPostureMatrixExecutable(t, tt.harness)
+			if got != incompatible || !external {
+				t.Fatalf("opted-in posture executable = %q, external=%v; want explicit %q", got, external, incompatible)
+			}
+		})
+	}
+}
+
+const (
+	// These are deliberately Carbon-test-specific overrides. The production
+	// launcher variables and ambient PATH are not live-test consent: ordinary
+	// package tests must remain on the deterministic in-process test peer.
+	acpPostureClaudeExecutableEnv = "CARBON_TEST_CLAUDE_ACP"
+	acpPostureCodexExecutableEnv  = "CARBON_TEST_CODEX_ACP"
+)
+
+func acpPostureMatrixExecutable(t testing.TB, harness loop.AgentHarnessName) (string, bool) {
+	t.Helper()
+	envName := ""
+	switch harness {
+	case "claude-code":
+		envName = acpPostureClaudeExecutableEnv
+	case "codex":
+		envName = acpPostureCodexExecutableEnv
+	default:
+		t.Fatalf("unsupported posture-matrix harness %q", harness)
+	}
+	if path := os.Getenv(envName); path != "" {
+		if !filepath.IsAbs(path) || filepath.Clean(path) != path {
+			t.Fatalf("%s must be a clean absolute executable path, got %q", envName, path)
+		}
+		return path, true
+	}
+	path, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable(): %v", err)
+	}
+	return path, false
+}
+
 // TestACPPostureMatrixThroughProductionBuilders drives the real composition
 // registry and child factory for every launch/source/profile combination. The
 // launched ACP peer asks for an edit at a path inside the configured workspace;
 // the response is therefore an observation of the permission handler created by
 // the actual acpdriver.Config, rather than a recorder or a manually built config.
 func TestACPPostureMatrixThroughProductionBuilders(t *testing.T) {
-	executable, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
 	tests := []struct {
 		name       string
 		launchPath string
@@ -119,16 +187,36 @@ func TestACPPostureMatrixThroughProductionBuilders(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			executable, external := acpPostureMatrixExecutable(t, tt.harness)
+			if !external {
+				// Keep an installed claude/codex adapter (or any incompatible
+				// executable with its well-known name) out of the default
+				// posture probe. The fixture is selected explicitly below.
+				t.Setenv("PATH", t.TempDir())
+				t.Setenv(acpClaudeExecutableEnv, "")
+				t.Setenv(acpCodexExecutableEnv, "")
+			}
 			workspace := t.TempDir()
 			compiled := acpPostureMatrixCatalog(t, tt.harness, tt.credential)
+			childEnv := []string{"PATH=" + taskACPPostureHelperPath}
+			nativeEnvAllowlist := []string{"PATH"}
+			gatewayEnvAllowlist := []string{"PATH"}
+			if external {
+				// An opted-in external adapter may need its normal login/home
+				// environment. NewACPComposition still applies the production
+				// credential-specific allowlists and secret filter before launch.
+				childEnv = os.Environ()
+				nativeEnvAllowlist = acpNativeAuthEnvAllowlist
+				gatewayEnvAllowlist = acpGatewayEnvAllowlist
+			}
 			composition, err := NewACPComposition(ACPChildrenConfig{
 				Catalog:             compiled,
 				AccessProfile:       tt.profile,
 				Executables:         map[loop.AgentHarnessName]string{tt.harness: executable},
 				WorkspaceRoot:       workspace,
-				Env:                 []string{"PATH=" + taskACPPostureHelperPath},
-				NativeEnvAllowlist:  []string{"PATH"},
-				GatewayEnvAllowlist: []string{"PATH"},
+				Env:                 childEnv,
+				NativeEnvAllowlist:  nativeEnvAllowlist,
+				GatewayEnvAllowlist: gatewayEnvAllowlist,
 				gatewayPreflightBinding: &launch.ProxyBinding{
 					BaseURL: "http://127.0.0.1:1",
 					Token:   "posture-matrix-preflight",
