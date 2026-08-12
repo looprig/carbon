@@ -244,13 +244,13 @@ github.com/invopop/jsonschema
 github.com/landlock-lsm/go-landlock/landlock
 github.com/landlock-lsm/go-landlock/landlock/internal
 github.com/landlock-lsm/go-landlock/landlock/syscall
-# github.com/looprig/acp v0.2.2
+# github.com/looprig/acp v0.2.3
 ## explicit; go 1.26.4
 github.com/looprig/acp/client
 github.com/looprig/acp/launch
 github.com/looprig/acp/protocol
 github.com/looprig/acp/transport/stdio
-# github.com/looprig/classifiers v0.1.4
+# github.com/looprig/classifiers v0.1.5
 ## explicit; go 1.26.4
 github.com/looprig/classifiers/internal/evidence
 github.com/looprig/classifiers/internal/policy
@@ -268,7 +268,7 @@ github.com/looprig/core/uuid
 github.com/looprig/credentials
 github.com/looprig/credentials/catalog
 github.com/looprig/credentials/httpauth
-# github.com/looprig/foreignloops v0.2.3
+# github.com/looprig/foreignloops v0.2.4
 ## explicit; go 1.26.4
 github.com/looprig/foreignloops/backend
 github.com/looprig/foreignloops/driver
@@ -320,7 +320,7 @@ github.com/looprig/inference/transport
 github.com/looprig/inference/usage
 github.com/looprig/inference/wire/jsonbody
 github.com/looprig/inference/wire/sse
-# github.com/looprig/llm v0.13.2
+# github.com/looprig/llm v0.13.4
 ## explicit; go 1.26.4
 github.com/looprig/llm
 github.com/looprig/llm/auto
@@ -381,7 +381,7 @@ github.com/looprig/llm/providers/xai
 github.com/looprig/llm/providers/zai
 github.com/looprig/llm/providers/zenmux
 github.com/looprig/llm/tee
-# github.com/looprig/mcp v0.6.2
+# github.com/looprig/mcp v0.6.3
 ## explicit; go 1.26.4
 github.com/looprig/mcp/internal/canonical
 github.com/looprig/mcp/internal/catalog
@@ -420,7 +420,7 @@ github.com/looprig/secrets/local
 ## explicit; go 1.25.8
 github.com/looprig/storage
 github.com/looprig/storage/memstore
-# github.com/looprig/tools v0.10.1
+# github.com/looprig/tools v0.10.2
 ## explicit; go 1.26.4
 github.com/looprig/tools
 github.com/looprig/tools/askuser
