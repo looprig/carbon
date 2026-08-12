@@ -43,31 +43,6 @@ jobs:
       - name: go test -tags integration -race (supervised commands end to end)
         run: go test -tags integration -race -count=1 ./internal/app -run 'TestIntegrationProcess'
 
-  # Linux: the same supervised-process integration suite, on the platform
-  # Sandbox's own real containment backends (Landlock/seccomp/cgroups) cover
-  # separately in the sandbox module's own CI. Carbon's own suite here
-  # proves the composed Bash-to-Tools-to-Harness-to-Sandbox path end to end
-  # through Carbon's own composition, same as the macOS job.
-  test-linux:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
-      - name: enable hosted Linux sandbox capabilities
-        run: |
-          # Ubuntu 24.04 restricts unprivileged user namespaces via AppArmor.
-          # These are the same hosted-runner preparations used by Sandbox CI.
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
-          sudo sysctl -w kernel.unprivileged_userns_clone=1 || true
-          sudo modprobe nf_conntrack || true
-          sudo modprobe nf_tables || true
-      - name: go test -race (default suite)
-        run: go test -race -count=1 ./...
-      - name: go test -tags integration -race (supervised commands end to end)
-        run: go test -tags integration -race -count=1 ./internal/app -run 'TestIntegrationProcess'
-
   # Compile every package's test binary independently. This catches
   # architecture-specific Windows issues even when the live worker is x64.
   windows-cross-compile:

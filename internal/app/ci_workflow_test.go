@@ -48,16 +48,17 @@ func TestCILintBuildUsesScopedFormatCheck(t *testing.T) {
 		}
 	}
 
-	linux := jobs["test-linux"]
-	capabilityStep := workflowStep(t, linux, "enable hosted Linux sandbox capabilities")
-	for _, command := range []string{
-		"sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true",
-		"sudo sysctl -w kernel.unprivileged_userns_clone=1 || true",
-		"sudo modprobe nf_conntrack || true",
-		"sudo modprobe nf_tables || true",
+	if _, ok := jobs["test-linux"]; ok {
+		t.Fatal("CI must not require live Linux sandbox enforcement on a generic hosted runner")
+	}
+	for _, unavailableSetup := range []string{
+		"apparmor_restrict_unprivileged_userns",
+		"unprivileged_userns_clone",
+		"modprobe nf_conntrack",
+		"modprobe nf_tables",
 	} {
-		if !strings.Contains(capabilityStep, command) {
-			t.Fatalf("test-linux capability step must retain %q; step:\n%s", command, capabilityStep)
+		if strings.Contains(workflow, unavailableSetup) {
+			t.Fatalf("CI workflow must not contain hosted-kernel setup %q", unavailableSetup)
 		}
 	}
 
