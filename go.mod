@@ -1,6 +1,6 @@
 module github.com/looprig/carbon
 
-go 1.26.4
+go 1.26.6
 
 tool (
 	github.com/securego/gosec/v2/cmd/gosec
