@@ -185,33 +185,137 @@ func TestProductionACPCompositionKeepsConfiguredGatewayRowsAlongsideOrdinaryRows
 
 func TestResolveACPExecutable(t *testing.T) {
 	dir := t.TempDir()
-	configuredPath := filepath.Join(dir, "configured-claude-code-acp")
+	configuredPath := filepath.Join(dir, "configured-claude-agent-acp")
 	writeFakeACPExecutable(t, configuredPath)
 
 	pathDir := t.TempDir()
-	pathExecutable := filepath.Join(pathDir, "claude-code-acp")
-	writeFakeACPExecutable(t, pathExecutable)
+	currentExecutable := filepath.Join(pathDir, acpClaudeAdapterName)
+	writeFakeACPExecutable(t, currentExecutable)
+	deprecatedExecutable := filepath.Join(pathDir, acpDeprecatedClaudeAdapterName)
+	writeFakeACPExecutable(t, deprecatedExecutable)
 	t.Setenv("PATH", pathDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
+	claudeNames := []string{acpClaudeAdapterName, acpDeprecatedClaudeAdapterName}
 	tests := []struct {
-		name          string
-		env           string
-		configured    string
-		wellKnownName string
-		want          string
+		name           string
+		env            string
+		configured     string
+		wellKnownNames []string
+		want           string
+		wantMatched    string
 	}{
-		{name: "env var wins", env: "/env/claude-code-acp", configured: configuredPath, wellKnownName: "claude-code-acp", want: "/env/claude-code-acp"},
-		{name: "config wins over PATH", env: "", configured: configuredPath, wellKnownName: "claude-code-acp", want: configuredPath},
-		{name: "falls back to PATH", env: "", configured: "", wellKnownName: "claude-code-acp", want: pathExecutable},
-		{name: "nothing resolves", env: "", configured: "", wellKnownName: "no-such-acp-adapter-binary", want: ""},
+		{name: "env var wins", env: "/env/claude-agent-acp", configured: configuredPath, wellKnownNames: claudeNames, want: "/env/claude-agent-acp"},
+		{name: "config wins over PATH", env: "", configured: configuredPath, wellKnownNames: claudeNames, want: configuredPath},
+		{
+			name: "prefers the current adapter over the deprecated one", wellKnownNames: claudeNames,
+			want: currentExecutable, wantMatched: acpClaudeAdapterName,
+		},
+		{
+			// The migration fallback: only the renamed package is
+			// installed, so Claude ACP keeps working -- but the caller
+			// learns which name matched so it can say so out loud.
+			name: "falls back to the deprecated adapter and reports it",
+			wellKnownNames: []string{
+				"no-such-acp-adapter-binary", acpDeprecatedClaudeAdapterName,
+			},
+			want: deprecatedExecutable, wantMatched: acpDeprecatedClaudeAdapterName,
+		},
+		{name: "nothing resolves", wellKnownNames: []string{"no-such-acp-adapter-binary"}, want: ""},
+		{name: "no well-known names", wellKnownNames: nil, want: ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := resolveACPExecutable(tt.env, tt.configured, tt.wellKnownName)
+			got, matched := resolveACPExecutable(tt.env, tt.configured, tt.wellKnownNames...)
 			if got != tt.want {
 				t.Fatalf("resolveACPExecutable() = %q, want %q", got, tt.want)
 			}
+			if matched != tt.wantMatched {
+				t.Fatalf("resolveACPExecutable() matched = %q, want %q", matched, tt.wantMatched)
+			}
 		})
+	}
+}
+
+// TestProductionACPDiscoveryPrefersCurrentClaudeAdapter proves the production
+// composition path -- not just the resolution helper -- discovers
+// @agentclientprotocol/claude-agent-acp's binary, and that falling back to
+// the renamed, deprecated @zed-industries/claude-code-acp binary reaches the
+// operator through the existing bounded ACP diagnostics rather than silently.
+func TestProductionACPDiscoveryPrefersCurrentClaudeAdapter(t *testing.T) {
+	tests := []struct {
+		name           string
+		installed      []string
+		wantBase       string
+		wantDeprecated bool
+	}{
+		{name: "current only", installed: []string{acpClaudeAdapterName}, wantBase: acpClaudeAdapterName},
+		{
+			name:      "both installed",
+			installed: []string{acpClaudeAdapterName, acpDeprecatedClaudeAdapterName},
+			wantBase:  acpClaudeAdapterName,
+		},
+		{
+			name:           "deprecated only",
+			installed:      []string{acpDeprecatedClaudeAdapterName},
+			wantBase:       acpDeprecatedClaudeAdapterName,
+			wantDeprecated: true,
+		},
+		{name: "neither installed", installed: nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pathDir := t.TempDir()
+			for _, name := range tt.installed {
+				writeFakeACPExecutable(t, filepath.Join(pathDir, name))
+			}
+			t.Setenv("PATH", pathDir)
+			t.Setenv(acpClaudeExecutableEnv, "")
+			t.Setenv(acpCodexExecutableEnv, "")
+
+			composition, err := newProductionACPCompositionWithPreflight(
+				context.Background(), DefaultAccessProfile,
+				configuredProductionModelsForTest("configured-only"), nil,
+			)
+			if err != nil {
+				t.Fatalf("newProductionACPCompositionWithPreflight() error = %v", err)
+			}
+			gotDeprecated := false
+			for _, diagnostic := range composition.Diagnostics {
+				if diagnostic == acpDiagnosticDeprecatedClaudeAdapter() {
+					gotDeprecated = true
+				}
+			}
+			if gotDeprecated != tt.wantDeprecated {
+				t.Fatalf("deprecated-adapter diagnostic = %t, want %t (diagnostics %#v)", gotDeprecated, tt.wantDeprecated, composition.Diagnostics)
+			}
+			if got := composition.Catalog.HasProfile("acp/claude-code"); got != (tt.wantBase != "") {
+				t.Fatalf("acp/claude-code profile present = %t, want %t", got, tt.wantBase != "")
+			}
+			if tt.wantBase == "" {
+				return
+			}
+			resolved, _ := resolveACPExecutable("", "", acpClaudeAdapterName, acpDeprecatedClaudeAdapterName)
+			if filepath.Base(resolved) != tt.wantBase {
+				t.Fatalf("discovered executable = %q, want a %q binary", resolved, tt.wantBase)
+			}
+		})
+	}
+}
+
+// TestACPDeprecatedClaudeAdapterDiagnosticIsBoundedAndSecretFree holds the
+// deprecation notice to the same shape as every other ACP diagnostic: one
+// short line, no filesystem path, no stderr or provider content.
+func TestACPDeprecatedClaudeAdapterDiagnosticIsBoundedAndSecretFree(t *testing.T) {
+	t.Parallel()
+	diagnostic := acpDiagnosticDeprecatedClaudeAdapter()
+	if !strings.HasPrefix(diagnostic, "acp: claude-code ") {
+		t.Fatalf("diagnostic = %q, want the shared \"acp: <harness> \" prefix", diagnostic)
+	}
+	if strings.ContainsAny(diagnostic, "\n\r\x00") || len(diagnostic) > 256 {
+		t.Fatalf("diagnostic = %q, want one bounded single-line string", diagnostic)
+	}
+	if !strings.Contains(diagnostic, acpDeprecatedClaudeAdapterName) || !strings.Contains(diagnostic, "@agentclientprotocol/claude-agent-acp") {
+		t.Fatalf("diagnostic = %q, want both the deprecated name and the remediation package", diagnostic)
 	}
 }
 

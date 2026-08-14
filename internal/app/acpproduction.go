@@ -21,6 +21,27 @@ const (
 	acpCodexExecutableEnv  = "CODEX_ACP_EXECUTABLE"
 	acpNativeProbeTimeout  = 5 * time.Second
 	acpNativeFieldLimit    = 128
+
+	// acpClaudeAdapterName is the current Claude ACP adapter binary,
+	// installed by @agentclientprotocol/claude-agent-acp. It is the only
+	// adapter identity the steering gate in
+	// github.com/looprig/foreignloops/driver/acp recognizes for Claude, so
+	// it must be preferred over any older name.
+	acpClaudeAdapterName = "claude-agent-acp"
+	// acpDeprecatedClaudeAdapterName is the pre-rename Claude ACP adapter
+	// binary, installed by @zed-industries/claude-code-acp. npm has marked
+	// that package deprecated ("renamed to
+	// @agentclientprotocol/claude-agent-acp") and it is no longer the
+	// upstream release line. It stays only as a last-resort discovery
+	// fallback so an upgrade does not silently strip Claude ACP delegation
+	// from an operator who has not migrated yet -- and discovering it
+	// always emits acpDiagnosticDeprecatedClaudeAdapter, because a silent
+	// fallback to a deprecated package is exactly how this drifted.
+	acpDeprecatedClaudeAdapterName = "claude-code-acp"
+	// acpCodexAdapterName is the current Codex ACP adapter binary,
+	// installed by @agentclientprotocol/codex-acp. It has never been
+	// renamed, so it has no deprecated alias.
+	acpCodexAdapterName = "codex-acp"
 )
 
 // Gateway-backed children inherit only process mechanics. Provider keys remain
@@ -90,12 +111,20 @@ func newProductionACPCompositionWithCollabRequired(_ context.Context, accessProf
 	if err != nil {
 		return nil, err
 	}
-	return NewACPComposition(ACPChildrenConfig{
+	claudeExecutable, claudeWellKnownName := resolveACPExecutable(
+		os.Getenv(acpClaudeExecutableEnv), configured.ACPLaunchers["claude-code"],
+		acpClaudeAdapterName, acpDeprecatedClaudeAdapterName,
+	)
+	codexExecutable, _ := resolveACPExecutable(
+		os.Getenv(acpCodexExecutableEnv), configured.ACPLaunchers["codex"],
+		acpCodexAdapterName,
+	)
+	composition, err := NewACPComposition(ACPChildrenConfig{
 		Catalog:       catalog,
 		AccessProfile: effectiveProfile,
 		Executables: map[loop.AgentHarnessName]string{
-			"claude-code": resolveACPExecutable(os.Getenv(acpClaudeExecutableEnv), configured.ACPLaunchers["claude-code"], "claude-code-acp"),
-			"codex":       resolveACPExecutable(os.Getenv(acpCodexExecutableEnv), configured.ACPLaunchers["codex"], "codex-acp"),
+			"claude-code": claudeExecutable,
+			"codex":       codexExecutable,
 		},
 		CollabMCPExecutable: collabExecutable,
 		requireCollabMCP:    requireCollabMCP,
@@ -104,6 +133,27 @@ func newProductionACPCompositionWithCollabRequired(_ context.Context, accessProf
 		NativeEnvAllowlist:  acpNativeAuthEnvAllowlist,
 		GatewayEnvAllowlist: acpGatewayEnvAllowlist,
 	})
+	if err != nil {
+		return nil, err
+	}
+	// Only warn when the deprecated adapter actually survived the static
+	// checks and stayed in the catalog: a harness that was dropped already
+	// carries its own, more actionable diagnostic.
+	if claudeWellKnownName == acpDeprecatedClaudeAdapterName && composition.Catalog.HasProfile("acp/claude-code") {
+		composition.Diagnostics = append(composition.Diagnostics, acpDiagnosticDeprecatedClaudeAdapter())
+	}
+	return composition, nil
+}
+
+// acpDiagnosticDeprecatedClaudeAdapter reports that PATH discovery fell back
+// to the renamed, deprecated Claude ACP adapter. Like every other ACP
+// diagnostic it is a fixed, secret-free category string with no filesystem
+// path, stderr, or provider content.
+func acpDiagnosticDeprecatedClaudeAdapter() string {
+	return fmt.Sprintf(
+		"acp: claude-code is using the deprecated %q adapter (@zed-industries/claude-code-acp, renamed upstream); install @agentclientprotocol/claude-agent-acp, or point acp_launchers in models.json or %s at it",
+		acpDeprecatedClaudeAdapterName, acpClaudeExecutableEnv,
+	)
 }
 
 // preflightProductionACPExecutable is an explicit diagnostic/test probe. It
@@ -259,27 +309,37 @@ func validACPNativeField(value string) bool {
 // resolveACPExecutable picks one harness's ACP adapter executable by explicit
 // precedence: the environment-variable override, then the configured
 // acp_launchers path, then PATH discovery of the fixed well-known adapter
-// name. It performs no existence or executability check; NewACPComposition's
-// static checks own that. A relative PATH match is resolved to an absolute
-// path so the clean-absolute-path invariant used by the rest of the ACP
-// pipeline holds.
-func resolveACPExecutable(envValue, configuredPath, wellKnownName string) string {
+// names in the order given. It performs no existence or executability check;
+// NewACPComposition's static checks own that. A relative PATH match is
+// resolved to an absolute path so the clean-absolute-path invariant used by
+// the rest of the ACP pipeline holds.
+//
+// wellKnownNames is ordered most-current-first and the first PATH hit wins,
+// so a machine with both the current and a deprecated adapter installed
+// always gets the current one. The second return value is the well-known
+// name that matched, or "" when the path came from the environment override
+// or acp_launchers -- an explicitly configured path is the operator's own
+// choice and is never reported as a deprecated discovery.
+func resolveACPExecutable(envValue, configuredPath string, wellKnownNames ...string) (executable, matchedName string) {
 	if envValue != "" {
-		return envValue
+		return envValue, ""
 	}
 	if configuredPath != "" {
-		return configuredPath
+		return configuredPath, ""
 	}
-	found, err := exec.LookPath(wellKnownName)
-	if err != nil {
-		return ""
-	}
-	if !filepath.IsAbs(found) {
-		if abs, absErr := filepath.Abs(found); absErr == nil {
-			found = abs
+	for _, wellKnownName := range wellKnownNames {
+		found, err := exec.LookPath(wellKnownName)
+		if err != nil {
+			continue
 		}
+		if !filepath.IsAbs(found) {
+			if abs, absErr := filepath.Abs(found); absErr == nil {
+				found = abs
+			}
+		}
+		return found, wellKnownName
 	}
-	return found
+	return "", ""
 }
 
 func cleanACPWorkspaceRoot(root string) bool {

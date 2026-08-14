@@ -269,13 +269,25 @@ children through the per-loop collaboration MCP server. The support matrix is:
 | Runtime | MessageAgent support |
 | --- | --- |
 | Native Harness | Steering |
-| Claude ACP 0.65.0 | Steering |
-| Current Codex ACP | Queued fallback |
-| Future adapters | Require advertised host-owned idle fallback before steering is enabled |
+| Claude ACP, versions on the verified allowlist (0.64.0-0.66.0) | Steering |
+| Any other Claude ACP version | Queued fallback |
+| Every Codex ACP version, including the current one | Queued fallback |
+| Future adapters | Require advertised host-owned idle fallback, or an explicitly verified version, before steering is enabled |
 
-The exact Claude ACP version is intentional. Carbon does not probe unknown ACP
-methods or infer safe idle behavior: a future adapter must advertise both
-steering and a host-owned idle fallback before it can be enabled.
+The version allowlist is intentional and lives in
+`github.com/looprig/foreignloops/driver/acp` (`claudeSteeringVersions`).
+Carbon does not probe unknown ACP methods or infer safe idle behavior: an
+adapter must either advertise both steering and a host-owned idle fallback,
+or be a version someone verified honors the `promptRequired` opt-in. No
+adapter advertises an idle behavior today, so in practice the allowlist is
+the whole gate, and an unlisted version degrades to the queued fallback
+rather than steering unverified.
+
+Codex ACP is excluded at every version, not just the one that was current
+when this was written. Its idle steer still starts an adapter-owned turn
+Carbon cannot correlate, so the exclusion is a floor
+(`codexSteeringFloor`, unset until an upstream fix is verified) rather than
+an equality test that would lapse on the next adapter upgrade.
 
 ## Placement
 
