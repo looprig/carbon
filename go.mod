@@ -9,21 +9,21 @@ tool (
 )
 
 require (
-	github.com/looprig/acp v0.2.3
-	github.com/looprig/classifiers v0.1.5
-	github.com/looprig/core v0.5.1
-	github.com/looprig/credentials v0.1.0
-	github.com/looprig/foreignloops v0.2.4
-	github.com/looprig/fsstore v0.3.2
-	github.com/looprig/harness v0.25.0
-	github.com/looprig/inference v0.10.0
-	github.com/looprig/llm v0.13.4
-	github.com/looprig/mcp v0.6.3
-	github.com/looprig/sandbox v0.8.1
-	github.com/looprig/secrets v0.1.0
-	github.com/looprig/storage v0.3.1
-	github.com/looprig/tools v0.10.2
-	github.com/looprig/tui v0.15.2
+	github.com/looprig/acp v0.3.0
+	github.com/looprig/classifiers v0.2.0
+	github.com/looprig/core v0.6.0
+	github.com/looprig/credentials v0.2.0
+	github.com/looprig/foreignloops v0.3.0
+	github.com/looprig/fsstore v0.4.0
+	github.com/looprig/harness v0.26.0
+	github.com/looprig/inference v0.11.0
+	github.com/looprig/llm v0.14.0
+	github.com/looprig/mcp v0.7.0
+	github.com/looprig/sandbox v0.9.0
+	github.com/looprig/secrets v0.2.0
+	github.com/looprig/storage v0.4.0
+	github.com/looprig/tools v0.11.0
+	github.com/looprig/tui v0.16.0
 	golang.org/x/sys v0.47.0
 )
 
@@ -31,7 +31,7 @@ require (
 	charm.land/bubbles/v2 v2.1.1 // indirect
 	charm.land/bubbletea/v2 v2.0.8 // indirect
 	charm.land/glamour/v2 v2.0.1 // indirect
-	charm.land/lipgloss/v2 v2.0.5 // indirect
+	charm.land/lipgloss/v2 v2.0.6 // indirect
 	cloud.google.com/go v0.123.0 // indirect
 	cloud.google.com/go/auth v0.23.0 // indirect
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
@@ -46,8 +46,8 @@ require (
 	github.com/ccojocar/zxcvbn-go v1.0.4 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/charmbracelet/colorprofile v0.4.3 // indirect
-	github.com/charmbracelet/ultraviolet v0.0.0-20260810092200-402eeaa30986 // indirect
-	github.com/charmbracelet/x/ansi v0.11.7 // indirect
+	github.com/charmbracelet/ultraviolet v0.0.0-20260811164956-006e29f97886 // indirect
+	github.com/charmbracelet/x/ansi v0.11.8 // indirect
 	github.com/charmbracelet/x/exp/golden v0.0.0-20260803091719-3755ebad01b1 // indirect
 	github.com/charmbracelet/x/exp/slice v0.0.0-20260803091719-3755ebad01b1 // indirect
 	github.com/charmbracelet/x/term v0.2.2 // indirect
@@ -104,14 +104,14 @@ require (
 	go.uber.org/multierr v1.11.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	go.yaml.in/yaml/v4 v4.0.0-rc.6 // indirect
-	golang.org/x/crypto v0.54.0 // indirect
+	golang.org/x/crypto v0.55.0 // indirect
 	golang.org/x/exp/typeparams v0.0.0-20260810151157-a8b543ca52da // indirect
 	golang.org/x/mod v0.39.0 // indirect
-	golang.org/x/net v0.57.0 // indirect
+	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/telemetry v0.0.0-20260804195142-bdd03c3c8848 // indirect
-	golang.org/x/text v0.40.0 // indirect
+	golang.org/x/text v0.41.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	golang.org/x/tools v0.48.0 // indirect
 	golang.org/x/vuln v1.6.0 // indirect
