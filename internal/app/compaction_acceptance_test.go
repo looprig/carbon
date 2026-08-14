@@ -17,6 +17,7 @@ import (
 	"github.com/looprig/harness/pkg/loop"
 	"github.com/looprig/harness/pkg/tool"
 	"github.com/looprig/inference"
+	"github.com/looprig/inference/codec/bedrockconverse"
 	contextcount "github.com/looprig/inference/contextcount"
 	model "github.com/looprig/inference/model"
 	stream "github.com/looprig/inference/stream"
@@ -334,12 +335,58 @@ func acceptanceMessageContainsRuntimeContext(message content.Conversation) bool 
 	return false
 }
 
+func acceptanceAssertBedrockRuntimeWire(t *testing.T, request inference.Request, wantToolResults int) {
+	t.Helper()
+	body, err := bedrockconverse.EncodeRequest(request)
+	if err != nil {
+		t.Fatalf("bedrockconverse.EncodeRequest() error = %v", err)
+	}
+	var wire struct {
+		Messages []struct {
+			Role    string                       `json:"role"`
+			Content []map[string]json.RawMessage `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &wire); err != nil {
+		t.Fatalf("json.Unmarshal(Bedrock request) error = %v", err)
+	}
+	for i := 1; i < len(wire.Messages); i++ {
+		if wire.Messages[i-1].Role == wire.Messages[i].Role {
+			t.Errorf("Bedrock messages[%d:%d] have adjacent %q roles", i-1, i, wire.Messages[i].Role)
+		}
+	}
+	runtimeMarkers := bytes.Count(body, []byte("runtime_context"))
+	if runtimeMarkers != 2 {
+		t.Errorf("Bedrock runtime_context marker count = %d, want one opening/closing pair", runtimeMarkers)
+	}
+	toolResults := 0
+	toolResultMessages := 0
+	for _, message := range wire.Messages {
+		messageToolResults := 0
+		for _, block := range message.Content {
+			if _, ok := block["toolResult"]; ok {
+				messageToolResults++
+			}
+		}
+		if messageToolResults > 0 {
+			toolResultMessages++
+			toolResults += messageToolResults
+		}
+	}
+	if toolResults != wantToolResults {
+		t.Errorf("Bedrock toolResult blocks = %d, want %d", toolResults, wantToolResults)
+	}
+	if wantToolResults > 0 && toolResultMessages != 1 {
+		t.Errorf("Bedrock tool-result messages = %d, want one grouped user turn", toolResultMessages)
+	}
+}
+
 // TestAcceptanceCompactionProjectsHeadAndRetainsExactTail drives the real
 // Carbon composition through a tool continuation, three completed user
 // segments, and manual compaction. It deliberately compares the journal's
 // unprojected retained suffix with the model-facing projected transcript: the
 // two are different contracts and must stay different.
-func TestAcceptanceCompactionProjectsHeadAndRetainsExactTail(t *testing.T) {
+func TestAcceptanceBedrockRuntimeContextProjectsCompactionHeadAndRetainsExactTail(t *testing.T) {
 	t.Parallel()
 	const (
 		summary     = `<conversation_summary><goal>summary-only authority</goal><constraints/><decisions/><state>old head reduced</state><open_items>keep retained users genuine</open_items></conversation_summary>`
@@ -358,6 +405,7 @@ func TestAcceptanceCompactionProjectsHeadAndRetainsExactTail(t *testing.T) {
 			{chunks: []content.Chunk{
 				&content.ThinkingChunk{Thinking: rawThinking},
 				&content.ToolUseChunk{Index: 0, ID: "compaction-fixture-tool-1", Name: "CompactionFixtureTool", InputJSON: `{}`},
+				&content.ToolUseChunk{Index: 1, ID: "compaction-fixture-tool-2", Name: "CompactionFixtureTool", InputJSON: `{}`},
 			}},
 			{chunks: []content.Chunk{&content.TextChunk{Text: headMarker + " final"}}},
 			{chunks: []content.Chunk{&content.TextChunk{Text: "RETAINED-ASSISTANT-ONE"}}},
@@ -379,6 +427,11 @@ func TestAcceptanceCompactionProjectsHeadAndRetainsExactTail(t *testing.T) {
 		t.Fatalf("first tool turn captured %d stream requests, want initial and tool-continuation requests", len(streamRequests))
 	}
 	continuation := streamRequests[1]
+	if continuation.TransientMessages != 1 {
+		t.Errorf("tool continuation TransientMessages = %d, want 1 runtime tail", continuation.TransientMessages)
+	}
+	acceptanceAssertBedrockRuntimeWire(t, streamRequests[0], 0)
+	acceptanceAssertBedrockRuntimeWire(t, continuation, 2)
 	toolText := acceptanceFindToolResult(t, continuation)
 	if len(toolText) > 50*1024 {
 		t.Errorf("Carbon-shaped tool result = %d bytes, want <= 50KiB", len(toolText))
@@ -505,6 +558,7 @@ func TestAcceptanceCompactionProjectsHeadAndRetainsExactTail(t *testing.T) {
 	if got := acceptanceRuntimeMessageCount(t, next); got != 1 {
 		t.Errorf("next request runtime context count = %d, want 1", got)
 	}
+	acceptanceAssertBedrockRuntimeWire(t, next, 0)
 	expectedNext := append(content.AgenticMessages{committed.Summary}, wantRetained...)
 	expectedNext = append(expectedNext, &content.UserMessage{Message: content.Message{Role: content.RoleUser, Blocks: []content.Block{&content.TextBlock{Text: "POST-COMPACTION-USER"}}}})
 	if len(next.Messages) != len(expectedNext)+1 {
