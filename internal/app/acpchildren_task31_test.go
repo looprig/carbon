@@ -319,7 +319,7 @@ func TestACPCompositionRestoresCodexRuntimeThroughCurrentCatalog(t *testing.T) {
 	}
 }
 
-func TestACPCompositionMissingLunaTombstonesChildAndKeepsPrimer(t *testing.T) {
+func TestACPCompositionMissingLunaRemapsChildToCurrentCodexDefault(t *testing.T) {
 	ctx := context.Background()
 	fullCatalog := gatewayRuntimeCatalogForTask31(t, map[model.ProviderName]inference.Client{
 		"anthropic": &fakeLLM{}, "openai": &fakeLLM{},
@@ -351,7 +351,8 @@ func TestACPCompositionMissingLunaTombstonesChildAndKeepsPrimer(t *testing.T) {
 	missingCatalog := gatewayRuntimeCatalogForTask31(t, map[model.ProviderName]inference.Client{
 		"anthropic": &fakeLLM{},
 	})
-	missingComposition := testACPComposition(t, missingCatalog, &acpCompositionRecorder{backend: newACPCompositionBackend()})
+	missingRecorder := &acpCompositionRecorder{backend: newACPCompositionBackend()}
+	missingComposition := testACPComposition(t, missingCatalog, missingRecorder)
 	missingCfg := Config{ACPChildren: missingComposition, RuntimeCatalog: missingCatalog}
 	// Rebuild the same Carbon topology with the current, deliberately incomplete catalog.
 	client := &managedScript{fn: func(context.Context, inference.Request) ([]content.Chunk, error) { return finalText("unused"), nil }}
@@ -375,7 +376,7 @@ func TestACPCompositionMissingLunaTombstonesChildAndKeepsPrimer(t *testing.T) {
 		t.Fatalf("restored active primer = %v, want Carbon root %v", restored.ActiveLoop().ID(), rootID)
 	}
 	if _, ok := restored.Loop(childID); !ok {
-		t.Fatal("missing-runtime child was not retained as a tombstone")
+		t.Fatal("same-harness remapped child was not restored")
 	}
 	var tombstoned bool
 	for _, raw := range replayACPEvents(t, stores.session, live.SessionID()) {
@@ -383,8 +384,12 @@ func TestACPCompositionMissingLunaTombstonesChildAndKeepsPrimer(t *testing.T) {
 			tombstoned = true
 		}
 	}
-	if !tombstoned {
-		t.Fatal("restore emitted no child tombstone")
+	if tombstoned {
+		t.Fatal("same-harness model drift unexpectedly tombstoned the child")
+	}
+	_, restoredCalls, _, restoredRuntime, _ := missingRecorder.snapshot()
+	if restoredCalls != 1 || restoredRuntime.Profile != "acp/codex" {
+		t.Fatalf("same-harness fallback calls=%d runtime=%+v", restoredCalls, restoredRuntime)
 	}
 }
 

@@ -280,7 +280,7 @@ func TestProductionOpenRejectsInvalidModelsBeforeOpeningPersistence(t *testing.T
 	}
 }
 
-func TestRestoreRejectsModelConfigRevisionDrift(t *testing.T) {
+func TestRestoreAdoptsModelConfigRevisionDrift(t *testing.T) {
 	stores := mustHeadlessTestStores(t)
 	root := t.TempDir()
 	ctx := context.Background()
@@ -319,11 +319,11 @@ func TestRestoreRejectsModelConfigRevisionDrift(t *testing.T) {
 		}
 		return err
 	}
-	if err := restore("model-rev-b"); err == nil {
-		t.Fatal("restore with changed model configuration revision succeeded")
+	if err := restore("model-rev-b"); err != nil {
+		t.Fatalf("restore with changed ephemeral model configuration revision failed: %v", err)
 	}
 	if err := restore("model-rev-a"); err != nil {
-		t.Fatalf("restore with identical model configuration revision failed: %v", err)
+		t.Fatalf("restore after returning to the original model configuration revision failed: %v", err)
 	}
 }
 

@@ -341,6 +341,7 @@ func buildRigWithRegistrationAndACP(definition loop.Definition, stores *sessionS
 		rig.WithSnapshots(rig.SnapshotPolicy{Trigger: rig.SnapshotManual, Priority: rig.SnapshotBestEffort, Timeout: snapshotTimeout}),
 		rig.WithDelegationLimits(limits),
 		rig.WithFingerprintFields(agentFingerprintFields(cfg)),
+		rig.WithRuntimeRestoreResolver(carbonRuntimeRestoreResolver{}),
 		rig.WithOffloadGC(rig.OffloadGCPolicy{Interval: offloadGCInterval, Timeout: offloadGCTimeout}),
 	}
 	if stores.resourceStorage != nil {
@@ -360,6 +361,8 @@ func buildRigWithRegistrationAndACP(definition loop.Definition, stores *sessionS
 	options = append(options, permissionReview.options()...)
 	if allowMismatch {
 		options = append(options, rig.WithAllowConfigMismatch())
+	} else {
+		options = append(options, rig.WithRestoreDecider(carbonRestoreDecider{}))
 	}
 	return rig.Define(options...)
 }

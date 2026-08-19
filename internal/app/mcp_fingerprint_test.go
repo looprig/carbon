@@ -2,10 +2,8 @@ package app
 
 import (
 	"context"
-	"errors"
 	"testing"
 
-	"github.com/looprig/harness/pkg/session"
 	mcpharness "github.com/looprig/mcp/pkg/harness"
 )
 
@@ -235,11 +233,9 @@ func TestMCPConfigFingerprintRestoreBehavior(t *testing.T) {
 		}
 	})
 
-	t.Run("changed digest is rejected", func(t *testing.T) {
-		err := restoreWith(t, changedDigest, false)
-		var rejected *session.RestoreRejectedError
-		if !errors.As(err, &rejected) {
-			t.Fatalf("restore under a DIFFERENT MCP config digest error = %T %v, want *session.RestoreRejectedError", err, err)
+	t.Run("changed digest is adopted as ephemeral", func(t *testing.T) {
+		if err := restoreWith(t, changedDigest, false); err != nil {
+			t.Fatalf("restore under a DIFFERENT ephemeral MCP config digest failed: %v", err)
 		}
 	})
 

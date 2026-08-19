@@ -64,9 +64,10 @@ func TestSessionAccessCloseIsIdempotent(t *testing.T) {
 	}
 }
 
-// TestRestoreRejectsAccessProfileDrift proves the fixed-profile rule at the
-// durable boundary. A profile change changes the single access digest.
-func TestRestoreRejectsAccessProfileDrift(t *testing.T) {
+// TestRestoreAdoptsCurrentAccessProfile proves Carbon treats its explicitly
+// selected process profile as current composition while Harness still audits
+// the changed access digest.
+func TestRestoreAdoptsCurrentAccessProfile(t *testing.T) {
 	stores, err := openTestStores(t)
 	if err != nil {
 		t.Fatalf("openTestStores: %v", err)
@@ -109,11 +110,11 @@ func TestRestoreRejectsAccessProfileDrift(t *testing.T) {
 		return err
 	}
 
-	if err := restore(t, AccessTrusted); err == nil {
-		t.Fatal("restore under a different access profile succeeded")
+	if err := restore(t, AccessTrusted); err != nil {
+		t.Fatalf("restore under current trusted access profile failed: %v", err)
 	}
 	if err := restore(t, AccessReadOnly); err != nil {
-		t.Fatalf("restore under the same access profile failed: %v", err)
+		t.Fatalf("restore after returning to readonly access profile failed: %v", err)
 	}
 }
 
