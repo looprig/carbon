@@ -25,7 +25,7 @@ func TestRuntimeCatalogExposesModesAndModel(t *testing.T) {
 
 // TestSessionPresentationReportsFixedProfile proves the runtime agent surfaces the
 // session-fixed access profile name and workspace root through the TUI's
-// SessionPresenter contract. The default (empty) Config resolves to the readonly
+// SessionPresenter contract. The default (empty) Config resolves to the trusted
 // profile.
 func TestSessionPresentationReportsFixedProfile(t *testing.T) {
 	agent, _ := openAcceptanceAgent(t)
@@ -38,7 +38,7 @@ func TestSessionPresentationReportsFixedProfile(t *testing.T) {
 	if presentation.WorkspaceRoot == "" {
 		t.Fatal("WorkspaceRoot is empty, want the session workspace root")
 	}
-	// A clean headless read-only store carries no out-of-catalog family diagnostics.
+	// A clean headless store carries no out-of-catalog family diagnostics.
 	if len(presentation.PermissionDiagnostics) != 0 {
 		t.Fatalf("PermissionDiagnostics = %v, want none for a clean store", presentation.PermissionDiagnostics)
 	}

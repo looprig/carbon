@@ -46,9 +46,10 @@ const (
 	AccessUnconfined AccessProfile = "unconfined"
 )
 
-// DefaultAccessProfile is the command default. The least-authority ReadOnly
-// profile is chosen so an unspecified session starts fail-closed.
-const DefaultAccessProfile = AccessReadOnly
+// DefaultAccessProfile is the command default. Trusted gives Carbon ordinary
+// workspace-write, host-read, and network access while retaining a gate for
+// host writes and keeping execution sandboxed.
+const DefaultAccessProfile = AccessTrusted
 
 // ParseAccessProfile validates an access-profile name at the CLI boundary. It
 // accepts EXACTLY the three known names and reports whether the name was valid,
@@ -66,8 +67,7 @@ func ParseAccessProfile(name string) (AccessProfile, bool) {
 // normalizeAccessProfile applies the product default and then validates the
 // selected profile through the same parser used at the CLI boundary. Every
 // composition path that consumes Config.AccessProfile uses this helper so an
-// empty value cannot accidentally widen authority or drift from the command
-// convention.
+// empty value cannot drift from the command convention.
 func normalizeAccessProfile(profile AccessProfile) (AccessProfile, error) {
 	if profile == "" {
 		profile = DefaultAccessProfile

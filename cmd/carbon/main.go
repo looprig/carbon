@@ -44,7 +44,7 @@ const (
 // cliFlags is the parsed CLI invocation: whether to list sessions and exit (--list), which
 // session to resume (--resume <uuid>; zero = new session), the session store root
 // (--data-dir; empty = the ~/.looprig/carbon/store default), the selected access profile
-// (--access-profile readonly|trusted|unconfined; default readonly), and the explicit
+// (--access-profile readonly|trusted|unconfined; default trusted), and the explicit
 // unconfined acknowledgement (--acknowledge-unconfined; required to select unconfined). There
 // is no positional agent name because Carbon is one fixed Rig.
 type cliFlags struct {

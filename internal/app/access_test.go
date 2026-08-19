@@ -50,8 +50,8 @@ func TestProductAccessVersion(t *testing.T) {
 // fail-closed rejection of anything else.
 func TestParseAccessProfile(t *testing.T) {
 	t.Parallel()
-	if DefaultAccessProfile != AccessReadOnly {
-		t.Fatalf("DefaultAccessProfile = %q, want %q", DefaultAccessProfile, AccessReadOnly)
+	if DefaultAccessProfile != AccessTrusted {
+		t.Fatalf("DefaultAccessProfile = %q, want %q", DefaultAccessProfile, AccessTrusted)
 	}
 	valid := []AccessProfile{AccessReadOnly, AccessTrusted, AccessUnconfined}
 	for _, name := range valid {

@@ -153,7 +153,7 @@ func TestMCPConfigDigestStableAcrossHeaderValueChange(t *testing.T) {
 // TestMCPConfigFingerprintRestoreBehavior exercises Task 11's fingerprint
 // plumbing through the SAME restore-drift harness
 // TestPermissionReviewConfigFingerprintChanges (permission_review_test.go)
-// and TestRestoreRejectsAccessProfileDrift (access_assembly_test.go) use:
+// and TestRestoreAdoptsCurrentAccessProfile (access_assembly_test.go) use:
 // buildRig/RestoreSession directly, no live MCP process needed since
 // agentFingerprintFields reads cfg.MCPConfigRev as a plain string.
 //
@@ -164,12 +164,10 @@ func TestMCPConfigDigestStableAcrossHeaderValueChange(t *testing.T) {
 // is always unknowable, and AssessDrift's own documented rule is "Warn when
 // direction is unknowable -- fail secure" (harness commit c050a43a, fixing a
 // gap this test's own predecessor discovered and reported). Carbon's
-// RestoreDecider (session.DefaultPolicyDecider, per this repo's CLAUDE.md
-// "Permission review" section) rejects whenever
-// event.DriftAssessment.AnyWarn() is true, so a restore where the MCP digest
-// changed is REJECTED with a typed *session.RestoreRejectedError -- proven
-// here through the real buildRig/RestoreSession path with a REAL digest pair
-// from genuinely different specs (a second stdio server added), not
+// composition restore policy treats external capabilities as ephemeral, so a
+// restore where the MCP digest changed adopts the current configuration. This
+// is proven through the real buildRig/RestoreSession path with a real digest
+// pair from genuinely different specs (a second stdio server added), not
 // synthetic literals.
 func TestMCPConfigFingerprintRestoreBehavior(t *testing.T) {
 	t.Parallel()

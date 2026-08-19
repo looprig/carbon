@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"strings"
 	"sync"
 	"testing"
 
@@ -18,6 +19,7 @@ import (
 	"github.com/looprig/harness/pkg/journal"
 	"github.com/looprig/harness/pkg/loop"
 	"github.com/looprig/harness/pkg/rig"
+	"github.com/looprig/harness/pkg/session"
 	"github.com/looprig/harness/pkg/sessionstore"
 	"github.com/looprig/harness/pkg/tool"
 	"github.com/looprig/inference"
@@ -136,7 +138,7 @@ func testACPEmptyComposition(t *testing.T) *ACPComposition {
 	}
 }
 
-func testACPDelegationRig(t *testing.T, cfg Config) (*rig.Rig, *sessionStores, *delegateProbe) {
+func testACPDelegationRig(t *testing.T, cfg Config) (*rig.Rig, *sessionStores, *delegateProbe, string, Config) {
 	t.Helper()
 	client := &managedScript{fn: func(context.Context, inference.Request) ([]content.Chunk, error) {
 		return finalText("child done"), nil
@@ -159,18 +161,24 @@ func testACPDelegationRig(t *testing.T, cfg Config) (*rig.Rig, *sessionStores, *
 	if err != nil {
 		t.Fatal(err)
 	}
-	return assembly, stores, probe
+	return assembly, stores, probe, root, cfg
 }
 
 func task31ProductionDefinition(t *testing.T, client inference.Client, probe *delegateProbe, cfg Config) (loop.Definition, string, Config) {
 	t.Helper()
 	root := t.TempDir()
+	definition, cfg := task31ProductionDefinitionAtRoot(t, client, probe, cfg, root)
+	return definition, root, cfg
+}
+
+func task31ProductionDefinitionAtRoot(t *testing.T, client inference.Client, probe *delegateProbe, cfg Config, root string) (loop.Definition, Config) {
+	t.Helper()
 	access, cfg := headlessTestAccess(t, cfg, root)
 	definition, err := carbonTestDefinitionWithAdditionalTools(client, testModel(), cfg, access, []tool.Definition{probe.definition()})
 	if err != nil {
 		t.Fatalf("carbonTestDefinitionWithAdditionalTools() error = %v", err)
 	}
-	return definition, root, cfg
+	return definition, cfg
 }
 
 func gatewayRuntimeCatalogForTask31(t *testing.T, clients map[model.ProviderName]inference.Client) loop.RuntimeCatalog {
@@ -252,7 +260,7 @@ func TestACPCompositionRestoresCodexRuntimeThroughCurrentCatalog(t *testing.T) {
 	})
 	recorder := &acpCompositionRecorder{backend: newACPCompositionBackend()}
 	composition := testACPComposition(t, catalog, recorder)
-	assembly, stores, probe := testACPDelegationRig(t, Config{ACPChildren: composition, RuntimeCatalog: catalog})
+	assembly, stores, probe, _, _ := testACPDelegationRig(t, Config{ACPChildren: composition, RuntimeCatalog: catalog})
 
 	live, err := assembly.NewSession(ctx)
 	if err != nil {
@@ -326,7 +334,7 @@ func TestACPCompositionMissingLunaRemapsChildToCurrentCodexDefault(t *testing.T)
 	})
 	recorder := &acpCompositionRecorder{backend: newACPCompositionBackend()}
 	fullComposition := testACPComposition(t, fullCatalog, recorder)
-	assembly, stores, probe := testACPDelegationRig(t, Config{ACPChildren: fullComposition, RuntimeCatalog: fullCatalog})
+	assembly, stores, probe, root, liveCfg := testACPDelegationRig(t, Config{ACPChildren: fullComposition, RuntimeCatalog: fullCatalog})
 	live, err := assembly.NewSession(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -353,16 +361,18 @@ func TestACPCompositionMissingLunaRemapsChildToCurrentCodexDefault(t *testing.T)
 	})
 	missingRecorder := &acpCompositionRecorder{backend: newACPCompositionBackend()}
 	missingComposition := testACPComposition(t, missingCatalog, missingRecorder)
-	missingCfg := Config{ACPChildren: missingComposition, RuntimeCatalog: missingCatalog}
+	missingCfg := liveCfg
+	missingCfg.ACPChildren = missingComposition
+	missingCfg.RuntimeCatalog = missingCatalog
 	// Rebuild the same Carbon topology with the current, deliberately incomplete catalog.
 	client := &managedScript{fn: func(context.Context, inference.Request) ([]content.Chunk, error) { return finalText("unused"), nil }}
 	probe2 := &delegateProbe{}
-	definition, root, missingCfg := task31ProductionDefinition(t, client, probe2, missingCfg)
+	definition, missingCfg := task31ProductionDefinitionAtRoot(t, client, probe2, missingCfg, root)
 	registration, err := newConversationHustleRegistration()
 	if err != nil {
 		t.Fatal(err)
 	}
-	currentRig, err := buildRigWithRegistrationAndACP(definition, stores, root, missingCfg, true, rig.DelegationLimits{Depth: delegationSpawnDepth, Quota: delegationSpawnQuota}, registration, permissionReviewRegistration{}, missingComposition)
+	currentRig, err := buildRigWithRegistrationAndACP(definition, stores, root, missingCfg, false, rig.DelegationLimits{Depth: delegationSpawnDepth, Quota: delegationSpawnQuota}, registration, permissionReviewRegistration{}, missingComposition)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -391,6 +401,129 @@ func TestACPCompositionMissingLunaRemapsChildToCurrentCodexDefault(t *testing.T)
 	if restoredCalls != 1 || restoredRuntime.Profile != "acp/codex" {
 		t.Fatalf("same-harness fallback calls=%d runtime=%+v", restoredCalls, restoredRuntime)
 	}
+}
+
+func TestACPCompositionRemovalDoesNotBlockRestoreWhenUnused(t *testing.T) {
+	ctx := context.Background()
+	fullCatalog := gatewayRuntimeCatalogForTask31(t, map[model.ProviderName]inference.Client{
+		"anthropic": &fakeLLM{}, "openai": &fakeLLM{},
+	})
+	fullComposition := testACPComposition(t, fullCatalog, &acpCompositionRecorder{backend: newACPCompositionBackend()})
+	assembly, stores, _, root, liveCfg := testACPDelegationRig(t, Config{ACPChildren: fullComposition, RuntimeCatalog: fullCatalog})
+	live, err := assembly.NewSession(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionID := live.SessionID()
+	if err := live.Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	emptyComposition := testACPEmptyComposition(t)
+	currentRig := testACPCurrentRig(t, stores, emptyComposition, root, liveCfg)
+	restored, err := currentRig.RestoreSession(ctx, sessionID)
+	if err != nil {
+		t.Fatalf("unused ACP removal blocked restore: %v", err)
+	}
+	defer func() { _ = restored.Shutdown(ctx) }()
+}
+
+func TestACPCompositionRemovalTombstonesInactiveUsedChild(t *testing.T) {
+	ctx := context.Background()
+	fullCatalog := gatewayRuntimeCatalogForTask31(t, map[model.ProviderName]inference.Client{
+		"anthropic": &fakeLLM{}, "openai": &fakeLLM{},
+	})
+	fullComposition := testACPComposition(t, fullCatalog, &acpCompositionRecorder{backend: newACPCompositionBackend()})
+	assembly, stores, probe, root, liveCfg := testACPDelegationRig(t, Config{ACPChildren: fullComposition, RuntimeCatalog: fullCatalog})
+	live, err := assembly.NewSession(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, err := probe.captured().Execute(ctx, tool.DelegateRequest{
+		Operation: tool.DelegateStart, AgentType: string(carbon.Name), Message: "review", WaitForResponse: false, Runtime: codexMaxRuntime(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionID := live.SessionID()
+	if err := live.Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	emptyComposition := testACPEmptyComposition(t)
+	currentRig := testACPCurrentRig(t, stores, emptyComposition, root, liveCfg)
+	restored, err := currentRig.RestoreSession(ctx, sessionID)
+	if err != nil {
+		t.Fatalf("inactive used ACP removal blocked root restore: %v", err)
+	}
+	defer func() { _ = restored.Shutdown(ctx) }()
+	for _, raw := range replayACPEvents(t, stores.session, sessionID) {
+		if ev, ok := raw.(event.LoopRestoreTombstoned); ok && ev.LoopID == started.AgentID {
+			return
+		}
+	}
+	t.Fatal("removed inactive ACP child was not durably tombstoned")
+}
+
+func TestACPCompositionRemovalFailsClearlyForActiveUsedChild(t *testing.T) {
+	ctx := context.Background()
+	fullCatalog := gatewayRuntimeCatalogForTask31(t, map[model.ProviderName]inference.Client{
+		"anthropic": &fakeLLM{}, "openai": &fakeLLM{},
+	})
+	fullComposition := testACPComposition(t, fullCatalog, &acpCompositionRecorder{backend: newACPCompositionBackend()})
+	assembly, stores, probe, root, liveCfg := testACPDelegationRig(t, Config{ACPChildren: fullComposition, RuntimeCatalog: fullCatalog})
+	live, err := assembly.NewSession(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, err := probe.captured().Execute(ctx, tool.DelegateRequest{
+		Operation: tool.DelegateStart, AgentType: string(carbon.Name), Message: "review", WaitForResponse: false, Runtime: codexMaxRuntime(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := live.SetActiveLoop(ctx, started.AgentID); err != nil {
+		t.Fatal(err)
+	}
+	sessionID := live.SessionID()
+	if err := live.Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	emptyComposition := testACPEmptyComposition(t)
+	currentRig := testACPCurrentRig(t, stores, emptyComposition, root, liveCfg)
+	_, err = currentRig.RestoreSession(ctx, sessionID)
+	var runtimeErr *session.RestoreRuntimeMismatchError
+	if !errors.As(err, &runtimeErr) || runtimeErr.Kind != session.RestoreRuntimeUnavailable || runtimeErr.Harness != "codex" {
+		t.Fatalf("active used ACP restore error = %v, want unavailable codex runtime", err)
+	}
+	if !strings.Contains(err.Error(), `used harness "codex" is not currently configured or runnable`) {
+		t.Fatalf("active used ACP restore error = %q, want actionable harness diagnostic", err)
+	}
+}
+
+func testACPCurrentRig(t *testing.T, stores *sessionStores, composition *ACPComposition, root string, cfg Config) *rig.Rig {
+	t.Helper()
+	cfg.ACPChildren = composition
+	cfg.RuntimeCatalog = composition.Catalog.RuntimeCatalog
+	client := &managedScript{fn: func(context.Context, inference.Request) ([]content.Chunk, error) {
+		return finalText("unused"), nil
+	}}
+	probe := &delegateProbe{}
+	definition, cfg := task31ProductionDefinitionAtRoot(t, client, probe, cfg, root)
+	registration, err := newConversationHustleRegistration()
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentRig, err := buildRigWithRegistrationAndACP(
+		definition, stores, root, cfg, false,
+		rig.DelegationLimits{Depth: delegationSpawnDepth, Quota: delegationSpawnQuota},
+		registration, permissionReviewRegistration{}, composition,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return currentRig
 }
 
 func TestACPCompositionWithoutProfilesUsesManagedNativeFallback(t *testing.T) {

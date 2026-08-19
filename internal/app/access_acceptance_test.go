@@ -649,8 +649,8 @@ func TestAcceptanceEgressFailureSurfacedAtAssembly(t *testing.T) {
 // the SAME effective authority for two independent opens of the same profile over
 // the same workspace: identical access-config digest and identical Carbon policy
 // revisions. New and restore share this path (openRuntimeAgent), so a restore under
-// the same configuration reconstructs identical authority; the drift rejection is
-// covered by TestRestoreRejectsAccessProfileDrift.
+// the same configuration reconstructs identical authority; adopting a changed
+// current profile on restore is covered by TestRestoreAdoptsCurrentAccessProfile.
 func TestAcceptanceNewRestoreAuthorityParity(t *testing.T) {
 	root := canonicalTempDir(t)
 

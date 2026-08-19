@@ -145,7 +145,7 @@ func TestCollabMCPIntegrationNewAndRestoredForeignConstruction(t *testing.T) {
 		"openai":    &fakeLLM{},
 	})
 	composition := collabMCPIntegrationComposition(t, catalog, recorder)
-	assembly, _, probe := testACPDelegationRig(t, Config{
+	assembly, _, probe, _, _ := testACPDelegationRig(t, Config{
 		ACPChildren:    composition,
 		RuntimeCatalog: catalog,
 	})

@@ -735,22 +735,19 @@ func TestPermissionReviewProgrammaticModelWinsOverModelsJSONThroughFullCompositi
 // This SUPERSEDES this test's own prior assumption (a Task 24 correction
 // that a topology-only permission-review change always classified
 // event.DriftInfo and so always auto-accepted under
-// event.DefaultPolicyDecider). Harness's pkg/event/drift.go now carries a
+// Carbon's composition restore policy). Harness's pkg/event/drift.go carries a
 // dedicated ConfigManifest.PermissionReviewConfigured signal, compared
 // DIRECTIONALLY: disabled -> enabled is event.DriftWarn ("design §21: never
 // silently resumes with a different permission-review configuration" — exactly
 // the bug this fix closes), enabled -> disabled stays event.DriftInfo (strictly narrower, more
-// human control). event.DefaultPolicyDecider (pkg/session/decider.go, the
-// Harness default Carbon never overrides with a custom RestoreDecider)
-// rejects on ANY Warn change, so RestoreSession now returns a typed
+// human control). Carbon deliberately keeps both permission-review fields
+// critical, so RestoreSession returns a typed
 // *session.RestoreRejectedError for the widening case.
 //
 // Reasoning for why Carbon does NOT auto-accept this drift on the caller's
 // behalf: per CLAUDE.md's "fail closed when access, permission, identity, or
-// durable policy state is uncertain," and because TestRestoreRejectsAccessProfileDrift
-// already establishes Carbon's existing convention for every other kind of
-// rejected restore drift (access-profile change) — surface the plain
-// rejection error to the caller and require the SAME explicit,
+// durable policy state is uncertain." Carbon surfaces the plain rejection
+// error to the caller and requires the existing explicit,
 // caller-supplied SessionSelector.AllowConfigMismatch a caller would use
 // for any other deliberate config change, rather than inventing a
 // permission-review-specific auto-accept path. This test proves both halves:
@@ -859,8 +856,7 @@ func TestPermissionReviewConfigFingerprintChanges(t *testing.T) {
 		stores, root, sid := newDisabledBaseline(t)
 		// The existing, pre-established mechanism (SessionSelector.AllowConfigMismatch
 		// -> rig.WithAllowConfigMismatch): the SAME widening restore now succeeds
-		// when the caller opts in exactly as TestRestoreRejectsAccessProfileDrift's
-		// own access-profile case would.
+		// when the caller opts in.
 		if err := restoreWith(t, stores, root, sid, enabled, true); err != nil {
 			t.Fatalf("restore under a DIFFERENT permission-review configuration WITH AllowConfigMismatch error = %v, want success", err)
 		}

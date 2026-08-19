@@ -34,7 +34,7 @@ func TestACPPostureForAccessProfile(t *testing.T) {
 		profile AccessProfile
 		posture driver.Posture
 	}{
-		{name: "empty defaults to readonly", profile: "", posture: driver.PostureReadOnly},
+		{name: "empty defaults to trusted", profile: "", posture: driver.PostureWorkspaceWrite},
 		{name: "readonly", profile: AccessReadOnly, posture: driver.PostureReadOnly},
 		{name: "trusted", profile: AccessTrusted, posture: driver.PostureWorkspaceWrite},
 		{name: "unconfined", profile: AccessUnconfined, posture: driver.PostureWorkspaceWrite},
@@ -65,7 +65,7 @@ func TestNewACPCompositionCapturesEffectiveACPPosture(t *testing.T) {
 		effective   AccessProfile
 		wantPosture driver.Posture
 	}{
-		{name: "empty profile defaults", selected: "", effective: DefaultAccessProfile, wantPosture: driver.PostureReadOnly},
+		{name: "empty profile defaults", selected: "", effective: DefaultAccessProfile, wantPosture: driver.PostureWorkspaceWrite},
 		{name: "readonly", selected: AccessReadOnly, effective: AccessReadOnly, wantPosture: driver.PostureReadOnly},
 		{name: "trusted", selected: AccessTrusted, effective: AccessTrusted, wantPosture: driver.PostureWorkspaceWrite},
 		{name: "unconfined", selected: AccessUnconfined, effective: AccessUnconfined, wantPosture: driver.PostureWorkspaceWrite},
