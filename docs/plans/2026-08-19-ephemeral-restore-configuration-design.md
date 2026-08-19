@@ -14,9 +14,15 @@ access-profile drift is audited but does not reject a Carbon restore.
 
 ## Restore policy
 
-Carbon installs an application-specific `session.RestoreDecider` instead of
-using Harness's fail-secure default or the blanket `WithAllowConfigMismatch`
-escape hatch. The decider accepts drift in:
+Harness remains policy-neutral. Its existing `session.RestoreDecider` exposes
+manifest drift to the composition layer, and a new runtime-restore resolver
+exposes a durable loop's validated runtime selection plus the current catalogue
+when exact reconstruction fails. Both hooks keep their existing fail-closed
+behavior when a composer does not install a policy.
+
+Carbon installs application-specific implementations instead of using
+Harness's defaults or the blanket `WithAllowConfigMismatch` escape hatch. The
+manifest decider accepts drift in:
 
 - model identity and the parent runtime catalogue;
 - MCP external-capability identity;
@@ -43,11 +49,14 @@ and tombstones unavailable inactive children. Carbon therefore accepts global
 catalogue drift and leaves the per-loop restored builder as the compatibility
 boundary.
 
-For each durable ACP child, Carbon first resolves its persisted selection. If
-the old model, effort, credential source, or target alias no longer exists, it
-falls back to the current default selection for the same harness. Launcher paths
-are never durable identity. The persisted ACP session identifier is passed to
-the same harness's restored builder with the current configuration.
+For each durable ACP child, Harness first attempts its exact, fail-closed
+reconstruction. If the old model, effort, credential source, or target alias no
+longer exists, it gives the validated mismatch and current catalogue to the
+composer-installed runtime resolver. Carbon's resolver may return only the
+current default selection for the same persisted harness; it may not cross to a
+different harness. Launcher paths are never durable identity. The persisted ACP
+session identifier is passed to the same harness's restored builder with the
+current configuration.
 
 If that harness has no admitted profile, no verified executable, or cannot
 restore the durable child, Harness tombstones an inactive child. If the failed
@@ -100,11 +109,12 @@ single launcher authority.
 
 ## Components
 
-- `carbon/internal/app`: Carbon restore decider, ACP same-harness fallback, and
-  focused integration tests.
+- `carbon/internal/app`: Carbon manifest decider and same-harness runtime
+  resolver, plus focused integration tests.
 - `carbon/cmd/carbon`: trusted default assertions and CLI behavior.
-- `harness/internal/sessionruntime` and `harness/pkg/session`: preserve and
-  present the active child runtime-mismatch cause.
+- `harness/internal/sessionruntime`, `harness/pkg/session`, and `harness/pkg/rig`:
+  expose the policy-neutral runtime-restore request/decision hook, preserve the
+  fail-closed default, and present the active child runtime-mismatch cause.
 - `~/.zshrc`: remove obsolete ACP environment overrides.
 
 No persisted event schema changes are required. Existing sessions use the
