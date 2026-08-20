@@ -63,7 +63,7 @@ func TestModelConfigNativeACPProfilesDistinguishAbsentManagedAndExplicit(t *test
 func TestModelConfigNativeACPModelsAcceptLegacyAndStructuredEntries(t *testing.T) {
 	config := decodeModelConfigWithNativeACP(t, `{"codex":{"enabled":true,"models":[
 		"legacy-model",
-		{"model":"gpt-5.6-sol","efforts":["high","medium"],"default_effort":"medium"}
+		{"model":"gpt-5.6-sol","efforts":["max","minimal","high","none","xhigh","low","medium"],"default_effort":"xhigh"}
 	]}}`)
 	normalized, err := normalizeModelConfig(config)
 	if err != nil {
@@ -77,7 +77,7 @@ func TestModelConfigNativeACPModelsAcceptLegacyAndStructuredEntries(t *testing.T
 	if len(options) != 2 {
 		t.Fatalf("normalized model options = %#v, want 2 entries", options)
 	}
-	assertNativeACPModelOption(t, options[0], "gpt-5.6-sol", []string{"medium", "high"}, "medium")
+	assertNativeACPModelOption(t, options[0], "gpt-5.6-sol", []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"}, "xhigh")
 	assertNativeACPModelOption(t, options[1], "legacy-model", []string{"none"}, "none")
 }
 

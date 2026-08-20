@@ -157,6 +157,10 @@ model; `FAKE_EXAMPLE_KEY_DO_NOT_USE` is deliberately unusable:
 
 The catalogue is authoritative for production model aliases and credentials.
 Version 2 is required; Carbon does not rewrite or migrate an existing file.
+The accepted neutral effort vocabulary is `none`, `minimal`, `low`, `medium`,
+`high`, `xhigh`, and `max`, in that order. Each model row must list only the
+subset that its selected model and API format support; Carbon preserves those
+choices rather than silently clamping them to another level.
 Every model that lists `delegate` in `uses` must include a bounded, single-line
 `description`. These descriptions are shown in the `StartAgent` tool's runtime
 catalogue, not repeated in the system prompt.

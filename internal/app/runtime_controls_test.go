@@ -126,6 +126,26 @@ func TestRuntimeCatalogEffortsReflectCurrentModelNotRosterOrder(t *testing.T) {
 	}
 }
 
+func TestRuntimeCatalogFallbackUsesEffortSuperset(t *testing.T) {
+	selected := testModel()
+	selected.Caps.Thinking = true
+	agent, _ := openAcceptanceAgentSelectingPrimerCandidate(t, nil, selected)
+
+	options, err := agent.LoopRuntimeOptions(context.Background(), agent.ActiveLoopID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []tui.EffortID{"", "minimal", "low", "medium", "high", "xhigh", "max"}
+	if len(options.Efforts) != len(want) {
+		t.Fatalf("efforts = %#v, want %v", options.Efforts, want)
+	}
+	for i, effort := range options.Efforts {
+		if effort.ID != want[i] {
+			t.Fatalf("efforts = %#v, want %v", options.Efforts, want)
+		}
+	}
+}
+
 func TestRuntimeControllerRejectsUnknownTypedChoices(t *testing.T) {
 	agent, _ := openAcceptanceAgent(t)
 	if err := agent.SetModel(context.Background(), agent.ActiveLoopID(), tui.ModelID("unknown/model")); err == nil {

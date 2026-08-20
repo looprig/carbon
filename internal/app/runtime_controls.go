@@ -203,7 +203,10 @@ func (a *RuntimeAgent) LoopRuntimeOptions(_ context.Context, loopID uuid.UUID) (
 	if current, ok := currentPrimerCandidate(a.primerCandidates, selectedModel); ok {
 		efforts = current.Efforts
 	} else if len(efforts) == 0 && selectedModel.Caps.Thinking {
-		efforts = []model.Effort{model.EffortNone, model.EffortLow, model.EffortMedium, model.EffortHigh, model.EffortMax}
+		efforts = []model.Effort{
+			model.EffortNone, model.EffortMinimal, model.EffortLow, model.EffortMedium,
+			model.EffortHigh, model.EffortXHigh, model.EffortMax,
+		}
 	}
 	for _, effort := range efforts {
 		label := string(effort)

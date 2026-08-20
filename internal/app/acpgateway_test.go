@@ -74,7 +74,7 @@ func TestBuildACPGatewayPlanSeparatesClaudeMainAndSmallEffortAliases(t *testing.
 	t.Parallel()
 	compiled := testACPGatewayCatalog(t)
 
-	for _, effort := range []model.Effort{model.EffortMedium, model.EffortHigh, model.EffortMax} {
+	for _, effort := range []model.Effort{model.EffortMedium, model.EffortHigh, model.EffortXHigh, model.EffortMax} {
 		effort := effort
 		t.Run(string(effort), func(t *testing.T) {
 			t.Parallel()
@@ -184,12 +184,12 @@ func legacyTestGatewayTargets(clients map[model.ProviderName]inference.Client) [
 		name     string
 		efforts  []model.Effort
 	}{
-		{alias: "fable-5", provider: "anthropic", format: model.APIFormatAnthropic, name: "claude-fable-5", efforts: []model.Effort{model.EffortLow, model.EffortMedium, model.EffortHigh, model.EffortMax}},
-		{alias: "sonnet-5", provider: "anthropic", format: model.APIFormatAnthropic, name: "claude-sonnet-5", efforts: []model.Effort{model.EffortLow, model.EffortMedium, model.EffortHigh, model.EffortMax}},
-		{alias: "opus-5", provider: "anthropic", format: model.APIFormatAnthropic, name: "claude-opus-5", efforts: []model.Effort{model.EffortLow, model.EffortMedium, model.EffortHigh, model.EffortMax}},
-		{alias: "gpt-5.6-sol", provider: "openai", format: model.APIFormatOpenAIResponses, name: "gpt-5.6-sol", efforts: []model.Effort{model.EffortNone, model.EffortLow, model.EffortMedium, model.EffortHigh, model.EffortMax}},
-		{alias: "gpt-5.6-terra", provider: "openai", format: model.APIFormatOpenAIResponses, name: "gpt-5.6-terra", efforts: []model.Effort{model.EffortNone, model.EffortLow, model.EffortMedium, model.EffortHigh, model.EffortMax}},
-		{alias: "gpt-5.6-luna", provider: "openai", format: model.APIFormatOpenAIResponses, name: "gpt-5.6-luna", efforts: []model.Effort{model.EffortNone, model.EffortLow, model.EffortMedium, model.EffortHigh, model.EffortMax}},
+		{alias: "fable-5", provider: "anthropic", format: model.APIFormatAnthropic, name: "claude-fable-5", efforts: []model.Effort{model.EffortLow, model.EffortMedium, model.EffortHigh, model.EffortXHigh, model.EffortMax}},
+		{alias: "sonnet-5", provider: "anthropic", format: model.APIFormatAnthropic, name: "claude-sonnet-5", efforts: []model.Effort{model.EffortLow, model.EffortMedium, model.EffortHigh, model.EffortXHigh, model.EffortMax}},
+		{alias: "opus-5", provider: "anthropic", format: model.APIFormatAnthropic, name: "claude-opus-5", efforts: []model.Effort{model.EffortLow, model.EffortMedium, model.EffortHigh, model.EffortXHigh, model.EffortMax}},
+		{alias: "gpt-5.6-sol", provider: "openai", format: model.APIFormatOpenAIResponses, name: "gpt-5.6-sol", efforts: []model.Effort{model.EffortNone, model.EffortMinimal, model.EffortLow, model.EffortMedium, model.EffortHigh, model.EffortXHigh, model.EffortMax}},
+		{alias: "gpt-5.6-terra", provider: "openai", format: model.APIFormatOpenAIResponses, name: "gpt-5.6-terra", efforts: []model.Effort{model.EffortNone, model.EffortMinimal, model.EffortLow, model.EffortMedium, model.EffortHigh, model.EffortXHigh, model.EffortMax}},
+		{alias: "gpt-5.6-luna", provider: "openai", format: model.APIFormatOpenAIResponses, name: "gpt-5.6-luna", efforts: []model.Effort{model.EffortNone, model.EffortMinimal, model.EffortLow, model.EffortMedium, model.EffortHigh, model.EffortXHigh, model.EffortMax}},
 	}
 	var targets []ACPGatewaySource
 	for _, definition := range definitions {

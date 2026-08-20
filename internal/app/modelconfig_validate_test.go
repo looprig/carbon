@@ -2,6 +2,7 @@ package app
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -34,7 +35,6 @@ func TestValidateModelConfig(t *testing.T) {
 		{name: "empty efforts", mutate: func(c *modelConfigFile) { c.Models[0].Efforts = nil }},
 		{name: "empty effort", mutate: func(c *modelConfigFile) { c.Models[0].Efforts[0] = "" }},
 		{name: "duplicate efforts", mutate: func(c *modelConfigFile) { c.Models[0].Efforts = append(c.Models[0].Efforts, "none") }},
-		{name: "invalid xhigh effort", mutate: func(c *modelConfigFile) { c.Models[0].Efforts[0] = "xhigh" }},
 		{name: "invalid ultra effort", mutate: func(c *modelConfigFile) { c.Models[0].Efforts[0] = "ultra" }},
 		{name: "empty default effort", mutate: func(c *modelConfigFile) { c.Models[0].DefaultEffort = "" }},
 		{name: "padded default effort", mutate: func(c *modelConfigFile) { c.Models[0].DefaultEffort = "none " }},
@@ -88,6 +88,31 @@ func TestValidateModelConfig(t *testing.T) {
 				t.Errorf("error leaked API key: %v", err)
 			}
 		})
+	}
+}
+
+func TestNormalizeModelConfigAcceptsEffortSuperset(t *testing.T) {
+	config := validDecodedModelConfig(t)
+	config.Models[0].Capabilities.Thinking = true
+	config.Models[0].Efforts = []string{"max", "minimal", "high", "none", "xhigh", "low", "medium"}
+	config.Models[0].DefaultEffort = "xhigh"
+
+	normalized, err := normalizeModelConfig(config)
+	if err != nil {
+		t.Fatalf("normalizeModelConfig() error = %v", err)
+	}
+	want := []model.Effort{
+		model.EffortNone, model.EffortMinimal, model.EffortLow, model.EffortMedium,
+		model.EffortHigh, model.EffortXHigh, model.EffortMax,
+	}
+	if got := normalized.Models[0].Efforts; !slices.Equal(got, want) {
+		t.Fatalf("Efforts = %v, want %v", got, want)
+	}
+	if got := normalized.Models[0].DefaultEffort; got != model.EffortXHigh {
+		t.Fatalf("DefaultEffort = %q, want xhigh", got)
+	}
+	if got := normalized.Models[0].Model.Sampling.Effort; got != model.EffortXHigh {
+		t.Fatalf("Model.Sampling.Effort = %q, want xhigh", got)
 	}
 }
 

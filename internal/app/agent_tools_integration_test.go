@@ -448,8 +448,8 @@ func TestAgentToolsRejectIncompatibleNativeModelEffort(t *testing.T) {
 	if got := runManagedTurn(t, agent, "reject an incompatible model effort"); got != "invalid selection handled" {
 		t.Fatalf("final = %q", got)
 	}
-	if !strings.Contains(result, "unknown_runtime") {
-		t.Fatalf("incompatible selection result = %q, want bounded unknown_runtime error", result)
+	if !strings.Contains(result, "tool preparation failed") || !strings.Contains(result, `effort "low" is unavailable for model "beta"`) {
+		t.Fatalf("incompatible selection result = %q, want bounded unavailable-effort preparation error", result)
 	}
 }
 
@@ -513,9 +513,9 @@ func TestAssembledStartAgentACPFailureUsesSafeDetail(t *testing.T) {
 		if strings.Contains(got, googleAPIKey) {
 			return nil, fmt.Errorf("StartAgent ACP failure result leaked bare credential")
 		}
-		wantPrefix := "error: agent failed: " + safeDetail
+		wantPrefix := "StartAgent failed: " + safeDetail
 		if !strings.HasPrefix(got, wantPrefix) || !strings.Contains(got, "[REDACTED]") {
-			return nil, fmt.Errorf("StartAgent ACP failure result did not preserve safe detail and redact credential")
+			return nil, fmt.Errorf("StartAgent ACP failure result %q did not preserve safe detail and redact credential", got)
 		}
 		return finalText("ACP failure formatted safely"), nil
 	}

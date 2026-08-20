@@ -337,6 +337,11 @@ func acceptanceMessageContainsRuntimeContext(message content.Conversation) bool 
 
 func acceptanceAssertBedrockRuntimeWire(t *testing.T, request inference.Request, wantToolResults int) {
 	t.Helper()
+	request.Model = request.Model.Clone()
+	// This assertion projects an otherwise OpenAI-configured acceptance request
+	// into Converse solely to validate its message shape. Converse has no
+	// model-independent effort field, so make that projection explicit.
+	request.Model.Sampling.Effort = model.EffortNone
 	body, err := bedrockconverse.EncodeRequest(request)
 	if err != nil {
 		t.Fatalf("bedrockconverse.EncodeRequest() error = %v", err)

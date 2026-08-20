@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1396,8 +1397,9 @@ func TestACPChildEnvironmentIsCredentialScopedWithoutStartupPreflight(t *testing
 		t.Fatalf("Claude configured aliases changed during composition: %#v", claude.Models)
 	}
 	for _, option := range claude.Models {
-		if option.Alias == "sonnet-5" && len(option.Efforts) != 4 {
-			t.Fatalf("Claude configured efforts changed during composition: %#v", option)
+		wantEfforts := []model.Effort{model.EffortLow, model.EffortMedium, model.EffortHigh, model.EffortXHigh, model.EffortMax}
+		if option.Alias == "sonnet-5" && !slices.Equal(option.Efforts, wantEfforts) {
+			t.Fatalf("Claude configured efforts = %v, want %v", option.Efforts, wantEfforts)
 		}
 	}
 	if _, _, err := composition.Registry.Builder("acp/claude-code"); err != nil {

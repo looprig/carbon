@@ -68,7 +68,10 @@ limit ordinal or any in-session authority-mutation surface.
   that mode. A configured non-empty list is a strict allowlist. Its preferred
   structured entries are `{ "model": "<id>", "efforts": ["<effort>"],
   "default_effort": "<effort>" }`; `default_effort` must be one of the listed
-  efforts, and `StartAgent` may select only those model/effort pairs. Legacy
+  efforts, and `StartAgent` may select only those model/effort pairs. The
+  neutral superset is `none`, `minimal`, `low`, `medium`, `high`, `xhigh`,
+  and `max`; each entry lists only the subset its runtime actually advertises.
+  Legacy
   string entries remain accepted for compatibility and have the same model-only
   behavior as structured entries whose sole effort and default are `none`;
   non-`none` structured entries carry their exact model/effort selector.
