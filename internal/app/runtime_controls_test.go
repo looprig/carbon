@@ -21,6 +21,13 @@ func TestRuntimeCatalogExposesModesAndModel(t *testing.T) {
 	if len(options.Models) != 1 || options.Models[0].ID == "" {
 		t.Fatalf("models = %#v, want one stable current model", options.Models)
 	}
+	handle, ok := agent.sess.Loop(agent.ActiveLoopID())
+	if !ok {
+		t.Fatal("active loop is unavailable")
+	}
+	if got, want := options.Models[0].Provider, string(handle.Model().Provider); got != want {
+		t.Errorf("fallback model provider = %q, want canonical provider %q", got, want)
+	}
 }
 
 // TestSessionPresentationReportsFixedProfile proves the runtime agent surfaces the
@@ -93,6 +100,11 @@ func TestRuntimeCatalogListsAllPrimerCandidates(t *testing.T) {
 	}
 	if options.Models[0].ID != tui.ModelID("candidate-a") || options.Models[1].ID != tui.ModelID("candidate-b") {
 		t.Fatalf("models = %#v, want candidate-a then candidate-b in config order", options.Models)
+	}
+	for i, option := range options.Models {
+		if got, want := option.Provider, string(agent.primerCandidates[i].Model.Provider); got != want {
+			t.Errorf("model %q provider = %q, want canonical provider %q", option.ID, got, want)
+		}
 	}
 	// The session opened on candidate-a's model (testModel()), so effort
 	// options must reflect candidate-a, not candidate-b.

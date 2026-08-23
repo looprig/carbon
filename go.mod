@@ -23,7 +23,7 @@ require (
 	github.com/looprig/secrets v0.2.0
 	github.com/looprig/storage v0.4.0
 	github.com/looprig/tools v0.11.0
-	github.com/looprig/tui v0.16.0
+	github.com/looprig/tui v0.17.0
 	golang.org/x/sys v0.47.0
 )
 
@@ -84,6 +84,7 @@ require (
 	github.com/openai/openai-go/v3 v3.50.0 // indirect
 	github.com/pb33f/ordered-map/v2 v2.3.1 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
+	github.com/sahilm/fuzzy v0.1.3 // indirect
 	github.com/securego/gosec/v2 v2.28.0 // indirect
 	github.com/segmentio/asm v1.2.1 // indirect
 	github.com/segmentio/encoding v0.5.4 // indirect

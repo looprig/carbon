@@ -192,11 +192,20 @@ func (a *RuntimeAgent) LoopRuntimeOptions(_ context.Context, loopID uuid.UUID) (
 	selectedModel := handle.Model()
 	if len(a.primerCandidates) == 0 {
 		publicID := a.publicModelID(selectedModel)
-		options.Models = []tui.ModelOption{{ID: tui.ModelID(publicID), Label: publicID}}
+		options.Models = []tui.ModelOption{{
+			ID:       tui.ModelID(publicID),
+			Provider: string(selectedModel.Provider),
+			Label:    publicID,
+		}}
 	} else {
 		options.Models = make([]tui.ModelOption, 0, len(a.primerCandidates))
 		for _, c := range a.primerCandidates {
-			options.Models = append(options.Models, tui.ModelOption{ID: tui.ModelID(c.Alias), Label: c.Alias, Description: c.Description})
+			options.Models = append(options.Models, tui.ModelOption{
+				ID:          tui.ModelID(c.Alias),
+				Provider:    string(c.Model.Provider),
+				Label:       c.Alias,
+				Description: c.Description,
+			})
 		}
 	}
 	efforts := a.primerEfforts

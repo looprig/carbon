@@ -117,6 +117,8 @@ github.com/hexops/gotextdiff v1.0.3 h1:gitA9+qJrrTCsiCl7+kh75nPqQt1cx4ZkudSTLoUq
 github.com/hexops/gotextdiff v1.0.3/go.mod h1:pSWU5MAI3yDq+fZBTazCSJysOMbxWL1BSow5/V2vxeg=
 github.com/invopop/jsonschema v0.14.0 h1:MHQqLhvpNUZfw+hM3AZDYK7jxO8FZoQeQM77g8iyZjg=
 github.com/invopop/jsonschema v0.14.0/go.mod h1:ygm6C2EaVNMBDPpaPlnOA2pFAxBnxGjFlMZABxm9n2I=
+github.com/kylelemons/godebug v1.1.0 h1:RPNrshWIDI6G2gRW9EHilWtl7Z6Sb1BR0xunSBf0SNc=
+github.com/kylelemons/godebug v1.1.0/go.mod h1:9/0rRGxNHcop5bhtWyNeEfOS8JIWk580+fNqagV/RAw=
 github.com/landlock-lsm/go-landlock v0.9.0 h1:2q8G8yx9Hsd5bV+R6PJfgQl0zszNxC8KO+SIqGwfxlw=
 github.com/landlock-lsm/go-landlock v0.9.0/go.mod h1:mn5GSi81Jf7yMs5WSi+SUi4sUeNLUGVdbT4Id6wXNQw=
 github.com/looprig/acp v0.3.0 h1:RODf29Gkd1huRBHMIfUzDNO0/8uW9rxHZUA+87JDgYQ=
@@ -147,8 +149,8 @@ github.com/looprig/storage v0.4.0 h1:LFzCuRpjuYKTANNMsqKp+ilb9jnAJMRrR18KoNqBCjw
 github.com/looprig/storage v0.4.0/go.mod h1:cA0IN/Xn3iMUojKkcfhQZApTtrjg/mdISijL0NtlxUA=
 github.com/looprig/tools v0.11.0 h1:KdMHLFH7PEuNS9Nf+UhqtJLARPZBSWNwKtZfUfpTIEk=
 github.com/looprig/tools v0.11.0/go.mod h1:klJV+aPQ34XGcfrMWlhiE3snwrpfGg0aic+l233aDPw=
-github.com/looprig/tui v0.16.0 h1:8AWt07IS5P0FIsSeoU/8ZBcCFeZLm2w8lluk/5bVufI=
-github.com/looprig/tui v0.16.0/go.mod h1:tj+ynHt/MIfXeVSGDZebxzhRTktj5n/+wRW6z4cBPgg=
+github.com/looprig/tui v0.17.0 h1:v2jltbqUBd14JFO/Ab6KgtKfHoo3L+JRE/iVoWTZheA=
+github.com/looprig/tui v0.17.0/go.mod h1:IHFKj0czKsSo4cPStkrsiwHyV8QHGyPcV/TS2QWs724=
 github.com/lucasb-eyer/go-colorful v1.4.1 h1:1EO+WB73+EH8EVbzlrG3KLAfEypQWVHIBqlTf+2hNss=
 github.com/lucasb-eyer/go-colorful v1.4.1/go.mod h1:R4dSotOR9KMtayYi1e77YzuveK+i7ruzyGqttikkLy0=
 github.com/mattn/go-runewidth v0.0.27 h1:Feg/Oou5zI/wnpgDF6omIU0OokC9GxLC/WRknhVlIR0=
@@ -175,6 +177,8 @@ github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 h1:Jamvg5psRI
 github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/rivo/uniseg v0.4.7 h1:WUdvkW8uEhrYfLC4ZzdpI2ztxP1I582+49Oc5Mq64VQ=
 github.com/rivo/uniseg v0.4.7/go.mod h1:FN3SvrM+Zdj16jyLfmOkMNblXMcoc8DfTHruCPUcx88=
+github.com/sahilm/fuzzy v0.1.3 h1:juByESSS32nVD81vr6tHmKmA/8zde7gE+x5CLxrzXPU=
+github.com/sahilm/fuzzy v0.1.3/go.mod h1:au6//VbVSqu6DFrkL2CfjlJ5iURpNCPeE+1GwY3XsT8=
 github.com/santhosh-tekuri/jsonschema/v6 v6.0.3 h1:1EYB5IzjZawrrnELUi78f9fPu57HuXjmddZPjrls/28=
 github.com/santhosh-tekuri/jsonschema/v6 v6.0.3/go.mod h1:JXeL+ps8p7/KNMjDQk3TCwPpBy0wYklyWTfbkIzdIFU=
 github.com/securego/gosec/v2 v2.28.0 h1:ZsSdiDb0AtTpLFVol5z91gbMei9ZiLEPG/pZjZujp7c=
