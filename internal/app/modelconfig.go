@@ -217,7 +217,7 @@ func modelTargetConfigFromV3(wire modelTargetConfigV3Wire) (modelTargetConfig, e
 		return modelTargetConfig{}, err
 	}
 	return modelTargetConfig{
-		Alias: wire.Alias, Description: wire.Description, Provider: wire.Provider,
+		Alias: wire.Alias, Label: wire.Label, Description: wire.Description, Provider: wire.Provider,
 		APIFormat: wire.APIFormat, BaseURL: wire.BaseURL, Model: wire.Model,
 		ContextLimits: wire.ContextLimits, APIKey: apiKey, CredentialRef: credentialRef,
 		Uses: wire.Uses, Capabilities: wire.Capabilities, Efforts: wire.Efforts,
@@ -283,7 +283,11 @@ func (c *permissionReviewConfig) UnmarshalJSON(data []byte) error {
 }
 
 type modelTargetConfig struct {
-	Alias         string                   `json:"alias"`
+	Alias string `json:"alias"`
+	// Label is omitempty because this union form is marshalled back into files of EITHER
+	// schema version, and label exists only in v3: a v2 file that emitted an empty label
+	// would fail its own strict decode on an unknown field.
+	Label         string                   `json:"label,omitempty"`
 	Description   string                   `json:"description"`
 	Provider      string                   `json:"provider"`
 	APIFormat     string                   `json:"api_format"`
@@ -369,7 +373,17 @@ type modelTargetConfigV2Wire struct {
 }
 
 type modelTargetConfigV3Wire struct {
-	Alias         string                   `json:"alias"`
+	Alias string `json:"alias"`
+	// Label is the display name the model picker shows for this target, and the ONLY
+	// cosmetic field a target carries beyond its description. It is optional: an omitted
+	// label leaves the picker deriving a name from the model id, which is what every v3
+	// file written before this field did and still does.
+	//
+	// It is additive within schema v3 rather than a v4: it changes no existing field's
+	// meaning and no validation of one, so every file written against v3 stays valid and
+	// behaves identically. The cost is downgrade-only -- a file that USES label is an
+	// unknown field to a carbon built before it, which decodes strictly.
+	Label         string                   `json:"label,omitempty"`
 	Description   string                   `json:"description"`
 	Provider      string                   `json:"provider"`
 	APIFormat     string                   `json:"api_format"`
@@ -565,7 +579,7 @@ func encodeModelConfigV3(config normalizedModelConfig) ([]byte, error) {
 			return nil, modelConfigFailure("encode", errors.New("normalized model auth contains both credential forms"))
 		}
 		row := modelTargetConfigV3Wire{
-			Alias: target.Alias, Description: target.Description,
+			Alias: target.Alias, Label: target.Label, Description: target.Description,
 			Provider: string(target.Model.Provider), APIFormat: string(target.Model.APIFormat),
 			BaseURL: target.Model.BaseURL, Model: target.Model.Name,
 			ContextLimits: modelContextLimitsConfig{

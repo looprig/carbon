@@ -113,6 +113,123 @@ func TestRuntimeCatalogListsAllPrimerCandidates(t *testing.T) {
 	}
 }
 
+// TestRuntimeCatalogLabelsModelsByNameNotAlias pins what the model picker SHOWS. An alias is
+// a routing key and has to name the gateway serving the model ("opencode-go-glm-5.2"), which
+// in a picker that already groups rows under a provider heading is a prefix repeated on every
+// row. The label is the model's own name, with the provider's catalog namespace cut off; the
+// ID stays the alias, so selection and typed matching are untouched.
+func TestRuntimeCatalogLabelsModelsByNameNotAlias(t *testing.T) {
+	base := testModel()
+	candidates := []PrimerCandidate{
+		{Alias: "opencode-go-glm-5.2", Model: model.CustomModel(base.Provider, base.APIFormat, base.BaseURL, "glm-5.2", model.WithTools())},
+		{Alias: "chutes-kimi-k3", Model: model.CustomModel(base.Provider, base.APIFormat, "https://chutes.example", "moonshotai/Kimi-K3-TEE", model.WithTools())},
+		{Alias: "synthetics-kimi-k3", Model: model.CustomModel(base.Provider, base.APIFormat, "https://synthetic.example", "hf:moonshotai/Kimi-K3", model.WithTools())},
+	}
+	agent, _ := openAcceptanceAgentSelectingPrimerCandidate(t, candidates, candidates[0].Model)
+
+	options, err := agent.LoopRuntimeOptions(context.Background(), agent.ActiveLoopID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"glm-5.2", "Kimi-K3-TEE", "Kimi-K3"}
+	if len(options.Models) != len(want) {
+		t.Fatalf("models = %#v, want %d candidates", options.Models, len(want))
+	}
+	for i, option := range options.Models {
+		if option.Label != want[i] {
+			t.Errorf("model %d label = %q, want %q", i, option.Label, want[i])
+		}
+		if string(option.ID) != candidates[i].Alias {
+			t.Errorf("model %d ID = %q, want the routing alias %q", i, option.ID, candidates[i].Alias)
+		}
+	}
+}
+
+// TestRuntimeCatalogPrefersConfiguredLabel pins the precedence: a label the file configured
+// is what the picker shows, verbatim, and the derived model name is only the fallback for
+// targets that configured none.
+func TestRuntimeCatalogPrefersConfiguredLabel(t *testing.T) {
+	base := testModel()
+	candidates := []PrimerCandidate{
+		{Alias: "opencode-go-glm-5.2", Label: "GLM 5.2", Model: model.CustomModel(base.Provider, base.APIFormat, base.BaseURL, "glm-5.2", model.WithTools())},
+		{Alias: "opencode-go-kimi-k3", Model: model.CustomModel(base.Provider, base.APIFormat, "https://zen.example", "moonshotai/kimi-k3", model.WithTools())},
+	}
+	agent, _ := openAcceptanceAgentSelectingPrimerCandidate(t, candidates, candidates[0].Model)
+
+	options, err := agent.LoopRuntimeOptions(context.Background(), agent.ActiveLoopID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"GLM 5.2", "kimi-k3"}
+	if len(options.Models) != len(want) {
+		t.Fatalf("models = %#v, want %d candidates", options.Models, len(want))
+	}
+	for i, option := range options.Models {
+		if option.Label != want[i] {
+			t.Errorf("model %d label = %q, want %q", i, option.Label, want[i])
+		}
+		if string(option.ID) != candidates[i].Alias {
+			t.Errorf("model %d ID = %q, want the routing alias %q", i, option.ID, candidates[i].Alias)
+		}
+	}
+}
+
+// TestRuntimeCatalogNeverRewritesAConfiguredLabel pins the one asymmetry in the collision
+// fallback. Two rows that would read identically are normally both a bug and both replaced by
+// their aliases -- but a label the file states is a decision, not a derivation, so it stands
+// while the DERIVED name beside it yields.
+func TestRuntimeCatalogNeverRewritesAConfiguredLabel(t *testing.T) {
+	base := testModel()
+	candidates := []PrimerCandidate{
+		{Alias: "opencode-go-glm-5.2", Label: "glm-5.2", Model: model.CustomModel(base.Provider, base.APIFormat, "https://zen.example", "zai-org/GLM-5.2", model.WithTools())},
+		{Alias: "chutes-glm-5.2", Model: model.CustomModel(base.Provider, base.APIFormat, "https://chutes.example", "glm-5.2", model.WithTools())},
+	}
+	agent, _ := openAcceptanceAgentSelectingPrimerCandidate(t, candidates, candidates[0].Model)
+
+	options, err := agent.LoopRuntimeOptions(context.Background(), agent.ActiveLoopID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"glm-5.2", "chutes-glm-5.2"}
+	if len(options.Models) != len(want) {
+		t.Fatalf("models = %#v, want %d candidates", options.Models, len(want))
+	}
+	for i, option := range options.Models {
+		if option.Label != want[i] {
+			t.Errorf("model %d label = %q, want %q", i, option.Label, want[i])
+		}
+	}
+}
+
+// TestRuntimeCatalogFallsBackToAliasOnCollidingLabels pins the disambiguation. Candidates are
+// unique by provider, API format, base URL and name -- not by name alone -- so two gateways
+// fronting the same provider API can serve the same model and land under the same heading.
+// Two identical rows selecting different models is worse than verbose ones, so the colliding
+// set falls back to the alias while every other row keeps its short name.
+func TestRuntimeCatalogFallsBackToAliasOnCollidingLabels(t *testing.T) {
+	base := testModel()
+	candidates := []PrimerCandidate{
+		{Alias: "opencode-go-glm-5.2", Model: model.CustomModel(base.Provider, base.APIFormat, "https://opencode.example", "glm-5.2", model.WithTools())},
+		{Alias: "chutes-glm-5.2", Model: model.CustomModel(base.Provider, base.APIFormat, "https://chutes.example", "zai-org/glm-5.2", model.WithTools())},
+		{Alias: "lmstudio-qwen3.8-27b", Model: model.CustomModel(base.Provider, base.APIFormat, "https://lmstudio.example", "qwen3.8-27b", model.WithTools())},
+	}
+	agent, _ := openAcceptanceAgentSelectingPrimerCandidate(t, candidates, candidates[0].Model)
+
+	options, err := agent.LoopRuntimeOptions(context.Background(), agent.ActiveLoopID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"opencode-go-glm-5.2", "chutes-glm-5.2", "qwen3.8-27b"}
+	if len(options.Models) != len(want) {
+		t.Fatalf("models = %#v, want %d candidates", options.Models, len(want))
+	}
+	for i, option := range options.Models {
+		if option.Label != want[i] {
+			t.Errorf("model %d label = %q, want %q", i, option.Label, want[i])
+		}
+	}
+}
+
 // TestRuntimeCatalogEffortsReflectCurrentModelNotRosterOrder proves efforts are
 // derived from whichever candidate matches the CURRENT model, not from roster
 // position 0. candidate-a is still listed first in Config.PrimerCandidates, but

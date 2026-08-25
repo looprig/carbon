@@ -315,6 +315,77 @@ func TestNormalizeModelConfigDescriptions(t *testing.T) {
 	})
 }
 
+// TestNormalizeModelConfigLabels pins the optional display name: it is normalized like a
+// description, it is OPTIONAL in a way a description is not (an absent one leaves the picker
+// deriving a name), and a present-but-blank one is rejected rather than silently ignored.
+func TestNormalizeModelConfigLabels(t *testing.T) {
+	t.Parallel()
+
+	t.Run("collapses presentation whitespace", func(t *testing.T) {
+		config := validDecodedModelConfig(t)
+		config.Models[0].Label = "  GLM   5.2  "
+		normalized, err := normalizeModelConfig(config)
+		if err != nil {
+			t.Fatalf("normalizeModelConfig() error = %v", err)
+		}
+		if got, want := normalized.Models[0].Label, "GLM 5.2"; got != want {
+			t.Fatalf("normalized label = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("absent label is not an error", func(t *testing.T) {
+		config := validDecodedModelConfig(t)
+		config.Models[0].Label = ""
+		normalized, err := normalizeModelConfig(config)
+		if err != nil {
+			t.Fatalf("normalizeModelConfig() error = %v", err)
+		}
+		if normalized.Models[0].Label != "" {
+			t.Fatalf("normalized label = %q, want empty", normalized.Models[0].Label)
+		}
+	})
+
+	t.Run("rejects unusable labels", func(t *testing.T) {
+		cases := []struct {
+			name string
+			text string
+		}{
+			{name: "blank", text: "   "},
+			{name: "nul", text: "GLM\x005.2"},
+			{name: "newline", text: "GLM\n5.2"},
+			{name: "too long", text: strings.Repeat("a", 65)},
+			{name: "url", text: "https://provider.example/glm"},
+			{name: "path", text: "/usr/local/bin/glm"},
+			{name: "credential", text: "GLM api_key"},
+		}
+		for _, tt := range cases {
+			t.Run(tt.name, func(t *testing.T) {
+				config := validDecodedModelConfig(t)
+				config.Models[0].Label = tt.text
+				if _, err := normalizeModelConfig(config); err == nil {
+					t.Fatal("normalizeModelConfig() error = nil, want label validation error")
+				}
+			})
+		}
+	})
+
+	t.Run("labels may repeat across models", func(t *testing.T) {
+		// Two gateways serving the same model are two targets with two aliases; the
+		// picker groups them under different provider headings, so the NAME may repeat
+		// even though the alias may not.
+		config := validDecodedModelConfig(t)
+		config.Models[0].Label = "GLM 5.2"
+		second := config.Models[0]
+		second.Alias = "second-gateway"
+		second.Label = "GLM 5.2"
+		second.BaseURL = "https://second.example.test/v1"
+		config.Models = append(config.Models, second)
+		if _, err := normalizeModelConfig(config); err != nil {
+			t.Fatalf("normalizeModelConfig() error = %v", err)
+		}
+	})
+}
+
 func TestNormalizeModelConfigPreservesOptionalFields(t *testing.T) {
 	input := `{
 		"version": 2,

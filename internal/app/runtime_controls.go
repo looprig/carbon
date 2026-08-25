@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/looprig/core/uuid"
@@ -191,11 +192,14 @@ func (a *RuntimeAgent) LoopRuntimeOptions(_ context.Context, loopID uuid.UUID) (
 	}
 	selectedModel := handle.Model()
 	if len(a.primerCandidates) == 0 {
+		// No candidates means no configured primer-capable model, which normalization
+		// rejects (primer_default must name one). This branch therefore serves embedded
+		// composition, where there is no file and so no configured label to honor.
 		publicID := a.publicModelID(selectedModel)
 		options.Models = []tui.ModelOption{{
 			ID:       tui.ModelID(publicID),
 			Provider: string(selectedModel.Provider),
-			Label:    publicID,
+			Label:    modelDisplayLabel(publicID, selectedModel),
 		}}
 	} else {
 		options.Models = make([]tui.ModelOption, 0, len(a.primerCandidates))
@@ -203,10 +207,11 @@ func (a *RuntimeAgent) LoopRuntimeOptions(_ context.Context, loopID uuid.UUID) (
 			options.Models = append(options.Models, tui.ModelOption{
 				ID:          tui.ModelID(c.Alias),
 				Provider:    string(c.Model.Provider),
-				Label:       c.Alias,
+				Label:       primerCandidateLabel(c),
 				Description: c.Description,
 			})
 		}
+		disambiguateModelLabels(options.Models, a.primerCandidates)
 	}
 	efforts := a.primerEfforts
 	if current, ok := currentPrimerCandidate(a.primerCandidates, selectedModel); ok {
@@ -319,6 +324,74 @@ func currentPrimerCandidate(candidates []PrimerCandidate, current model.Model) (
 		}
 	}
 	return PrimerCandidate{}, false
+}
+
+// primerCandidateLabel is the name the picker shows for one candidate: the label the file
+// configured, or the model's own name when it configured none.
+//
+// A configured label is taken VERBATIM. It is the one place a person states what they want to
+// see, and second-guessing it -- trimming a prefix, disambiguating it against a neighbour --
+// would make the field advisory rather than authoritative.
+func primerCandidateLabel(c PrimerCandidate) string {
+	if c.Label != "" {
+		return c.Label
+	}
+	return modelDisplayLabel(c.Alias, c.Model)
+}
+
+// modelDisplayLabel is the name a model is SHOWN under in the picker: the model's own name,
+// with the provider's catalog namespace ("zai-org/GLM-5.2", "hf:moonshotai/Kimi-K3") cut off
+// the front.
+//
+// It is deliberately not the configured alias. An alias is a routing key, and a routing key
+// has to say which gateway serves the model -- "opencode-go-glm-5.2", "chutes-kimi-k3" -- so a
+// list of them is a column of prefixes with the answer at the end of each line. The picker
+// already groups its rows under a provider heading, so the prefix is on screen once per group
+// rather than once per row. The alias remains the option's ID, and the tray still matches it
+// when the user types, so nothing that could be typed before stops working.
+//
+// Only the LAST path segment is taken, so a namespace applies whether it is one segment or
+// several. A colon is left alone: it tags a variant (":free", ":thinking") rather than
+// naming a namespace, and dropping it would merge two genuinely different models.
+func modelDisplayLabel(alias string, value model.Model) string {
+	name := strings.TrimSpace(value.Name)
+	if i := strings.LastIndexByte(name, '/'); i >= 0 {
+		name = name[i+1:]
+	}
+	if name == "" {
+		return alias // a model with no name at all is still reachable by its routing key
+	}
+	return name
+}
+
+// disambiguateModelLabels restores the alias on any rows a DERIVED name made
+// indistinguishable.
+//
+// Primer candidates are unique by provider, API format, base URL and name -- NOT by name
+// alone -- so two gateways fronting the same provider API can legitimately serve the same
+// model, and their rows land under the same heading. A picker with two identical rows that
+// select different models is worse than a verbose one, so the colliding row falls back to the
+// routing key that distinguishes it. Rows that collide across DIFFERENT providers are left
+// alone: their headings already tell them apart.
+//
+// A CONFIGURED label never yields. It is counted -- a derived name that collides with one
+// still has to move -- but it is never itself rewritten, because the file said what this model
+// is called and two rows sharing a name is then a deliberate choice, not an accident of
+// derivation.
+func disambiguateModelLabels(options []tui.ModelOption, candidates []PrimerCandidate) {
+	type groupedLabel struct{ provider, label string }
+	counts := make(map[groupedLabel]int, len(options))
+	for _, option := range options {
+		counts[groupedLabel{option.Provider, option.Label}]++
+	}
+	for i := range options {
+		if candidates[i].Label != "" {
+			continue
+		}
+		if counts[groupedLabel{options[i].Provider, options[i].Label}] > 1 {
+			options[i].Label = candidates[i].Alias
+		}
+	}
 }
 
 func modelID(value model.Model) string { return string(value.Provider) + "/" + value.Name }

@@ -53,7 +53,10 @@ func (e *configuredClientConstructionError) Format(state fmt.State, _ rune) {
 // (uses: ["primer", ...]). RuntimeAgent uses the roster of these to list
 // and switch the primer loop's model at runtime.
 type PrimerCandidate struct {
-	Alias         string
+	Alias string
+	// Label is the configured display name, empty when the file omitted one. The picker
+	// falls back to deriving a name from the model id; see modelDisplayLabel.
+	Label         string
 	Description   string
 	Model         model.Model
 	Efforts       []model.Effort
@@ -153,6 +156,7 @@ func compileProductionModelsWithContext(ctx context.Context, config normalizedMo
 			primerCandidateTargets[key] = target.Alias
 			primerCandidates = append(primerCandidates, PrimerCandidate{
 				Alias:         target.Alias,
+				Label:         target.Label,
 				Description:   target.Description,
 				Model:         target.Model.Clone(),
 				Efforts:       append([]model.Effort(nil), target.Efforts...),

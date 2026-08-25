@@ -33,7 +33,12 @@ type secretFreeNativeACPModel struct {
 }
 
 type secretFreeModelTarget struct {
-	Alias         string                       `json:"alias"`
+	Alias string `json:"alias"`
+	// Label is digested alongside Description, the cosmetic field it sits next to in the
+	// file: both describe the configuration, so both move the revision when they change.
+	// Omitted when empty, so every configuration written before labels existed digests to
+	// exactly the value it did before.
+	Label         string                       `json:"label,omitempty"`
 	Description   string                       `json:"description,omitempty"`
 	Provider      string                       `json:"provider"`
 	APIFormat     string                       `json:"api_format"`
@@ -134,7 +139,7 @@ func secretFreeModelConfigJSON(config normalizedModelConfig) ([]byte, error) {
 			effortNames[i] = modelConfigEffortName(effort)
 		}
 		secretTarget := secretFreeModelTarget{
-			Alias: target.Alias, Description: target.Description, Provider: string(target.Model.Provider), APIFormat: string(target.Model.APIFormat),
+			Alias: target.Alias, Label: target.Label, Description: target.Description, Provider: string(target.Model.Provider), APIFormat: string(target.Model.APIFormat),
 			BaseURL: target.Model.BaseURL, Model: target.Model.Name,
 			ContextLimits: secretFreeModelContextLimits{
 				WindowTokens: uint64(target.Model.Limits.WindowTokens), MaxInputTokens: uint64(target.Model.Limits.MaxInputTokens),

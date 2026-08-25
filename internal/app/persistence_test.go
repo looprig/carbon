@@ -63,8 +63,11 @@ func TestProductionModelsPersistedOpenLoadsExactlyOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(options.Models) != 1 || options.Models[0].ID != "persisted-primer-alias" || options.Models[0].Label != "persisted-primer-alias" || options.Models[0].Description != "" {
-		t.Fatalf("runtime models = %#v, want only configured primer alias", options.Models)
+	// The ID stays the routing alias -- it is what SetModel resolves -- while the LABEL is
+	// the model's own name: the picker groups by provider, so an alias's gateway prefix is
+	// already on screen once per group.
+	if len(options.Models) != 1 || options.Models[0].ID != "persisted-primer-alias" || options.Models[0].Label != "persisted-configured-primer" || options.Models[0].Description != "" {
+		t.Fatalf("runtime models = %#v, want the configured primer alias labelled by model name", options.Models)
 	}
 	if len(options.Efforts) != 1 || options.Efforts[0].ID != tui.EffortID(model.EffortHigh) {
 		t.Fatalf("runtime efforts = %#v, want only configured high effort", options.Efforts)

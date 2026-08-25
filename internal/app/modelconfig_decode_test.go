@@ -286,6 +286,76 @@ func TestWriteMigratedModelConfigV2ToV3IsAtomicOwnerOnlyAndExplicit(t *testing.T
 	}
 }
 
+// TestModelConfigV3LabelRoundTrips pins the optional display name through the v3 wire: it
+// decodes, it survives an encode, and a file that omits it encodes back to a file that still
+// omits it -- so adding the field cannot rewrite configurations that never used it.
+func TestModelConfigV3LabelRoundTrips(t *testing.T) {
+	t.Parallel()
+
+	v3, err := migrateModelConfigV2ToV3([]byte(validLMStudioModelConfig))
+	if err != nil {
+		t.Fatalf("migrateModelConfigV2ToV3() error = %v", err)
+	}
+	if strings.Contains(string(v3), `"label"`) {
+		t.Fatalf("migrated v2 config emitted a label it never had: %s", v3)
+	}
+
+	labelled := strings.Replace(string(v3), `"alias":"local",`, `"alias":"local","label":"Qwen3 Coder",`, 1)
+	if labelled == string(v3) {
+		t.Fatalf("fixture shape changed; could not insert a label into %s", v3)
+	}
+	decoded, err := decodeModelConfig([]byte(labelled))
+	if err != nil {
+		t.Fatalf("decodeModelConfig(labelled) error = %v", err)
+	}
+	if got, want := decoded.Models[0].Label, "Qwen3 Coder"; got != want {
+		t.Fatalf("decoded label = %q, want %q", got, want)
+	}
+	normalized, err := normalizeModelConfig(decoded)
+	if err != nil {
+		t.Fatalf("normalizeModelConfig() error = %v", err)
+	}
+	encoded, err := encodeModelConfigV3(normalized)
+	if err != nil {
+		t.Fatalf("encodeModelConfigV3() error = %v", err)
+	}
+	if !strings.Contains(string(encoded), `"label":"Qwen3 Coder"`) {
+		t.Fatalf("encoded config dropped the label: %s", encoded)
+	}
+}
+
+// TestModelConfigLabelMovesTheDigest pins that a label is part of the configuration the
+// secret-free digest describes, exactly as the description beside it is. A cosmetic edit is
+// still an edit, and a revision that could not see it would report a file as unchanged when
+// it is not.
+func TestModelConfigLabelMovesTheDigest(t *testing.T) {
+	t.Parallel()
+
+	base := validDecodedModelConfig(t)
+	normalizedBase, err := normalizeModelConfig(base)
+	if err != nil {
+		t.Fatalf("normalizeModelConfig() error = %v", err)
+	}
+	before, err := modelConfigDigest(normalizedBase)
+	if err != nil {
+		t.Fatalf("modelConfigDigest() error = %v", err)
+	}
+
+	labelled := validDecodedModelConfig(t)
+	labelled.Models[0].Label = "Qwen3 Coder"
+	normalizedLabelled, err := normalizeModelConfig(labelled)
+	if err != nil {
+		t.Fatalf("normalizeModelConfig(labelled) error = %v", err)
+	}
+	after, err := modelConfigDigest(normalizedLabelled)
+	if err != nil {
+		t.Fatalf("modelConfigDigest(labelled) error = %v", err)
+	}
+	if before == after {
+		t.Fatal("digest did not change when a label was added")
+	}
+}
+
 func TestMigrateModelConfigV2ToV3EmitsNativeACPUnionWithoutInternalFields(t *testing.T) {
 	input := strings.Replace(
 		validLMStudioModelConfig,

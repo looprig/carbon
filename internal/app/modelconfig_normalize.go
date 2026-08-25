@@ -58,7 +58,11 @@ type normalizedACPLauncher struct {
 }
 
 type normalizedModelTarget struct {
-	Alias         string
+	Alias string
+	// Label is the display name the model picker shows, empty when the file omitted it.
+	// It is presentation only: the alias remains the routing key every reference field
+	// and every ACP child names this target by.
+	Label         string
 	Description   string
 	Model         model.Model
 	Uses          []string
@@ -335,6 +339,10 @@ func normalizeModelTargetForVersion(target modelTargetConfig, version int) (norm
 	if err != nil {
 		return normalized, err
 	}
+	label, err := normalizeModelLabel(target.Label)
+	if err != nil {
+		return normalized, err
+	}
 	if !target.Capabilities.Tools {
 		return normalized, modelConfigValidationError("models must support tools")
 	}
@@ -395,8 +403,8 @@ func normalizeModelTargetForVersion(target modelTargetConfig, version int) (norm
 		return modelConfigEffortRank(efforts[i]) < modelConfigEffortRank(efforts[j])
 	})
 	return normalizedModelTarget{
-		Alias: target.Alias, Description: description, Model: constructed, Uses: uses, Efforts: efforts,
-		DefaultEffort: defaultEffort, client: client,
+		Alias: target.Alias, Label: label, Description: description, Model: constructed, Uses: uses,
+		Efforts: efforts, DefaultEffort: defaultEffort, client: client,
 	}, nil
 }
 
@@ -496,6 +504,45 @@ func rejectDuplicateDeploymentIdentities(targets []normalizedModelTarget) error 
 		seen[identity] = target.client
 	}
 	return nil
+}
+
+// maxModelLabelBytes bounds the picker's display name. It is far shorter than a
+// description's 256 because a label is a COLUMN in a tray beside every other model's, not
+// prose: anything longer is pushing the description column off a terminal rather than naming
+// a model.
+const maxModelLabelBytes = 64
+
+// normalizeModelLabel validates and collapses the optional display name.
+//
+// It applies the description's rules -- valid UTF-8, no control characters, whitespace
+// collapsed to single spaces, no credential-shaped or path-shaped material -- because a label
+// is the same kind of value arriving from the same file and rendered on the same screen. A
+// label is OPTIONAL, so an omitted one returns empty and the picker falls back to deriving a
+// name; a present but blank one is rejected rather than silently treated as omitted, since it
+// is a value the author wrote and meant something by.
+func normalizeModelLabel(value string) (string, error) {
+	if value == "" {
+		return "", nil
+	}
+	if !utf8.ValidString(value) {
+		return "", modelConfigValidationError("model label must be valid UTF-8")
+	}
+	for _, r := range value {
+		if r == 0 || r == '\r' || r == '\n' || (unicode.IsControl(r) && r != '\t') {
+			return "", modelConfigValidationError("model label contains forbidden control characters")
+		}
+	}
+	normalized := strings.Join(strings.Fields(value), " ")
+	if normalized == "" {
+		return "", modelConfigValidationError("model label must be nonblank when present")
+	}
+	if len(normalized) > maxModelLabelBytes {
+		return "", modelConfigValidationError("model label exceeds the maximum length")
+	}
+	if forbiddenModelDescriptionMaterial(normalized) {
+		return "", modelConfigValidationError("model label contains forbidden material")
+	}
+	return normalized, nil
 }
 
 const maxModelDescriptionBytes = 256
