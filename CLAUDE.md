@@ -264,6 +264,100 @@ own.
   This is a real, pre-existing gap flagged in code comments
   (`runtime_controls.go`, `assembly.go`), not something this feature closes.
 
+## `carbon serve` hosts one live session per workspace root
+
+`carbon serve` (`cmd/carbon/serve.go` over `internal/app/servehost.go`) puts the
+HTTP + web-UI surface over ONE process-lifetime rig. That rig places the workspace
+with `rig.WithExclusiveWorkspace`, which acquires a lease named
+`workspace-roots/<sha256(canonical root)>` per session, and fsstore's advisory lock
+conflicts **even inside one process** — a second `Acquire` opens its own fd whose
+non-blocking lock fails. So at most one session can be live over a given workspace
+root.
+
+Read that limit precisely, because the obvious reading is wrong in both directions:
+
+- The bound is **per workspace root, not per process or per machine**. Two `carbon`
+  invocations in two different checkouts have always worked and still do; the lease
+  names differ. What is single-root is the *rig*.
+- `carbon serve` and the `carbon` TUI still cannot both run over the *same* checkout.
+  That is pre-existing and expected.
+- Two browser tabs on the **same** session are fine. `handleRestore` is
+  attach-or-restore (harness v0.30.0): an already-live sid is answered
+  `200 {"restored": false}` without the rig being consulted at all, so the second tab
+  attaches to the existing runtime instead of rebuilding over its journal.
+
+### Switching sessions is a confirmed handoff, never a silent close
+
+Opening a *different* session while one is live does **not** close the incumbent.
+`ServeHost.NewSession`/`RestoreSession` refuse with `*LiveSessionHandoffError`
+naming the session that holds the root. The incumbent may be mid-turn with a browser
+watching its event stream, and a click in a list must never silently kill running
+work.
+
+The consent path is carbon's own, outside `/v1`, because harness's error mapping
+cannot express it (every `RestoreSession` failure that is not a
+`serve.SessionNotFoundError` becomes a bare 500, so a client cannot tell "busy with
+another session" from "broken"):
+
+- `GET /ui/live` → `{"live": bool, "session_id"?}` — who holds the root right now.
+- `POST /ui/handoff` `{"session_id": "<the id the human was shown>"}` → 204. The id
+  is **required**, and a body naming a session that is no longer the live one is a
+  409 (`live_session_mismatch`, retryable) rather than a close. That is what keeps a
+  confirmation that raced another tab from ending the wrong session — the TOCTOU is
+  closed by naming the expected id, not by trusting "close whatever is live".
+
+`rig.WithSharedWorkspace` would allow concurrent sessions but folds into the config
+fingerprint as `shared:<root>` instead of `exclusive:<root>`, so every session the
+TUI created would fail to restore as configuration drift. Do not swap it without a
+migration.
+
+### What a `/restore` status actually means to a client
+
+- **404** is terminal. It is minted by `serveRig` from `ServeHost.HasSession`, which
+  reads the listing catalog index, and it means the id was never persisted *or*
+  belongs to another workspace root — neither of which becomes true later.
+- **500** is retryable, but not by blind repetition. In carbon the overwhelmingly
+  likely cause is the handoff refusal above, so a client that gets one should read
+  `GET /ui/live` and offer the confirmation; the identical request succeeds after
+  `POST /ui/handoff`.
+- pkg/serve's own `handleRestore` documents a race it cannot close — two clients
+  restoring the same *cold* session both miss the liveness check and reach the rig,
+  where the loser fails on the session's single-writer lease and surfaces as a bare
+  500 on a perfectly healthy session. **carbon does not exhibit it:** `ServeHost`
+  holds one mutex across the whole of an open and returns the already-live controller
+  for the same id, so the loser is handed the winner's session and `registerIfAbsent`
+  answers it `restored: false`. `cmd/carbon`'s
+  `TestServeConcurrentColdRestoreDoesNotFail` pins that; do not remove the same-id
+  short-circuit in `RestoreSession` without reintroducing the 500.
+
+### The session list spans every workspace; the attach state is what scopes it
+
+The session store is global (it lives under the Carbon home, not the workspace) and
+`carbon serve`'s read plane is `catalogreader` over the raw catalog with **no**
+workspace filter — unlike the TUI picker, which goes through
+`SessionStoreFactory.List` and does filter. So `GET /v1/sessions` genuinely lists
+other checkouts' sessions, and listing, status and journal all serve fine for them
+(a journal read needs no rig, lease or root).
+
+`GET /ui/session-presentation` publishes the per-row state that makes that safe:
+`{"<sid>": {"attach": "live"|"resumable"|"read_only", "workspace", "reason"?}}`,
+merged into the list client-side. It is a carbon-owned route outside `/v1` because
+`serve.SessionSummary` is five fixed fields with an `additionalProperties: false`
+schema and `pkg/serve` has no presentation seam. It is **optional**: a deployment
+that does not serve it yields rows with no state, defaulting to `resumable`. That is
+also why a failed catalog read there is a 500 and never an empty map — an empty map
+is indistinguishable from "not served" and would downgrade the live session to a row
+offering to restore what is already running.
+
+### A serve session outlives the request that opened it
+
+harness derives a session's entire lifetime from the context passed to
+`NewSession`/`RestoreSession`, and `pkg/serve` passes the HTTP request context.
+`ServeHost` therefore strips cancellation (keeping values) before the rig sees it:
+a serve session's lifetime belongs to the host and ends at `CloseLive` or `Close`.
+Removing that leaves every created session dead before its 201 reaches the browser
+and every first input answering 500 `session: loop exited`.
+
 ## Collaboration MessageAgent support
 
 Carbon exposes only the existing `MessageAgent` operation to foreign ACP
