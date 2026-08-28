@@ -542,6 +542,128 @@ func lastActivity(meta sessionstore.SessionMeta) time.Time {
 	return meta.LastActiveAt
 }
 
+// resolvedProductionModels is resolveServeModels' result: the inference client and
+// model factory a session assembles over, the Config those values were folded into,
+// and the credential lifecycle the caller now owns. It is a struct rather than six
+// naked return values because the two credential fields are an ownership transfer,
+// not data, and a positional tuple makes dropping one of them invisible at the call
+// site.
+type resolvedProductionModels struct {
+	cfg     Config
+	client  inference.Client
+	factory ModelFactory
+	// credentialRuntime and credentialLease are non-nil only for a model
+	// configuration that resolved through the credential store. On a successful
+	// return the runtime's session has ALREADY BEGUN: the caller owns exactly one
+	// endSession plus the lease release (or, with no lease, the runtime Close).
+	// On ANY error return nothing is left begun or held.
+	credentialRuntime *credentialRuntime
+	credentialLease   *credentialRegistryLease
+}
+
+// resolveServeModels resolves the production model configuration for one composition
+// root: it resolves the looprig home, loads models.json (preferring the
+// context-carrying loader, falling back to the plain one), rejects a configuration
+// with no usable primer, admits one credential session, and folds the resolved model
+// revision, primer alias/efforts/candidates, delegate models, ACP children and
+// permission-review section into cfg.
+//
+// It exists as a package function because there are now TWO composition roots that
+// need exactly this: SessionStoreFactory.Open (the TUI's one-rig-per-open path) and
+// OpenServeHost (carbon serve's one-rig-per-process path). A second inline copy
+// would drift — the folding here is nine assignments whose omission is silent, and
+// the credential begin/release discipline is the kind of thing a copy gets subtly
+// wrong. Keeping one implementation means a mutation of any folding step breaks both
+// callers' tests.
+//
+// The credential contract is the delicate part. beginSession is a COUNTING admission
+// (credentials.go): it increments an active-session counter that logout drains
+// against, so it is re-entrant and a caller may legitimately hold one admission for
+// as long as it holds the client. Every failure path after the begin releases it
+// here, so an error return never leaves an admission outstanding.
+func resolveServeModels(ctx context.Context, cfg Config, loadWithContext productionModelsContextLoader, load productionModelsLoader) (resolvedProductionModels, error) {
+	home, err := looprigHome(cfg)
+	if err != nil {
+		return resolvedProductionModels{}, err
+	}
+	cfg.HomeDir = home
+	var configured productionModels
+	if loadWithContext != nil {
+		configured, err = loadWithContext(ctx, home)
+	} else {
+		configured, err = load(home)
+	}
+	if err != nil {
+		return resolvedProductionModels{}, err
+	}
+	if configured.PrimerClient == nil || configured.PrimerModel.Name == "" {
+		releaseCredentialComposition(configured.credentialRuntime, configured.credentialLease)
+		return resolvedProductionModels{}, &ModelConfigCapabilityError{}
+	}
+	credentialLifecycle := configured.credentialRuntime
+	credentialLease := configured.credentialLease
+	if credentialLifecycle != nil {
+		if err := credentialLifecycle.beginSession(); err != nil {
+			releaseCredentialComposition(credentialLifecycle, credentialLease)
+			return resolvedProductionModels{}, err
+		}
+	}
+	// fail releases the admission this function took, so no error path hands the
+	// caller a half-owned credential lifecycle.
+	fail := func(err error) (resolvedProductionModels, error) {
+		if credentialLifecycle != nil {
+			credentialLifecycle.endSession()
+			releaseCredentialComposition(credentialLifecycle, credentialLease)
+		}
+		return resolvedProductionModels{}, err
+	}
+
+	client := configured.RuntimeClient
+	if client == nil {
+		client = configured.PrimerClient
+	}
+	factory := newModelFactoryFor(configured.PrimerModel)
+	cfg.ModelConfigRev = configured.ConfigRev
+	cfg.PrimerAlias = configured.PrimerAlias
+	cfg.PrimerEfforts = append([]model.Effort(nil), configured.PrimerEfforts...)
+	cfg.PrimerCandidates = append([]PrimerCandidate(nil), configured.PrimerCandidates...)
+	cfg.DelegateModels = delegateModelsFrom(configured.ACP)
+	cfg, err = withProductionACPChildren(ctx, cfg, configured)
+	if err != nil {
+		return fail(err)
+	}
+	// Programmatic enable wins: a models.json permission_review section can
+	// only ever ENABLE permission review, never override an already-enabled
+	// programmatic selection (see Config.PermissionReviewEnabled's doc
+	// comment). newPermissionReviewRegistration's own trusted-profile gate
+	// (permission_review.go) still applies regardless of which source set it.
+	if !cfg.PermissionReviewEnabled && configured.PermissionReviewEnabled {
+		cfg.PermissionReviewEnabled = true
+		cfg.PermissionReviewModel = configured.PermissionReviewModel
+		cfg.PermissionReviewStrictPolicy = configured.PermissionReviewStrict
+	}
+	return resolvedProductionModels{
+		cfg:               cfg,
+		client:            client,
+		factory:           factory,
+		credentialRuntime: credentialLifecycle,
+		credentialLease:   credentialLease,
+	}, nil
+}
+
+// releaseCredentialComposition disposes of a credential composition the caller is
+// abandoning: the registry lease when one was borrowed (the lease owns the runtime's
+// close), otherwise the runtime directly. Both are nil-safe.
+func releaseCredentialComposition(runtime *credentialRuntime, lease *credentialRegistryLease) {
+	if lease != nil {
+		_ = lease.Release()
+		return
+	}
+	if runtime != nil {
+		_ = runtime.Close()
+	}
+}
+
 // Open builds a fully-persisted Carbon session from one models.json load.
 func (f *SessionStoreFactory) Open(ctx context.Context, sel SessionSelector, cfg Config) (*RuntimeAgent, error) {
 	var client inference.Client
@@ -555,39 +677,20 @@ func (f *SessionStoreFactory) Open(ctx context.Context, sel SessionSelector, cfg
 			return nil, err
 		}
 	} else {
-		home, err := looprigHome(cfg)
+		resolved, err := resolveServeModels(ctx, cfg, f.loadModelsWithContext, f.loadModels)
 		if err != nil {
 			return nil, err
 		}
-		cfg.HomeDir = home
-		var configured productionModels
-		if f.loadModelsWithContext != nil {
-			configured, err = f.loadModelsWithContext(ctx, home)
-		} else {
-			configured, err = f.loadModels(home)
-		}
-		if err != nil {
-			return nil, err
-		}
-		if configured.PrimerClient == nil || configured.PrimerModel.Name == "" {
-			if configured.credentialLease != nil {
-				_ = configured.credentialLease.Release()
-			} else if configured.credentialRuntime != nil {
-				_ = configured.credentialRuntime.Close()
-			}
-			return nil, &ModelConfigCapabilityError{}
-		}
-		credentialLifecycle = configured.credentialRuntime
-		credentialLease = configured.credentialLease
+		cfg = resolved.cfg
+		client = resolved.client
+		factory = resolved.factory
+		credentialLifecycle = resolved.credentialRuntime
+		credentialLease = resolved.credentialLease
+		// resolveServeModels returns with the credential session ALREADY BEGUN, so
+		// ownership of the matching endSession is this function's from here on. The
+		// deferred release is disarmed (by niling credentialLifecycle) only once the
+		// assembled agent has taken the lifecycle over.
 		if credentialLifecycle != nil {
-			if err := credentialLifecycle.beginSession(); err != nil {
-				if credentialLease != nil {
-					_ = credentialLease.Release()
-				} else {
-					_ = credentialLifecycle.Close()
-				}
-				return nil, err
-			}
 			defer func() {
 				if credentialLifecycle != nil {
 					credentialLifecycle.endSession()
@@ -598,30 +701,6 @@ func (f *SessionStoreFactory) Open(ctx context.Context, sel SessionSelector, cfg
 					}
 				}
 			}()
-		}
-		client = configured.RuntimeClient
-		if client == nil {
-			client = configured.PrimerClient
-		}
-		factory = newModelFactoryFor(configured.PrimerModel)
-		cfg.ModelConfigRev = configured.ConfigRev
-		cfg.PrimerAlias = configured.PrimerAlias
-		cfg.PrimerEfforts = append([]model.Effort(nil), configured.PrimerEfforts...)
-		cfg.PrimerCandidates = append([]PrimerCandidate(nil), configured.PrimerCandidates...)
-		cfg.DelegateModels = delegateModelsFrom(configured.ACP)
-		cfg, err = withProductionACPChildren(ctx, cfg, configured)
-		if err != nil {
-			return nil, err
-		}
-		// Programmatic enable wins: a models.json permission_review section can
-		// only ever ENABLE permission review, never override an already-enabled
-		// programmatic selection (see Config.PermissionReviewEnabled's doc
-		// comment). newPermissionReviewRegistration's own trusted-profile gate
-		// (permission_review.go) still applies regardless of which source set it.
-		if !cfg.PermissionReviewEnabled && configured.PermissionReviewEnabled {
-			cfg.PermissionReviewEnabled = true
-			cfg.PermissionReviewModel = configured.PermissionReviewModel
-			cfg.PermissionReviewStrictPolicy = configured.PermissionReviewStrict
 		}
 	}
 	agent, err := f.openWithClient(ctx, client, factory, sel, cfg)
