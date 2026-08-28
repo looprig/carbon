@@ -501,3 +501,269 @@ func TestServeHostFailedAdoptReleasesTheWorkspaceRoot(t *testing.T) {
 		t.Fatalf("NewSession after a failed adopt: %v (the workspace root lease was stranded)", err)
 	}
 }
+
+// TestServeHostHasSessionDistinguishesNeverPersisted is the input to the HTTP 404.
+// harness maps every RestoreSession error except its own session-not-found class to a
+// bare 500, and rig.RestoreSession has no not-found error class at all, so the
+// existence check has to happen BEFORE the rig is touched. The listing catalog is the
+// cheap authority for it: it reads the index only, with no lease and no replay.
+func TestServeHostHasSessionDistinguishesNeverPersisted(t *testing.T) {
+	host := newTestServeHost(t)
+	ctx := context.Background()
+
+	absent, err := uuid.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := host.HasSession(ctx, absent); err != nil || ok {
+		t.Fatalf("HasSession(absent) = (%v, %v), want (false, nil)", ok, err)
+	}
+
+	sess, err := host.NewSession(ctx)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	if ok, err := host.HasSession(ctx, sess.SessionID()); err != nil || !ok {
+		t.Fatalf("HasSession(live) = (%v, %v), want (true, nil)", ok, err)
+	}
+}
+
+// TestServeHostHasSessionIgnoresAnotherWorkspacesSessions scopes the existence check
+// to the root this host serves. The session store is global (it lives under the
+// looprig home, not the workspace), so the catalog spans every checkout carbon has
+// ever run in; a rig binds ONE root. Reporting a foreign session as present would turn
+// a request the deployment can never serve into a workspace-root config mismatch deep
+// inside the rig -- a 500 -- where "no such session here" is the honest answer.
+func TestServeHostHasSessionIgnoresAnotherWorkspacesSessions(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	home := t.TempDir()
+	build := WithServeInferenceClient(func() (inference.Client, ModelFactory, error) {
+		return &fakeLLM{}, newModelFactoryFor(testModel()), nil
+	})
+
+	t.Chdir(t.TempDir()) // workspace A
+	inA, err := OpenServeHost(ctx, Config{HomeDir: home}, dataDir, build)
+	if err != nil {
+		t.Fatalf("OpenServeHost in workspace A: %v", err)
+	}
+	sessA, err := inA.NewSession(ctx)
+	if err != nil {
+		t.Fatalf("NewSession in workspace A: %v", err)
+	}
+	idA := sessA.SessionID()
+	if err := inA.Close(ctx); err != nil {
+		t.Fatalf("Close in workspace A: %v", err)
+	}
+
+	t.Chdir(t.TempDir()) // workspace B, same global store
+	inB, err := OpenServeHost(ctx, Config{HomeDir: home}, dataDir, build)
+	if err != nil {
+		t.Fatalf("OpenServeHost in workspace B: %v", err)
+	}
+	t.Cleanup(func() { _ = inB.Close(ctx) })
+
+	if ok, err := inB.HasSession(ctx, idA); err != nil || ok {
+		t.Fatalf("HasSession(workspace A's session) = (%v, %v), want (false, nil)", ok, err)
+	}
+}
+
+// TestServeHostRestoreReturnsTheAlreadyLiveSession pins the attach case. The exclusive
+// root lease makes a second restore of the same id impossible, and re-restoring would
+// in any case orphan the subscribers already streaming from the live controller, so
+// the live controller itself is returned.
+func TestServeHostRestoreReturnsTheAlreadyLiveSession(t *testing.T) {
+	host := newTestServeHost(t)
+	ctx := context.Background()
+
+	live, err := host.NewSession(ctx)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	attached, err := host.RestoreSession(ctx, live.SessionID())
+	if err != nil {
+		t.Fatalf("RestoreSession(live): %v", err)
+	}
+	if attached != live {
+		t.Fatalf("RestoreSession(live) returned a different controller (%p) than the live one (%p)", attached, live)
+	}
+	assertSessionAlive(t, live, "restoring the live session shut it down")
+}
+
+// TestServeHostRestoreRefusesAHandoffWhileAnotherSessionIsLive is the restore half of
+// the confirmed-handoff contract: clicking a different session in the list must not
+// silently kill the one that is running.
+func TestServeHostRestoreRefusesAHandoffWhileAnotherSessionIsLive(t *testing.T) {
+	host := newTestServeHost(t)
+	ctx := context.Background()
+
+	first, err := host.NewSession(ctx)
+	if err != nil {
+		t.Fatalf("NewSession #1: %v", err)
+	}
+	firstID := first.SessionID()
+	if err := host.CloseLive(ctx, firstID); err != nil {
+		t.Fatalf("CloseLive: %v", err)
+	}
+	second, err := host.NewSession(ctx)
+	if err != nil {
+		t.Fatalf("NewSession #2: %v", err)
+	}
+
+	_, err = host.RestoreSession(ctx, firstID)
+	var handoff *LiveSessionHandoffError
+	if !errors.As(err, &handoff) {
+		t.Fatalf("RestoreSession while another session is live = %T %v, want *LiveSessionHandoffError", err, err)
+	}
+	if handoff.LiveID != second.SessionID() {
+		t.Errorf("handoff.LiveID = %v, want the incumbent %v", handoff.LiveID, second.SessionID())
+	}
+	assertSessionAlive(t, second, "a refused restore shut the incumbent down")
+
+	// After the handoff is confirmed the restore succeeds.
+	if err := host.CloseLive(ctx, second.SessionID()); err != nil {
+		t.Fatalf("CloseLive(second): %v", err)
+	}
+	restored, err := host.RestoreSession(ctx, firstID)
+	if err != nil {
+		t.Fatalf("RestoreSession(%v) after a confirmed handoff: %v", firstID, err)
+	}
+	if restored.SessionID() != firstID {
+		t.Fatalf("restored id = %v, want %v", restored.SessionID(), firstID)
+	}
+	if host.live == nil || host.live.mcp.manager != nil {
+		// No mcp.json in this host, so the assembly is the zero value; the point of
+		// the check is that the restored session was adopted at all.
+		if host.live == nil {
+			t.Fatal("a restored session was not recorded as live")
+		}
+	}
+}
+
+// TestServeHostRestoresASessionTheTUIPathCreated is the cross-composition proof that
+// the process-lifetime rig is fingerprint-compatible with the one
+// SessionStoreFactory builds per open. `carbon serve` exists to serve the user's
+// EXISTING sessions, so a serve host that composed even slightly differently -- a
+// missing MCP configuration digest, a different access digest, different delegation
+// limits -- would reject every one of them as configuration drift.
+func TestServeHostRestoresASessionTheTUIPathCreated(t *testing.T) {
+	ctx := context.Background()
+	t.Chdir(t.TempDir())
+	dataDir := t.TempDir()
+	home := t.TempDir()
+	writeMCPConfigFixture(t, home, "sh")
+	cfg := Config{HomeDir: home}
+
+	factory, err := NewSessionStoreFactory(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	factory.buildClient = func() (inference.Client, ModelFactory, error) {
+		return &fakeLLM{}, newModelFactoryFor(testModel()), nil
+	}
+	agent, err := factory.Open(ctx, SessionSelector{}, cfg)
+	if err != nil {
+		t.Fatalf("SessionStoreFactory.Open: %v", err)
+	}
+	id := agent.SessionID()
+	if err := agent.Close(ctx); err != nil {
+		t.Fatalf("agent.Close: %v", err)
+	}
+	if err := factory.Close(); err != nil {
+		t.Fatalf("factory.Close: %v", err)
+	}
+
+	host, err := OpenServeHost(ctx, cfg, dataDir,
+		WithServeInferenceClient(func() (inference.Client, ModelFactory, error) {
+			return &fakeLLM{}, newModelFactoryFor(testModel()), nil
+		}))
+	if err != nil {
+		t.Fatalf("OpenServeHost: %v", err)
+	}
+	t.Cleanup(func() { _ = host.Close(ctx) })
+
+	if ok, err := host.HasSession(ctx, id); err != nil || !ok {
+		t.Fatalf("HasSession(TUI session) = (%v, %v), want (true, nil)", ok, err)
+	}
+	restored, err := host.RestoreSession(ctx, id)
+	if err != nil {
+		t.Fatalf("RestoreSession(%v) of a session the TUI path created: %v", id, err)
+	}
+	if restored.SessionID() != id {
+		t.Fatalf("restored id = %v, want %v", restored.SessionID(), id)
+	}
+}
+
+// TestServeHostHasSessionPropagatesACatalogFailure pins the half of HasSession's
+// contract that is easy to get backwards. A FAILED index read is not evidence that
+// the session is absent, and reporting it as absent would answer 404 for a session
+// that exists -- telling a user their work is gone because a disk read hiccuped. The
+// boolean means "definitely not here"; anything else is an error.
+func TestServeHostHasSessionPropagatesACatalogFailure(t *testing.T) {
+	ctx := context.Background()
+	t.Chdir(t.TempDir())
+	dataDir := t.TempDir()
+	host, err := OpenServeHost(ctx, Config{HomeDir: t.TempDir()}, dataDir,
+		WithServeInferenceClient(func() (inference.Client, ModelFactory, error) {
+			return &fakeLLM{}, newModelFactoryFor(testModel()), nil
+		}))
+	if err != nil {
+		t.Fatalf("OpenServeHost: %v", err)
+	}
+	t.Cleanup(func() { _ = host.Close(ctx) })
+
+	sess, err := host.NewSession(ctx)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	id := sess.SessionID()
+	if err := host.CloseLive(ctx, id); err != nil {
+		t.Fatalf("CloseLive: %v", err)
+	}
+	// Corrupt the session's listing-index entry so the index read itself fails.
+	entry := filepath.Join(dataDir, "kv", "sessions", id.String())
+	if _, err := os.Stat(entry); err != nil {
+		t.Fatalf("listing index entry %s: %v", entry, err)
+	}
+	if err := os.WriteFile(entry, []byte("not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ok, err := host.HasSession(ctx, id)
+	if err == nil {
+		t.Fatalf("HasSession with a failing catalog read = (%v, nil), want the read error", ok)
+	}
+	if ok {
+		t.Error("HasSession reported true on a failed read")
+	}
+}
+
+// TestServeHostHasSessionTrustsTheLiveSessionOverTheIndex pins why the live check
+// comes BEFORE the catalog read rather than after it. A session this host is
+// currently serving is servable by definition -- a browser may be streaming its
+// events right now -- so a missing or damaged listing-index entry must not be allowed
+// to turn its restore into a 404 and disconnect it.
+func TestServeHostHasSessionTrustsTheLiveSessionOverTheIndex(t *testing.T) {
+	ctx := context.Background()
+	t.Chdir(t.TempDir())
+	dataDir := t.TempDir()
+	host, err := OpenServeHost(ctx, Config{HomeDir: t.TempDir()}, dataDir,
+		WithServeInferenceClient(func() (inference.Client, ModelFactory, error) {
+			return &fakeLLM{}, newModelFactoryFor(testModel()), nil
+		}))
+	if err != nil {
+		t.Fatalf("OpenServeHost: %v", err)
+	}
+	t.Cleanup(func() { _ = host.Close(ctx) })
+
+	live, err := host.NewSession(ctx)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	if err := os.Remove(filepath.Join(dataDir, "kv", "sessions", live.SessionID().String())); err != nil {
+		t.Fatalf("removing the listing index entry: %v", err)
+	}
+	if ok, err := host.HasSession(ctx, live.SessionID()); err != nil || !ok {
+		t.Fatalf("HasSession(live, index entry gone) = (%v, %v), want (true, nil)", ok, err)
+	}
+}

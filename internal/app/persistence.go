@@ -516,12 +516,20 @@ func currentWorkspaceFingerprint() (string, error) {
 func filterSameWorkspace(metas []sessionstore.SessionMeta, root string) []sessionstore.SessionMeta {
 	kept := metas[:0]
 	for _, meta := range metas {
-		fp := meta.ConfigFingerprint.WorkspaceRoot
-		if fp == "" || strings.HasSuffix(fp, ":"+root) {
+		if sameWorkspace(meta, root) {
 			kept = append(kept, meta)
 		}
 	}
 	return kept
+}
+
+// sameWorkspace is filterSameWorkspace's per-session predicate, factored out so a
+// caller holding ONE SessionMeta (ServeHost.HasSession, which reads a single catalog
+// entry rather than the whole list) applies the same rule rather than a second,
+// drifting copy of it.
+func sameWorkspace(meta sessionstore.SessionMeta, root string) bool {
+	fp := meta.ConfigFingerprint.WorkspaceRoot
+	return fp == "" || strings.HasSuffix(fp, ":"+root)
 }
 
 // sortSessionsByRecency orders metas most-recently-active first, in place.

@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"errors"
 	"os"
 	"sync"
 
@@ -58,10 +57,6 @@ import (
 // error types below are Carbon's own; mapping them onto HTTP status codes is the
 // process root's job.
 
-// errServeSessionNotImplemented is the placeholder the session-lifecycle methods
-// return until their own task lands. It is never returned once those are built.
-var errServeSessionNotImplemented = errors.New("carbon: serve session lifecycle is not implemented")
-
 // ServeHostOption configures OpenServeHost.
 type ServeHostOption func(*serveHostConfig)
 
@@ -90,10 +85,15 @@ func withServeModelsLoader(load productionModelsContextLoader) ServeHostOption {
 // facades and listing catalog, the session access wiring, the one immutable rig, and
 // the credential admission. Per live session it owns one mcpSessionAssembly.
 type ServeHost struct {
-	fs          *fsstore.Store
-	stores      *sessionStores
-	access      *sessionAccess
-	rig         *rig.Rig
+	fs     *fsstore.Store
+	stores *sessionStores
+	access *sessionAccess
+	rig    *rig.Rig
+	// workspace is the canonical workspace root, in the form
+	// SessionMeta.ConfigFingerprint.WorkspaceRoot is compared against. It scopes
+	// HasSession to the checkout this host serves; the session store itself is
+	// global and spans every checkout carbon has ever run in.
+	workspace   string
 	serveConfig Config
 
 	credentialRuntime *credentialRuntime
@@ -175,6 +175,14 @@ func OpenServeHost(ctx context.Context, cfg Config, dataDir string, opts ...Serv
 		releaseCredentials()
 		return nil, &WorkspaceRootError{Cause: err}
 	}
+	// The canonical form the session catalog records, resolved once. List tolerates a
+	// failure here by leaving the listing unfiltered, but a serve host cannot: an
+	// unscoped HasSession would admit another checkout's session ids into the rig.
+	workspace, err := currentWorkspaceFingerprint()
+	if err != nil {
+		releaseCredentials()
+		return nil, &WorkspaceRootError{Cause: err}
+	}
 
 	// Interactive: a human at a browser resolves gates over the HTTP surface, so the
 	// access wiring uses the HOME-derived read/write workspace permission store and
@@ -241,6 +249,7 @@ func OpenServeHost(ctx context.Context, cfg Config, dataDir string, opts ...Serv
 		stores:            stores,
 		access:            access,
 		rig:               assembled,
+		workspace:         workspace,
 		serveConfig:       cfg,
 		credentialRuntime: credentialRuntime,
 		credentialLease:   credentialLease,
@@ -378,14 +387,62 @@ func (h *ServeHost) adoptLocked(ctx context.Context, sess session.SessionControl
 	return nil
 }
 
-// RestoreSession rebuilds a persisted session on the shared rig.
+// RestoreSession rebuilds a persisted session on the shared rig and attaches its own
+// MCP composition.
+//
+// It returns the ALREADY-LIVE controller when id names the live session: the
+// exclusive root lease makes a second restore of the same id impossible, and a
+// re-restore would orphan every subscriber already streaming from the live one.
+// (harness's HTTP layer short-circuits an already-live id before reaching here, so
+// this is the defensive half of that contract, not its only enforcement.) Any OTHER
+// id while a session is live is refused with *LiveSessionHandoffError -- clicking a
+// different session in a list must not silently kill the running one.
 func (h *ServeHost) RestoreSession(ctx context.Context, id uuid.UUID) (session.SessionController, error) {
-	return nil, errServeSessionNotImplemented
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.live != nil {
+		if h.live.id == id {
+			return h.live.session, nil
+		}
+		return nil, &LiveSessionHandoffError{LiveID: h.live.id}
+	}
+	sess, err := h.rig.RestoreSession(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if err := h.adoptLocked(ctx, sess); err != nil {
+		return nil, err
+	}
+	return sess, nil
 }
 
-// HasSession reports whether a session id has ever been persisted in this workspace.
+// HasSession reports whether id names a session this host can actually serve: one
+// that has been persisted AND belongs to the workspace root this host binds. It reads
+// the listing catalog's index entry only -- no lease, no replay -- so it is cheap
+// enough to run on every restore request.
+//
+// It exists because the process root has to turn an unservable id into a 404 itself.
+// harness maps every restore failure except its own session-not-found class to a bare
+// 500, and rig.RestoreSession has no not-found class; a cross-workspace id would
+// otherwise surface as an opaque config-fingerprint mismatch from deep inside the rig.
+//
+// The BOOLEAN, not the error, is this method's contract: an error means the catalog
+// READ failed, which is a genuine 500 and must never be flattened into "not found".
 func (h *ServeHost) HasSession(ctx context.Context, id uuid.UUID) (bool, error) {
-	return false, errServeSessionNotImplemented
+	h.mu.Lock()
+	live := h.live
+	h.mu.Unlock()
+	if live != nil && live.id == id {
+		return true, nil
+	}
+	meta, ok, err := h.stores.catalog.ReadMeta(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		return false, nil
+	}
+	return sameWorkspace(meta, h.workspace), nil
 }
 
 // Close tears the host down once, in the reverse of construction order: the live
