@@ -767,3 +767,32 @@ func TestServeHostHasSessionTrustsTheLiveSessionOverTheIndex(t *testing.T) {
 		t.Fatalf("HasSession(live, index entry gone) = (%v, %v), want (true, nil)", ok, err)
 	}
 }
+
+// TestServeHostRefusesSessionsAfterClose closes the post-shutdown window. Close
+// releases the credential admission, removes the access wiring's scratch HOME and
+// closes the durable backend, so a session opened after it would run with revoked
+// credentials, no sandbox scratch HOME and a backend nobody owns. An HTTP server
+// draining in-flight requests while its host tears down is exactly the shape that
+// reaches this, so it fails loud instead.
+func TestServeHostRefusesSessionsAfterClose(t *testing.T) {
+	host := newTestServeHost(t)
+	ctx := context.Background()
+	if err := host.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	id, err := uuid.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var closedErr *StoreClosedError
+	if _, err := host.NewSession(ctx); !errors.As(err, &closedErr) {
+		t.Errorf("NewSession after Close = %T %v, want *StoreClosedError", err, err)
+	}
+	if _, err := host.RestoreSession(ctx, id); !errors.As(err, &closedErr) {
+		t.Errorf("RestoreSession after Close = %T %v, want *StoreClosedError", err, err)
+	}
+	if _, err := host.HasSession(ctx, id); !errors.As(err, &closedErr) {
+		t.Errorf("HasSession after Close = %T %v, want *StoreClosedError", err, err)
+	}
+}

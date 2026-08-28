@@ -99,9 +99,16 @@ type ServeHost struct {
 	credentialRuntime *credentialRuntime
 	credentialLease   *credentialRegistryLease
 
-	// mu guards live, the single-live-session invariant.
-	mu   sync.Mutex
-	live *liveServeSession
+	// mu guards live and closed: the single-live-session invariant, and the
+	// post-teardown refusal. It is held across the whole of a session open, because
+	// checking that no session is live and opening one have to be a single step --
+	// two concurrent opens that both saw an idle host would both take the workspace
+	// root lease and the second would fail deep inside the rig. The cost is that
+	// LiveSession blocks for the duration of an open, which is the right trade: a
+	// pre-flight probe that answered "nothing is live" mid-open would be wrong.
+	mu     sync.Mutex
+	live   *liveServeSession
+	closed bool
 
 	closeOnce sync.Once
 	closeErr  error
@@ -342,6 +349,9 @@ func (h *ServeHost) CloseLive(ctx context.Context, expected uuid.UUID) error {
 func (h *ServeHost) NewSession(ctx context.Context) (session.SessionController, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.closed {
+		return nil, &StoreClosedError{}
+	}
 	if h.live != nil {
 		return nil, &LiveSessionHandoffError{LiveID: h.live.id}
 	}
@@ -400,6 +410,9 @@ func (h *ServeHost) adoptLocked(ctx context.Context, sess session.SessionControl
 func (h *ServeHost) RestoreSession(ctx context.Context, id uuid.UUID) (session.SessionController, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.closed {
+		return nil, &StoreClosedError{}
+	}
 	if h.live != nil {
 		if h.live.id == id {
 			return h.live.session, nil
@@ -430,8 +443,11 @@ func (h *ServeHost) RestoreSession(ctx context.Context, id uuid.UUID) (session.S
 // READ failed, which is a genuine 500 and must never be flattened into "not found".
 func (h *ServeHost) HasSession(ctx context.Context, id uuid.UUID) (bool, error) {
 	h.mu.Lock()
-	live := h.live
+	closed, live := h.closed, h.live
 	h.mu.Unlock()
+	if closed {
+		return false, &StoreClosedError{}
+	}
 	if live != nil && live.id == id {
 		return true, nil
 	}
@@ -452,7 +468,11 @@ func (h *ServeHost) HasSession(ctx context.Context, id uuid.UUID) (bool, error) 
 func (h *ServeHost) Close(ctx context.Context) error {
 	h.closeOnce.Do(func() {
 		var first error
-		if err := h.closeLive(ctx); err != nil {
+		h.mu.Lock()
+		h.closed = true
+		err := h.closeLiveLocked(ctx)
+		h.mu.Unlock()
+		if err != nil {
 			first = err
 		}
 		if h.credentialRuntime != nil {
@@ -474,13 +494,6 @@ func (h *ServeHost) Close(ctx context.Context) error {
 		h.closeErr = first
 	})
 	return h.closeErr
-}
-
-// closeLive closes the live session, if any, taking the lock.
-func (h *ServeHost) closeLive(ctx context.Context) error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.closeLiveLocked(ctx)
 }
 
 // closeLiveLocked stops the MCP consumers first, then shuts the session down -- the
