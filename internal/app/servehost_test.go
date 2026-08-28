@@ -845,3 +845,121 @@ func TestServeHostSessionOutlivesTheOpeningContext(t *testing.T) {
 		t.Fatalf("Submit after the restoring context was cancelled: %v", err)
 	}
 }
+
+// TestServeHostSessionPresentationsClassifyEveryListedRow covers the per-row attach
+// state the browser needs and `/v1/sessions` structurally cannot carry: SessionSummary
+// is five fixed fields whose schema is additionalProperties:false, and pkg/serve has
+// no presentation seam.
+//
+// The classification is CARBON's local policy and it has to answer for the whole
+// catalog, not just this checkout's part of it. carbon serve's read plane is
+// catalogreader over the raw catalog with no workspace filter (the TUI's
+// SessionStoreFactory.List filters; the serve list does not), and the session store is
+// global, so `/v1/sessions` genuinely lists other checkouts' sessions. Those rows are
+// read_only: their transcript replays fine (a journal read needs no rig, lease or
+// root) but this host can never make them live, and HasSession already answers 404 for
+// them.
+func TestServeHostSessionPresentationsClassifyEveryListedRow(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	home := t.TempDir()
+	build := WithServeInferenceClient(func() (inference.Client, ModelFactory, error) {
+		return &fakeLLM{}, newModelFactoryFor(testModel()), nil
+	})
+
+	// A session belonging to a DIFFERENT workspace root, in the same global store.
+	t.Chdir(t.TempDir())
+	// The CANONICAL root, resolved exactly as the fingerprint records it (on macOS a
+	// t.TempDir() lives under a symlinked /var, so the raw string is not it).
+	foreignRoot, err := currentWorkspaceFingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreignHost, err := OpenServeHost(ctx, Config{HomeDir: home}, dataDir, build)
+	if err != nil {
+		t.Fatalf("OpenServeHost in the foreign workspace: %v", err)
+	}
+	foreign, err := foreignHost.NewSession(ctx)
+	if err != nil {
+		t.Fatalf("NewSession in the foreign workspace: %v", err)
+	}
+	foreignID := foreign.SessionID()
+	if err := foreignHost.Close(ctx); err != nil {
+		t.Fatalf("Close the foreign host: %v", err)
+	}
+
+	// The served workspace: one session that is live, one that is merely persisted.
+	t.Chdir(t.TempDir())
+	servedRoot, err := currentWorkspaceFingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, err := OpenServeHost(ctx, Config{HomeDir: home}, dataDir, build)
+	if err != nil {
+		t.Fatalf("OpenServeHost: %v", err)
+	}
+	t.Cleanup(func() { _ = host.Close(ctx) })
+
+	cold, err := host.NewSession(ctx)
+	if err != nil {
+		t.Fatalf("NewSession (cold): %v", err)
+	}
+	coldID := cold.SessionID()
+	if err := host.CloseLive(ctx, coldID); err != nil {
+		t.Fatalf("CloseLive: %v", err)
+	}
+	live, err := host.NewSession(ctx)
+	if err != nil {
+		t.Fatalf("NewSession (live): %v", err)
+	}
+	liveID := live.SessionID()
+
+	presentations, err := host.SessionPresentations(ctx)
+	if err != nil {
+		t.Fatalf("SessionPresentations: %v", err)
+	}
+	for _, tc := range []struct {
+		name string
+		id   uuid.UUID
+		want SessionAttachState
+		root string
+	}{
+		{"the live session", liveID, AttachLive, servedRoot},
+		{"a persisted session of this workspace", coldID, AttachResumable, servedRoot},
+		{"another workspace's session", foreignID, AttachReadOnly, foreignRoot},
+	} {
+		got, ok := presentations[tc.id]
+		if !ok {
+			t.Errorf("%s (%v) is absent from the presentation map; its row would default to resumable", tc.name, tc.id)
+			continue
+		}
+		if got.Attach != tc.want {
+			t.Errorf("%s attach = %q, want %q", tc.name, got.Attach, tc.want)
+		}
+		// The workspace is published as the canonical ROOT, not harness's
+		// "<placement mode>:<root>" fingerprint string, because it is shown to a
+		// human as a path.
+		if got.Workspace != tc.root {
+			t.Errorf("%s workspace = %q, want %q", tc.name, got.Workspace, tc.root)
+		}
+		if (got.Reason != "") != (tc.want == AttachReadOnly) {
+			t.Errorf("%s reason = %q; a reason belongs to read_only rows and only to them", tc.name, got.Reason)
+		}
+	}
+}
+
+// TestServeHostSessionPresentationsPropagateACatalogFailure keeps the optional route
+// honest. The presentation map is advisory — an absent one leaves every row at its
+// default — but a FAILED catalog read must never be reported as an empty map, which
+// would silently downgrade a live session to a resumable row and offer to restore
+// something already running.
+func TestServeHostSessionPresentationsPropagateACatalogFailure(t *testing.T) {
+	ctx := context.Background()
+	host := newTestServeHost(t)
+	if err := host.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if _, err := host.SessionPresentations(ctx); err == nil {
+		t.Fatal("SessionPresentations on a closed host succeeded; a broken read plane would present as an empty catalog")
+	}
+}

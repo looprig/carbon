@@ -488,6 +488,107 @@ func (h *ServeHost) HasSession(ctx context.Context, id uuid.UUID) (bool, error) 
 	return sameWorkspace(meta, h.workspace), nil
 }
 
+// SessionAttachState is one listed session's attach state: what a browser may do with
+// that row. It is the single field the wui design's session list needs and the /v1
+// wire contract structurally cannot carry -- serve.SessionSummary is five fixed fields
+// whose schema is additionalProperties:false, and pkg/serve has no presentation seam.
+//
+// The three states are a DEPLOYMENT-neutral vocabulary, not carbon's: a hosted
+// deployment lists every session and resolves each row against a host registry, while
+// carbon serves one checkout. Both compute this field; the same UI renders both.
+type SessionAttachState string
+
+const (
+	// AttachLive means a process holds this session: attach and drive it.
+	AttachLive SessionAttachState = "live"
+	// AttachResumable means nothing holds it, but this deployment can materialize its
+	// workspace and make it live.
+	AttachResumable SessionAttachState = "resumable"
+	// AttachReadOnly means the transcript is all this deployment can offer, with a
+	// reason. It is a COMPLETE experience rather than a stub: listing, status and
+	// journal are served off the durable store with no rig, lease or workspace root
+	// involved, so a read-only row renders its full history. Only making a session
+	// live is root-bound.
+	AttachReadOnly SessionAttachState = "read_only"
+)
+
+// readOnlyForeignWorkspaceReason is the one reason carbon produces. It is shown to a
+// human, so it names the cause and not the mechanism, and it contains no path (the
+// row's own Workspace field carries that).
+const readOnlyForeignWorkspaceReason = "this session belongs to a different workspace"
+
+// SessionPresentation is one listed session's presentation metadata.
+type SessionPresentation struct {
+	// Attach is what the browser may do with the row.
+	Attach SessionAttachState
+	// Workspace is the canonical workspace root the session was recorded against,
+	// empty when it recorded none.
+	Workspace string
+	// Reason explains a non-attachable row. It is set only for AttachReadOnly.
+	Reason string
+}
+
+// SessionPresentations classifies every session in the listing catalog for this host.
+//
+// It has to answer for the WHOLE catalog rather than this checkout's part of it,
+// because carbon serve's read plane is catalogreader over the raw catalog with no
+// workspace filter -- unlike SessionStoreFactory.List, which the TUI picker uses and
+// which does filter. The session store is global (it lives under the looprig home, not
+// the workspace), so GET /v1/sessions genuinely lists other checkouts' sessions, and
+// those rows need an honest state: their transcript replays, but this host can never
+// make them live and HasSession already answers 404 for them.
+//
+// The map is the whole catalog and is not paged. That matches how it is consumed: a
+// client merges it into a page of /v1/sessions client-side, so a page-shaped
+// presentation would have to be re-fetched in lockstep with a list whose ordering it
+// does not control.
+//
+// A read failure is an ERROR, never an empty map. The route this backs is optional by
+// design -- a deployment that does not serve it leaves every row at its default -- but
+// silently degrading a live session to the resumable default would offer to restore
+// something already running.
+func (h *ServeHost) SessionPresentations(ctx context.Context) (map[uuid.UUID]SessionPresentation, error) {
+	h.mu.Lock()
+	closed, live := h.closed, h.live
+	h.mu.Unlock()
+	if closed {
+		return nil, &StoreClosedError{}
+	}
+	var liveID uuid.UUID
+	if live != nil {
+		liveID = live.id
+	}
+
+	metas, err := h.stores.catalog.ListSessions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	presentations := make(map[uuid.UUID]SessionPresentation, len(metas))
+	for _, meta := range metas {
+		presentations[meta.SessionID] = presentationFor(meta, h.workspace, liveID)
+	}
+	return presentations, nil
+}
+
+// presentationFor is SessionPresentations' per-row policy, factored out so it is
+// testable against one fabricated catalog entry and so the ordering of its cases is
+// explicit: liveness wins over workspace scoping, because the live session is by
+// construction this host's own and answering anything else for it would offer a
+// restore of the session already streaming.
+func presentationFor(meta sessionstore.SessionMeta, servedRoot string, liveID uuid.UUID) SessionPresentation {
+	presentation := SessionPresentation{Workspace: canonicalWorkspaceRoot(meta)}
+	switch {
+	case !liveID.IsZero() && meta.SessionID == liveID:
+		presentation.Attach = AttachLive
+	case sameWorkspace(meta, servedRoot):
+		presentation.Attach = AttachResumable
+	default:
+		presentation.Attach = AttachReadOnly
+		presentation.Reason = readOnlyForeignWorkspaceReason
+	}
+	return presentation
+}
+
 // Close tears the host down once, in the reverse of construction order: the live
 // session (which releases the exclusive root lease), the credential admission, the
 // access wiring (which removes its scratch HOME), then the durable backend. Repeated

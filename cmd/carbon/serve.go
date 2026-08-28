@@ -117,7 +117,7 @@ var _ serve.Rig[session.SessionController, rig.SessionOption] = (*serveRig)(nil)
 // bounded: Server refuses a bind only when it is non-loopback AND unproven, so it can
 // only ever cause a false-negative refusal of a public bind, never a false-positive
 // exposure. carbon binds loopback.
-func buildServeHandler(r serve.Rig[session.SessionController, rig.SessionOption], reads serve.Reader, host handoffHost) http.Handler {
+func buildServeHandler(r serve.Rig[session.SessionController, rig.SessionOption], reads serve.Reader, host uiHost) http.Handler {
 	root := http.NewServeMux()
 	root.Handle(uiPrefix, uiHandler(host))
 	root.Handle("/", wui.Handler(serve.Handler(r, reads)))
@@ -148,14 +148,30 @@ type handoffHost interface {
 	CloseLive(ctx context.Context, expected uuid.UUID) error
 }
 
+// presentationHost is the narrow view the session-presentation route needs. It is its
+// own interface, not a method bolted onto handoffHost, because the two consumers are
+// unrelated: one ends a live session, the other classifies a list of dead ones.
+type presentationHost interface {
+	// SessionPresentations classifies every session in the listing catalog.
+	SessionPresentations(ctx context.Context) (map[uuid.UUID]carbon.SessionPresentation, error)
+}
+
+// uiHost is what the /ui subtree as a whole needs. The mux is one handler, so it takes
+// one value; the routes each depend on their own narrow half.
+type uiHost interface {
+	handoffHost
+	presentationHost
+}
+
 // uiHandler routes carbon's own pre-flight surface. It is a dedicated mux rather than
 // two patterns on the root mux because the root's "/" SPA catch-all matches every
 // method: a POST to /ui/live registered only as "GET /ui/live" would fall through to
 // the SPA and answer 200 with an HTML page instead of 405. Confined to its own mux,
 // an unknown /ui path is a 404 and a wrong method is a 405.
-func uiHandler(host handoffHost) http.Handler {
+func uiHandler(host uiHost) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /ui/live", handleUILive(host))
+	mux.Handle("GET /ui/session-presentation", handleUISessionPresentation(host))
 	mux.Handle("POST /ui/handoff", handleUIHandoff(host))
 	return mux
 }
@@ -181,6 +197,55 @@ func handleUILive(host handoffHost) http.HandlerFunc {
 		body := uiLiveResponse{}
 		if id, ok := host.LiveSession(); ok {
 			body.Live, body.SessionID = true, id.String()
+		}
+		writeUIJSON(w, http.StatusOK, body)
+	}
+}
+
+// uiSessionPresentation is one row of GET /ui/session-presentation. The three attach
+// states are the design's own vocabulary; carbon serializes internal/app's value
+// rather than re-deriving it, so the policy has exactly one implementation.
+type uiSessionPresentation struct {
+	Attach    string `json:"attach"`
+	Workspace string `json:"workspace,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+// handleUISessionPresentation serves the per-row attach state the session list needs
+// and cannot carry.
+//
+// It is a CARBON-owned route outside /v1 for a structural reason, not a stylistic one:
+// serve.SessionSummary is five fixed fields, its schema is additionalProperties:false,
+// and pkg/serve exposes no presentation seam a consumer could extend. /v1/sessions
+// stays harness's canonical contract, untouched, and the client merges this map into
+// it by session id.
+//
+// The route is OPTIONAL by design. A deployment that does not serve it yields rows
+// with no state, which default to "resumable" — the same semantics as the TUI's
+// optional consumer-supplied session presentation, expressed over HTTP. That is
+// exactly why a read failure must be a 500 and never an empty map: an empty map is
+// indistinguishable from "not served", so it would quietly downgrade the live session
+// to a row offering to restore what is already running.
+func handleUISessionPresentation(host presentationHost) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		presentations, err := host.SessionPresentations(r.Context())
+		if err != nil {
+			slog.Error("carbon: session presentation failed", "err", err)
+			// Retryable: the failure is a read of the durable catalog, and the list
+			// it decorates is itself re-fetchable.
+			writeUIError(w, http.StatusInternalServerError, "session_presentation_failed",
+				"the session presentation could not be read", true)
+			return
+		}
+		// Keyed by the canonical session id string so the client indexes it directly
+		// with the session_id it already holds from /v1/sessions.
+		body := make(map[string]uiSessionPresentation, len(presentations))
+		for id, presentation := range presentations {
+			body[id.String()] = uiSessionPresentation{
+				Attach:    string(presentation.Attach),
+				Workspace: presentation.Workspace,
+				Reason:    presentation.Reason,
+			}
 		}
 		writeUIJSON(w, http.StatusOK, body)
 	}
@@ -280,7 +345,7 @@ func writeUIError(w http.ResponseWriter, status int, code, message string, retry
 // without a models.json, a store on disk, or a workspace lease.
 type serveHostAPI interface {
 	serveHost
-	handoffHost
+	uiHost
 	// Catalog and SessionStore are the read plane catalogreader.New reads the
 	// sessions list, status and journal pages from.
 	Catalog() *sessionstore.Catalog

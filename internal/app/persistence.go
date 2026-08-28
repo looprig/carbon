@@ -532,6 +532,25 @@ func sameWorkspace(meta sessionstore.SessionMeta, root string) bool {
 	return fp == "" || strings.HasSuffix(fp, ":"+root)
 }
 
+// canonicalWorkspaceRoot recovers the canonical workspace ROOT from a session's
+// recorded fingerprint. harness folds the placement into
+// ConfigFingerprint.WorkspaceRoot as "<placement mode>:<canonical root>" (pkg/rig's
+// workspace.go), and a root is what a human is shown, so the mode prefix is dropped
+// here. A record with no fingerprint (or none of the expected shape) yields the value
+// unchanged, which for the empty case is the empty string sameWorkspace already treats
+// as "belongs to no particular project".
+//
+// It splits on the FIRST colon, which is what makes it the exact inverse of
+// sameWorkspace's ":"+root suffix match: the mode is a bare identifier and never
+// contains one.
+func canonicalWorkspaceRoot(meta sessionstore.SessionMeta) string {
+	fp := meta.ConfigFingerprint.WorkspaceRoot
+	if _, root, found := strings.Cut(fp, ":"); found {
+		return root
+	}
+	return fp
+}
+
 // sortSessionsByRecency orders metas most-recently-active first, in place.
 func sortSessionsByRecency(metas []sessionstore.SessionMeta) {
 	sort.SliceStable(metas, func(i, j int) bool {

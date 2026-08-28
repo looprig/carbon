@@ -709,3 +709,55 @@ func TestServeConcurrentColdRestoreDoesNotFail(t *testing.T) {
 		}
 	}
 }
+
+// TestServeSessionPresentationTracksTheLiveSession drives the presentation route
+// against the real host rather than a stub: the state is a function of what is
+// actually live and of the workspace root the process actually serves, and neither is
+// observable from a unit test of the handler.
+func TestServeSessionPresentationTracksTheLiveSession(t *testing.T) {
+	fixture := startTestServe(t, idleScript)
+	sid := fixture.createSession(t)
+
+	type row struct {
+		Attach    string `json:"attach"`
+		Workspace string `json:"workspace"`
+		Reason    string `json:"reason"`
+	}
+	var body map[string]row
+	fixture.getJSON(t, "/ui/session-presentation", http.StatusOK, &body)
+	got, ok := body[sid.String()]
+	if !ok {
+		t.Fatalf("the live session %v is absent from the presentation map: %v", sid, body)
+	}
+	if got.Attach != "live" {
+		t.Errorf("attach = %q for the session this process is holding, want live", got.Attach)
+	}
+	if got.Workspace == "" {
+		t.Error("the live row published no workspace root")
+	}
+	if got.Reason != "" {
+		t.Errorf("reason = %q on an attachable row; a reason belongs to read_only rows only", got.Reason)
+	}
+	servedRoot := got.Workspace
+
+	// After the handoff the very same row is resumable, still in this workspace: the
+	// state tracks liveness, it is not baked in at creation.
+	resp := fixture.do(t, http.MethodPost, "/ui/handoff", map[string]any{"session_id": sid.String()})
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("handoff = %d, want 204", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+
+	body = nil
+	fixture.getJSON(t, "/ui/session-presentation", http.StatusOK, &body)
+	got, ok = body[sid.String()]
+	if !ok {
+		t.Fatalf("the session %v vanished from the presentation map after the handoff", sid)
+	}
+	if got.Attach != "resumable" {
+		t.Errorf("attach = %q after the handoff, want resumable", got.Attach)
+	}
+	if got.Workspace != servedRoot {
+		t.Errorf("workspace = %q after the handoff, want the unchanged %q", got.Workspace, servedRoot)
+	}
+}

@@ -203,13 +203,23 @@ func TestServeRigReturnsTheHostSessionUnwrapped(t *testing.T) {
 	}
 }
 
-// stubHandoffHost is the handoffHost double backing the /ui/* route tests.
+// stubHandoffHost is the uiHost double backing the /ui/* route tests.
 type stubHandoffHost struct {
 	live     uuid.UUID
 	hasLive  bool
 	closeErr error
 
+	presentations    map[uuid.UUID]carbon.SessionPresentation
+	presentationsErr error
+
 	closed []uuid.UUID
+}
+
+func (s *stubHandoffHost) SessionPresentations(context.Context) (map[uuid.UUID]carbon.SessionPresentation, error) {
+	if s.presentationsErr != nil {
+		return nil, s.presentationsErr
+	}
+	return s.presentations, nil
 }
 
 func (s *stubHandoffHost) LiveSession() (uuid.UUID, bool) { return s.live, s.hasLive }
@@ -291,7 +301,7 @@ func TestServeHandlerGuardsEveryRouteAgainstDNSRebinding(t *testing.T) {
 	t.Parallel()
 
 	h := testServeHandler(t, &stubHandoffHost{})
-	for _, target := range []string{"/", "/v1/sessions", "/ui/live", "/ui/handoff"} {
+	for _, target := range []string{"/", "/v1/sessions", "/ui/live", "/ui/session-presentation", "/ui/handoff"} {
 		rec := doServe(t, h, http.MethodGet, target, nil, func(r *http.Request) { r.Host = "attacker.example" })
 		if rec.Code != http.StatusForbidden {
 			t.Errorf("GET %s with a foreign Host = %d, want %d", target, rec.Code, http.StatusForbidden)
@@ -523,6 +533,86 @@ func TestUIRoutesRejectTheWrongMethod(t *testing.T) {
 	}
 	if rec := doServe(t, h, http.MethodGet, "/ui/handoff", nil, nil); rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("GET /ui/handoff = %d, want 405", rec.Code)
+	}
+	if rec := doServe(t, h, http.MethodPost, "/ui/session-presentation", nil, jsonBody); rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("POST /ui/session-presentation = %d, want 405", rec.Code)
+	}
+}
+
+// TestUISessionPresentationPublishesTheAttachState covers the route that carries the
+// one field the session list needs and structurally cannot hold: serve.SessionSummary
+// is five fixed fields whose schema is additionalProperties:false, and pkg/serve has no
+// presentation seam. So the state travels here, outside /v1, and the client merges it
+// into the list by session id.
+//
+// All THREE states are asserted, including the read_only one carbon's local policy
+// produces for another checkout's sessions. The serve read plane is catalogreader over
+// the unfiltered global catalog, so those rows really are listed.
+func TestUISessionPresentationPublishesTheAttachState(t *testing.T) {
+	t.Parallel()
+
+	live, resumable, foreign := mustUUID(t), mustUUID(t), mustUUID(t)
+	host := &stubHandoffHost{presentations: map[uuid.UUID]carbon.SessionPresentation{
+		live:      {Attach: carbon.AttachLive, Workspace: "/w/served"},
+		resumable: {Attach: carbon.AttachResumable, Workspace: "/w/served"},
+		foreign:   {Attach: carbon.AttachReadOnly, Workspace: "/w/other", Reason: "another workspace"},
+	}}
+
+	rec := doServe(t, testServeHandler(t, host), http.MethodGet, "/ui/session-presentation", nil, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /ui/session-presentation = %d, want 200 (body %q)", rec.Code, rec.Body.String())
+	}
+	var body map[string]struct {
+		Attach    string `json:"attach"`
+		Workspace string `json:"workspace"`
+		Reason    string `json:"reason"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v (body %q)", err, rec.Body.String())
+	}
+	if len(body) != 3 {
+		t.Fatalf("body has %d rows, want 3: %v", len(body), body)
+	}
+	for name, tc := range map[string]struct {
+		id     uuid.UUID
+		attach string
+		root   string
+		reason string
+	}{
+		"live":      {live, "live", "/w/served", ""},
+		"resumable": {resumable, "resumable", "/w/served", ""},
+		"read_only": {foreign, "read_only", "/w/other", "another workspace"},
+	} {
+		got, ok := body[tc.id.String()]
+		if !ok {
+			t.Errorf("%s row is missing; the map must be keyed by the canonical session id the list already carries", name)
+			continue
+		}
+		if got.Attach != tc.attach || got.Workspace != tc.root || got.Reason != tc.reason {
+			t.Errorf("%s row = %+v, want attach=%q workspace=%q reason=%q", name, got, tc.attach, tc.root, tc.reason)
+		}
+	}
+}
+
+// TestUISessionPresentationFailsLoudRatherThanEmpty is the assertion that makes the
+// route's optionality safe. It is optional BY DESIGN — a deployment that does not
+// serve it yields rows with no state, which default to resumable — and that is exactly
+// why a failed read must not answer 200 with an empty map: the client cannot tell the
+// two apart, so it would silently downgrade the LIVE session to a row offering to
+// restore what is already running.
+func TestUISessionPresentationFailsLoudRatherThanEmpty(t *testing.T) {
+	t.Parallel()
+
+	host := &stubHandoffHost{presentationsErr: errors.New("catalog unavailable")}
+	rec := doServe(t, testServeHandler(t, host), http.MethodGet, "/ui/session-presentation", nil, nil)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("GET /ui/session-presentation with a broken catalog = %d, want 500 (body %q)", rec.Code, rec.Body.String())
+	}
+	if code := errorCode(t, rec); code != "session_presentation_failed" {
+		t.Errorf("error code = %q, want session_presentation_failed", code)
+	}
+	if strings.Contains(rec.Body.String(), "catalog unavailable") {
+		t.Errorf("the internal cause leaked to the client: %q", rec.Body.String())
 	}
 }
 
