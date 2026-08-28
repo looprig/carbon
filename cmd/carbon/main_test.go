@@ -8,6 +8,7 @@ import (
 	"go/parser"
 	"go/token"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -162,6 +163,45 @@ func TestRunPreservesPublicIdentity(t *testing.T) {
 	}
 }
 
+// serveImportPath is the one import the boundary guards are about.
+const serveImportPath = "github.com/looprig/harness/pkg/serve"
+
+// serveImportOffenders reports every non-test Go file under root whose import
+// block names harness's generic HTTP layer. It is the primitive the boundary
+// guards are built from: the scan is shared, the ROOTS differ.
+//
+// _test.go files are skipped: a test may legitimately drive the HTTP surface,
+// and forbidding that would make the boundary untestable.
+func serveImportOffenders(root string) ([]string, error) {
+	var offenders []string
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		file, parseErr := parser.ParseFile(token.NewFileSet(), path, nil, parser.ImportsOnly)
+		if parseErr != nil {
+			return parseErr
+		}
+		for _, spec := range file.Imports {
+			importPath, unquoteErr := strconv.Unquote(spec.Path.Value)
+			if unquoteErr != nil {
+				return unquoteErr
+			}
+			if importPath == serveImportPath {
+				offenders = append(offenders, path)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return offenders, nil
+}
+
 // TestRunHasNoServeAdapter guards the process boundary: the command and Rig
 // packages do not directly import the generic harness HTTP layer. A future HTTP entry point
 // should pass the real rig to serve.Handler instead of adding a Carbon Runner adapter here.
@@ -169,30 +209,12 @@ func TestRunHasNoServeAdapter(t *testing.T) {
 	moduleRoot := filepath.Clean("../..")
 	for _, relRoot := range []string{"cmd/carbon", "."} {
 		root := filepath.Join(moduleRoot, relRoot)
-		err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
-				return nil
-			}
-			file, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.ImportsOnly)
-			if err != nil {
-				return err
-			}
-			for _, spec := range file.Imports {
-				importPath, err := strconv.Unquote(spec.Path.Value)
-				if err != nil {
-					return err
-				}
-				if importPath == "github.com/looprig/harness/pkg/serve" {
-					t.Errorf("%s imports harness serve; no Carbon serve adapter belongs in this migration", path)
-				}
-			}
-			return nil
-		})
+		offenders, err := serveImportOffenders(root)
 		if err != nil {
 			t.Fatalf("scan %s: %v", root, err)
+		}
+		for _, path := range offenders {
+			t.Errorf("%s imports harness serve; no Carbon serve adapter belongs in this migration", path)
 		}
 	}
 }
@@ -481,4 +503,39 @@ func mustUUID(t *testing.T) uuid.UUID {
 		t.Fatalf("uuid.New: %v", err)
 	}
 	return id
+}
+
+// TestServeImportOffendersFindsOnlyNonTestGoFiles pins the scanner the boundary
+// guard is built from: it reports every non-test .go file under the given root
+// that imports harness's serve package, and ignores _test.go files (a test may
+// legitimately drive the HTTP surface).
+func TestServeImportOffendersFindsOnlyNonTestGoFiles(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	write := func(rel, src string) string {
+		full := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(full), 0o750); err != nil {
+			t.Fatalf("mkdir %s: %v", rel, err)
+		}
+		if err := os.WriteFile(full, []byte(src), 0o600); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+		return full
+	}
+
+	const importsServe = "package p\n\nimport _ \"github.com/looprig/harness/pkg/serve\"\n"
+	const clean = "package p\n\nimport _ \"fmt\"\n"
+
+	offender := write("app/wiring.go", importsServe)
+	write("app/wiring_test.go", importsServe) // a test file may import serve
+	write("app/clean.go", clean)
+
+	got, err := serveImportOffenders(root)
+	if err != nil {
+		t.Fatalf("serveImportOffenders: %v", err)
+	}
+	if len(got) != 1 || got[0] != offender {
+		t.Fatalf("offenders = %v, want exactly [%s]", got, offender)
+	}
 }
