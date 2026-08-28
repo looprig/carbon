@@ -202,20 +202,61 @@ func serveImportOffenders(root string) ([]string, error) {
 	return offenders, nil
 }
 
-// TestRunHasNoServeAdapter guards the process boundary: the command and Rig
-// packages do not directly import the generic harness HTTP layer. A future HTTP entry point
-// should pass the real rig to serve.Handler instead of adding a Carbon Runner adapter here.
-func TestRunHasNoServeAdapter(t *testing.T) {
-	moduleRoot := filepath.Clean("../..")
-	for _, relRoot := range []string{"cmd/carbon", "."} {
-		root := filepath.Join(moduleRoot, relRoot)
-		offenders, err := serveImportOffenders(root)
-		if err != nil {
-			t.Fatalf("scan %s: %v", root, err)
-		}
-		for _, path := range offenders {
-			t.Errorf("%s imports harness serve; no Carbon serve adapter belongs in this migration", path)
-		}
+// TestRigPackagesHaveNoServeAdapter is the negative half of the boundary guard.
+// Carbon's rig, agent, persistence and catalog packages all live under internal/,
+// and NONE of them may import harness's generic HTTP layer: the rig is composed
+// there, but the HTTP surface is composed over it exactly once, at the process
+// root in package main.
+//
+// SCOPE. internal/ and cmd/carbon together are the whole module (the module root
+// has no Go package), and they do not overlap. The predecessor of this guard
+// scanned the roots {"cmd/carbon", "."} joined under "../..", where "." already
+// contains cmd/carbon, so cmd/carbon was walked twice and the module-wide ban was
+// really the "." root doing all the work. Splitting the roots along the actual
+// boundary loses no coverage and drops the duplicate walk.
+//
+// This guard DELIBERATELY DIVERGES from the committed
+// docs/plans/2026-07-11-harness-rig-migration-{design,implementation}.md, which
+// prohibit serve composition outright: "Do not add one", "a SWE serve endpoint
+// (none exists today)", "no SWE serve adapter is introduced", "Do not add serve
+// code". Those documents do NOT authorise this change. Each contains only a
+// forward-looking clause describing what a hypothetical future composition would
+// have to look like -- "Future composition uses generic serve.Handler[S,O]
+// directly" (design) and "A future HTTP composition would pass the real rig to
+// generic serve.Handler[S,O] without a SWE Runner wrapper" (implementation) --
+// which constrains such a future without permitting it. `carbon serve` is that
+// future, and the reasons for building it are argued in
+// looprig/docs/plans/2026-08-27-wui-web-ui-design.md section 6, not inherited from
+// the migration docs. What survives the divergence unchanged is the part those
+// documents were actually protecting: no Carbon-specific serve.Runner adapter,
+// and no serve import below the process root. That is exactly what this test
+// still enforces.
+func TestRigPackagesHaveNoServeAdapter(t *testing.T) {
+	t.Parallel()
+
+	offenders, err := serveImportOffenders(filepath.Join("..", "..", "internal"))
+	if err != nil {
+		t.Fatalf("scan internal: %v", err)
+	}
+	for _, path := range offenders {
+		t.Errorf("%s imports %s; the HTTP surface is composed only in cmd/carbon", path, serveImportPath)
+	}
+}
+
+// TestServeCompositionLivesInCommand is the positive half of the boundary: the
+// serve composition must exist, and must exist HERE. Without it a refactor could
+// delete `carbon serve` outright, or quietly relocate it, and the negative guard
+// above would still pass.
+func TestServeCompositionLivesInCommand(t *testing.T) {
+	t.Parallel()
+	t.Skip("unskip in Task 6.11, once cmd/carbon/serve.go exists")
+
+	offenders, err := serveImportOffenders(".")
+	if err != nil {
+		t.Fatalf("scan cmd/carbon: %v", err)
+	}
+	if len(offenders) == 0 {
+		t.Fatalf("no file in cmd/carbon imports %s; the serve composition is missing", serveImportPath)
 	}
 }
 
