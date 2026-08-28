@@ -355,6 +355,7 @@ func (h *ServeHost) NewSession(ctx context.Context) (session.SessionController, 
 	if h.live != nil {
 		return nil, &LiveSessionHandoffError{LiveID: h.live.id}
 	}
+	ctx = detachSessionLifetime(ctx)
 	sess, err := h.rig.NewSession(ctx)
 	if err != nil {
 		return nil, err
@@ -363,6 +364,31 @@ func (h *ServeHost) NewSession(ctx context.Context) (session.SessionController, 
 		return nil, err
 	}
 	return sess, nil
+}
+
+// detachSessionLifetime strips cancellation from a caller's context while keeping its
+// values, and it is what makes ServeHost usable from an HTTP handler at all.
+//
+// harness derives a session's WHOLE lifetime from the context passed to
+// NewSession/RestoreSession -- internal/sessionruntime's newSessionTopology and
+// restore_constructor both do `sessionCtx, sessionCancel := context.WithCancel(ctx)`,
+// and every loop context descends from that. pkg/serve's handleCreate and
+// handleRestore pass `r.Context()`, which net/http cancels the moment the response is
+// written. Passing it through would mint a session that is already dead when the 201
+// reaches the browser: the next POST .../input answers 500 "session: loop exited".
+//
+// A serve session's lifetime belongs to the HOST, not to the request that happened to
+// ask for it -- it ends at CloseLive or Close, both of which shut it down explicitly.
+// So the host, which owns that invariant, is where the request's cancellation is
+// dropped, rather than at whichever caller happens to be wiring HTTP today.
+//
+// The cost is that a client disconnecting mid-open no longer aborts construction.
+// That is the right trade in both directions: construction is short and takes leases
+// whose release is owned by the session it is building, and a half-built session
+// abandoned by a cancelled context is exactly the state that strands the workspace
+// root. Values (trace/log context) are preserved, so nothing observable is lost.
+func detachSessionLifetime(ctx context.Context) context.Context {
+	return context.WithoutCancel(ctx)
 }
 
 // adoptLocked builds this session's own MCP composition and records it as the live
@@ -419,6 +445,7 @@ func (h *ServeHost) RestoreSession(ctx context.Context, id uuid.UUID) (session.S
 		}
 		return nil, &LiveSessionHandoffError{LiveID: h.live.id}
 	}
+	ctx = detachSessionLifetime(ctx)
 	sess, err := h.rig.RestoreSession(ctx, id)
 	if err != nil {
 		return nil, err

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/looprig/core/content"
 	"github.com/looprig/core/uuid"
 	"github.com/looprig/harness/pkg/session"
 	"github.com/looprig/inference"
@@ -794,5 +795,53 @@ func TestServeHostRefusesSessionsAfterClose(t *testing.T) {
 	}
 	if _, err := host.HasSession(ctx, id); !errors.As(err, &closedErr) {
 		t.Errorf("HasSession after Close = %T %v, want *StoreClosedError", err, err)
+	}
+}
+
+// TestServeHostSessionOutlivesTheOpeningContext is the load-bearing lifetime test for
+// an HTTP host, and it is not a theoretical one: without it `carbon serve` cannot run
+// a single turn.
+//
+// harness derives a session's ENTIRE lifetime from the context handed to
+// NewSession/RestoreSession (internal/sessionruntime's newSessionTopology and
+// restore_constructor both do `sessionCtx, sessionCancel := context.WithCancel(ctx)`),
+// and pkg/serve's handleCreate/handleRestore hand it `r.Context()` — a context the
+// net/http server cancels the instant the response is written. A host that passed that
+// context straight through would therefore mint a session that is already dead by the
+// time the 201 reaches the browser, and the very next POST .../input would answer 500
+// "session: loop exited".
+//
+// So the host detaches cancellation before the rig sees it. The session lives until
+// CloseLive or Close — the two owners of its lifetime — and nothing else.
+func TestServeHostSessionOutlivesTheOpeningContext(t *testing.T) {
+	host := newTestServeHost(t)
+
+	opening, cancelOpening := context.WithCancel(context.Background())
+	live, err := host.NewSession(opening)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	id := live.SessionID()
+	cancelOpening()
+	assertSessionAlive(t, live, "the session died when the context that opened it was cancelled; every carbon serve create would 500 on its first input")
+
+	// Liveness is not just "Done is open": the session must still ACCEPT work.
+	if _, err := live.Submit(context.Background(), []content.Block{&content.TextBlock{Text: "still alive?"}}); err != nil {
+		t.Fatalf("Submit after the opening context was cancelled: %v", err)
+	}
+
+	// The same guarantee on the restore path, which has its own constructor.
+	if err := host.CloseLive(context.Background(), id); err != nil {
+		t.Fatalf("CloseLive: %v", err)
+	}
+	restoring, cancelRestoring := context.WithCancel(context.Background())
+	restored, err := host.RestoreSession(restoring, id)
+	if err != nil {
+		t.Fatalf("RestoreSession: %v", err)
+	}
+	cancelRestoring()
+	assertSessionAlive(t, restored, "the restored session died when the context that restored it was cancelled")
+	if _, err := restored.Submit(context.Background(), []content.Block{&content.TextBlock{Text: "still alive?"}}); err != nil {
+		t.Fatalf("Submit after the restoring context was cancelled: %v", err)
 	}
 }
