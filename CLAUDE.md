@@ -437,6 +437,17 @@ or access-profile behavior.
 
 The binary and command are both named `carbon`.
 
+Running a locally built `bin/carbon` against a real `models.json` that
+configures ACP launchers needs a `carbon-collab-mcp` **sibling next to the
+executable** — the per-loop collaboration MCP server, built and installed from
+the `mcp` module, resolved from `os.Executable()`'s directory
+(`internal/app/collabmcp.go`). Without it every session-composing entry point,
+`carbon serve` included, fails at startup with "collaboration MCP executable
+unavailable". `make install` puts both in `~/.looprig/bin`; a bare `make build`
+produces only `bin/carbon`, so copy the sibling in before smoke-testing out of
+`bin/`. Also give `--data-dir` a path OUTSIDE the workspace: the rig refuses a
+persistence path that overlaps the workspace root.
+
 ## Dependencies
 
 Prefer the standard library. Ask before adding a new third-party dependency. Sibling looprig modules already in `go.mod` are approved architecture dependencies.
