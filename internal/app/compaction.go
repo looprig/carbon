@@ -100,7 +100,7 @@ func newConversationContextPolicy(model model.Model, primerCandidates []PrimerCa
 		counter:         inferencePolicy.ContextCounter(),
 		capability:      inferencePolicy.InferenceCapability(),
 		transports:      transports,
-		toolLimits:      loop.ToolLimits{ResultBytes: 50 * 1024},
+		toolLimits:      loop.ToolLimits{Iterations: 100, Calls: 200, ResultBytes: 50 * 1024},
 		compaction:      compaction,
 		summaryFragment: conversationSummaryConsumptionFragment,
 		summaryRevision: conversationSummaryConsumptionRevision,

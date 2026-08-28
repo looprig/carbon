@@ -15,7 +15,7 @@ require (
 	github.com/looprig/credentials v0.2.0
 	github.com/looprig/foreignloops v0.3.1
 	github.com/looprig/fsstore v0.4.1
-	github.com/looprig/harness v0.29.0
+	github.com/looprig/harness v0.30.1
 	github.com/looprig/inference v0.12.1
 	github.com/looprig/llm v0.14.1
 	github.com/looprig/mcp v0.7.1
@@ -23,7 +23,7 @@ require (
 	github.com/looprig/secrets v0.2.0
 	github.com/looprig/storage v0.4.1
 	github.com/looprig/tools v0.11.0
-	github.com/looprig/tui v0.18.0
+	github.com/looprig/tui v0.18.1
 	golang.org/x/sys v0.47.0
 )
 

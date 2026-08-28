@@ -188,7 +188,7 @@ func TestConversationContextPolicyOptionsInstallDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newConversationContextPolicy() error = %v", err)
 	}
-	if got, want := policy.toolLimits, (loop.ToolLimits{ResultBytes: 50 * 1024}); got != want {
+	if got, want := policy.toolLimits, (loop.ToolLimits{Iterations: 100, Calls: 200, ResultBytes: 50 * 1024}); got != want {
 		t.Errorf("conversationContextPolicy.toolLimits = %+v, want %+v", got, want)
 	}
 	definition, err := loop.Define(append([]loop.Option{
@@ -205,7 +205,7 @@ func TestConversationContextPolicyOptionsInstallDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("definition.Bind() error = %v", err)
 	}
-	if got, want := bound.ToolLimits(), (loop.ToolLimits{Iterations: 25, Calls: 100, Parallel: 8, ResultBytes: 50 * 1024}); got != want {
+	if got, want := bound.ToolLimits(), (loop.ToolLimits{Iterations: 100, Calls: 200, Parallel: 8, ResultBytes: 50 * 1024}); got != want {
 		t.Errorf("bound.ToolLimits() = %+v, want %+v", got, want)
 	}
 	gotCompaction, ok := bound.CompactionPolicy()
