@@ -497,7 +497,10 @@ Assert:
 - banner/greeting and user-visible operator identity are unchanged despite internal `operator-primary` name;
 - the opener satisfies the migrated CLI contract;
 - process shutdown closes live session before the shared store;
-- no SWE serve adapter is introduced.
+- no SWE serve adapter is introduced. (**SUPERSEDED 2026-08-27:** `carbon serve` adds a
+  serve COMPOSITION in `cmd/carbon`, not an adapter — no Carbon `Runner` wrapper exists,
+  and the boundary guard in `cmd/carbon/main_test.go` still fails any `pkg/serve` import
+  under `internal/`. See the wui design §6.)
 
 **Step 2: Verify RED**
 
@@ -512,6 +515,14 @@ Expected: failures against old opener/agent methods.
 Keep `cli.Run` and `SessionStoreFactory` as the process composition seam. Pass the migrated opener/adapter. Remove old comments and helpers describing primary `loop.Config`, spawner binding, manual lease/GC, or checkpoint watcher.
 
 Do not add serve code. A future HTTP composition would pass the real rig to generic `serve.Handler[S,O]` without a SWE Runner wrapper.
+
+**SUPERSEDED 2026-08-27.** That future arrived, as `carbon serve`. Read the sentence
+above as a constraint on the shape any such composition must take, not as advance
+authorisation to build one — this task prohibits serve code outright. The prohibition is
+overridden by `looprig/docs/plans/2026-08-27-wui-web-ui-design.md` §6 on that document's
+own argument. What survives unchanged is the constraint itself: the real rig is passed to
+the generic `serve.Handler[S,O]`, there is no Carbon `Runner` wrapper, and the composition
+lives only at the process root.
 
 **Step 4: Verify GREEN**
 
@@ -631,3 +642,4 @@ Do not create an empty commit.
 - SWE contains no idle checkpoint watcher, manual session factory, late spawner, or custom Subagent wrapper.
 - Restored sync/async delegates, active/mode/model/effort, gates, ceiling, workspace, and CLI adapter state are verified before new admission.
 - The migrated CLI version lands first; SWE introduces no serve endpoint or CLI-specific topology.
+  (**SUPERSEDED 2026-08-27** as to the serve endpoint — see the wui design §6.)

@@ -1,7 +1,10 @@
 # SWE Migration to Harness Rig Design
 
 **Date:** 2026-07-11  
-**Status:** Approved migration design; implementation is a separate change  
+**Status:** Implemented. The "no serve composition" constraint below is SUPERSEDED
+by `looprig/docs/plans/2026-08-27-wui-web-ui-design.md` §6 (2026-08-27), which adds
+`carbon serve`. That design argues the change on its own merits; nothing in this
+document authorised it. See the "Serve" row and the "Do not add" list below.  
 **Depends on:** the reviewed harness rig/session/workspace branch and the approved CLI migration plan
 
 ## Goal
@@ -23,7 +26,7 @@ This is a breaking migration. Old adapters are deleted rather than wrapped.
 | Sandbox/read guard | `swarms/swe/confinement.go`, `confine`, runtime-skill wiring use a fixed root and per-spawn ceiling | Rebuild per loop bind from `tool.Bindings.Workspace` and the session ceiling source |
 | TUI adapter | `swarms/swe/agent.go` caches primary ID and image capability, owns teardown/replay | Wrap `session.SessionController`; expose current active selection, independent focus, uniform all-loop replay, and dynamic per-loop image capability |
 | CLI composition | `cmd/swe/main.go:179-249` opens `SessionStoreFactory` and passes an opener to CLI | Preserve this composition seam; update it to the migrated CLI adapter contract |
-| Serve | No SWE production serve composition exists | Do not add one. Future composition uses generic `serve.Handler[S,O]` directly |
+| Serve | No SWE production serve composition exists | Do not add one. Future composition uses generic `serve.Handler[S,O]` directly. **SUPERSEDED 2026-08-27:** `carbon serve` composes `serve.Handler[S,O]` over the real rig in `cmd/carbon`, and `internal/` still may not import `pkg/serve`. The forward-looking sentence in this cell constrained the shape of such a future; it did not authorise building one. The argument is in the wui design §6. |
 
 ## Target ownership
 
@@ -259,7 +262,9 @@ Delete, do not deprecate:
 
 Do not add:
 
-- a SWE serve endpoint (none exists today);
+- a SWE serve endpoint (none existed at the time of this migration). **SUPERSEDED 2026-08-27**
+  by `carbon serve`, which the wui design §6 argues for directly rather than claiming
+  any permission from this list;
 - a second session factory alongside rig;
 - automatic workspace-snapshot GC;
 - SWE-specific behavior to CLI;
