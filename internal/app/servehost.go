@@ -195,6 +195,20 @@ func OpenServeHost(ctx context.Context, cfg Config, dataDir string, opts ...Serv
 		return nil, err
 	}
 
+	// The MCP configuration digest is part of the rig's config fingerprint, and the
+	// rig is defined ONCE here, so the digest has to be resolved once here too --
+	// not per session as openRuntimeAgent does it. A host that left MCPConfigRev
+	// empty would define a rig whose fingerprint disagrees with every session the
+	// TUI created from the same mcp.json, and every restore would be rejected as
+	// configuration drift. The probe Manager is built only for its digest and is
+	// closed immediately; each session builds its own (see adoptLocked).
+	baseline, err := newMCPSessionAssembly(cfg)
+	if err != nil {
+		return fail(err)
+	}
+	cfg.MCPConfigRev = baseline.configRev()
+	baseline.close(ctx)
+
 	definition, err := carbonDefinition(client, factory(), cfg, access, nil)
 	if err != nil {
 		return fail(err)
@@ -240,9 +254,128 @@ func (h *ServeHost) Catalog() *sessionstore.Catalog { return h.stores.catalog }
 // from.
 func (h *ServeHost) SessionStore() *sessionstore.Store { return h.stores.session }
 
-// NewSession brings up a fresh session on the shared rig.
+// LiveSessionHandoffError reports that the requested operation cannot proceed because
+// a DIFFERENT session is already live over this workspace root.
+//
+// It is not an internal failure and it is not a race to be retried: it is the signal
+// that a human decision is owed. Carbon composes its rig with
+// rig.WithExclusiveWorkspace, so at most one session may hold the workspace root at a
+// time; the incumbent may be mid-turn, with a browser watching its event stream. The
+// alternative -- closing the incumbent so the new open can proceed -- would make an
+// ordinary click silently kill running work, so ServeHost refuses instead and names
+// the session that must be handed off. A caller that has obtained the human's consent
+// calls CloseLive with this id and retries.
+type LiveSessionHandoffError struct {
+	// LiveID is the session currently holding the workspace root.
+	LiveID uuid.UUID
+}
+
+func (e *LiveSessionHandoffError) Error() string {
+	if e == nil {
+		return "carbon: another session is live"
+	}
+	return "carbon: session " + e.LiveID.String() + " is live and must be handed off first"
+}
+
+// MCPConfigDriftError reports that <home>/mcp.json changed after the rig was defined.
+// The rig's config fingerprint records the digest resolved at host construction, so a
+// session opened against a different MCP configuration would durably record a
+// fingerprint that does not describe the tools it actually had. The open fails closed;
+// restarting the server re-resolves the configuration.
+type MCPConfigDriftError struct {
+	Want string
+	Got  string
+}
+
+func (e *MCPConfigDriftError) Error() string {
+	return "carbon: mcp configuration changed since the server started"
+}
+
+// LiveSession reports the id of the session currently holding the workspace root, if
+// any. It is the read half of the handoff seam: a caller asks what is live BEFORE it
+// asks a human to confirm closing it.
+func (h *ServeHost) LiveSession() (uuid.UUID, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.live == nil {
+		return uuid.UUID{}, false
+	}
+	return h.live.id, true
+}
+
+// CloseLive performs a CONFIRMED handoff: it shuts the live session down only if that
+// session is the one the caller named. A mismatch returns *LiveSessionHandoffError
+// carrying the id that is ACTUALLY live, so a caller whose confirmation raced another
+// tab's handoff re-asks about the right session instead of killing the wrong one. An
+// idle host is a no-op rather than an error, because two tabs confirming the same
+// handoff is the expected case, not a failure.
+func (h *ServeHost) CloseLive(ctx context.Context, expected uuid.UUID) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.live == nil {
+		return nil
+	}
+	if h.live.id != expected {
+		return &LiveSessionHandoffError{LiveID: h.live.id}
+	}
+	return h.closeLiveLocked(ctx)
+}
+
+// NewSession brings up a fresh session on the shared rig and attaches its OWN MCP
+// composition. It REFUSES while another session is live rather than closing it; see
+// LiveSessionHandoffError.
+//
+// The returned controller is the rig's own, unwrapped. That is deliberate: harness's
+// live registry evicts a dead session by watching an optional Done() channel on the
+// value it was handed, and a wrapper that did not forward Done would silently opt
+// every session out of eviction, pinning a subscription and a goroutine per dead
+// session.
 func (h *ServeHost) NewSession(ctx context.Context) (session.SessionController, error) {
-	return nil, errServeSessionNotImplemented
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.live != nil {
+		return nil, &LiveSessionHandoffError{LiveID: h.live.id}
+	}
+	sess, err := h.rig.NewSession(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := h.adoptLocked(ctx, sess); err != nil {
+		return nil, err
+	}
+	return sess, nil
+}
+
+// adoptLocked builds this session's own MCP composition and records it as the live
+// session. mcpharness.Manager.BindSession is a compare-and-swap that permanently
+// binds one Manager to one session id, so the Manager cannot be hoisted to the host
+// alongside the rig. With no <home>/mcp.json the assembly is the zero value and every
+// method is a no-op, so the common case costs nothing.
+//
+// A failure tears the freshly-opened session back down rather than leaving it live
+// with a half-attached manager, matching openRuntimeAgent's own fail closure. The
+// shutdown is also what releases the exclusive workspace root lease, so a failed
+// adopt does not strand the workspace.
+func (h *ServeHost) adoptLocked(ctx context.Context, sess session.SessionController) error {
+	abort := func(assembly *mcpSessionAssembly, err error) error {
+		if assembly != nil {
+			assembly.close(ctx)
+		}
+		_ = sess.Shutdown(ctx)
+		return err
+	}
+	assembly, err := newMCPSessionAssembly(h.serveConfig)
+	if err != nil {
+		return abort(nil, err)
+	}
+	if rev := assembly.configRev(); rev != h.serveConfig.MCPConfigRev {
+		return abort(&assembly, &MCPConfigDriftError{Want: h.serveConfig.MCPConfigRev, Got: rev})
+	}
+	if err := assembly.attach(ctx, sess, true); err != nil {
+		return abort(&assembly, err)
+	}
+	h.live = &liveServeSession{id: sess.SessionID(), session: sess, mcp: assembly}
+	return nil
 }
 
 // RestoreSession rebuilds a persisted session on the shared rig.
