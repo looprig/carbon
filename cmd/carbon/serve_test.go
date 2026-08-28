@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,20 +9,15 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	carbon "github.com/looprig/carbon/internal/app"
 	"github.com/looprig/core/uuid"
-	"github.com/looprig/harness/pkg/rig"
 	"github.com/looprig/harness/pkg/serve"
 	"github.com/looprig/harness/pkg/session"
 )
-
-// serveRigContract is the compile-time proof that carbon's wrapper is exactly what
-// serve.Handler wants — the same instantiation harness/pkg/serve/deps_test.go
-// asserts for *rig.Rig itself. A drift in serve.Rig's shape breaks this file before
-// it can break the composition in serve.go.
-var serveRigContract serve.Rig[session.SessionController, rig.SessionOption] = (*serveRig)(nil)
 
 // stubServeHost is the narrow serveHost double. It records what was asked of it so a
 // test can prove serveRig did NOT reach the rig on the not-found path.
@@ -546,4 +542,278 @@ func errorCode(t *testing.T, rec *httptest.ResponseRecorder) string {
 		t.Fatalf("decode error envelope: %v (body %q)", err, rec.Body.String())
 	}
 	return env.Error.Code
+}
+
+// syncBuffer is a bytes.Buffer safe for the test goroutine to read while runServe's
+// goroutine writes. Without it -race flags every address assertion below.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// stubServeCloser is serveDeps' host double. It records whether it was closed, which
+// is the assertion that matters: closing the host is what releases the exclusive
+// workspace root lease, and a path that skips it leaves the next `carbon` run unable
+// to open the same checkout.
+type stubServeCloser struct {
+	mu     sync.Mutex
+	closed int
+	err    error
+}
+
+func (s *stubServeCloser) Close(context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closed++
+	return s.err
+}
+
+func (s *stubServeCloser) closes() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closed
+}
+
+// waitForSubstring blocks until out contains want, or fails the test.
+func waitForSubstring(t *testing.T, out *syncBuffer, want string) string {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if got := out.String(); strings.Contains(got, want) {
+			return got
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("output never contained %q; got %q", want, out.String())
+	return ""
+}
+
+// TestRunServeReportsTheResolvedAddress proves the ":0" ephemeral-port path prints a
+// usable URL — a human and the integration harness both need it — that cancellation
+// is a clean exit, and that the host is closed on the way out.
+func TestRunServeReportsTheResolvedAddress(t *testing.T) {
+	t.Parallel()
+
+	var out, errOut syncBuffer
+	host := &stubServeCloser{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan int, 1)
+	go func() {
+		done <- runServe(ctx, serveOptions{addr: "127.0.0.1:0"}, serveDeps{
+			host:    host,
+			handler: testServeHandler(t, &stubHandoffHost{}),
+		}, &out, &errOut)
+	}()
+
+	printed := waitForSubstring(t, &out, "http://127.0.0.1:")
+	if strings.Contains(printed, "http://127.0.0.1:0\n") {
+		t.Errorf("printed the unresolved port: %q", printed)
+	}
+	cancel()
+
+	if code := <-done; code != exitOK {
+		t.Fatalf("runServe exit = %d, want %d (stderr: %s)", code, exitOK, errOut.String())
+	}
+	if host.closes() != 1 {
+		t.Fatalf("host closed %d times, want exactly 1; the workspace root lease is not released", host.closes())
+	}
+}
+
+// TestRunServeClosesTheHostOnEveryFailurePath is the one that matters more than the
+// exit code. The bind refusal and the listen failure both return BEFORE the serve
+// loop, and a return that skips the host close leaks the exclusive workspace root
+// lease — the next `carbon` run over the same checkout then fails outright.
+func TestRunServeClosesTheHostOnEveryFailurePath(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		addr string
+		want string
+	}{
+		"public bind refused by serve.Server": {addr: "0.0.0.0:8722", want: "serve:"},
+		"unlistenable port":                   {addr: "127.0.0.1:70000", want: "serve:"},
+		"malformed address":                   {addr: "not-an-address", want: "serve:"},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			var out, errOut syncBuffer
+			host := &stubServeCloser{}
+			// A bounded context, not Background: a regression that wrongly PROCEEDS
+			// to serve an address this function is supposed to reject would otherwise
+			// block here forever instead of failing.
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			code := runServe(ctx, serveOptions{addr: tt.addr}, serveDeps{
+				host:    host,
+				handler: testServeHandler(t, &stubHandoffHost{}),
+			}, &out, &errOut)
+			if code != exitFailed {
+				t.Errorf("exit = %d, want %d", code, exitFailed)
+			}
+			if !strings.Contains(errOut.String(), tt.want) {
+				t.Errorf("stderr = %q, want a %q-prefixed diagnostic", errOut.String(), tt.want)
+			}
+			if host.closes() != 1 {
+				t.Errorf("host closed %d times, want exactly 1", host.closes())
+			}
+		})
+	}
+}
+
+// TestRunServeHostCloseFailureIsAProcessFailure proves a teardown error is not
+// swallowed: a host that failed to close may still hold the lease, and the operator
+// has to know.
+func TestRunServeHostCloseFailureIsAProcessFailure(t *testing.T) {
+	t.Parallel()
+
+	var out, errOut syncBuffer
+	host := &stubServeCloser{err: errors.New("lease stuck")}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan int, 1)
+	go func() {
+		done <- runServe(ctx, serveOptions{addr: "127.0.0.1:0"}, serveDeps{
+			host:    host,
+			handler: testServeHandler(t, &stubHandoffHost{}),
+		}, &out, &errOut)
+	}()
+	waitForSubstring(t, &out, "http://127.0.0.1:")
+	cancel()
+
+	if code := <-done; code != exitFailed {
+		t.Fatalf("exit = %d, want %d", code, exitFailed)
+	}
+	if !strings.Contains(errOut.String(), "close host") {
+		t.Errorf("stderr = %q, want a close-host diagnostic", errOut.String())
+	}
+}
+
+// TestRunServeActuallyServes proves the composed handler is reachable on the bound
+// port — the bind, the listener, and the handler are wired to each other and not
+// merely each constructed.
+func TestRunServeActuallyServes(t *testing.T) {
+	t.Parallel()
+
+	var out, errOut syncBuffer
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan int, 1)
+	go func() {
+		done <- runServe(ctx, serveOptions{addr: "127.0.0.1:0"}, serveDeps{
+			host:    &stubServeCloser{},
+			handler: testServeHandler(t, &stubHandoffHost{}),
+		}, &out, &errOut)
+	}()
+
+	printed := waitForSubstring(t, &out, "http://127.0.0.1:")
+	base := strings.TrimSpace(printed[strings.Index(printed, "http://"):])
+
+	resp, err := http.Get(base + "/ui/live") //nolint:noctx // short-lived loopback probe
+	if err != nil {
+		t.Fatalf("GET %s/ui/live: %v", base, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /ui/live = %d, want 200", resp.StatusCode)
+	}
+	cancel()
+	if code := <-done; code != exitOK {
+		t.Fatalf("exit = %d, want %d (stderr %s)", code, exitOK, errOut.String())
+	}
+}
+
+// TestRunServeCommandWarnsBeforeOpeningAnUnconfinedHost proves `carbon serve
+// --access-profile unconfined` carries the SAME warning the TUI path prints. The
+// profile runs commands directly on the host with no OS confinement, and a serve
+// invocation exposes that over HTTP — if either path can reach it silently, the
+// warning is decorative.
+func TestRunServeCommandWarnsBeforeOpeningAnUnconfinedHost(t *testing.T) {
+	t.Parallel()
+
+	var out, errOut syncBuffer
+	opened := false
+	open := func(context.Context, carbon.Config, string) (serveHostAPI, error) {
+		opened = true
+		return nil, errors.New("no host in this test")
+	}
+	flags := cliFlags{serve: true, serveAddr: "127.0.0.1:0", accessProfile: carbon.AccessUnconfined}
+
+	if code := runServeCommand(context.Background(), flags, carbon.Config{}, "/tmp/store", open, &out, &errOut); code != exitFailed {
+		t.Fatalf("exit = %d, want %d", code, exitFailed)
+	}
+	if !opened {
+		t.Error("the host opener was never called")
+	}
+	if !strings.Contains(errOut.String(), "no OS confinement") {
+		t.Errorf("stderr = %q, want the unconfined warning", errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "serve:") {
+		t.Errorf("stderr = %q, want the open failure reported", errOut.String())
+	}
+
+	// A confined profile must NOT print it, or the warning stops meaning anything.
+	var quietOut, quietErr syncBuffer
+	flags.accessProfile = carbon.AccessTrusted
+	runServeCommand(context.Background(), flags, carbon.Config{}, "/tmp/store", open, &quietOut, &quietErr)
+	if strings.Contains(quietErr.String(), "no OS confinement") {
+		t.Errorf("trusted profile printed the unconfined warning: %q", quietErr.String())
+	}
+}
+
+// TestRunDispatchesTheServeSubcommand proves `carbon serve` actually REACHES the
+// serve composition. Without it, deleting run's serve branch leaves every other test
+// in this file green — they all call runServe or runServeCommand directly — while the
+// CLI silently starts the TUI instead of a server.
+//
+// It also pins that the shared flags carry through: serve resolves the SAME store
+// root --data-dir selects for the TUI.
+func TestRunDispatchesTheServeSubcommand(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	var out, errOut syncBuffer
+	var opened int
+	var gotDataDir string
+	var gotProfile carbon.AccessProfile
+	open := func(_ context.Context, cfg carbon.Config, dataDir string) (serveHostAPI, error) {
+		opened++
+		gotDataDir, gotProfile = dataDir, cfg.AccessProfile
+		return nil, errors.New("stub opener")
+	}
+
+	// An already-cancelled context so a regression that falls through to the TUI path
+	// unwinds immediately instead of blocking this test.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	code := runWithServeOpener(ctx, []string{"serve", "--data-dir", dir, "--access-profile", "readonly"}, open, &out, &errOut)
+	if opened != 1 {
+		t.Fatalf("the serve host opener ran %d times, want 1; `carbon serve` did not reach the serve composition", opened)
+	}
+	if code != exitFailed {
+		t.Errorf("exit = %d, want %d", code, exitFailed)
+	}
+	if gotDataDir != dir {
+		t.Errorf("serve opened data dir %q, want %q", gotDataDir, dir)
+	}
+	if gotProfile != carbon.AccessReadOnly {
+		t.Errorf("serve opened with profile %q, want %q", gotProfile, carbon.AccessReadOnly)
+	}
 }

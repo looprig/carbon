@@ -250,7 +250,6 @@ func TestRigPackagesHaveNoServeAdapter(t *testing.T) {
 // above would still pass.
 func TestServeCompositionLivesInCommand(t *testing.T) {
 	t.Parallel()
-	t.Skip("unskip in Task 6.11, once cmd/carbon/serve.go exists")
 
 	offenders, err := serveImportOffenders(".")
 	if err != nil {

@@ -304,6 +304,19 @@ func normalizeSubcommandArgs(args []string) ([]string, string) {
 	}
 }
 
+// warnUnconfined prints the unconfined-execution warning, and only for that profile.
+// It is ONE function rather than a literal at each call site because both entry points
+// -- the TUI run and `carbon serve` -- must say exactly the same thing: the profile
+// runs commands directly on the host with the invoking user's authority and no OS
+// confinement. The --acknowledge-unconfined flag was already required at the flag
+// boundary; this is the reminder at the point of use.
+func warnUnconfined(errOut io.Writer, profile carbon.AccessProfile) {
+	if profile != carbon.AccessUnconfined {
+		return
+	}
+	fmt.Fprintln(errOut, "carbon: WARNING: --access-profile unconfined runs commands directly on the host with no OS confinement (real HOME, full filesystem and network authority).")
+}
+
 // listSessions prints the session list (id, status, last-active, title) to w, from the store's
 // listing catalog (most-recently-active first). It is the --list path: it reads the listing
 // index only — no session lease, no replay — so it is cheap and cannot contend a running
@@ -419,6 +432,14 @@ func runCLIWithStore(ctx context.Context, open tui.OpenAgent, banner runtime.Ban
 // os.Exit, so main stays the single exit point. ctx is the process root (signal-aware);
 // out/errOut are the list + error sinks.
 func run(ctx context.Context, args []string, out, errOut io.Writer) int {
+	return runWithServeOpener(ctx, args, openServeHost, out, errOut)
+}
+
+// runWithServeOpener is run's body with the serve host construction injected. The
+// seam exists for exactly one guarantee that is otherwise untestable: that
+// `carbon serve` DISPATCHES to the serve composition instead of falling through to
+// the TUI path. Production always passes openServeHost.
+func runWithServeOpener(ctx context.Context, args []string, openServe serveHostOpener, out, errOut io.Writer) int {
 	flags, ferr := parseFlags(args)
 	if ferr != nil {
 		fmt.Fprintln(errOut, ferr)
@@ -486,6 +507,18 @@ func run(ctx context.Context, args []string, out, errOut io.Writer) int {
 		return exitOK
 	}
 
+	// `carbon serve` composes the HTTP + web UI surface over its OWN host: it needs one
+	// process-lifetime rig, whereas SessionStoreFactory deliberately builds a fresh rig
+	// per Open. It therefore branches BEFORE the factory is constructed and never
+	// constructs one -- an unused factory would hold the store open for nothing.
+	//
+	// It also carries its own copy of the unconfined warning, through the same
+	// warnUnconfined the TUI path below uses: this branch returns before reaching that
+	// call site, and serve exposes the selected profile's authority over HTTP.
+	if flags.serve {
+		return runServeCommand(ctx, flags, cfg, dataDir, openServe, out, errOut)
+	}
+
 	// Open the session-store factory: the process-level composition root that owns the single
 	// on-disk store shared by every session. A failure to open it fails loud — persistence is
 	// the point. It is closed once here on return, after runtime.Run (and every session it opened)
@@ -513,9 +546,7 @@ func run(ctx context.Context, args []string, out, errOut io.Writer) int {
 	// Selecting unconfined execution surfaces an explicit warning before the session opens:
 	// the profile runs commands directly on the host with the invoking user's authority and
 	// no OS confinement. The acknowledgement flag was already required at the boundary.
-	if flags.accessProfile == carbon.AccessUnconfined {
-		fmt.Fprintln(errOut, "carbon: WARNING: --access-profile unconfined runs commands directly on the host with no OS confinement (real HOME, full filesystem and network authority).")
-	}
+	warnUnconfined(errOut, flags.accessProfile)
 
 	// The initial open honors --resume; every /clear reopen starts a FRESH persisted session.
 	// The selected access profile applies to every open. runtime.Run owns logging, signal

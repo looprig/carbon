@@ -10,16 +10,21 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"mime"
+	"net"
 	"net/http"
+	"time"
 
 	carbon "github.com/looprig/carbon/internal/app"
 	"github.com/looprig/core/uuid"
 	"github.com/looprig/harness/pkg/rig"
 	"github.com/looprig/harness/pkg/serve"
+	"github.com/looprig/harness/pkg/serve/catalogreader"
 	"github.com/looprig/harness/pkg/session"
+	"github.com/looprig/harness/pkg/sessionstore"
 	"github.com/looprig/wui"
 )
 
@@ -71,8 +76,9 @@ func (r *serveRig) RestoreSession(ctx context.Context, id uuid.UUID) (session.Se
 	return r.host.RestoreSession(ctx, id)
 }
 
-// The instantiation serve.Handler is called with. Asserted here as well as in the
-// test so a shape drift breaks the build, not just the suite.
+// The instantiation serve.Handler is called with — the same one
+// harness/pkg/serve/deps_test.go asserts for *rig.Rig itself. Asserted as a
+// declaration so a drift in serve.Rig's shape breaks the BUILD, not just the suite.
 var _ serve.Rig[session.SessionController, rig.SessionOption] = (*serveRig)(nil)
 
 // --- HTTP composition -------------------------------------------------------
@@ -263,4 +269,130 @@ type uiErrorBody struct {
 
 func writeUIError(w http.ResponseWriter, status int, code, message string, retryable bool) {
 	writeUIJSON(w, status, uiErrorResponse{Error: uiErrorBody{Code: code, Message: message, Retryable: retryable}})
+}
+
+// --- the serve command ------------------------------------------------------
+
+// serveHostAPI is everything the serve command needs from internal/app's
+// *ServeHost, assembled from the two narrow consumer interfaces above plus the read
+// plane and teardown. It exists so runServeCommand takes a SEAM rather than a
+// concrete host: a test drives the command's warning, failure and wiring behaviour
+// without a models.json, a store on disk, or a workspace lease.
+type serveHostAPI interface {
+	serveHost
+	handoffHost
+	// Catalog and SessionStore are the read plane catalogreader.New reads the
+	// sessions list, status and journal pages from.
+	Catalog() *sessionstore.Catalog
+	SessionStore() *sessionstore.Store
+	Close(ctx context.Context) error
+}
+
+// The real host satisfies the whole seam, so the interface cannot drift from
+// production without breaking the build.
+var _ serveHostAPI = (*carbon.ServeHost)(nil)
+
+// serveHostOpener is the app.OpenServeHost-shaped construction seam.
+type serveHostOpener func(ctx context.Context, cfg carbon.Config, dataDir string) (serveHostAPI, error)
+
+// openServeHost is the production opener. It is a thin adapter only because Go will
+// not treat a func returning *carbon.ServeHost as a func returning serveHostAPI.
+func openServeHost(ctx context.Context, cfg carbon.Config, dataDir string) (serveHostAPI, error) {
+	return carbon.OpenServeHost(ctx, cfg, dataDir)
+}
+
+// serveOptions is runServe's parsed invocation.
+type serveOptions struct{ addr string }
+
+// serveDeps is the composition runServe drives: the host (closed on return, on EVERY
+// path) and the handler built over it.
+type serveDeps struct {
+	host    interface{ Close(context.Context) error }
+	handler http.Handler
+}
+
+// serveShutdownTimeout bounds graceful shutdown. SSE streams are long-lived and will
+// not drain on their own, so this is the point at which they are cut.
+const serveShutdownTimeout = 5 * time.Second
+
+// runServeCommand is the whole `carbon serve` command: warn, open the host, compose
+// the handler over it, serve. It NEVER constructs carbon.NewSessionStoreFactory —
+// that factory deliberately builds a fresh rig per Open, and serve needs one
+// process-lifetime rig instead.
+func runServeCommand(ctx context.Context, flags cliFlags, cfg carbon.Config, dataDir string, open serveHostOpener, out, errOut io.Writer) int {
+	// The same warning the TUI path prints, from the same single source. serve
+	// exposes the selected profile's authority over HTTP, so if either entry point
+	// could reach unconfined execution silently the warning would be decorative.
+	warnUnconfined(errOut, flags.accessProfile)
+
+	host, err := open(ctx, cfg, dataDir)
+	if err != nil {
+		fmt.Fprintln(errOut, "serve:", err)
+		return exitFailed
+	}
+	handler := buildServeHandler(&serveRig{host: host}, catalogreader.New(host.Catalog(), host.SessionStore()), host)
+	return runServe(ctx, serveOptions{addr: flags.serveAddr}, serveDeps{host: host, handler: handler}, out, errOut)
+}
+
+// runServe binds, serves until ctx is cancelled, then shuts the server down with a
+// bounded grace period and closes the host.
+//
+// Closing the host is DEFERRED rather than written at the end, because it must happen
+// on every return path including the two early bind failures: the host close is what
+// shuts the live session down, and that is what releases the exclusive workspace root
+// lease. A path that skipped it would leave a following `carbon` TUI run over the
+// same checkout failing with *rig.WorkspaceRootBusyError.
+//
+// The listener is created explicitly rather than by ListenAndServe so a ":0" address
+// resolves to a real port that can be printed. serve.Server still owns the timeouts
+// and the fail-secure bind check; only the listen call is ours.
+func runServe(ctx context.Context, opts serveOptions, deps serveDeps, out, errOut io.Writer) (exit int) {
+	exit = exitOK
+	defer func() {
+		if deps.host == nil {
+			return
+		}
+		// ctx is already cancelled on the normal path, so the close gets its own.
+		if err := deps.host.Close(context.Background()); err != nil {
+			fmt.Fprintln(errOut, "serve: close host:", err)
+			exit = exitFailed
+		}
+	}()
+
+	srv, err := serve.Server(opts.addr, deps.handler)
+	if err != nil {
+		fmt.Fprintln(errOut, "serve:", err)
+		return exitFailed
+	}
+	// The address is never a wildcard by construction: serve.Server above has already
+	// refused any non-loopback bind, because carbon installs no authenticator and never
+	// passes WithInsecurePublicBind. (gosec does not flag this line, so no suppression
+	// is carried here; the reasoning is recorded because the refusal above, not this
+	// call, is what makes it safe.)
+	listener, err := net.Listen("tcp", srv.Addr)
+	if err != nil {
+		fmt.Fprintln(errOut, "serve: listen:", err)
+		return exitFailed
+	}
+	fmt.Fprintf(out, "carbon serve listening on http://%s\n", listener.Addr())
+
+	errs := make(chan error, 1)
+	go func() { errs <- srv.Serve(listener) }()
+
+	select {
+	case <-ctx.Done():
+	case err := <-errs:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			fmt.Fprintln(errOut, "serve:", err)
+			exit = exitFailed
+		}
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), serveShutdownTimeout)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		fmt.Fprintln(errOut, "serve: shutdown:", err)
+		exit = exitFailed
+	}
+	return exit
 }
