@@ -8,6 +8,7 @@ import (
 	"go/parser"
 	"go/token"
 	"io/fs"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -578,5 +579,81 @@ func TestServeImportOffendersFindsOnlyNonTestGoFiles(t *testing.T) {
 	}
 	if len(got) != 1 || got[0] != offender {
 		t.Fatalf("offenders = %v, want exactly [%s]", got, offender)
+	}
+}
+
+// TestParseServeSubcommand covers the one subcommand carbon grows. It must be
+// recognised BEFORE the FlagSet, which rejects every positional arg (parseFlags'
+// "Carbon takes no positional args" guard), and it must compose with the existing
+// session flags rather than replacing them: `carbon serve --data-dir X
+// --access-profile readonly` selects the same store and the same authority the TUI
+// would.
+func TestParseServeSubcommand(t *testing.T) {
+	t.Parallel()
+
+	flags, err := parseFlags([]string{"serve"})
+	if err != nil {
+		t.Fatalf("parse serve: %v", err)
+	}
+	if !flags.serve {
+		t.Fatal("serve = false, want true")
+	}
+	if flags.serveAddr != defaultServeAddr {
+		t.Errorf("serveAddr = %q, want the loopback default %q", flags.serveAddr, defaultServeAddr)
+	}
+
+	flags, err = parseFlags([]string{"serve", "--addr", "127.0.0.1:0", "--data-dir", "/tmp/s", "--access-profile", "readonly"})
+	if err != nil {
+		t.Fatalf("parse serve with flags: %v", err)
+	}
+	if flags.serveAddr != "127.0.0.1:0" || flags.dataDir != "/tmp/s" || flags.accessProfile != carbon.AccessReadOnly {
+		t.Fatalf("serve flags = %+v", flags)
+	}
+
+	// `serve` is one command among several, and every other command answers a
+	// different question about the same store. Combining them is ambiguous, not a
+	// convenience, so each pairing fails at the boundary. `serve extra` is rejected
+	// by the pre-existing positional guard: the rewrite consumes only the `serve`
+	// token, leaving `extra` positional.
+	for _, args := range [][]string{
+		{"serve", "--list"},
+		{"serve", "--resume", "00000000-0000-4000-8000-000000000000"},
+		{"serve", "--credentials-list"},
+		{"serve", "login", "openai"},
+		{"serve", "extra"},
+	} {
+		if _, err := parseFlags(args); err == nil {
+			t.Errorf("parseFlags(%v) err = nil, want a rejection", args)
+		}
+	}
+}
+
+// TestParseServeAddrIsRejectedWithoutServe pins the boundary's no-silent-ignore rule:
+// --addr configures `carbon serve` and nothing else, so supplying it to the TUI path
+// is a malformed invocation rather than a flag that quietly does nothing. An explicit
+// but empty --addr is rejected the same way an empty --resume is.
+func TestParseServeAddrIsRejectedWithoutServe(t *testing.T) {
+	t.Parallel()
+
+	if _, err := parseFlags([]string{"--addr", "127.0.0.1:9999"}); err == nil {
+		t.Error("parseFlags(--addr without serve) err = nil, want a rejection")
+	}
+	if _, err := parseFlags([]string{"serve", "--addr", "   "}); err == nil {
+		t.Error("parseFlags(serve --addr \"   \") err = nil, want a rejection")
+	}
+}
+
+// TestDefaultServeAddrIsLoopback pins the bind default. serve.Server only refuses a
+// bind that is BOTH non-loopback AND unauthenticated, and carbon installs no
+// authenticator — so a non-loopback default would expose a fully-permissioned coding
+// agent to the local network on first run.
+func TestDefaultServeAddrIsLoopback(t *testing.T) {
+	t.Parallel()
+	host, _, err := net.SplitHostPort(defaultServeAddr)
+	if err != nil {
+		t.Fatalf("SplitHostPort(%q): %v", defaultServeAddr, err)
+	}
+	if ip := net.ParseIP(host); host != "localhost" && (ip == nil || !ip.IsLoopback()) {
+		t.Fatalf("defaultServeAddr host = %q, want loopback", host)
 	}
 }

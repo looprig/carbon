@@ -32,6 +32,19 @@ const bannerName = "Carbon"
 
 const dataDirUsage = "session store root (default ~/.looprig/carbon/store)"
 
+// defaultServeAddr is `carbon serve`'s bind address. LOOPBACK BY DEFAULT and
+// deliberately so: serve.Server refuses a non-loopback bind only when no
+// authenticator is installed, and carbon installs none, so the only things standing
+// between a public bind and a fully-permissioned coding agent are this default and
+// that refusal. A user who wants a different address types one, and a non-loopback
+// one is then refused by serve.Server rather than by this constant. Port 0 is
+// permitted (the tests use it); runServe prints the resolved address.
+const defaultServeAddr = "127.0.0.1:8722"
+
+// serveAddrUsage documents --addr. It names the subcommand because --addr is
+// meaningful only under `carbon serve` and is rejected anywhere else.
+const serveAddrUsage = "address `carbon serve` binds (loopback by default)"
+
 // Process exit codes main returns via os.Exit. exitOK / exitRuntime mirror the runtime's
 // codes; exitUsage is the boundary-failure code for a malformed invocation or a
 // persistence/list failure (distinct from a TUI run error, which runtime.Run owns).
@@ -60,6 +73,14 @@ type cliFlags struct {
 	// acknowledgeUnconfined is the explicit opt-in required to select the unconfined
 	// profile (direct host execution). Selecting unconfined without it fails closed.
 	acknowledgeUnconfined bool
+	// serve selects the `carbon serve` subcommand: an HTTP + web-UI host over the
+	// same persisted store, agent, tools and permissions the TUI uses. It is one
+	// command among several and is mutually exclusive with all of them.
+	serve bool
+	// serveAddr is the bind address for --addr, defaultServeAddr when --addr is not
+	// given. It is meaningful only when serve is set; parseFlags rejects --addr
+	// otherwise rather than silently ignoring it.
+	serveAddr string
 }
 
 // FlagParseError reports a malformed CLI invocation (an unknown flag, a non-UUID --resume
@@ -87,7 +108,7 @@ func (e *FlagParseError) Unwrap() error { return e.Cause }
 // typed error rather than calling os.Exit, keeping main the single exit point and making
 // the parser unit-testable.
 func parseFlags(args []string) (cliFlags, error) {
-	args, commandErr := normalizeCredentialCommandArgs(args)
+	args, commandErr := normalizeSubcommandArgs(args)
 	if commandErr != "" {
 		return cliFlags{}, &FlagParseError{Reason: commandErr}
 	}
@@ -106,6 +127,8 @@ func parseFlags(args []string) (cliFlags, error) {
 		dataDir               = fs.String("data-dir", "", dataDirUsage)
 		accessProfile         = fs.String("access-profile", string(carbon.DefaultAccessProfile), "session access profile: readonly|trusted|unconfined")
 		ackUnconfined         = fs.Bool("acknowledge-unconfined", false, "acknowledge that --access-profile unconfined runs commands directly on the host with no OS confinement")
+		serve                 = fs.Bool("serve", false, "serve the web UI and HTTP API over this workspace's sessions")
+		serveAddr             = fs.String("addr", defaultServeAddr, serveAddrUsage)
 	)
 	if err := fs.Parse(args); err != nil {
 		return cliFlags{}, &FlagParseError{Reason: "invalid flags", Cause: err}
@@ -144,6 +167,7 @@ func parseFlags(args []string) (cliFlags, error) {
 		list: *list, credentialList: *credentialList || *credentialListAlias || *credentialListAlias2,
 		credentialLogin: login, credentialLogout: logout,
 		dataDir: strings.TrimSpace(*dataDir), accessProfile: profile, acknowledgeUnconfined: *ackUnconfined,
+		serve: *serve, serveAddr: strings.TrimSpace(*serveAddr),
 	}
 
 	// Detect whether --resume was explicitly given (vs left at its empty default): an
@@ -167,8 +191,31 @@ func parseFlags(args []string) (cliFlags, error) {
 		out.resume = id
 	}
 
+	// --addr configures `carbon serve` and nothing else. An --addr on any other
+	// invocation is a malformed request, rejected here rather than silently ignored;
+	// an explicit but empty --addr is rejected exactly as an empty --resume is.
+	var addrGiven bool
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "addr" {
+			addrGiven = true
+		}
+	})
+	if addrGiven {
+		if !out.serve {
+			return cliFlags{}, &FlagParseError{Reason: "--addr requires the serve command"}
+		}
+		if out.serveAddr == "" {
+			return cliFlags{}, &FlagParseError{Reason: "--addr requires a bind address"}
+		}
+	}
+
 	if out.list && !out.resume.IsZero() {
 		return cliFlags{}, &FlagParseError{Reason: "--list and --resume are mutually exclusive"}
+	}
+	// serve hosts sessions for the duration of the process; --resume names one session
+	// for a single TUI run. Combining them is ambiguous, so it fails at the boundary.
+	if out.serve && !out.resume.IsZero() {
+		return cliFlags{}, &FlagParseError{Reason: "serve cannot be combined with --resume"}
 	}
 	var credentialLoginGiven, credentialLogoutGiven, credentialListGiven bool
 	fs.Visit(func(f *flag.Flag) {
@@ -194,6 +241,9 @@ func parseFlags(args []string) (cliFlags, error) {
 	if out.list {
 		commands++
 	}
+	if out.serve {
+		commands++
+	}
 	if out.credentialList {
 		commands++
 	}
@@ -204,18 +254,25 @@ func parseFlags(args []string) (cliFlags, error) {
 		commands++
 	}
 	if commands > 1 {
-		return cliFlags{}, &FlagParseError{Reason: "credential and session commands are mutually exclusive"}
+		return cliFlags{}, &FlagParseError{Reason: "session, serve, and credential commands are mutually exclusive"}
 	}
 	return out, nil
 }
 
-// normalizeCredentialCommandArgs accepts explicit subcommand spellings in
-// addition to the flag spelling. It is intentionally narrow: only
-// `credentials|credential list`, `login <provider>`, and `logout <reference>`
-// are recognized, so ordinary positional typos remain rejected below.
-func normalizeCredentialCommandArgs(args []string) ([]string, string) {
+// normalizeSubcommandArgs accepts explicit subcommand spellings in addition to the
+// flag spelling. It is intentionally narrow: only `serve`,
+// `credentials|credential list`, `login <provider>`, and `logout <reference>` are
+// recognized, so ordinary positional typos remain rejected below.
+//
+// The rewrite consumes ONLY the leading command token and leaves everything after it
+// untouched, so the FlagSet still sees the ordinary flags (`serve --addr X
+// --data-dir Y`) and still rejects a stray positional (`serve extra`).
+func normalizeSubcommandArgs(args []string) ([]string, string) {
 	if len(args) == 0 {
 		return args, ""
+	}
+	if args[0] == "serve" {
+		return append([]string{"--serve"}, args[1:]...), ""
 	}
 	if args[0] == "login" || args[0] == "logout" {
 		if len(args) < 2 || strings.TrimSpace(args[1]) == "" {
