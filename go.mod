@@ -24,6 +24,7 @@ require (
 	github.com/looprig/storage v0.4.1
 	github.com/looprig/tools v0.11.0
 	github.com/looprig/tui v0.18.1
+	github.com/looprig/wui v0.1.1
 	golang.org/x/sys v0.47.0
 )
 
@@ -74,7 +75,6 @@ require (
 	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/invopop/jsonschema v0.14.0 // indirect
 	github.com/landlock-lsm/go-landlock v0.9.0 // indirect
-	github.com/looprig/wui v0.1.1 // indirect
 	github.com/lucasb-eyer/go-colorful v1.4.1 // indirect
 	github.com/mattn/go-runewidth v0.0.27 // indirect
 	github.com/mdlayher/netlink v1.11.2 // indirect
