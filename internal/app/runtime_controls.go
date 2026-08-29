@@ -232,25 +232,16 @@ func (a *RuntimeAgent) LoopRuntimeOptions(_ context.Context, loopID uuid.UUID) (
 	return options, nil
 }
 
+// SetMode forwards the TUI's mode request to the loop controller. Carbon's
+// definition declares no modes, so the controller rejects any non-base mode
+// with its own unknown-mode error; there is no primer-specific admission
+// check to keep in sync.
 func (a *RuntimeAgent) SetMode(ctx context.Context, loopID uuid.UUID, id tui.ModeID) error {
 	controller, ok := a.sess.LoopController(loopID)
 	if !ok {
 		return fmt.Errorf("carbon: loop %s is unavailable", loopID)
 	}
-	mode := loop.ModeName(id)
-	if len(a.primerEfforts) != 0 {
-		switch mode {
-		case "quick":
-			if !containsPrimerEffort(a.primerEfforts, model.EffortLow) {
-				return fmt.Errorf("carbon: mode %q is not admitted by the configured primer", id)
-			}
-		case "deep":
-			if !containsPrimerEffort(a.primerEfforts, model.EffortMax) {
-				return fmt.Errorf("carbon: mode %q is not admitted by the configured primer", id)
-			}
-		}
-	}
-	return controller.SetMode(ctx, mode)
+	return controller.SetMode(ctx, loop.ModeName(id))
 }
 
 func (a *RuntimeAgent) SetModel(ctx context.Context, loopID uuid.UUID, id tui.ModelID) error {

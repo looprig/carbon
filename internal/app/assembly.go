@@ -5,11 +5,15 @@ package app
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"net/http"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/looprig/carbon/internal/catalog/carbon"
+	"github.com/looprig/core/uuid"
 	"github.com/looprig/harness/pkg/loop"
 	"github.com/looprig/harness/pkg/rig"
 	"github.com/looprig/harness/pkg/session"
@@ -32,28 +36,6 @@ const skillToolName = "Skill"
 // immutable loop fingerprint changes whenever the injected collaboration-tool
 // bundle changes.
 const managedAgentToolsRevision = "agent-tools-v2"
-const initialCodingMode = loop.ModeName("quick")
-
-func codingModes(admitted []model.Effort) []loop.Mode {
-	modes := make([]loop.Mode, 0, 2)
-	if len(admitted) == 0 || containsPrimerEffort(admitted, model.EffortLow) {
-		modes = append(modes, loop.Mode{Name: "quick", Effort: model.EffortLow, Instructions: "Prefer the shortest safe path. Keep investigation narrow and verification focused."})
-	}
-	if len(admitted) == 0 || containsPrimerEffort(admitted, model.EffortMax) {
-		modes = append(modes, loop.Mode{Name: "deep", Effort: model.EffortMax, Instructions: "Investigate broadly, challenge assumptions, and verify the result thoroughly."})
-	}
-	return modes
-}
-
-func initialCodingModeFor(admitted []model.Effort) loop.ModeName {
-	if len(admitted) == 0 || containsPrimerEffort(admitted, model.EffortLow) {
-		return initialCodingMode
-	}
-	if containsPrimerEffort(admitted, model.EffortMax) {
-		return loop.ModeName("deep")
-	}
-	return loop.ModeName("")
-}
 
 // The rig-injected managed agent tools prepare empty access requests, so the
 // Carbon access gate auto-allows them. Carbon is the sole legal delegate and
@@ -154,8 +136,6 @@ func carbonDefinitionWithContextPolicy(client inference.Client, model model.Mode
 		loop.WithRuntimeContext(runtimeCtx),
 		loop.WithDelegates(carbon.Name),
 		loop.WithDelegation(loop.Delegation{Style: loop.DelegationManaged}),
-		loop.WithModes(codingModes(cfg.PrimerEfforts)...),
-		loop.WithInitialMode(initialCodingModeFor(cfg.PrimerEfforts)),
 	}
 	options = append(options, contextPolicy.options()...)
 	definition, err := loop.Define(options...)
@@ -544,11 +524,77 @@ func openSessionWithDefinition(ctx context.Context, definition loop.Definition, 
 	}
 	controller, err := assembly.RestoreSession(ctx, selector.Resume)
 	if err != nil {
-		return nil, err
+		return nil, classifyRestoreError(err, selector.Resume, definition)
 	}
 	adapter, err := sessionadapter.Restore(ctx, controller, stores.session)
 	if err != nil {
 		return nil, err
 	}
 	return adapter, nil
+}
+
+// RestoredModeError reports a resume whose persisted mode this build of Carbon no
+// longer declares.
+//
+// Carbon used to declare "quick" and "deep" primer modes and start every loop in
+// "quick"; it now declares none, so the primer's effort is whatever models.json's
+// default_effort resolves to. A loop's start mode is durable (harness records
+// bound.InitialMode() on LoopStarted, which folds back into RestoredState.Mode), so
+// every session persisted by the older build asks to resume in a mode that is gone.
+//
+// Without SessionSelector.AllowConfigMismatch such a resume never gets that far: the
+// config-fingerprint gate refuses it first with a clear *session.ConfigMismatchError.
+// This error covers the other half. With the flag set the gate is bypassed, restore
+// reaches harness's exact-name mode resolution (loopruntime.NewRestoredWithRuntime ->
+// configForMode), misses, and fails with a bare "loop: bind: invalid_definition:
+// quick" that names neither the session nor the reason nor a way forward. Carbon is
+// what removed the modes, so Carbon is what explains their absence.
+type RestoredModeError struct {
+	SessionID uuid.UUID
+	Mode      loop.ModeName
+	// Declared is the mode set this build does offer, empty when it declares none.
+	Declared []loop.ModeName
+	Cause    error
+}
+
+func (e *RestoredModeError) Error() string {
+	message := "carbon: cannot resume session " + e.SessionID.String() + ": it was started in mode " +
+		strconv.Quote(string(e.Mode)) + ", which this build of Carbon no longer defines"
+	if len(e.Declared) == 0 {
+		message += " (this build declares no modes; the primer's effort comes from default_effort in models.json)"
+	} else {
+		names := make([]string, 0, len(e.Declared))
+		for _, name := range e.Declared {
+			names = append(names, strconv.Quote(string(name)))
+		}
+		message += " (this build declares " + strings.Join(names, ", ") + ")"
+	}
+	return message + ". Start a new session instead of resuming this one."
+}
+
+func (e *RestoredModeError) Unwrap() error { return e.Cause }
+
+// classifyRestoreError turns harness's unknown-mode bind failure into the actionable
+// RestoredModeError and passes every other restore failure through untouched.
+//
+// harness reports an unresolvable mode name as *loop.BindError{Kind:
+// BindInvalidDefinition, Name: <mode>}. The Name alone is not enough to claim the
+// mode is missing -- that kind is also raised for bind failures carrying no mode --
+// so the classification is confirmed against the definition's own declared set: only
+// a name this definition genuinely does not offer becomes a RestoredModeError.
+func classifyRestoreError(err error, sessionID uuid.UUID, definition loop.Definition) error {
+	var bindErr *loop.BindError
+	if err == nil || !errors.As(err, &bindErr) || bindErr.Kind != loop.BindInvalidDefinition || bindErr.Name == "" {
+		return err
+	}
+	missing := loop.ModeName(bindErr.Name)
+	modes := definition.Modes()
+	declared := make([]loop.ModeName, 0, len(modes))
+	for _, mode := range modes {
+		if mode.Name == missing {
+			return err
+		}
+		declared = append(declared, mode.Name)
+	}
+	return &RestoredModeError{SessionID: sessionID, Mode: missing, Declared: declared, Cause: err}
 }

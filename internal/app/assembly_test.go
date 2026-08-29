@@ -18,6 +18,7 @@ import (
 	"github.com/looprig/harness/pkg/tool"
 	"github.com/looprig/inference"
 	model "github.com/looprig/inference/model"
+	"github.com/looprig/tools/skill"
 )
 
 func carbonDef(t *testing.T, cfg Config) loop.Definition {
@@ -87,21 +88,42 @@ func TestCarbonDefinitionIsSoleManagedLoop(t *testing.T) {
 	}
 }
 
-func TestCarbonDefinitionUsesQuickAndDeepModes(t *testing.T) {
+// TestCarbonDefinitionUsesModelDefaultEffort pins the modeless primer
+// composition: Carbon declares no modes, so every request resolves the
+// definition's implicit base mode, whose effort is the WithInference model's
+// Sampling.Effort — the value models.json's default_effort normalizes into.
+// Removing the explicit quick/deep modes is what makes the configured
+// default_effort the session's actual effort.
+func TestCarbonDefinitionUsesModelDefaultEffort(t *testing.T) {
 	t.Parallel()
 	definition := carbonDef(t, Config{})
-	if got := definition.InitialMode(); got != initialCodingMode {
-		t.Fatalf("initial mode = %q, want %q", got, initialCodingMode)
+	if got := definition.Modes(); len(got) != 0 {
+		t.Fatalf("declared modes = %d (%v), want 0: primer effort must come from the model descriptor's default_effort", len(got), got)
 	}
-	if got := definition.Modes(); len(got) != 2 {
-		t.Fatalf("modes = %d, want 2", len(got))
-	} else {
-		want := map[loop.ModeName]model.Effort{"quick": model.EffortLow, "deep": model.EffortMax}
-		for _, mode := range got {
-			if want[mode.Name] != mode.Effort {
-				t.Errorf("mode %q effort = %q, want %q", mode.Name, mode.Effort, want[mode.Name])
-			}
-		}
+	if got := definition.InitialMode(); got != "" {
+		t.Fatalf("initial mode = %q, want empty (no modes)", got)
+	}
+}
+
+// TestCarbonDefinitionInitialFingerprintIsModelDefaultEffort verifies the
+// definition resolves its initial request model from the WithInference
+// descriptor, not a mode override: a model stamped with EffortMax (the value
+// models.json's default_effort normalizes into) must drive the initial
+// fingerprint. With no declared modes, FingerprintInitial returns the base
+// model untouched — the same base mode Bind resolves every request against.
+func TestCarbonDefinitionInitialFingerprintIsModelDefaultEffort(t *testing.T) {
+	t.Parallel()
+	client := &fakeLLM{}
+	wantEffort := model.EffortMax
+	stamped := testModel()
+	stamped.Sampling.Effort = wantEffort
+	access, cfg := headlessTestAccess(t, Config{}, t.TempDir())
+	definition, err := carbonDefinition(client, stamped, cfg, access, nil)
+	if err != nil {
+		t.Fatalf("carbonDefinition() error = %v", err)
+	}
+	if got := definition.FingerprintInitial().Model.Sampling.Effort; got != wantEffort {
+		t.Fatalf("FingerprintInitial().Model.Sampling.Effort = %q, want %q (the model's default_effort)", got, wantEffort)
 	}
 }
 
@@ -190,5 +212,154 @@ func sessionRootLoops(t *testing.T, stores *sessionStores, sessionID uuid.UUID) 
 		if started, ok := ev.(event.LoopStarted); ok && started.Cause.Coordinates.LoopID.IsZero() {
 			roots[started.AgentName] = started
 		}
+	}
+}
+
+// legacyModefulCarbonDefinition rebuilds the definition Carbon shipped BEFORE the
+// primer modes were removed: carbonDefinitionWithContextPolicy's options plus the
+// quick/deep modes and the "quick" initial mode it used to declare.
+//
+// It exists to persist a session the way the older build did, because a durable
+// start mode is the only way into the migration path every already-existing session
+// takes. It is deliberately a test fixture rather than a mode seam on production:
+// the removed modes stay removed, and this copy is free to rot the moment the real
+// definition stops being able to restore what the old one wrote.
+func legacyModefulCarbonDefinition(client inference.Client, m model.Model, cfg Config, access *sessionAccess) (loop.Definition, error) {
+	contextPolicy, err := newConversationContextPolicy(m, cfg.PrimerCandidates, cfg.DelegateModels)
+	if err != nil {
+		return loop.Definition{}, err
+	}
+	loader := skill.NewEmbeddedSkillLoader(nil, nil)
+	options := []loop.Option{
+		loop.WithName(carbon.Name),
+		loop.WithDisplayName(carbon.DisplayName),
+		loop.WithDescription(carbon.Description),
+		loop.WithInference(client, m),
+		loop.WithSystem(contextPolicy.system(carbon.SystemPrompt)),
+		loop.WithTools(carbonToolDefinitions(access.set, newHTTPClient(), skillDefinitionFor(loader))...),
+		loop.WithAccessGate(access.gate),
+		loop.WithPolicyRevision(contextPolicy.policyRevision(access.policyRev + ":" + managedAgentToolsRevision)),
+		loop.WithRuntimeContext(newRuntimeContextProvider(runtimeSkillCatalogForAccess(access))),
+		loop.WithDelegates(carbon.Name),
+		loop.WithDelegation(loop.Delegation{Style: loop.DelegationManaged}),
+		loop.WithModes(
+			loop.Mode{Name: "quick", Effort: model.EffortLow, Instructions: "Prefer the shortest safe path. Keep investigation narrow and verification focused."},
+			loop.Mode{Name: "deep", Effort: model.EffortMax, Instructions: "Investigate broadly, challenge assumptions, and verify the result thoroughly."},
+		),
+		loop.WithInitialMode(loop.ModeName("quick")),
+	}
+	options = append(options, contextPolicy.options()...)
+	return loop.Define(options...)
+}
+
+// TestRestoreOfASessionStartedInARemovedModeNamesTheMissingMode closes the migration
+// gap left by dropping the quick/deep modes. Sessions the older build persisted carry
+// a durable start mode of "quick" (harness stamps bound.InitialMode() onto LoopStarted
+// and folds it back into RestoredState.Mode). An ordinary resume of one is refused by
+// the config-fingerprint gate, which is fine and already clear. A resume with
+// SessionSelector.AllowConfigMismatch bypasses that gate and reaches harness's
+// exact-name mode resolution, which misses and fails with a bare
+// "loop: bind: invalid_definition: quick" -- opaque about the session, the reason, and
+// the way forward.
+//
+// The assertion is on the actionable replacement: a typed *RestoredModeError naming
+// the session and the mode that is gone, saying this build defines no modes and that
+// effort now comes from models.json, and telling the user to start a new session.
+// Against the old opaque error every one of those checks fails.
+func TestRestoreOfASessionStartedInARemovedModeNamesTheMissingMode(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	stores, err := openTestStores(t)
+	if err != nil {
+		t.Fatalf("openTestStores() error = %v", err)
+	}
+	root := t.TempDir()
+
+	access, cfg := headlessTestAccess(t, Config{}, root)
+	legacy, err := legacyModefulCarbonDefinition(&fakeLLM{}, testModel(), cfg, access)
+	if err != nil {
+		t.Fatalf("legacyModefulCarbonDefinition() error = %v", err)
+	}
+	if got := legacy.InitialMode(); got != loop.ModeName("quick") {
+		t.Fatalf("legacy fixture initial mode = %q, want %q: the fixture must persist the mode the old build did", got, "quick")
+	}
+	seedRig, err := buildRig(legacy, stores, root, cfg, false)
+	if err != nil {
+		t.Fatalf("buildRig(legacy) error = %v", err)
+	}
+	controller, err := seedRig.NewSession(ctx)
+	if err != nil {
+		t.Fatalf("NewSession(legacy) error = %v", err)
+	}
+	sid := controller.SessionID()
+	if err := controller.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown(legacy) error = %v", err)
+	}
+
+	current, err := carbonTestDefinition(&fakeLLM{}, testModel(), cfg, access)
+	if err != nil {
+		t.Fatalf("carbonTestDefinition() error = %v", err)
+	}
+	adapter, err := openSessionWithDefinition(ctx, current, cfg, stores, root, SessionSelector{Resume: sid, AllowConfigMismatch: true}, permissionReviewRegistration{})
+	if err == nil {
+		_ = adapter.Controller().Shutdown(ctx)
+		t.Fatalf("resume of a session started in a removed mode succeeded, want a mode-migration failure")
+	}
+	var modeErr *RestoredModeError
+	if !errors.As(err, &modeErr) {
+		t.Fatalf("resume error = %v (%T), want *RestoredModeError", err, err)
+	}
+	if modeErr.SessionID != sid {
+		t.Errorf("RestoredModeError.SessionID = %v, want %v", modeErr.SessionID, sid)
+	}
+	if modeErr.Mode != loop.ModeName("quick") {
+		t.Errorf("RestoredModeError.Mode = %q, want %q", modeErr.Mode, "quick")
+	}
+	if len(modeErr.Declared) != 0 {
+		t.Errorf("RestoredModeError.Declared = %v, want none: this build declares no modes", modeErr.Declared)
+	}
+	// The underlying harness failure stays reachable: this wraps the diagnosis, it
+	// does not swallow it.
+	var bindErr *loop.BindError
+	if !errors.As(err, &bindErr) || bindErr.Name != "quick" {
+		t.Errorf("wrapped cause = %v, want the harness *loop.BindError naming %q", errors.Unwrap(err), "quick")
+	}
+	message := modeErr.Error()
+	for _, want := range []string{sid.String(), `"quick"`, "no longer defines", "declares no modes", "default_effort", "Start a new session"} {
+		if !strings.Contains(message, want) {
+			t.Errorf("RestoredModeError.Error() = %q, missing %q", message, want)
+		}
+	}
+}
+
+// TestClassifyRestoreErrorPassesThroughUnrelatedFailures pins the other half of the
+// classification: only a bind failure naming a mode the definition does not declare
+// becomes a RestoredModeError. A bind failure naming a mode the definition DOES
+// declare is some other fault and must not be relabelled as a migration, and neither
+// must an unrelated error or a nil.
+func TestClassifyRestoreErrorPassesThroughUnrelatedFailures(t *testing.T) {
+	t.Parallel()
+	access, cfg := headlessTestAccess(t, Config{}, t.TempDir())
+	modeful, err := legacyModefulCarbonDefinition(&fakeLLM{}, testModel(), cfg, access)
+	if err != nil {
+		t.Fatalf("legacyModefulCarbonDefinition() error = %v", err)
+	}
+	sid := uuid.MustParse("11111111-1111-4111-8111-111111111111")
+
+	if got := classifyRestoreError(nil, sid, modeful); got != nil {
+		t.Errorf("classifyRestoreError(nil) = %v, want nil", got)
+	}
+	plain := errors.New("store unavailable")
+	if got := classifyRestoreError(plain, sid, modeful); !errors.Is(got, plain) || got.Error() != plain.Error() {
+		t.Errorf("classifyRestoreError(unrelated) = %v, want it passed through", got)
+	}
+	declared := &loop.BindError{Kind: loop.BindInvalidDefinition, Name: "quick", Index: -1}
+	var modeErr *RestoredModeError
+	if got := classifyRestoreError(declared, sid, modeful); errors.As(got, &modeErr) {
+		t.Errorf("classifyRestoreError(bind error naming a DECLARED mode) = %v, want it passed through", got)
+	}
+	nameless := &loop.BindError{Kind: loop.BindInvalidDefinition, Index: -1}
+	if got := classifyRestoreError(nameless, sid, modeful); errors.As(got, &modeErr) {
+		t.Errorf("classifyRestoreError(bind error naming no mode) = %v, want it passed through", got)
 	}
 }

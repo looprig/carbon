@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/looprig/harness/pkg/loop"
 	"github.com/looprig/harness/pkg/tool"
 	"github.com/looprig/tools/skill"
 )
@@ -62,7 +61,6 @@ func TestCarbonDefinitionUsesRuntimeContext(t *testing.T) {
 	if definition.PolicyRevision() == "" || definition.ToolRequirements() == 0 {
 		t.Fatalf("Carbon definition missing runtime/policy wiring: policy=%q requirements=%v", definition.PolicyRevision(), definition.ToolRequirements())
 	}
-	_ = loop.ModeName("quick")
 }
 
 func TestCarbonDefinitionRuntimeContextDiscoversCurrentWorkspaceSkills(t *testing.T) {
