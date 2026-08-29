@@ -632,12 +632,12 @@ func TestServeHostRestoreRefusesAHandoffWhileAnotherSessionIsLive(t *testing.T) 
 	if restored.SessionID() != firstID {
 		t.Fatalf("restored id = %v, want %v", restored.SessionID(), firstID)
 	}
-	if host.live == nil || host.live.mcp.manager != nil {
-		// No mcp.json in this host, so the assembly is the zero value; the point of
-		// the check is that the restored session was adopted at all.
-		if host.live == nil {
-			t.Fatal("a restored session was not recorded as live")
-		}
+	// No mcp.json in this host, so the MCP assembly is the zero value and says
+	// nothing; the point of the check is that the restored session was adopted as the
+	// live one at all. (This was written as a nested pair of conditions whose outer
+	// arm could only be entered by the inner arm being false — a no-op.)
+	if host.live == nil {
+		t.Fatal("a restored session was not recorded as live")
 	}
 }
 
@@ -953,7 +953,55 @@ func TestServeHostSessionPresentationsClassifyEveryListedRow(t *testing.T) {
 // default — but a FAILED catalog read must never be reported as an empty map, which
 // would silently downgrade a live session to a resumable row and offer to restore
 // something already running.
+//
+// This reaches ListSessions for real, by corrupting the listing-index entry the way
+// TestServeHostHasSessionPropagatesACatalogFailure does. An earlier version of this
+// test asserted the same claim by closing the host first, which returns at the closed
+// guard and never calls the catalog at all: swapping ListSessions' error return for an
+// empty map left the whole suite, integration included, green.
 func TestServeHostSessionPresentationsPropagateACatalogFailure(t *testing.T) {
+	ctx := context.Background()
+	t.Chdir(t.TempDir())
+	dataDir := t.TempDir()
+	host, err := OpenServeHost(ctx, Config{HomeDir: t.TempDir()}, dataDir,
+		WithServeInferenceClient(func() (inference.Client, ModelFactory, error) {
+			return &fakeLLM{}, newModelFactoryFor(testModel()), nil
+		}))
+	if err != nil {
+		t.Fatalf("OpenServeHost: %v", err)
+	}
+	t.Cleanup(func() { _ = host.Close(ctx) })
+
+	sess, err := host.NewSession(ctx)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	id := sess.SessionID()
+	if err := host.CloseLive(ctx, id); err != nil {
+		t.Fatalf("CloseLive: %v", err)
+	}
+	entry := filepath.Join(dataDir, "kv", "sessions", id.String())
+	if _, err := os.Stat(entry); err != nil {
+		t.Fatalf("listing index entry %s: %v", entry, err)
+	}
+	if err := os.WriteFile(entry, []byte("not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := host.SessionPresentations(ctx)
+	if err == nil {
+		t.Fatalf("SessionPresentations with a failing catalog read = (%v, nil), want the read error", got)
+	}
+	if got != nil {
+		t.Errorf("SessionPresentations returned a map (%v) alongside its error; a partial map reads as authoritative", got)
+	}
+}
+
+// TestServeHostSessionPresentationsRefuseAClosedHost is the closed-plane half, and the
+// only test that fails when SessionPresentations' closed guard is removed. A closed
+// host has no read plane, so answering an empty map would say "no sessions" rather
+// than "this host is gone".
+func TestServeHostSessionPresentationsRefuseAClosedHost(t *testing.T) {
 	ctx := context.Background()
 	host := newTestServeHost(t)
 	if err := host.Close(ctx); err != nil {

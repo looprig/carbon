@@ -466,6 +466,38 @@ func TestUIHandoffIsConfirmedNotSilent(t *testing.T) {
 	}
 }
 
+// TestUIHandoffReportsARealCloseFailureAsA500 covers the third outcome of
+// CloseLive, which the mismatch and success cases leave untouched: a shutdown that
+// genuinely failed. It must not be laundered into the 409 the mismatch branch
+// produces — 409 tells the client "re-read /ui/live and confirm again", and a client
+// that obeyed would loop against a host whose session will not close. The 500 is
+// non-retryable for the same reason.
+//
+// The error is deliberately NOT echoed: it can name a workspace path or a lease
+// holder, and the log line is where that belongs.
+func TestUIHandoffReportsARealCloseFailureAsA500(t *testing.T) {
+	t.Parallel()
+
+	id, err := uuid.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	boom := errors.New("workspace lease could not be released")
+	host := &stubHandoffHost{live: id, hasLive: true, closeErr: boom}
+	h := testServeHandler(t, host)
+
+	rec := doServe(t, h, http.MethodPost, "/ui/handoff", strings.NewReader(`{"session_id":"`+id.String()+`"}`), jsonBody)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("handoff over a failing CloseLive = %d, want 500 (body %q)", rec.Code, rec.Body.String())
+	}
+	if code := errorCode(t, rec); code != "handoff_failed" {
+		t.Errorf("error code = %q, want handoff_failed; a laundered 409 would tell the client to retry forever", code)
+	}
+	if body := rec.Body.String(); strings.Contains(body, boom.Error()) {
+		t.Errorf("response echoed the underlying error: %s", body)
+	}
+}
+
 // TestUIHandoffRequiresANonSimpleContentType is carbon's CSRF defence for its own
 // control route. wui's CSRFGuard is created INSIDE wui.Handler and its token store is
 // unreachable from here, so /ui/handoff cannot join the five routes it protects.
