@@ -30,6 +30,60 @@ func TestRuntimeCatalogExposesModesAndModel(t *testing.T) {
 	}
 }
 
+// TestRuntimeOptionsMarkCurrentChoices proves the catalog maps live runtime state back to
+// its opaque picker identities. The selected model is the SECOND candidate and its ID is an
+// alias rather than the model name; its selected effort is also late in the list, so a tray
+// can use these markers to open on values that are not initially visible.
+func TestRuntimeOptionsMarkCurrentChoices(t *testing.T) {
+	candidates := multiPrimerCandidates()
+	candidates[1].Model.Sampling.Effort = model.EffortHigh
+	agent, _ := openAcceptanceAgentSelectingPrimerCandidate(t, candidates, candidates[1].Model)
+
+	options, err := agent.LoopRuntimeOptions(context.Background(), agent.ActiveLoopID())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	currentModes := 0
+	for _, option := range options.Modes {
+		if option.Current {
+			currentModes++
+			if option.ID != tui.ModeID("") {
+				t.Errorf("current mode = %q, want base mode", option.ID)
+			}
+		}
+	}
+	if currentModes != 1 {
+		t.Errorf("current modes = %d, want exactly 1: %#v", currentModes, options.Modes)
+	}
+
+	currentModels := 0
+	for _, option := range options.Models {
+		if option.Current {
+			currentModels++
+			if option.ID != tui.ModelID("candidate-b") {
+				t.Errorf("current model = %q, want alias candidate-b", option.ID)
+			}
+		}
+	}
+	if currentModels != 1 {
+		t.Errorf("current models = %d, want exactly 1: %#v", currentModels, options.Models)
+	}
+
+	currentEfforts := 0
+	for _, option := range options.Efforts {
+		if option.Current {
+			currentEfforts++
+			if option.ID != tui.EffortID(model.EffortHigh) {
+				t.Errorf("current effort = %q, want high", option.ID)
+			}
+		}
+	}
+	if currentEfforts != 1 {
+		t.Errorf("current efforts = %d, want exactly 1: %#v", currentEfforts, options.Efforts)
+	}
+}
+
 // TestSessionPresentationReportsFixedProfile proves the runtime agent surfaces the
 // session-fixed access profile name and workspace root through the TUI's
 // SessionPresenter contract. The default (empty) Config resolves to the trusted

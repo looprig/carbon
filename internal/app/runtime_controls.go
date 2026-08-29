@@ -181,16 +181,17 @@ func (a *RuntimeAgent) LoopRuntimeOptions(_ context.Context, loopID uuid.UUID) (
 		return tui.LoopRuntimeOptions{}, fmt.Errorf("carbon: loop %s is unavailable", loopID)
 	}
 	options := tui.LoopRuntimeOptions{}
+	selectedMode := handle.Mode()
+	selectedModel := handle.Model()
 	if catalog, ok := handle.(loop.ModeCatalog); ok {
 		for _, mode := range catalog.Modes() {
 			label := string(mode)
 			if label == "" {
 				label = "Default"
 			}
-			options.Modes = append(options.Modes, tui.ModeOption{ID: tui.ModeID(mode), Label: label})
+			options.Modes = append(options.Modes, tui.ModeOption{ID: tui.ModeID(mode), Label: label, Current: mode == selectedMode})
 		}
 	}
-	selectedModel := handle.Model()
 	if len(a.primerCandidates) == 0 {
 		// No candidates means no configured primer-capable model, which normalization
 		// rejects (primer_default must name one). This branch therefore serves embedded
@@ -200,6 +201,7 @@ func (a *RuntimeAgent) LoopRuntimeOptions(_ context.Context, loopID uuid.UUID) (
 			ID:       tui.ModelID(publicID),
 			Provider: string(selectedModel.Provider),
 			Label:    modelDisplayLabel(publicID, selectedModel),
+			Current:  true,
 		}}
 	} else {
 		options.Models = make([]tui.ModelOption, 0, len(a.primerCandidates))
@@ -209,6 +211,7 @@ func (a *RuntimeAgent) LoopRuntimeOptions(_ context.Context, loopID uuid.UUID) (
 				Provider:    string(c.Model.Provider),
 				Label:       primerCandidateLabel(c),
 				Description: c.Description,
+				Current:     runtimeModelKeyFor(c.Model) == runtimeModelKeyFor(selectedModel),
 			})
 		}
 		disambiguateModelLabels(options.Models, a.primerCandidates)
@@ -227,7 +230,7 @@ func (a *RuntimeAgent) LoopRuntimeOptions(_ context.Context, loopID uuid.UUID) (
 		if label == "" {
 			label = "Model default"
 		}
-		options.Efforts = append(options.Efforts, tui.EffortOption{ID: tui.EffortID(effort), Label: label})
+		options.Efforts = append(options.Efforts, tui.EffortOption{ID: tui.EffortID(effort), Label: label, Current: effort == selectedModel.Sampling.Effort})
 	}
 	return options, nil
 }
