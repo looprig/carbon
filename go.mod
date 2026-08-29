@@ -23,7 +23,7 @@ require (
 	github.com/looprig/secrets v0.2.0
 	github.com/looprig/storage v0.4.1
 	github.com/looprig/tools v0.11.0
-	github.com/looprig/tui v0.18.1
+	github.com/looprig/tui v0.18.2
 	github.com/looprig/wui v0.1.1
 	golang.org/x/sys v0.47.0
 )

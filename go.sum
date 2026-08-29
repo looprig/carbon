@@ -147,8 +147,8 @@ github.com/looprig/storage v0.4.1 h1:qXiO30xm0MQvo0ToVESr6czdp2+yoEPNIHQc/eYyEMc
 github.com/looprig/storage v0.4.1/go.mod h1:cA0IN/Xn3iMUojKkcfhQZApTtrjg/mdISijL0NtlxUA=
 github.com/looprig/tools v0.11.0 h1:KdMHLFH7PEuNS9Nf+UhqtJLARPZBSWNwKtZfUfpTIEk=
 github.com/looprig/tools v0.11.0/go.mod h1:klJV+aPQ34XGcfrMWlhiE3snwrpfGg0aic+l233aDPw=
-github.com/looprig/tui v0.18.1 h1:Wya7bR8V0L3dpyCBslMAIQ/QH0MyK2CtbtlakRyte78=
-github.com/looprig/tui v0.18.1/go.mod h1:r5Zkveo23H4wIGwOLrRTXvRYbi86CNeIGFaxH5OZeWw=
+github.com/looprig/tui v0.18.2 h1:yN5Uf4yVimpBdr1o2fdrVWBOVst0wb5pS5E/5YdZdkM=
+github.com/looprig/tui v0.18.2/go.mod h1:r5Zkveo23H4wIGwOLrRTXvRYbi86CNeIGFaxH5OZeWw=
 github.com/looprig/wui v0.1.1 h1:pbIRoLG5DG0IftCxPjr/GJAzNeXm6/0vXn7XqZR43uQ=
 github.com/looprig/wui v0.1.1/go.mod h1:Peigm+HF4RaBdcogRAYcUY24tlzHxTnyAO4M0VhXBoI=
 github.com/lucasb-eyer/go-colorful v1.4.1 h1:1EO+WB73+EH8EVbzlrG3KLAfEypQWVHIBqlTf+2hNss=
