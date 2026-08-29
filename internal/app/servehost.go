@@ -367,26 +367,39 @@ func (h *ServeHost) NewSession(ctx context.Context) (session.SessionController, 
 }
 
 // detachSessionLifetime strips cancellation from a caller's context while keeping its
-// values, and it is what makes ServeHost usable from an HTTP handler at all.
+// values. It enforces a ServeHost invariant: a served session's lifetime belongs to
+// the HOST and ends at CloseLive or Close -- the two places that shut it down
+// explicitly -- never at whatever context happened to ask for it.
 //
 // harness derives a session's WHOLE lifetime from the context passed to
-// NewSession/RestoreSession -- internal/sessionruntime's newSessionTopology and
+// NewSession/RestoreSession: internal/sessionruntime's newSessionTopology and
 // restore_constructor both do `sessionCtx, sessionCancel := context.WithCancel(ctx)`,
-// and every loop context descends from that. pkg/serve's handleCreate and
-// handleRestore pass `r.Context()`, which net/http cancels the moment the response is
-// written. Passing it through would mint a session that is already dead when the 201
-// reaches the browser: the next POST .../input answers 500 "session: loop exited".
+// and every loop context descends from that. Hand this host a cancellable context and
+// it mints a session that dies with its caller; the next Submit answers "session:
+// loop exited".
 //
-// A serve session's lifetime belongs to the HOST, not to the request that happened to
-// ask for it -- it ends at CloseLive or Close, both of which shut it down explicitly.
-// So the host, which owns that invariant, is where the request's cancellation is
-// dropped, rather than at whichever caller happens to be wiring HTTP today.
+// harness v0.30.2 fixed the acute case. pkg/serve's handleCreate and handleRestore
+// used to pass `r.Context()`, which net/http cancels the instant the response is
+// written, so every session carbon created over HTTP was dead before its 201 reached
+// the browser. serve now detaches on its own side and serve.Rig documents the
+// guarantee, so this call is NOT what keeps `carbon serve` working today: the serve
+// integration suite passes with it removed.
 //
-// The cost is that a client disconnecting mid-open no longer aborts construction.
-// That is the right trade in both directions: construction is short and takes leases
-// whose release is owned by the session it is building, and a half-built session
-// abandoned by a cancelled context is exactly the state that strands the workspace
-// root. Values (trace/log context) are preserved, so nothing observable is lost.
+// It stays because the invariant is the HOST's, not serve's. NewSession and
+// RestoreSession are ordinary exported methods on an exported type; nothing in the
+// type system confines them to serve's handlers, and serve.Rig's own doc says an
+// implementation is "free to derive a lifetime from" the context it is given -- the
+// guarantee is that serve will not send a cancellable one, not that a rig may ignore
+// cancellation. Leaning on it would put a carbon invariant in another repository's
+// doc comment, which was wrong once already, and its failure mode is a session that
+// dies silently rather than a build error. One idempotent WithoutCancel per open is a
+// cheap way to own it here.
+//
+// The cost is that a caller abandoning an open no longer aborts construction. That is
+// the right trade in both directions: construction is short and takes leases whose
+// release is owned by the session it is building, and a half-built session abandoned
+// by a cancelled context is exactly the state that strands the workspace root. Values
+// (trace/log context) are preserved, so nothing observable is lost.
 func detachSessionLifetime(ctx context.Context) context.Context {
 	return context.WithoutCancel(ctx)
 }

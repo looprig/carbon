@@ -15,7 +15,7 @@ require (
 	github.com/looprig/credentials v0.2.0
 	github.com/looprig/foreignloops v0.3.1
 	github.com/looprig/fsstore v0.4.1
-	github.com/looprig/harness v0.30.1
+	github.com/looprig/harness v0.30.2
 	github.com/looprig/inference v0.12.1
 	github.com/looprig/llm v0.14.1
 	github.com/looprig/mcp v0.7.1

@@ -798,21 +798,22 @@ func TestServeHostRefusesSessionsAfterClose(t *testing.T) {
 	}
 }
 
-// TestServeHostSessionOutlivesTheOpeningContext is the load-bearing lifetime test for
-// an HTTP host, and it is not a theoretical one: without it `carbon serve` cannot run
-// a single turn.
+// TestServeHostSessionOutlivesTheOpeningContext pins ServeHost's lifetime contract: a
+// session this host opens lives until CloseLive or Close — the two owners of its
+// lifetime — whatever the context that asked for it goes on to do.
 //
-// harness derives a session's ENTIRE lifetime from the context handed to
+// It tests CARBON's behaviour, not an upstream guarantee restated locally: delete
+// detachSessionLifetime and this test fails on the Submit below, because harness
+// derives a session's ENTIRE lifetime from the context handed to
 // NewSession/RestoreSession (internal/sessionruntime's newSessionTopology and
-// restore_constructor both do `sessionCtx, sessionCancel := context.WithCancel(ctx)`),
-// and pkg/serve's handleCreate/handleRestore hand it `r.Context()` — a context the
-// net/http server cancels the instant the response is written. A host that passed that
-// context straight through would therefore mint a session that is already dead by the
-// time the 201 reaches the browser, and the very next POST .../input would answer 500
-// "session: loop exited".
+// restore_constructor both do `sessionCtx, sessionCancel := context.WithCancel(ctx)`).
 //
-// So the host detaches cancellation before the rig sees it. The session lives until
-// CloseLive or Close — the two owners of its lifetime — and nothing else.
+// The bug that made it acute was over HTTP: pkg/serve's handleCreate/handleRestore
+// handed the rig `r.Context()`, which net/http cancels the instant the response is
+// written, so every session `carbon serve` created was dead before its 201 reached
+// the browser and the next POST .../input answered 500. harness v0.30.2 detaches on
+// serve's side as well, which fixes that path for every consumer; it does not move
+// the invariant off this host, which is why the detach and this test both stay.
 func TestServeHostSessionOutlivesTheOpeningContext(t *testing.T) {
 	host := newTestServeHost(t)
 
