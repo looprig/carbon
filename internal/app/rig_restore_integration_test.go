@@ -211,6 +211,24 @@ func TestRigRestoreStateWorkspaceAndContinuation(t *testing.T) {
 	}
 }
 
+// lastToolFailure is lastToolText plus the structured error flag. Since harness v0.27.1
+// an agent-tool refusal is an IsError tool result rather than plain result text, so the
+// flag is part of what the parent model is told and part of what the caller asserts.
+func lastToolFailure(req inference.Request) (string, bool) {
+	for i := len(req.Messages) - 1; i >= 0; i-- {
+		msg, ok := req.Messages[i].(*content.ToolResultMessage)
+		if !ok {
+			continue
+		}
+		for _, block := range msg.Blocks {
+			if text, ok := block.(*content.TextBlock); ok {
+				return text.Text, msg.IsError
+			}
+		}
+	}
+	return "", false
+}
+
 // TestRigRestoreDelegateOwnership uses a fresh fsstore instance to prove the durable owner
 // relation, rather than relying on the in-memory restore coverage in managed_delegation_test.
 func TestRigRestoreDelegateOwnership(t *testing.T) {
@@ -221,7 +239,11 @@ func TestRigRestoreDelegateOwnership(t *testing.T) {
 	step := 0
 	var childID uuid.UUID
 	var unrelatedResult string
+	var unrelatedIsError bool
 	var initialSyncResult string
+	// A well-formed delegate ID this loop never started: the durable owner relation, not
+	// ID validity, is what has to reject it.
+	intruderID := uuid.MustParse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
 	client := &managedScript{}
 	client.fn = func(_ context.Context, req inference.Request) ([]content.Chunk, error) {
 		if phase == "initial" {
@@ -259,9 +281,9 @@ func TestRigRestoreDelegateOwnership(t *testing.T) {
 				return nil, fmt.Errorf("owned follow-up = %q", got)
 			}
 			step++
-			return messageAgentCall("own-reject", fmt.Sprintf(`{"agent_id":%q,"message":"intrude"}`, uuid.MustParse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"))), nil
+			return messageAgentCall("own-reject", fmt.Sprintf(`{"agent_id":%q,"message":"intrude"}`, intruderID)), nil
 		default:
-			unrelatedResult = lastToolText(req)
+			unrelatedResult, unrelatedIsError = lastToolFailure(req)
 			return finalText("ownership checked"), nil
 		}
 	}
@@ -308,8 +330,18 @@ func TestRigRestoreDelegateOwnership(t *testing.T) {
 	if got := runManagedTurn(t, a2, "continue"); got != "ownership checked" {
 		t.Fatalf("final = %q", got)
 	}
-	if unrelatedResult != "error: agent request failed" {
-		t.Fatalf("unrelated delegate result = %q", unrelatedResult)
+	// Harness refuses the unrelated delegate on the durable owner relation. Since harness
+	// v0.27.1 ("return structured agent tool failures") that refusal reaches the model as
+	// an IsError result carrying the operation-specific detail, replacing the opaque
+	// "error: agent request failed" text this assertion used to expect. The refusal itself
+	// is unchanged, so what is asserted is the refusal, not the former wording.
+	if !unrelatedIsError {
+		t.Errorf("unrelated delegate result %q was not a structured tool failure", unrelatedResult)
+	}
+	if !strings.HasPrefix(unrelatedResult, "MessageAgent failed:") ||
+		!strings.Contains(unrelatedResult, intruderID.String()) ||
+		!strings.Contains(unrelatedResult, "is not owned by this loop") {
+		t.Fatalf("unrelated delegate result = %q, want a MessageAgent ownership refusal naming %s", unrelatedResult, intruderID)
 	}
 }
 
