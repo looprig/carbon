@@ -9,11 +9,11 @@ tool (
 )
 
 require (
-	github.com/looprig/acp v0.3.1
+	github.com/looprig/acp v0.3.2
 	github.com/looprig/classifiers v0.2.1
 	github.com/looprig/core v0.6.1
 	github.com/looprig/credentials v0.2.0
-	github.com/looprig/foreignloops v0.3.1
+	github.com/looprig/foreignloops v0.3.2
 	github.com/looprig/fsstore v0.4.1
 	github.com/looprig/harness v0.30.2
 	github.com/looprig/inference v0.12.1
