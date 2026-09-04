@@ -1023,12 +1023,13 @@ func (l *failCompactionTerminalLedger) arm() {
 }
 
 func (l *failCompactionTerminalLedger) Append(ctx context.Context, name string, expected uint64, payload []byte) error {
-	var envelope struct {
-		Body []byte `json:"body"`
-	}
-	decoded := json.Unmarshal(payload, &envelope) == nil
+	// The durable envelope is a binary frame (released sessionstore codec), not the JSON
+	// object this once decoded. Its event body is carried inline and uncompressed, so the
+	// terminal is identified by scanning the raw payload rather than by parsing a frame
+	// whose grammar this fault injector has no business knowing. Arming is what scopes the
+	// match to the compaction under test.
 	l.mu.Lock()
-	shouldFail := l.armed && decoded && bytes.Contains(envelope.Body, []byte("CompactionCommitted"))
+	shouldFail := l.armed && bytes.Contains(payload, []byte("CompactionCommitted"))
 	if shouldFail {
 		l.armed = false
 		close(l.failed)
@@ -1059,6 +1060,11 @@ func TestAcceptanceCompactionFinalizationFailureFaultsSession(t *testing.T) {
 			if err != nil {
 				t.Fatalf("storage.NewComposite() error = %v", err)
 			}
+			// NewComposite deliberately leaves OrderedIndex nil, so rebuilding the composite
+			// to inject the failing ledger drops the one memstore supplied. sessionstore.Open
+			// requires it, and this fixture is exercising compaction finalization, not a
+			// backend-validation path — carry the base index across.
+			backend.OrderedIndex = base.OrderedIndex
 			stores, err := openStores(backend)
 			if err != nil {
 				t.Fatalf("openStores() error = %v", err)

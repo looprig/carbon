@@ -205,8 +205,20 @@ func TestConversationContextPolicyOptionsInstallDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("definition.Bind() error = %v", err)
 	}
-	if got, want := bound.ToolLimits(), (loop.ToolLimits{Iterations: 100, Calls: 200, Parallel: 8, ResultBytes: 50 * 1024}); got != want {
-		t.Errorf("bound.ToolLimits() = %+v, want %+v", got, want)
+	// Parallel and CaptureBytes are harness defaults filled in at Bind, not carbon
+	// policy: carbon declares only Iterations, Calls and ResultBytes (asserted above,
+	// pre-Bind). CaptureBytes — the durable per-result retention ceiling backing tool-result
+	// spill — is referenced through its exported constant rather than restated, so a harness
+	// change to the default moves this expectation with it instead of failing here.
+	wantBound := loop.ToolLimits{
+		Iterations:   100,
+		Calls:        200,
+		Parallel:     8,
+		ResultBytes:  50 * 1024,
+		CaptureBytes: loop.DefaultToolResultCaptureBytes,
+	}
+	if got := bound.ToolLimits(); got != wantBound {
+		t.Errorf("bound.ToolLimits() = %+v, want %+v", got, wantBound)
 	}
 	gotCompaction, ok := bound.CompactionPolicy()
 	if !ok {
