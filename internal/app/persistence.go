@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
 	"sort"
@@ -96,7 +97,24 @@ type sessionStores struct {
 // openStores wires the session + workspace facades and the listing catalog over one backend
 // composite (fsstore for the persisted path, memstore for headless). The catalog is wired
 // with a replayer so a missing listing entry can be repaired by folding the ledger.
+//
+// The Blobs primitive is adapted to storage.BlobReaderLifecycle, which sessionstore.Open
+// requires and fsstore deliberately does not provide (see boundedBlobs). The adaptation
+// happens HERE, at the single seam every backend passes through, rather than at each
+// fsstore.Open call site — a future third backend cannot forget it, and the headless
+// memstore path already conforms so newBoundedBlobs returns it untouched.
+//
+// The composite is copied before its Blobs field is replaced: the caller owns the
+// original (fsstore returns its own *storage.Composite from Backend()), and mutating it
+// in place would reach back into the provider's state.
 func openStores(backend *storage.Composite) (*sessionStores, error) {
+	if backend == nil {
+		return nil, &StoreInitError{Stage: "sessionstore", Cause: errors.New("nil storage composite")}
+	}
+	adapted := *backend
+	adapted.Blobs = newBoundedBlobs(backend.Blobs)
+	backend = &adapted
+
 	sessionStore, err := sessionstore.Open(backend)
 	if err != nil {
 		return nil, &StoreInitError{Stage: "sessionstore", Cause: err}
