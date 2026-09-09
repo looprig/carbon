@@ -11,19 +11,19 @@ tool (
 require (
 	github.com/looprig/acp v0.3.2
 	github.com/looprig/classifiers v0.2.1
-	github.com/looprig/core v0.6.1
+	github.com/looprig/core v0.7.0
 	github.com/looprig/credentials v0.2.0
 	github.com/looprig/foreignloops v0.3.2
-	github.com/looprig/fsstore v0.4.1
-	github.com/looprig/harness v0.30.2
+	github.com/looprig/fsstore v0.5.1
+	github.com/looprig/harness v0.31.0
 	github.com/looprig/inference v0.12.1
 	github.com/looprig/llm v0.14.1
 	github.com/looprig/mcp v0.7.1
 	github.com/looprig/sandbox v0.9.0
 	github.com/looprig/secrets v0.2.0
-	github.com/looprig/storage v0.4.1
+	github.com/looprig/storage v0.6.0
 	github.com/looprig/tools v0.11.0
-	github.com/looprig/tui v0.19.0
+	github.com/looprig/tui v0.21.0
 	github.com/looprig/wui v0.1.1
 	golang.org/x/sys v0.47.0
 )
@@ -75,6 +75,7 @@ require (
 	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/invopop/jsonschema v0.14.0 // indirect
 	github.com/landlock-lsm/go-landlock v0.9.0 // indirect
+	github.com/looprig/sessionstore v0.1.0 // indirect
 	github.com/lucasb-eyer/go-colorful v1.4.1 // indirect
 	github.com/mattn/go-runewidth v0.0.27 // indirect
 	github.com/mdlayher/netlink v1.11.2 // indirect

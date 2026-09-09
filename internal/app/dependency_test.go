@@ -66,8 +66,9 @@ var (
 )
 
 // TestServeDependenciesArePinned proves carbon names the harness release carrying
-// the attach-or-restore fix (wui design §8.1) and a usable wui release. A harness
-// below v0.30 restores an already-live session by overwriting the registry entry,
+// the attach-or-restore fix (wui design §8.1), the exported tool-result capture
+// default used by Carbon's policy test, and a usable wui release. A harness below
+// v0.30 restores an already-live session by overwriting the registry entry,
 // orphaning every subscriber; and wui v0.1.1 is the first wui whose module zip
 // carries the BUILT SPA bundle — v0.1.0 was tagged from a development tree, ships
 // only the dist/index.html placeholder, and is retracted upstream, so naming it
@@ -82,8 +83,8 @@ func TestServeDependenciesArePinned(t *testing.T) {
 	}
 	gomod := string(data)
 
-	if !strings.Contains(gomod, "github.com/looprig/harness v0.30.") {
-		t.Error(`go.mod does not require github.com/looprig/harness v0.30.x`)
+	if !strings.Contains(gomod, "github.com/looprig/harness v0.31.") {
+		t.Error(`go.mod does not require github.com/looprig/harness v0.31.x`)
 	}
 
 	wui := regexp.MustCompile(`github\.com/looprig/wui (v\S+)`).FindStringSubmatch(gomod)
