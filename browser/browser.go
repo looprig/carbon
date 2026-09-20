@@ -42,6 +42,7 @@ type Config struct {
 	Storage       StorageConfig
 	Host          HostConfig
 	Factory       FactoryConfig
+	Shutdown      ShutdownPolicy
 	Address       string
 	ClientBuilder func() (inference.Client, func() model.Model, error)
 }
@@ -64,6 +65,7 @@ type Server struct {
 	factoryStopped    bool
 	hostStopped       bool
 	storageClosed     bool
+	shutdownPolicy    ShutdownPolicy
 	stopFactory       func(context.Context) error
 	stopHost          func(context.Context) (host.DrainReport, error)
 	closeStorage      func(context.Context) error
@@ -95,8 +97,12 @@ func (s *Server) Done() <-chan struct{} { return s.done }
 // Start owns the listener only after the Host is ready. A nonnil Server on
 // error retains resources whose cleanup may need a later Stop call.
 func Start(ctx context.Context, cfg Config) (*Server, error) {
-	if cfg.Factory.Verifier == nil {
-		return nil, ErrVerifierRequired
+	if err := validateFactoryConfig(cfg.Factory); err != nil {
+		return nil, err
+	}
+	policy, err := cfg.EffectiveShutdownPolicy()
+	if err != nil {
+		return nil, err
 	}
 	profile, ok := carbon.ParseAccessProfile(string(cfg.Runtime.AccessProfile))
 	if cfg.Runtime.AccessProfile == "" {
@@ -119,7 +125,7 @@ func Start(ctx context.Context, cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{storage: storage, done: make(chan struct{}), failureDone: make(chan struct{})}
+	s := &Server{storage: storage, shutdownPolicy: policy, done: make(chan struct{}), failureDone: make(chan struct{})}
 	h, err := carbon.OpenServePooledHost(ctx, storage, cfg.Host)
 	if err != nil {
 		if closeErr := storage.Close(context.Background()); closeErr != nil {

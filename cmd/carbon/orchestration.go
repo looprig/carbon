@@ -11,8 +11,6 @@ import (
 	"time"
 )
 
-const serveShutdownCeiling = time.Minute
-
 var ErrServeFactoryVerifierRequired = browser.ErrVerifierRequired
 
 // browserStartConfig holds the choices an embedding application must make.
@@ -24,11 +22,16 @@ type browserStartConfig = browser.Config
 // the borrowed storage provider is closed only after Host has released it.
 func runBrowserLifecycle(ctx context.Context, appCfg carbon.Config, cfg browserStartConfig, out, errOut io.Writer) int {
 	cfg.Runtime = appCfg
+	policy, err := cfg.EffectiveShutdownPolicy()
+	if err != nil {
+		fmt.Fprintln(errOut, "serve:", err)
+		return exitFailed
+	}
 	server, err := browser.Start(ctx, cfg)
 	if err != nil {
 		fmt.Fprintln(errOut, "serve:", err)
 		if server != nil {
-			cleanupCtx, cancel := context.WithTimeout(context.Background(), serveShutdownCeiling)
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), policy.ForcedCeiling)
 			defer cancel()
 			if cleanupErr := server.Stop(cleanupCtx); cleanupErr != nil {
 				fmt.Fprintln(errOut, "serve: cleanup:", cleanupErr)
@@ -41,7 +44,7 @@ func runBrowserLifecycle(ctx context.Context, appCfg carbon.Config, cfg browserS
 	if waitErr != nil && !errors.Is(waitErr, ctx.Err()) {
 		fmt.Fprintln(errOut, "serve: listener:", waitErr)
 	}
-	waitCtx, cancel := context.WithTimeout(context.Background(), serveShutdownCeiling)
+	waitCtx, cancel := context.WithTimeout(context.Background(), policy.ForcedCeiling)
 	defer cancel()
 	if err := server.Stop(waitCtx); err != nil {
 		fmt.Fprintln(errOut, "serve: cleanup:", err)
@@ -56,7 +59,7 @@ func runBrowserLifecycle(ctx context.Context, appCfg carbon.Config, cfg browserS
 // runWithTerminationSignals gives the first termination signal to the owned
 // lifecycle. A second signal or the ceiling invokes force while cleanup still
 // owns its resources; it never closes a provider out from under Host.
-func runWithTerminationSignals(parent context.Context, signals <-chan os.Signal, after func(time.Duration) <-chan time.Time, force func(), run func(context.Context) int) int {
+func runWithTerminationSignals(parent context.Context, signals <-chan os.Signal, ceilingDuration time.Duration, after func(time.Duration) <-chan time.Time, force func(), run func(context.Context) int) int {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	done := make(chan struct{})
@@ -68,7 +71,7 @@ func runWithTerminationSignals(parent context.Context, signals <-chan os.Signal,
 		case <-done:
 			return
 		}
-		ceiling := after(serveShutdownCeiling)
+		ceiling := after(ceilingDuration)
 		select {
 		case <-signals:
 			force()

@@ -41,26 +41,17 @@ func (c staticServeHostLinkCredential) ServiceToken(context.Context) (string, er
 // OpenServeFactory composes the browser edge over the same control store the
 // local Host uses. The caller starts Host before Factory and owns both lifetimes.
 func composeFactory(stores *carbon.ServeStorage, localHost *carbon.ServePooledHost, cfg FactoryConfig) (*factory.Server, error) {
-	if cfg.Verifier == nil {
-		return nil, ErrVerifierRequired
-	}
-	if cfg.Authorizer == nil {
-		return nil, errors.New("carbon: browser serve requires an injected authorizer")
+	if err := validateFactoryConfig(cfg); err != nil {
+		return nil, err
 	}
 	if stores == nil || stores.ControlStore() == nil || stores.Launcher() == nil || localHost == nil {
 		return nil, errors.New("carbon: browser Factory requires open storage and a pooled Host")
 	}
-	if err := cfg.DefaultTenant.Validate(); err != nil {
-		return nil, err
-	}
-	if cfg.DefaultTenant != stores.DefaultTenant() || cfg.StorageBindingID == "" || cfg.BindingVersion == "" || cfg.HostLinkToken == "" || cfg.ReplicaID == "" {
-		return nil, errors.New("carbon: browser Factory tenant, binding, token or replica configuration is incomplete")
+	if cfg.DefaultTenant != stores.DefaultTenant() {
+		return nil, errors.New("carbon: browser Factory tenant differs from the local storage tenant")
 	}
 	if !localHost.UsesServeStorage(stores) || !localHost.MatchesFactoryLinkConfig(cfg.StorageBindingID, cfg.HostLinkToken) {
 		return nil, errors.New("carbon: browser Factory storage, binding or HostLink token differs from the local Host")
-	}
-	if (cfg.UIRoutes == nil) != (cfg.AuthorizeUI == nil) {
-		return nil, errors.New("carbon: browser UI routes require a handler and authorizer together")
 	}
 	if cfg.UIRoutes == nil {
 		cfg.UIRoutes = unavailableLegacyUIRoutes()
@@ -110,6 +101,25 @@ func composeFactory(stores *carbon.ServeStorage, localHost *carbon.ServePooledHo
 		opts = append(opts, factory.WithClientLinkLimits(cfg.ClientLinkLimits))
 	}
 	return factory.New(opts...)
+}
+
+func validateFactoryConfig(cfg FactoryConfig) error {
+	if cfg.Verifier == nil {
+		return ErrVerifierRequired
+	}
+	if cfg.Authorizer == nil {
+		return errors.New("carbon: browser serve requires an injected authorizer")
+	}
+	if err := cfg.DefaultTenant.Validate(); err != nil {
+		return err
+	}
+	if cfg.StorageBindingID == "" || cfg.BindingVersion == "" || cfg.HostLinkToken == "" || cfg.ReplicaID == "" {
+		return errors.New("carbon: browser Factory tenant, binding, token or replica configuration is incomplete")
+	}
+	if (cfg.UIRoutes == nil) != (cfg.AuthorizeUI == nil) {
+		return errors.New("carbon: browser UI routes require a handler and authorizer together")
+	}
+	return nil
 }
 
 // The old routes describe one process-global live workspace. A pooled Host

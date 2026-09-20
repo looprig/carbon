@@ -565,7 +565,14 @@ func main() {
 	signals := make(chan os.Signal, 2)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(signals)
-	os.Exit(runWithTerminationSignals(context.Background(), signals, time.After,
+	// The stock binary has no injected browser verifier. Embedding applications
+	// resolve their own policy from their real Factory and Host configuration.
+	policy, err := (browserStartConfig{}).EffectiveShutdownPolicy()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "shutdown policy:", err)
+		os.Exit(exitFailed)
+	}
+	os.Exit(runWithTerminationSignals(context.Background(), signals, policy.ForcedCeiling, time.After,
 		func() { os.Exit(exitFailed) },
 		func(ctx context.Context) int { return run(ctx, os.Args[1:], os.Stdout, os.Stderr) }))
 }

@@ -19,7 +19,7 @@ func TestTerminationSignalChild(t *testing.T) {
 	signals := make(chan os.Signal, 2)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(signals)
-	code := runWithTerminationSignals(context.Background(), signals, time.After,
+	code := runWithTerminationSignals(context.Background(), signals, time.Minute, time.After,
 		func() { os.Exit(23) }, func(ctx context.Context) int {
 			_, _ = os.Stdout.WriteString("READY\n")
 			<-ctx.Done()
@@ -87,7 +87,7 @@ func TestServeSignalSupervisorCancelsOnFirstSignalAndForcesOnSecond(t *testing.T
 			armed := make(chan struct{})
 			done := make(chan int, 1)
 			go func() {
-				done <- runWithTerminationSignals(context.Background(), signals, func(time.Duration) <-chan time.Time {
+				done <- runWithTerminationSignals(context.Background(), signals, time.Minute, func(time.Duration) <-chan time.Time {
 					close(armed)
 					return make(chan time.Time)
 				}, func() { forced <- struct{}{} }, func(ctx context.Context) int {
@@ -129,9 +129,9 @@ func TestServeSignalSupervisorForcesAtInjectedCeiling(t *testing.T) {
 	finish := make(chan struct{})
 	done := make(chan int, 1)
 	go func() {
-		done <- runWithTerminationSignals(context.Background(), signals, func(d time.Duration) <-chan time.Time {
-			if d <= 0 {
-				t.Errorf("ceiling = %s", d)
+		done <- runWithTerminationSignals(context.Background(), signals, 3*time.Second, func(d time.Duration) <-chan time.Time {
+			if d != 3*time.Second {
+				t.Errorf("ceiling = %s, want 3s", d)
 			}
 			return ceiling
 		}, func() { forced <- struct{}{} }, func(ctx context.Context) int {
