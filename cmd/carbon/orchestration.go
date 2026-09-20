@@ -21,15 +21,6 @@ import (
 
 var ErrServeFactoryVerifierRequired = errors.New("carbon: browser serve requires an injected credential verifier")
 
-// browserComposition is supplied by the browser lifecycle owner after it has
-// opened storage and started the local Host. The legacy command path remains
-// available during the tested cutover; it does not manufacture credentials.
-type browserComposition struct {
-	stores *carbon.ServeStorage
-	host   *carbon.ServePooledHost
-	cfg    ServeFactoryConfig
-}
-
 // browserStartConfig holds the choices an embedding application must make.
 // The stock binary supplies no verifier and is refused before opening storage.
 type browserStartConfig struct {
@@ -145,20 +136,6 @@ func (s *browserShutdown) Wait(ctx context.Context) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-}
-
-func runComposedFactory(ctx context.Context, addr string, composition browserComposition, out, errOut io.Writer) int {
-	server, err := composeServeFactory(composition.stores, composition.host, composition.cfg)
-	if err != nil {
-		fmt.Fprintln(errOut, "serve:", err)
-		return exitFailed
-	}
-	exit := serveFactoryUntil(ctx, addr, server, out, errOut)
-	if err := server.Stop(context.Background()); err != nil {
-		fmt.Fprintln(errOut, "serve: shutdown Factory:", err)
-		return exitFailed
-	}
-	return exit
 }
 
 func serveFactoryUntil(ctx context.Context, addr string, server *factory.Server, out, errOut io.Writer) int {

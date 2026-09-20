@@ -1,9 +1,6 @@
-// Command carbon is the Carbon TUI entry point and composition root. It parses the CLI
-// invocation (--list / --resume / --data-dir), opens the session-store factory (one on-disk
-// fsstore-backed session store shared by every session), and either prints the session list
-// (--list) or hands the shared TUI runtime (runtime.Run) a thunk that opens/resumes the persisted
-// Carbon session. It is wiring only: all runtime behavior (logging, signal teardown, the TUI)
-// lives in tui, and all Session/persistence behavior lives in the internal app package.
+// Command carbon is the TUI and browser composition root. TUI commands use the
+// legacy session factory; browser serve composes Factory and a local pooled Host
+// only when an embedding application supplies credentials and browser policy.
 package main
 
 import (
@@ -32,13 +29,9 @@ const bannerName = "Carbon"
 
 const dataDirUsage = "session store root (default ~/.looprig/carbon/store)"
 
-// defaultServeAddr is `carbon serve`'s bind address. LOOPBACK BY DEFAULT and
-// deliberately so: serve.Server refuses a non-loopback bind only when no
-// authenticator is installed, and carbon installs none, so the only things standing
-// between a public bind and a fully-permissioned coding agent are this default and
-// that refusal. A user who wants a different address types one, and a non-loopback
-// one is then refused by serve.Server rather than by this constant. Port 0 is
-// permitted (the tests use it); runServe prints the resolved address.
+// Browser serving defaults to loopback. The stock command has no credential
+// verifier and refuses before binding; an injected composition must supply its
+// own verifier and Factory origin/CSRF policy.
 const defaultServeAddr = "127.0.0.1:8722"
 
 // serveAddrUsage documents --addr. It names the subcommand because --addr is
@@ -73,9 +66,8 @@ type cliFlags struct {
 	// acknowledgeUnconfined is the explicit opt-in required to select the unconfined
 	// profile (direct host execution). Selecting unconfined without it fails closed.
 	acknowledgeUnconfined bool
-	// serve selects the `carbon serve` subcommand: an HTTP + web-UI host over the
-	// same persisted store, agent, tools and permissions the TUI uses. It is one
-	// command among several and is mutually exclusive with all of them.
+	// serve selects the Factory browser surface over a local pooled Host. The
+	// stock binary refuses until an application injects browser credentials.
 	serve bool
 	// serveAddr is the bind address for --addr, defaultServeAddr when --addr is not
 	// given. It is meaningful only when serve is set; parseFlags rejects --addr
@@ -432,16 +424,13 @@ func runCLIWithStore(ctx context.Context, open tui.OpenAgent, banner runtime.Ban
 // os.Exit, so main stays the single exit point. ctx is the process root (signal-aware);
 // out/errOut are the list + error sinks.
 func run(ctx context.Context, args []string, out, errOut io.Writer) int {
-	// The stock command has no credential verifier. The nil legacy opener sends
-	// serve to its fail-closed browser branch before it opens any runtime.
-	return runWithServeOpener(ctx, args, nil, out, errOut)
+	return runWithBrowserConfig(ctx, args, browserStartConfig{}, out, errOut)
 }
 
-// runWithServeOpener is run's body with the serve host construction injected. The
-// seam exists for exactly one guarantee that is otherwise untestable: that
-// `carbon serve` DISPATCHES to the serve composition instead of falling through to
-// the TUI path. Production always passes openServeHost.
-func runWithServeOpener(ctx context.Context, args []string, openServe serveHostOpener, out, errOut io.Writer) int {
+// runWithBrowserConfig is the process root with product browser credentials
+// supplied by an embedding application. The stock command supplies none and
+// refuses browser serve before it opens storage or a runtime.
+func runWithBrowserConfig(ctx context.Context, args []string, browser browserStartConfig, out, errOut io.Writer) int {
 	flags, ferr := parseFlags(args)
 	if ferr != nil {
 		fmt.Fprintln(errOut, ferr)
@@ -518,13 +507,10 @@ func runWithServeOpener(ctx context.Context, args []string, openServe serveHostO
 	// warnUnconfined the TUI path below uses: this branch returns before reaching that
 	// call site, and serve exposes the selected profile's authority over HTTP.
 	if flags.serve {
-		if openServe == nil {
-			return runBrowserLifecycle(ctx, cfg, browserStartConfig{
-				Storage: carbon.ServeStorageConfig{DataDir: dataDir, DefaultTenant: "local"},
-				Address: flags.serveAddr,
-			}, out, errOut)
-		}
-		return runServeCommand(ctx, flags, cfg, dataDir, openServe, out, errOut)
+		warnUnconfined(errOut, flags.accessProfile)
+		browser.Storage.DataDir = dataDir
+		browser.Address = flags.serveAddr
+		return runBrowserLifecycle(ctx, cfg, browser, out, errOut)
 	}
 
 	// Open the session-store factory: the process-level composition root that owns the single

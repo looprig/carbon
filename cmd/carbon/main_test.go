@@ -203,35 +203,9 @@ func serveImportOffenders(root string) ([]string, error) {
 	return offenders, nil
 }
 
-// TestRigPackagesHaveNoServeAdapter is the negative half of the boundary guard.
-// Carbon's rig, agent, persistence and catalog packages all live under internal/,
-// and NONE of them may import harness's generic HTTP layer: the rig is composed
-// there, but the HTTP surface is composed over it exactly once, at the process
-// root in package main.
-//
-// SCOPE. internal/ and cmd/carbon together are the whole module (the module root
-// has no Go package), and they do not overlap. The predecessor of this guard
-// scanned the roots {"cmd/carbon", "."} joined under "../..", where "." already
-// contains cmd/carbon, so cmd/carbon was walked twice and the module-wide ban was
-// really the "." root doing all the work. Splitting the roots along the actual
-// boundary loses no coverage and drops the duplicate walk.
-//
-// This guard DELIBERATELY DIVERGES from the committed
-// docs/plans/2026-07-11-harness-rig-migration-{design,implementation}.md, which
-// prohibit serve composition outright: "Do not add one", "a SWE serve endpoint
-// (none exists today)", "no SWE serve adapter is introduced", "Do not add serve
-// code". Those documents do NOT authorise this change. Each contains only a
-// forward-looking clause describing what a hypothetical future composition would
-// have to look like -- "Future composition uses generic serve.Handler[S,O]
-// directly" (design) and "A future HTTP composition would pass the real rig to
-// generic serve.Handler[S,O] without a SWE Runner wrapper" (implementation) --
-// which constrains such a future without permitting it. `carbon serve` is that
-// future, and the reasons for building it are argued in
-// looprig/docs/plans/2026-08-27-wui-web-ui-design.md section 6, not inherited from
-// the migration docs. What survives the divergence unchanged is the part those
-// documents were actually protecting: no Carbon-specific serve.Runner adapter,
-// and no serve import below the process root. That is exactly what this test
-// still enforces.
+// Legacy Harness serve is retired from Carbon's runtime. This narrower guard
+// continues to prove that internal runtime packages import none of it; the
+// module-wide guard below covers the command as well.
 func TestRigPackagesHaveNoServeAdapter(t *testing.T) {
 	t.Parallel()
 
@@ -244,19 +218,17 @@ func TestRigPackagesHaveNoServeAdapter(t *testing.T) {
 	}
 }
 
-// TestServeCompositionLivesInCommand is the positive half of the boundary: the
-// serve composition must exist, and must exist HERE. Without it a refactor could
-// delete `carbon serve` outright, or quietly relocate it, and the negative guard
-// above would still pass.
-func TestServeCompositionLivesInCommand(t *testing.T) {
+// R1.3 retires Carbon's runtime use of Harness serve. The Factory and WUI
+// composition is independently pinned to this command by orchestration_pins_test.
+func TestNoCarbonRuntimeHarnessServeImport(t *testing.T) {
 	t.Parallel()
 
-	offenders, err := serveImportOffenders(".")
+	offenders, err := serveImportOffenders(filepath.Join("..", ".."))
 	if err != nil {
-		t.Fatalf("scan cmd/carbon: %v", err)
+		t.Fatalf("scan module: %v", err)
 	}
-	if len(offenders) == 0 {
-		t.Fatalf("no file in cmd/carbon imports %s; the serve composition is missing", serveImportPath)
+	for _, offender := range offenders {
+		t.Errorf("%s imports retired runtime %s", offender, serveImportPath)
 	}
 }
 

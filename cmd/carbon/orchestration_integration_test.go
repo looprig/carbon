@@ -182,6 +182,13 @@ func TestServeFactoryAuthenticatesBootstrapAndProductUI(t *testing.T) {
 	if untrustedResponse.Code != http.StatusForbidden || uiCalls != 1 {
 		t.Fatalf("untrusted UI origin = %d, handler calls %d", untrustedResponse.Code, uiCalls)
 	}
+	spoofedHost := httptest.NewRequest(http.MethodGet, "http://attacker.example/ui/check", nil)
+	spoofedHost.Header.Set("Authorization", "Bearer test-browser-token")
+	spoofedHostResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(spoofedHostResponse, spoofedHost)
+	if spoofedHostResponse.Code != http.StatusForbidden || uiCalls != 1 {
+		t.Fatalf("spoofed UI Host = %d, handler calls %d", spoofedHostResponse.Code, uiCalls)
+	}
 	cookieRequest := func(method, path, csrf string) *httptest.ResponseRecorder {
 		r := httptest.NewRequest(method, "http://localhost:8765"+path, strings.NewReader(`{}`))
 		r.AddCookie(&http.Cookie{Name: "carbon_session", Value: "test-browser-token"})
@@ -305,6 +312,7 @@ func TestInjectedBrowserLifecycleStartsAndStopsInOrder(t *testing.T) {
 	var out, errOut syncBuffer
 	dataDir := t.TempDir()
 	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
 	config := browserStartConfig{
 		Storage: carbon.ServeStorageConfig{DataDir: dataDir, DefaultTenant: "local"},
 		Host: carbon.ServePooledHostConfig{
@@ -330,7 +338,10 @@ func TestInjectedBrowserLifecycleStartsAndStopsInOrder(t *testing.T) {
 		})},
 	}
 	done := make(chan int, 1)
-	go func() { done <- runBrowserLifecycle(ctx, carbon.Config{HomeDir: homeDir}, config, &out, &errOut) }()
+	go func() {
+		done <- runWithBrowserConfig(ctx, []string{"serve", "--addr", "127.0.0.1:0", "--data-dir", dataDir,
+			"--access-profile", "trusted"}, config, &out, &errOut)
+	}()
 	printed := waitForSubstring(t, &out, "http://127.0.0.1:")
 	base := strings.TrimSpace(printed[strings.Index(printed, "http://"):])
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/v1/bootstrap", nil)
