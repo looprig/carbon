@@ -18,6 +18,7 @@ import (
 	harnessstore "github.com/looprig/harness/pkg/sessionstore"
 	"github.com/looprig/host/department"
 	"github.com/looprig/inference"
+	"github.com/looprig/sessionstore"
 )
 
 // PooledLauncher constructs a separate Carbon rig, access policy, gate, process
@@ -44,10 +45,41 @@ type PooledLauncher struct {
 }
 
 type pooledTenantStores struct {
-	ready  chan struct{}
-	fs     *fsstore.Store
-	stores *sessionStores
-	err    error
+	ready     chan struct{}
+	fs        *fsstore.Store
+	stores    *sessionStores
+	err       error
+	durableMu sync.Mutex
+	durable   *sessionstore.Store
+}
+
+// readPublicJournal shares the tenant's physical backend with Harness. The
+// companion SessionStore reads its legacy envelopes without taking ownership
+// of the provider; closeOwned shuts it down before closing fsstore.
+func (l *PooledLauncher) readPublicJournal(ctx context.Context, tenant sessionwire.TenantID, req sessionstore.ReadPublicJournalRequest) (sessionwire.JournalPage, error) {
+	l.mu.Lock()
+	if l.closed {
+		l.mu.Unlock()
+		return sessionwire.JournalPage{}, &StoreClosedError{}
+	}
+	l.active.Add(1)
+	l.mu.Unlock()
+	defer l.active.Done()
+	bundle, err := l.tenantStores(tenant)
+	if err != nil {
+		return sessionwire.JournalPage{}, err
+	}
+	bundle.durableMu.Lock()
+	if bundle.durable == nil {
+		backend := *bundle.fs.Backend()
+		backend.Blobs = newBoundedBlobs(backend.Blobs)
+		bundle.durable, err = sessionstore.Open(l.closeContext, &backend, sessionstore.WithLegacySingleTenant(tenant))
+	}
+	bundle.durableMu.Unlock()
+	if err != nil {
+		return sessionwire.JournalPage{}, err
+	}
+	return bundle.durable.ReadPublicJournal(ctx, req)
 }
 
 const tenantJournalDigestDomain = "looprig/carbon/tenant-journal-root/v1"
@@ -527,6 +559,11 @@ func (l *PooledLauncher) closeOwned() {
 		l.release(id, entry)
 	}
 	for _, bundle := range l.tenants {
+		if bundle.durable != nil {
+			if err := bundle.durable.Close(context.Background()); err != nil && first == nil {
+				first = err
+			}
+		}
 		if err := bundle.fs.Close(); err != nil && first == nil {
 			first = err
 		}
