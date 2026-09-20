@@ -7,8 +7,11 @@ import (
 	"github.com/looprig/carbon/browser"
 	carbon "github.com/looprig/carbon/internal/app"
 	"io"
+	"os"
 	"time"
 )
+
+const serveShutdownCeiling = time.Minute
 
 var ErrServeFactoryVerifierRequired = browser.ErrVerifierRequired
 
@@ -16,17 +19,16 @@ var ErrServeFactoryVerifierRequired = browser.ErrVerifierRequired
 // The stock binary supplies no verifier and is refused before opening storage.
 type browserStartConfig = browser.Config
 
-// runBrowserLifecycle owns the successful composition stages in start order.
-// Failed Host construction/start cleanup waits for Host v0.6's unstarted-close
-// contract; until then those failures return without closing the borrowed
-// storage provider, which the process must discard on exit.
+// runBrowserLifecycle owns successful composition stages in start order.
+// Host v0.6 CloseUnstarted releases a failed pre-publication composition;
+// the borrowed storage provider is closed only after Host has released it.
 func runBrowserLifecycle(ctx context.Context, appCfg carbon.Config, cfg browserStartConfig, out, errOut io.Writer) int {
 	cfg.Runtime = appCfg
 	server, err := browser.Start(ctx, cfg)
 	if err != nil {
 		fmt.Fprintln(errOut, "serve:", err)
 		if server != nil {
-			cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), serveShutdownCeiling)
 			defer cancel()
 			if cleanupErr := server.Stop(cleanupCtx); cleanupErr != nil {
 				fmt.Fprintln(errOut, "serve: cleanup:", cleanupErr)
@@ -39,7 +41,7 @@ func runBrowserLifecycle(ctx context.Context, appCfg carbon.Config, cfg browserS
 	if waitErr != nil && !errors.Is(waitErr, ctx.Err()) {
 		fmt.Fprintln(errOut, "serve: listener:", waitErr)
 	}
-	waitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	waitCtx, cancel := context.WithTimeout(context.Background(), serveShutdownCeiling)
 	defer cancel()
 	if err := server.Stop(waitCtx); err != nil {
 		fmt.Fprintln(errOut, "serve: cleanup:", err)
@@ -49,4 +51,31 @@ func runBrowserLifecycle(ctx context.Context, appCfg carbon.Config, cfg browserS
 		return exitFailed
 	}
 	return exitOK
+}
+
+// runWithTerminationSignals gives the first termination signal to the owned
+// lifecycle. A second signal or the ceiling invokes force while cleanup still
+// owns its resources; it never closes a provider out from under Host.
+func runWithTerminationSignals(parent context.Context, signals <-chan os.Signal, after func(time.Duration) <-chan time.Time, force func(), run func(context.Context) int) int {
+	ctx, cancel := context.WithCancel(parent)
+	defer cancel()
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-signals:
+			cancel()
+		case <-done:
+			return
+		}
+		ceiling := after(serveShutdownCeiling)
+		select {
+		case <-signals:
+			force()
+		case <-ceiling:
+			force()
+		case <-done:
+		}
+	}()
+	return run(ctx)
 }

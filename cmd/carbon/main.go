@@ -562,7 +562,10 @@ func main() {
 	// fd, or thread state exists. Wiring it from day one means no retrofit later.
 	sandbox.Init()
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	os.Exit(run(ctx, os.Args[1:], os.Stdout, os.Stderr))
+	signals := make(chan os.Signal, 2)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(signals)
+	os.Exit(runWithTerminationSignals(context.Background(), signals, time.After,
+		func() { os.Exit(exitFailed) },
+		func(ctx context.Context) int { return run(ctx, os.Args[1:], os.Stdout, os.Stderr) }))
 }

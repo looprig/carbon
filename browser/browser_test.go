@@ -30,6 +30,27 @@ func TestStopClosesListenerWhenServeWasOvertaken(t *testing.T) {
 	}
 }
 
+func TestPublicBindCancelledBeforeReadyClosesListener(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	var bound net.Listener
+	ln, err := listenReady(ctx, "127.0.0.1:0", func(_, addr string) (net.Listener, error) {
+		var bindErr error
+		bound, bindErr = net.Listen("tcp", addr)
+		cancel()
+		return bound, bindErr
+	})
+	if ln != nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled bind = (%v, %v)", ln, err)
+	}
+	if bound == nil {
+		t.Fatal("test did not bind")
+	}
+	if conn, err := net.DialTimeout("tcp", bound.Addr().String(), 100*time.Millisecond); err == nil {
+		conn.Close()
+		t.Fatal("cancelled startup retained public listener")
+	}
+}
+
 func TestStopRetriesHostBeforeClosingStorage(t *testing.T) {
 	var order []string
 	calls := 0

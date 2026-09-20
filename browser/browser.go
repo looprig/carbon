@@ -143,7 +143,7 @@ func Start(ctx context.Context, cfg Config) (*Server, error) {
 	if err := ctx.Err(); err != nil {
 		return failStart(s, err)
 	}
-	ln, err := net.Listen("tcp", cfg.Address)
+	ln, err := listenReady(ctx, cfg.Address, net.Listen)
 	if err != nil {
 		return failStart(s, err)
 	}
@@ -155,6 +155,23 @@ func Start(ctx context.Context, cfg Config) (*Server, error) {
 	// #nosec G118 -- Serve is owned by Server; Start's context only bounds startup.
 	go s.runServe(f.Serve)
 	return s, nil
+}
+
+// listenReady closes a successful bind if startup was cancelled while Listen
+// ran. Without the post-bind check Start could advertise a cancelled process.
+func listenReady(ctx context.Context, addr string, listen func(string, string) (net.Listener, error)) (net.Listener, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	ln, err := listen("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		_ = ln.Close()
+		return nil, err
+	}
+	return ln, nil
 }
 
 func (s *Server) runServe(serve func(net.Listener) error) {
