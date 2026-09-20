@@ -1,4 +1,6 @@
-package app
+//go:build integration
+
+package main
 
 import (
 	"bytes"
@@ -11,12 +13,14 @@ import (
 	"testing"
 	"time"
 
+	carbon "github.com/looprig/carbon/internal/app"
 	"github.com/looprig/core/content"
 	sessionwire "github.com/looprig/core/sessionwire/v1"
 	"github.com/looprig/factory"
 	"github.com/looprig/factory/identity"
 	"github.com/looprig/host"
 	"github.com/looprig/inference"
+	"github.com/looprig/inference/model"
 	"github.com/looprig/sessionstore"
 )
 
@@ -30,28 +34,33 @@ func (serveTestVerifier) VerifyCredential(_ context.Context, credential identity
 }
 
 func TestServeFactoryRequiresInjectedVerifier(t *testing.T) {
-	_, err := OpenServeFactory(nil, nil, ServeFactoryConfig{})
+	_, err := composeServeFactory(nil, nil, ServeFactoryConfig{})
 	if !errors.Is(err, ErrServeFactoryVerifierRequired) {
-		t.Fatalf("OpenServeFactory without verifier = %v, want verifier refusal", err)
+		t.Fatalf("composeServeFactory without verifier = %v, want verifier refusal", err)
 	}
 }
 
 func TestServeFactoryAuthenticatesBootstrapAndProductUI(t *testing.T) {
 	ctx := context.Background()
-	var created []*fakeLLM
+	modelRequests := make(chan inference.Request, 4)
 	dataDir := t.TempDir()
 	homeDir := t.TempDir()
-	stores, err := OpenServeStorage(ctx, Config{HomeDir: homeDir}, ServeStorageConfig{DataDir: dataDir, DefaultTenant: "local"},
-		WithServeInferenceClient(func() (inference.Client, ModelFactory, error) {
-			client := &fakeLLM{streamSteps: []fakeStreamStep{{chunks: []content.Chunk{&content.TextChunk{Text: "reply"}}}}}
-			created = append(created, client)
-			return client, newModelFactoryFor(testModel()), nil
+	stores, err := carbon.OpenServeStorage(ctx, carbon.Config{HomeDir: homeDir}, carbon.ServeStorageConfig{DataDir: dataDir, DefaultTenant: "local"},
+		carbon.WithServeInferenceClient(func() (inference.Client, carbon.ModelFactory, error) {
+			client := &scriptedClient{fn: func(_ int, req inference.Request) []content.Chunk {
+				select {
+				case modelRequests <- req:
+				default:
+				}
+				return []content.Chunk{&content.TextChunk{Text: "reply"}}
+			}}
+			return client, func() model.Model { return testServeModel() }, nil
 		}))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = stores.Close(context.Background()) })
-	hostService, err := OpenServePooledHost(ctx, stores, ServePooledHostConfig{
+	hostService, err := carbon.OpenServePooledHost(ctx, stores, carbon.ServePooledHostConfig{
 		ListenAddress: "127.0.0.1:0", AuthToken: "test-host-token", StorageBindingID: "carbon-local-v1",
 		Options: host.Options{HostID: "carbon-local", IsolationClass: sessionwire.HostIsolationClassCrossTenantIsolated,
 			Placement: sessionwire.HostPlacementPooled, Capacity: 2, WarmTTL: time.Minute, RegistryHeartbeat: 10 * time.Second,
@@ -95,15 +104,26 @@ func TestServeFactoryAuthenticatesBootstrapAndProductUI(t *testing.T) {
 	}
 	wrongToken := factoryCfg
 	wrongToken.HostLinkToken = "other-host-token"
-	if _, err := OpenServeFactory(stores, hostService, wrongToken); err == nil {
+	if _, err := composeServeFactory(stores, hostService, wrongToken); err == nil {
 		t.Fatal("Factory accepted a HostLink token that differs from its local Host")
 	}
 	wrongBinding := factoryCfg
 	wrongBinding.StorageBindingID = "other-binding"
-	if _, err := OpenServeFactory(stores, hostService, wrongBinding); err == nil {
+	if _, err := composeServeFactory(stores, hostService, wrongBinding); err == nil {
 		t.Fatal("Factory accepted a binding ID that differs from its local Host")
 	}
-	server, err := OpenServeFactory(stores, hostService, factoryCfg)
+	otherStores, err := carbon.OpenServeStorage(ctx, carbon.Config{HomeDir: homeDir}, carbon.ServeStorageConfig{DataDir: t.TempDir(), DefaultTenant: "local"},
+		carbon.WithServeInferenceClient(func() (inference.Client, carbon.ModelFactory, error) {
+			return &scriptedClient{fn: func(int, inference.Request) []content.Chunk { return nil }}, func() model.Model { return testServeModel() }, nil
+		}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = otherStores.Close(context.Background()) })
+	if _, err := composeServeFactory(otherStores, hostService, factoryCfg); err == nil {
+		t.Fatal("Factory accepted a Host from a different storage root")
+	}
+	server, err := composeServeFactory(stores, hostService, factoryCfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,6 +148,12 @@ func TestServeFactoryAuthenticatesBootstrapAndProductUI(t *testing.T) {
 	if got := request("/ui/check", "test-browser-token"); got.Code != http.StatusNoContent || seen.Tenant() != "local" {
 		t.Fatalf("authorized UI = %d, principal %q", got.Code, seen.Tenant())
 	}
+	if got := request("/ui/denied", "test-browser-token"); got.Code != http.StatusForbidden || uiCalls != 1 {
+		t.Fatalf("UI authorization refusal = %d, handler calls %d", got.Code, uiCalls)
+	}
+	if got := request("/", ""); got.Code != http.StatusOK || !strings.Contains(strings.ToLower(got.Body.String()), "html") {
+		t.Fatalf("official WUI asset shell = %d %q", got.Code, got.Body.String())
+	}
 	untrusted := httptest.NewRequest(http.MethodGet, "http://localhost:8765/ui/check", nil)
 	untrusted.Header.Set("Authorization", "Bearer test-browser-token")
 	untrusted.Header.Set("Origin", "https://evil.example")
@@ -135,6 +161,36 @@ func TestServeFactoryAuthenticatesBootstrapAndProductUI(t *testing.T) {
 	server.Handler().ServeHTTP(untrustedResponse, untrusted)
 	if untrustedResponse.Code != http.StatusForbidden || uiCalls != 1 {
 		t.Fatalf("untrusted UI origin = %d, handler calls %d", untrustedResponse.Code, uiCalls)
+	}
+	cookieRequest := func(method, path, csrf string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, "http://localhost:8765"+path, strings.NewReader(`{}`))
+		r.AddCookie(&http.Cookie{Name: "carbon_session", Value: "test-browser-token"})
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("Origin", "http://localhost:8765")
+		if csrf != "" {
+			r.Header.Set("X-CSRF-Token", csrf)
+		}
+		w := httptest.NewRecorder()
+		server.Handler().ServeHTTP(w, r)
+		return w
+	}
+	issued := cookieRequest(http.MethodGet, "/v1/csrf-token", "")
+	if issued.Code != http.StatusOK {
+		t.Fatalf("configured cookie CSRF mint = %d %q", issued.Code, issued.Body.String())
+	}
+	var csrf struct {
+		Token string `json:"csrf_token"`
+	}
+	if err := json.Unmarshal(issued.Body.Bytes(), &csrf); err != nil || csrf.Token == "" {
+		t.Fatalf("configured cookie minted no CSRF token: %v %q", err, issued.Body.String())
+	}
+	for _, tc := range []struct{ name, token string }{{"missing", ""}, {"bad", "invalid"}} {
+		if got := cookieRequest(http.MethodPost, "/v1/sessions", tc.token); got.Code != http.StatusForbidden {
+			t.Fatalf("%s CSRF = %d %q, want 403", tc.name, got.Code, got.Body.String())
+		}
+	}
+	if got := cookieRequest(http.MethodPost, "/v1/sessions", csrf.Token); got.Code == http.StatusForbidden {
+		t.Fatalf("valid cookie CSRF was refused: %s", got.Body.String())
 	}
 	if err := hostService.Start(ctx); err != nil {
 		t.Fatal(err)
@@ -144,7 +200,7 @@ func TestServeFactoryAuthenticatesBootstrapAndProductUI(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = server.Stop(context.Background()) })
 	create := sessionwire.CreateRequest{CommandEnvelope: sessionwire.CommandEnvelope{Version: sessionwire.CurrentWireVersion,
-		CommandID: "create-browser-1"}, SessionID: "browser-session-1", AgentID: CarbonAgentID,
+		CommandID: "create-browser-1"}, SessionID: "browser-session-1", AgentID: carbon.CarbonAgentID,
 		Blocks: json.RawMessage(`[{"type":"text","text":"hello from browser"}]`)}
 	body, err := json.Marshal(create)
 	if err != nil {
@@ -175,20 +231,13 @@ func TestServeFactoryAuthenticatesBootstrapAndProductUI(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	seenInput := false
-	for modelDeadline := time.Now().Add(5 * time.Second); !seenInput && time.Now().Before(modelDeadline); {
-		for _, client := range created {
-			streams, _ := client.capturedRequests()
-			for _, modelRequest := range streams {
-				encoded, _ := json.Marshal(modelRequest.Messages)
-				seenInput = seenInput || strings.Contains(string(encoded), "hello from browser")
-			}
+	select {
+	case modelRequest := <-modelRequests:
+		encoded, _ := json.Marshal(modelRequest.Messages)
+		if !strings.Contains(string(encoded), "hello from browser") {
+			t.Fatalf("browser's first model request = %s", encoded)
 		}
-		if !seenInput {
-			time.Sleep(10 * time.Millisecond)
-		}
-	}
-	if !seenInput {
+	case <-time.After(5 * time.Second):
 		t.Fatal("browser's first input never reached the model")
 	}
 	journal := request("/v1/sessions/browser-session-1/journal", "test-browser-token")
@@ -204,15 +253,15 @@ func TestServeFactoryAuthenticatesBootstrapAndProductUI(t *testing.T) {
 	if err := stores.Close(ctx); err != nil {
 		t.Fatal(err)
 	}
-	reopened, err := OpenServeStorage(ctx, Config{HomeDir: homeDir}, ServeStorageConfig{DataDir: dataDir, DefaultTenant: "local"},
-		WithServeInferenceClient(func() (inference.Client, ModelFactory, error) {
-			return &fakeLLM{}, newModelFactoryFor(testModel()), nil
+	reopened, err := carbon.OpenServeStorage(ctx, carbon.Config{HomeDir: homeDir}, carbon.ServeStorageConfig{DataDir: dataDir, DefaultTenant: "local"},
+		carbon.WithServeInferenceClient(func() (inference.Client, carbon.ModelFactory, error) {
+			return &scriptedClient{fn: func(int, inference.Request) []content.Chunk { return nil }}, func() model.Model { return testServeModel() }, nil
 		}))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer reopened.Close(ctx)
-	reopenedReader, err := NewServeSessionReader(reopened.ControlStore(), reopened.Launcher(), "carbon-local-v1", "v1")
+	reopenedReader, err := carbon.NewServeSessionReader(reopened.ControlStore(), reopened.Launcher(), "carbon-local-v1", "v1")
 	if err != nil {
 		t.Fatal(err)
 	}

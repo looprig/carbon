@@ -80,6 +80,7 @@ type ServeStorage struct {
 func (s *ServeStorage) ControlStore() *sessionstore.Store        { return s.control }
 func (s *ServeStorage) Launcher() *PooledLauncher                { return s.launcher }
 func (s *ServeStorage) DefaultJournalStore() *harnessstore.Store { return s.defaultJournal }
+func (s *ServeStorage) DefaultTenant() sessionwire.TenantID      { return s.defaultTenant }
 
 // ControlBackend is borrowed by Host.Compose; ServeStorage remains its owner.
 func (s *ServeStorage) ControlBackend() *storage.Composite { return s.controlBackend }

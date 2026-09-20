@@ -38,6 +38,7 @@ type ServePooledHostConfig struct {
 // Stop.
 type ServePooledHost struct {
 	service       *host.Service
+	storageOwner  *ServeStorage
 	authToken     string
 	bindingID     string
 	listener      net.Listener
@@ -64,6 +65,18 @@ type pooledHostStopAttempt struct {
 func (h *ServePooledHost) Endpoint() sessionwire.InternalEndpoint      { return h.endpoint }
 func (h *ServePooledHost) Service() *host.Service                      { return h.service }
 func (h *ServePooledHost) CompatibilityID() department.CompatibilityID { return h.compatibility }
+
+// MatchesFactoryLinkConfig checks the paired Factory's immutable binding and
+// service credential without exposing the HostLink token.
+func (h *ServePooledHost) MatchesFactoryLinkConfig(bindingID, token string) bool {
+	return h != nil && h.bindingID == bindingID && subtle.ConstantTimeCompare([]byte(h.authToken), []byte(token)) == 1
+}
+
+// UsesServeStorage pins Factory composition to this Host's actual provider,
+// rather than matching only deployment labels that another root may reuse.
+func (h *ServePooledHost) UsesServeStorage(stores *ServeStorage) bool {
+	return h != nil && stores != nil && h.storageOwner == stores
+}
 
 type serveHostAuth struct {
 	tenant sessionwire.TenantID
@@ -144,7 +157,7 @@ func OpenServePooledHost(ctx context.Context, stores *ServeStorage, cfg ServePoo
 		_ = listener.Close()
 		return nil, err
 	}
-	return &ServePooledHost{service: service, authToken: cfg.AuthToken, bindingID: cfg.StorageBindingID, listener: listener, server: &http.Server{Handler: service.Routes(), ReadHeaderTimeout: 5 * time.Second}, endpoint: endpoint, compatibility: compatibility, serveDone: make(chan error, 1)}, nil
+	return &ServePooledHost{service: service, storageOwner: stores, authToken: cfg.AuthToken, bindingID: cfg.StorageBindingID, listener: listener, server: &http.Server{Handler: service.Routes(), ReadHeaderTimeout: 5 * time.Second}, endpoint: endpoint, compatibility: compatibility, serveDone: make(chan error, 1)}, nil
 }
 
 // Start opens the internal listener before Host publishes capacity.

@@ -403,7 +403,10 @@ const serveShutdownTimeout = 5 * time.Second
 // the handler over it, serve. It NEVER constructs carbon.NewSessionStoreFactory —
 // that factory deliberately builds a fresh rig per Open, and serve needs one
 // process-lifetime rig instead.
-func runServeCommand(ctx context.Context, flags cliFlags, cfg carbon.Config, dataDir string, open serveHostOpener, out, errOut io.Writer) int {
+func runServeCommand(ctx context.Context, flags cliFlags, cfg carbon.Config, dataDir string, open serveHostOpener, out, errOut io.Writer, browser ...browserComposition) int {
+	if len(browser) != 0 {
+		return runComposedFactory(ctx, flags.serveAddr, browser[0], out, errOut)
+	}
 	// The same warning the TUI path prints, from the same single source. serve
 	// exposes the selected profile's authority over HTTP, so if either entry point
 	// could reach unconfined execution silently the warning would be decorative.
