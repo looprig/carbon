@@ -37,29 +37,31 @@ type ServePooledHostConfig struct {
 // backend and journal readers are borrowed from ServeStorage, which must outlive
 // Stop.
 type ServePooledHost struct {
-	service       *host.Service
-	storageOwner  *ServeStorage
-	authToken     string
-	bindingID     string
-	listener      net.Listener
-	server        *http.Server
-	endpoint      sessionwire.InternalEndpoint
-	compatibility department.CompatibilityID
-	serveDone     chan error
-	stateMu       sync.Mutex
-	startCalled   bool
-	stopCalled    bool
-	stopReport    host.DrainReport
-	stopErr       error
-	stopAttempt   *pooledHostStopAttempt
-	stopService   func(context.Context) (host.DrainReport, error)
+	service        *host.Service
+	storageOwner   *ServeStorage
+	authToken      string
+	bindingID      string
+	listener       net.Listener
+	server         *http.Server
+	endpoint       sessionwire.InternalEndpoint
+	compatibility  department.CompatibilityID
+	serveDone      chan error
+	stateMu        sync.Mutex
+	startCalled    bool
+	startSucceeded bool
+	serveConsumed  bool
+	stopCalled     bool
+	stopReport     host.DrainReport
+	stopErr        error
+	stopAttempt    *pooledStopAttempt
+	stopCancelHTTP context.CancelFunc
+	stopService    func(context.Context) (host.DrainReport, error)
 }
 
-type pooledHostStopAttempt struct {
-	done       chan struct{}
-	cancelHTTP context.CancelFunc
-	report     host.DrainReport
-	err        error
+type pooledStopAttempt struct {
+	done   chan struct{}
+	report host.DrainReport
+	err    error
 }
 
 func (h *ServePooledHost) Endpoint() sessionwire.InternalEndpoint      { return h.endpoint }
@@ -160,7 +162,9 @@ func OpenServePooledHost(ctx context.Context, stores *ServeStorage, cfg ServePoo
 	return &ServePooledHost{service: service, storageOwner: stores, authToken: cfg.AuthToken, bindingID: cfg.StorageBindingID, listener: listener, server: &http.Server{Handler: service.Routes(), ReadHeaderTimeout: 5 * time.Second}, endpoint: endpoint, compatibility: compatibility, serveDone: make(chan error, 1)}, nil
 }
 
-// Start opens the internal listener before Host publishes capacity.
+// Open already bound the internal listener. Start publishes Host capacity,
+// then launches the accept loop; a failed publication is disposed through
+// CloseUnstarted without ever accepting HostLink traffic.
 func (h *ServePooledHost) Start(ctx context.Context) error {
 	if h == nil {
 		return errors.New("carbon: nil pooled Host")
@@ -171,6 +175,12 @@ func (h *ServePooledHost) Start(ctx context.Context) error {
 		return errors.New("carbon: pooled Host starts once")
 	}
 	h.startCalled = true
+	if err := h.service.Start(ctx); err != nil {
+		// CloseUnstarted owns this Service's store; the caller's Stop will
+		// invoke it before the borrowed storage backend is closed.
+		return err
+	}
+	h.startSucceeded = true
 	go func() {
 		err := h.server.Serve(h.listener)
 		if errors.Is(err, http.ErrServerClosed) {
@@ -178,25 +188,11 @@ func (h *ServePooledHost) Start(ctx context.Context) error {
 		}
 		h.serveDone <- err
 	}()
-	if err := h.service.Start(ctx); err != nil {
-		report, stopErr := h.service.Stop(context.Background())
-		if stopErr != nil {
-			return errors.Join(err, stopErr)
-		}
-		h.stopReport, h.stopErr = report, errors.Join(h.server.Close(), closeListener(h.listener))
-		h.stopCalled = true
-		return errors.Join(err, h.stopErr)
-	}
 	select {
 	case err := <-h.serveDone:
+		h.serveConsumed = true
 		if err != nil {
-			report, stopErr := h.service.Stop(context.Background())
-			if stopErr != nil {
-				return errors.Join(fmt.Errorf("carbon: HostLink listener failed: %w", err), stopErr)
-			}
-			h.stopReport, h.stopErr = report, errors.Join(h.server.Close(), closeListener(h.listener))
-			h.stopCalled = true
-			return errors.Join(fmt.Errorf("carbon: HostLink listener failed: %w", err), h.stopErr)
+			return fmt.Errorf("carbon: HostLink listener failed: %w", err)
 		}
 	default:
 	}
@@ -207,9 +203,8 @@ func (h *ServePooledHost) Start(ctx context.Context) error {
 func (h *ServePooledHost) ServeDone() <-chan error { return h.serveDone }
 
 // Stop drains Host while HostLink remains reachable, then closes the listener.
-// A caller deadline ends only that caller's wait. A failed Host drain leaves
-// the listener and store owned for a later Stop retry. The owner must await a
-// successful Stop before ServeStorage.Close.
+// A caller deadline ends only that caller's wait: shutdown continues, and the
+// owner must call Stop again and await completion before ServeStorage.Close.
 // The caller must inspect DrainReport.Failures before reporting a clean drain.
 func (h *ServePooledHost) Stop(ctx context.Context) (host.DrainReport, error) {
 	if h == nil {
@@ -222,37 +217,42 @@ func (h *ServePooledHost) Stop(ctx context.Context) (host.DrainReport, error) {
 		return report, err
 	}
 	if h.stopAttempt == nil {
+		h.stopAttempt = &pooledStopAttempt{done: make(chan struct{})}
 		shutdownCtx, cancel := context.WithCancel(context.Background())
-		h.stopAttempt = &pooledHostStopAttempt{done: make(chan struct{}), cancelHTTP: cancel}
+		h.stopCancelHTTP = cancel
 		// #nosec G118 -- Host and SessionStore cleanup must outlive this caller's deadline.
-		go h.stopOwned(shutdownCtx, h.stopAttempt)
+		go h.stopOwned(shutdownCtx, cancel, h.stopAttempt)
 	}
-	attempt := h.stopAttempt
+	attempt, cancelHTTP := h.stopAttempt, h.stopCancelHTTP
 	h.stateMu.Unlock()
 	select {
 	case <-attempt.done:
 		return attempt.report, attempt.err
-	default:
-	}
-	select {
-	case <-attempt.done:
-		return attempt.report, attempt.err
 	case <-ctx.Done():
-		// Bound only this caller's wait. Host drain and store cleanup keep their
-		// own lifetime; HTTP shutdown may become forced after the drain.
-		attempt.cancelHTTP()
+		cancelHTTP()
 		return host.DrainReport{}, ctx.Err()
 	}
 }
 
-func (h *ServePooledHost) stopOwned(shutdownCtx context.Context, attempt *pooledHostStopAttempt) {
-	defer attempt.cancelHTTP()
-	stop := h.stopService
-	if stop == nil {
-		stop = h.service.Stop
+func (h *ServePooledHost) stopOwned(shutdownCtx context.Context, cancel context.CancelFunc, attempt *pooledStopAttempt) {
+	defer cancel()
+	var report host.DrainReport
+	var err error
+	if !h.startSucceeded {
+		if h.service != nil {
+			err = h.service.CloseUnstarted(context.Background())
+		}
+	} else {
+		stop := h.stopService
+		if stop == nil {
+			stop = h.service.Stop
+		}
+		report, err = stop(context.Background())
 	}
-	report, err := stop(context.Background())
-	if err != nil {
+	// A publication error is an incomplete Host Stop; keep the listener and
+	// borrowed backend alive for a later retry. A nonempty report may also
+	// retain residency or an open store and is never clean drain evidence.
+	if err != nil || len(report.Failures) != 0 {
 		h.stateMu.Lock()
 		attempt.report, attempt.err = report, err
 		h.stopAttempt = nil
@@ -271,9 +271,16 @@ func (h *ServePooledHost) stopOwned(shutdownCtx context.Context, attempt *pooled
 	if errors.Is(shutdownErr, context.Canceled) && forceErr == nil {
 		shutdownErr = nil
 	}
+	finalErr := errors.Join(shutdownErr, forceErr, closeListener(h.listener))
+	if h.startSucceeded && !h.serveConsumed && h.serveDone != nil {
+		serveErr := <-h.serveDone
+		if serveErr != nil && !errors.Is(serveErr, net.ErrClosed) {
+			finalErr = errors.Join(finalErr, serveErr)
+		}
+	}
 	h.stateMu.Lock()
-	h.stopReport, h.stopErr, h.stopCalled = report, errors.Join(err, shutdownErr, forceErr, closeListener(h.listener)), true
-	attempt.report, attempt.err = h.stopReport, h.stopErr
+	h.stopReport, h.stopErr, h.stopCalled = report, finalErr, true
+	attempt.report, attempt.err = report, finalErr
 	close(attempt.done)
 	h.stateMu.Unlock()
 }

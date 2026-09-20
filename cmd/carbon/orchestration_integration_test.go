@@ -57,9 +57,9 @@ func TestInjectedBrowserLifecycleStartsAndStopsInOrder(t *testing.T) {
 				TrustedOrigins: []string{"http://127.0.0.1"}},
 		},
 		Address: "127.0.0.1:0",
-		Runtime: browser.RuntimeConfig{ClientBuilder: func() (inference.Client, func() model.Model, error) {
+		ClientBuilder: func() (inference.Client, func() model.Model, error) {
 			return &scriptedClient{fn: func(int, inference.Request) []content.Chunk { return nil }}, func() model.Model { return testServeModel() }, nil
-		}},
+		},
 	}
 	done := make(chan int, 1)
 	go func() {

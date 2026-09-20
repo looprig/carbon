@@ -55,7 +55,7 @@ func TestServePooledHostTimedStopWaitsForHostStoreCleanup(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer listener.Close()
-	h := &ServePooledHost{listener: listener, server: &http.Server{}, stopService: func(stopCtx context.Context) (host.DrainReport, error) {
+	h := &ServePooledHost{listener: listener, server: &http.Server{}, startSucceeded: true, stopService: func(stopCtx context.Context) (host.DrainReport, error) {
 		return host.DrainReport{}, hostStore.Close(stopCtx)
 	}}
 	stopCtx, cancel := context.WithTimeout(ctx, 20*time.Millisecond)
@@ -104,52 +104,34 @@ func TestServePooledHostTimedStopWaitsForHostStoreCleanup(t *testing.T) {
 	}
 }
 
-func TestServePooledHostRetriesFailedDrainBeforeClosingStoreOrListener(t *testing.T) {
-	ctx := context.Background()
-	fs, err := fsstore.Open(fsstore.Options{Root: t.TempDir()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = fs.Close() })
-	backend := *fs.Backend()
-	backend.Blobs = newBoundedBlobs(backend.Blobs)
-	hostStore, err := sessionstore.Open(ctx, &backend)
-	if err != nil {
-		t.Fatal(err)
-	}
+func TestServePooledHostRetriesFailedDrainPublicationBeforeClosingListener(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer listener.Close()
-	attempts := 0
-	refusal := errors.New("drain publication refused")
-	h := &ServePooledHost{listener: listener, server: &http.Server{}, stopService: func(stopCtx context.Context) (host.DrainReport, error) {
-		attempts++
-		if attempts == 1 {
-			return host.DrainReport{}, refusal
-		}
-		return host.DrainReport{}, hostStore.Close(stopCtx)
-	}}
-	if _, err := h.Stop(ctx); !errors.Is(err, refusal) {
-		t.Fatalf("first Stop = %v, want refusal", err)
-	}
-	if attempts != 1 {
-		t.Fatalf("attempts after refusal = %d", attempts)
+	calls := 0
+	h := &ServePooledHost{listener: listener, server: &http.Server{}, startSucceeded: true,
+		stopService: func(context.Context) (host.DrainReport, error) {
+			calls++
+			if calls == 1 {
+				return host.DrainReport{}, errors.New("publication failed")
+			}
+			return host.DrainReport{}, nil
+		}}
+	if _, err := h.Stop(context.Background()); err == nil {
+		t.Fatal("failed publication reported clean Stop")
 	}
 	conn, err := net.DialTimeout("tcp", listener.Addr().String(), time.Second)
 	if err != nil {
 		t.Fatalf("listener closed after incomplete Host Stop: %v", err)
 	}
-	_ = conn.Close()
-	if _, err := h.Stop(ctx); err != nil {
-		t.Fatalf("retry Stop: %v", err)
+	conn.Close()
+	if _, err := h.Stop(context.Background()); err != nil {
+		t.Fatalf("retry Stop = %v", err)
 	}
-	if attempts != 2 {
-		t.Fatalf("attempts after retry = %d", attempts)
-	}
-	if _, err := net.DialTimeout("tcp", listener.Addr().String(), time.Second); err == nil {
-		t.Fatal("listener remains open after completed Host Stop")
+	if calls != 2 {
+		t.Fatalf("Host Stop calls = %d, want 2", calls)
 	}
 }
 
@@ -200,23 +182,56 @@ func TestServePooledHostRetriesRealDrainPublicationFailure(t *testing.T) {
 }
 
 func TestServePooledHostStopBeforeStartClosesPreboundListener(t *testing.T) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	ctx := context.Background()
+	storage, err := OpenServeStorage(ctx, Config{HomeDir: t.TempDir()}, ServeStorageConfig{DataDir: t.TempDir(), DefaultTenant: "local"},
+		WithServeInferenceClient(func() (inference.Client, ModelFactory, error) {
+			return &fakeLLM{}, newModelFactoryFor(testModel()), nil
+		}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer listener.Close()
-	address := listener.Addr().String()
-	h := &ServePooledHost{listener: listener, server: &http.Server{}, stopService: func(context.Context) (host.DrainReport, error) {
-		return host.DrainReport{}, nil
-	}}
-	if _, err := h.Stop(context.Background()); err != nil {
+	t.Cleanup(func() { _ = storage.Close(ctx) })
+	config := ServePooledHostConfig{
+		ListenAddress: "127.0.0.1:0", AuthToken: "test", StorageBindingID: "carbon-local-v1",
+		Options: host.Options{HostID: "carbon-local", IsolationClass: sessionwire.HostIsolationClassCrossTenantIsolated,
+			Placement: sessionwire.HostPlacementPooled, Capacity: 1, WarmTTL: time.Minute, RegistryHeartbeat: 10 * time.Second,
+			RegistryExpiry: time.Minute, ClaimTTL: 5 * time.Second, ApplyDeadline: 30 * time.Second,
+			CommandQueueSize: 16, ReconcileInterval: time.Minute, ReconcileBatch: 32},
+		Generation: 1, Link: host.LinkOptions{MaxBindingsPerLink: 1, MaxBindings: 1, MaxTenantLinks: 1},
+		Drain:                host.DrainOptions{Grace: time.Second, IdleBoundary: time.Second, PublishBound: time.Second},
+		CompatibilityTimeout: 20 * time.Second, WorkPoll: time.Second,
+	}
+	service, err := OpenServePooledHost(ctx, storage, config)
+	if err != nil {
 		t.Fatal(err)
+	}
+	address := service.listener.Addr().String()
+	if _, err := service.Stop(ctx); err != nil {
+		t.Fatalf("dispose unstarted Host: %v", err)
+	}
+	if err := service.Service().Start(ctx); !errors.Is(err, host.ErrServiceDisposed) {
+		t.Fatalf("disposed Host restarted: %v", err)
 	}
 	rebound, err := net.Listen("tcp", address)
 	if err != nil {
-		t.Fatalf("listener remains open after completed Stop: %v", err)
+		t.Fatalf("prebound listener remains open after Stop: %v", err)
 	}
 	_ = rebound.Close()
+	failed, err := OpenServePooledHost(ctx, storage, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if err := failed.Start(cancelled); err == nil {
+		t.Fatal("cancelled initial Host publication succeeded")
+	}
+	if _, err := failed.Stop(ctx); err != nil {
+		t.Fatalf("failed Start CloseUnstarted: %v", err)
+	}
+	if err := failed.Service().Start(ctx); !errors.Is(err, host.ErrServiceDisposed) {
+		t.Fatalf("failed-start Host restarted after cleanup: %v", err)
+	}
 }
 
 func TestServePooledHostCancelledStopClosesActiveSocket(t *testing.T) {

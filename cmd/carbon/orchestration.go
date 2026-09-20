@@ -20,8 +20,7 @@ type browserStartConfig = browser.Config
 // contract; until then those failures return without closing the borrowed
 // storage provider, which the process must discard on exit.
 func runBrowserLifecycle(ctx context.Context, appCfg carbon.Config, cfg browserStartConfig, out, errOut io.Writer) int {
-	cfg.Runtime.HomeDir = appCfg.HomeDir
-	cfg.Runtime.AccessProfile = string(appCfg.AccessProfile)
+	cfg.Runtime = appCfg
 	server, err := browser.Start(ctx, cfg)
 	if err != nil {
 		fmt.Fprintln(errOut, "serve:", err)

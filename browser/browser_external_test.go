@@ -56,16 +56,18 @@ func (client) Stream(context.Context, inference.Request) (*stream.StreamReader[c
 	}, nil), nil
 }
 
-func TestExternalApplicationCanStartCreateAndStop(t *testing.T) {
+func browserFixture(t *testing.T) browser.Config {
+	t.Helper()
 	const tenant = sessionwire.TenantID("local")
 	reconcile := factory.DefaultReconcileLimits()
 	reconcile.Interval = time.Second
 	cfg := browser.Config{
-		Runtime: browser.RuntimeConfig{HomeDir: t.TempDir(), AccessProfile: "trusted", ClientBuilder: func() (inference.Client, func() model.Model, error) {
+		Runtime: browser.RuntimeConfig{HomeDir: t.TempDir(), AccessProfile: "trusted"},
+		ClientBuilder: func() (inference.Client, func() model.Model, error) {
 			return client{}, func() model.Model {
 				return model.CustomModel(model.ProviderName(llm.ProviderLMStudio), model.APIFormatOpenAI, "http://localhost:1234/v1", "browser-test", model.WithTools(), model.WithContextLimits(model.ContextLimits{WindowTokens: 128_000}))
 			}, nil
-		}},
+		},
 		Storage: browser.StorageConfig{DataDir: t.TempDir(), DefaultTenant: tenant},
 		Host: browser.HostConfig{ListenAddress: "127.0.0.1:0", AuthToken: "host-token", StorageBindingID: "carbon-local-v1",
 			Options: host.Options{HostID: "browser-test-host", IsolationClass: sessionwire.HostIsolationClassCrossTenantIsolated, Placement: sessionwire.HostPlacementPooled,
@@ -81,6 +83,11 @@ func TestExternalApplicationCanStartCreateAndStop(t *testing.T) {
 				TrustedOrigins: []string{"http://127.0.0.1"}}},
 		Address: "127.0.0.1:0",
 	}
+	return cfg
+}
+
+func TestExternalApplicationCanStartCreateAndStop(t *testing.T) {
+	cfg := browserFixture(t)
 	s, err := browser.Start(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("Start = %v", err)
@@ -142,5 +149,17 @@ func TestExternalApplicationCanStartCreateAndStop(t *testing.T) {
 	case <-s.Done():
 	default:
 		t.Fatal("Done not closed after Stop")
+	}
+}
+
+func TestFactoryComposeFailureUnwindsStartedHost(t *testing.T) {
+	cfg := browserFixture(t)
+	cfg.Factory.HostLinkToken = "mismatched-token"
+	s, err := browser.Start(context.Background(), cfg)
+	if err == nil || s != nil {
+		if s != nil {
+			_ = s.Stop(context.Background())
+		}
+		t.Fatalf("Start with incompatible Factory = (%v, %v), want cleaned nil/error", s, err)
 	}
 }

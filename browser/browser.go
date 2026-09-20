@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"time"
 
 	carbon "github.com/looprig/carbon/internal/app"
 	"github.com/looprig/factory"
@@ -20,21 +21,29 @@ var ErrVerifierRequired = errors.New("carbon: browser serve requires an injected
 
 type StorageConfig = carbon.ServeStorageConfig
 type HostConfig = carbon.ServePooledHostConfig
+type ACPComposition = carbon.ACPComposition
+type PrimerCandidate = carbon.PrimerCandidate
+type AccessProfile = carbon.AccessProfile
 
-// RuntimeConfig selects the Carbon runtime and its model source. A nil
-// ClientBuilder uses Carbon's configured production model resolution.
-type RuntimeConfig struct {
-	HomeDir       string
-	AccessProfile string
-	ClientBuilder func() (inference.Client, func() model.Model, error)
-}
+const (
+	AccessReadOnly   AccessProfile = carbon.AccessReadOnly
+	AccessTrusted    AccessProfile = carbon.AccessTrusted
+	AccessUnconfined AccessProfile = carbon.AccessUnconfined
+)
+
+func ParseAccessProfile(name string) (AccessProfile, bool) { return carbon.ParseAccessProfile(name) }
+
+// RuntimeConfig preserves Carbon's complete runtime configuration. The alias
+// allows callers to select public fields without importing internal/app.
+type RuntimeConfig = carbon.Config
 
 type Config struct {
-	Runtime RuntimeConfig
-	Storage StorageConfig
-	Host    HostConfig
-	Factory FactoryConfig
-	Address string
+	Runtime       RuntimeConfig
+	Storage       StorageConfig
+	Host          HostConfig
+	Factory       FactoryConfig
+	Address       string
+	ClientBuilder func() (inference.Client, func() model.Model, error)
 }
 
 // Server retains every owned stage until an orderly shutdown completes.
@@ -47,12 +56,27 @@ type Server struct {
 	listener       net.Listener
 	serveDone      chan error
 	done           chan struct{}
-	attempt        chan struct{}
-	attemptErr     error
+	attempt        *stopAttempt
 	terminalErr    error
 	factoryStopped bool
 	hostStopped    bool
 	storageClosed  bool
+	stopFactory    func(context.Context) error
+	stopHost       func(context.Context) (host.DrainReport, error)
+	closeStorage   func(context.Context) error
+}
+
+// DrainIncompleteError means Host reported failures after Stop returned.
+// Ownership remains with Server; the backing provider is not closed.
+type DrainIncompleteError struct{ Report host.DrainReport }
+
+func (e *DrainIncompleteError) Error() string {
+	return fmt.Sprintf("carbon: Host drain incomplete (%d failures)", len(e.Report.Failures))
+}
+
+type stopAttempt struct {
+	done chan struct{}
+	err  error
 }
 
 func (s *Server) Addr() net.Addr {
@@ -69,17 +93,18 @@ func Start(ctx context.Context, cfg Config) (*Server, error) {
 	if cfg.Factory.Verifier == nil {
 		return nil, ErrVerifierRequired
 	}
-	profile, ok := carbon.ParseAccessProfile(cfg.Runtime.AccessProfile)
+	profile, ok := carbon.ParseAccessProfile(string(cfg.Runtime.AccessProfile))
 	if cfg.Runtime.AccessProfile == "" {
 		profile, ok = carbon.DefaultAccessProfile, true
 	}
 	if !ok {
 		return nil, fmt.Errorf("carbon: invalid browser access profile %q", cfg.Runtime.AccessProfile)
 	}
-	appCfg := carbon.Config{HomeDir: cfg.Runtime.HomeDir, AccessProfile: profile}
+	appCfg := cfg.Runtime
+	appCfg.AccessProfile = profile
 	var opts []carbon.ServeHostOption
-	if cfg.Runtime.ClientBuilder != nil {
-		build := cfg.Runtime.ClientBuilder
+	if cfg.ClientBuilder != nil {
+		build := cfg.ClientBuilder
 		opts = append(opts, carbon.WithServeInferenceClient(func() (inference.Client, carbon.ModelFactory, error) {
 			client, modelFactory, err := build()
 			return client, carbon.ModelFactory(modelFactory), err
@@ -100,28 +125,47 @@ func Start(ctx context.Context, cfg Config) (*Server, error) {
 	}
 	s.host = h
 	if err := h.Start(ctx); err != nil {
-		return s, err
+		return failStart(s, err)
 	}
 	f, err := composeFactory(storage, h, cfg.Factory)
 	if err != nil {
-		return s, err
+		return failStart(s, err)
 	}
 	s.factory = f
+	if err := f.Start(ctx); err != nil {
+		return failStart(s, err)
+	}
+	if err := ctx.Err(); err != nil {
+		return failStart(s, err)
+	}
 	ln, err := net.Listen("tcp", cfg.Address)
 	if err != nil {
-		return s, err
+		return failStart(s, err)
 	}
 	s.listener = ln
 	s.serveDone = make(chan error, 1)
 	// #nosec G118 -- Serve is owned by Server; Start's context only bounds startup.
-	go func() {
-		err := f.Serve(ln)
-		s.serveDone <- err
-		if err != nil {
-			_ = s.Stop(context.Background())
-		}
-	}()
+	go s.runServe(f.Serve)
 	return s, nil
+}
+
+func (s *Server) runServe(serve func(net.Listener) error) {
+	s.serveDone <- serve(s.listener)
+	// Any return from the public listener begins owner cleanup, even when no
+	// caller is waiting on Stop. The result is retained for Wait.
+	_ = s.Stop(context.Background())
+}
+
+func failStart(s *Server, cause error) (*Server, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cleanupErr := s.Stop(ctx)
+	select {
+	case <-s.Done():
+		return nil, errors.Join(cause, cleanupErr)
+	default:
+		return s, errors.Join(cause, cleanupErr)
+	}
 }
 
 // Stop starts or joins one lifecycle-owned cleanup attempt. Caller cancellation
@@ -139,18 +183,15 @@ func (s *Server) Stop(ctx context.Context) error {
 	default:
 	}
 	if s.attempt == nil {
-		s.attempt = make(chan struct{})
+		s.attempt = &stopAttempt{done: make(chan struct{})}
 		// #nosec G118 -- caller cancellation must not interrupt owned cleanup.
 		go s.cleanup(s.attempt)
 	}
-	ch := s.attempt
+	attempt := s.attempt
 	s.mu.Unlock()
 	select {
-	case <-ch:
-		s.mu.Lock()
-		err := s.attemptErr
-		s.mu.Unlock()
-		return err
+	case <-attempt.done:
+		return attempt.err
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -171,16 +212,20 @@ func (s *Server) Wait(ctx context.Context) error {
 	}
 }
 
-func (s *Server) cleanup(ch chan struct{}) {
+func (s *Server) cleanup(attempt *stopAttempt) {
 	// The listener is ours even if Factory.Stop overtakes Serve's state claim.
 	if s.listener != nil {
 		_ = s.listener.Close()
 	}
 	var diagnostic, err error
-	if !s.factoryStopped && s.factory != nil {
+	if !s.factoryStopped && (s.factory != nil || s.stopFactory != nil) {
 		// Factory's first Stop is idempotently terminal even when it reports an
 		// HTTP error. The uncancelled call has completed its sweep join.
-		diagnostic = s.factory.Stop(context.Background())
+		stop := s.stopFactory
+		if stop == nil {
+			stop = s.factory.Stop
+		}
+		diagnostic = stop(context.Background())
 		s.factoryStopped = true
 	}
 	if s.serveDone != nil {
@@ -190,27 +235,37 @@ func (s *Server) cleanup(ch chan struct{}) {
 		}
 		s.serveDone = nil
 	}
-	if !s.hostStopped && s.host != nil {
+	if !s.hostStopped && (s.host != nil || s.stopHost != nil) {
 		var report host.DrainReport
-		report, err = s.host.Stop(context.Background())
-		_ = report
+		stop := s.stopHost
+		if stop == nil {
+			stop = s.host.Stop
+		}
+		report, err = stop(context.Background())
+		if err == nil && len(report.Failures) != 0 {
+			err = &DrainIncompleteError{Report: report}
+		}
 		if err == nil {
 			s.hostStopped = true
 		}
 	}
-	if err == nil && !s.storageClosed && s.storage != nil {
-		err = s.storage.Close(context.Background())
+	if err == nil && !s.storageClosed && (s.storage != nil || s.closeStorage != nil) {
+		closeStore := s.closeStorage
+		if closeStore == nil {
+			closeStore = s.storage.Close
+		}
+		err = closeStore(context.Background())
 		if err == nil {
 			s.storageClosed = true
 		}
 	}
 	s.mu.Lock()
 	s.terminalErr = errors.Join(s.terminalErr, diagnostic)
-	s.attemptErr = errors.Join(err, diagnostic)
+	attempt.err = errors.Join(err, diagnostic)
 	if err == nil {
 		close(s.done)
 	}
 	s.attempt = nil
-	close(ch)
+	close(attempt.done)
 	s.mu.Unlock()
 }
