@@ -308,9 +308,8 @@ func TestServeStorageJournalFailureAfterInitCancellationCanReopen(t *testing.T) 
 	ctx, cancel := context.WithCancel(context.Background())
 	selected := ServeStorageConfig{DataDir: root, DefaultTenant: "local"}
 	_, err := OpenServeStorage(ctx, Config{}, selected, func(*serveHostConfig) { cancel() })
-	var init *StoreInitError
-	if !errors.As(err, &init) || init.Stage != "default-tenant-journal" {
-		t.Fatalf("cancelled initialization: %v, want journal init error", err)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled initialization: %v, want context cancellation", err)
 	}
 	if err := os.Remove(obstacle); err != nil {
 		t.Fatal(err)
@@ -320,6 +319,26 @@ func TestServeStorageJournalFailureAfterInitCancellationCanReopen(t *testing.T) 
 		t.Fatalf("reopen after cancelled initialization: %v", err)
 	}
 	if err := s.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestServeStorageNeverPublishesCancelledControlStore(t *testing.T) {
+	root := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	selected := ServeStorageConfig{DataDir: root, DefaultTenant: "local"}
+	s, err := OpenServeStorage(ctx, Config{}, selected, func(*serveHostConfig) { cancel() })
+	if s != nil || !errors.Is(err, context.Canceled) {
+		if s != nil {
+			_ = s.Close(context.Background())
+		}
+		t.Fatalf("cancelled bootstrap returned owner=%v err=%v", s != nil, err)
+	}
+	reopened, err := OpenServeStorage(context.Background(), Config{}, selected)
+	if err != nil {
+		t.Fatalf("reopen after cancellation: %v", err)
+	}
+	if err := reopened.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 }

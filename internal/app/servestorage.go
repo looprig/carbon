@@ -120,10 +120,18 @@ func OpenServeStorage(ctx context.Context, cfg Config, selected ServeStorageConf
 		_ = closeServeStorageResources(nil, control, fs.Close)
 		return nil, err
 	}
+	if err := ctx.Err(); err != nil {
+		_ = closeServeStorageResources(launcher, control, fs.Close)
+		return nil, err
+	}
 	journal, err := launcher.JournalStoreForTenant(selected.DefaultTenant)
 	if err != nil {
 		_ = closeServeStorageResources(launcher, control, fs.Close)
 		return nil, &StoreInitError{Stage: "default-tenant-journal", Cause: err}
+	}
+	if err := ctx.Err(); err != nil {
+		_ = closeServeStorageResources(launcher, control, fs.Close)
+		return nil, err
 	}
 	return &ServeStorage{controlFS: fs, control: control, launcher: launcher, defaultJournal: journal, closeProvider: fs.Close, closeDone: make(chan struct{})}, nil
 }
