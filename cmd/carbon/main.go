@@ -432,7 +432,9 @@ func runCLIWithStore(ctx context.Context, open tui.OpenAgent, banner runtime.Ban
 // os.Exit, so main stays the single exit point. ctx is the process root (signal-aware);
 // out/errOut are the list + error sinks.
 func run(ctx context.Context, args []string, out, errOut io.Writer) int {
-	return runWithServeOpener(ctx, args, openServeHost, out, errOut)
+	// The stock command has no credential verifier. The nil legacy opener sends
+	// serve to its fail-closed browser branch before it opens any runtime.
+	return runWithServeOpener(ctx, args, nil, out, errOut)
 }
 
 // runWithServeOpener is run's body with the serve host construction injected. The
@@ -516,6 +518,9 @@ func runWithServeOpener(ctx context.Context, args []string, openServe serveHostO
 	// warnUnconfined the TUI path below uses: this branch returns before reaching that
 	// call site, and serve exposes the selected profile's authority over HTTP.
 	if flags.serve {
+		if openServe == nil {
+			return runServeCommand(ctx, flags, cfg, dataDir, nil, out, errOut, browserComposition{})
+		}
 		return runServeCommand(ctx, flags, cfg, dataDir, openServe, out, errOut)
 	}
 

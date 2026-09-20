@@ -379,12 +379,6 @@ var _ serveHostAPI = (*carbon.ServeHost)(nil)
 // serveHostOpener is the app.OpenServeHost-shaped construction seam.
 type serveHostOpener func(ctx context.Context, cfg carbon.Config, dataDir string) (serveHostAPI, error)
 
-// openServeHost is the production opener. It is a thin adapter only because Go will
-// not treat a func returning *carbon.ServeHost as a func returning serveHostAPI.
-func openServeHost(ctx context.Context, cfg carbon.Config, dataDir string) (serveHostAPI, error) {
-	return carbon.OpenServeHost(ctx, cfg, dataDir)
-}
-
 // serveOptions is runServe's parsed invocation.
 type serveOptions struct{ addr string }
 
