@@ -24,18 +24,26 @@ import (
 // Each tenant owns a durable backend because Harness's journal layout marker
 // binds one backend to one tenant. A restore resolves the same backend and root.
 type PooledLauncher struct {
-	mu      sync.Mutex
-	dataDir string
-	cfg     Config
-	options serveHostConfig
-	tenants map[sessionwire.TenantID]*pooledTenantStores
-	live    map[uuid.UUID]*pooledSession
-	closed  bool
+	mu           sync.Mutex
+	dataDir      string
+	cfg          Config
+	options      serveHostConfig
+	tenants      map[sessionwire.TenantID]*pooledTenantStores
+	live         map[uuid.UUID]*pooledSession
+	reserved     map[uuid.UUID]struct{}
+	active       sync.WaitGroup
+	closeDone    chan struct{}
+	closeContext context.Context
+	closeCancel  context.CancelFunc
+	closeErr     error
+	closed       bool
 }
 
 type pooledTenantStores struct {
+	ready  chan struct{}
 	fs     *fsstore.Store
 	stores *sessionStores
+	err    error
 }
 
 const tenantJournalDigestDomain = "looprig/carbon/tenant-journal-root/v1"
@@ -64,7 +72,8 @@ func OpenPooledLauncher(_ context.Context, cfg Config, dataDir string, opts ...S
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return nil, &StoreInitError{Stage: "data-root", Cause: err}
 	}
-	return &PooledLauncher{dataDir: dataDir, cfg: cfg, options: options, tenants: make(map[sessionwire.TenantID]*pooledTenantStores), live: make(map[uuid.UUID]*pooledSession)}, nil
+	closeContext, closeCancel := context.WithCancel(context.Background())
+	return &PooledLauncher{dataDir: dataDir, cfg: cfg, options: options, tenants: make(map[sessionwire.TenantID]*pooledTenantStores), live: make(map[uuid.UUID]*pooledSession), reserved: make(map[uuid.UUID]struct{}), closeDone: make(chan struct{}), closeContext: closeContext, closeCancel: closeCancel}, nil
 }
 
 var _ SessionLauncher = (*PooledLauncher)(nil)
@@ -95,39 +104,55 @@ func (l *PooledLauncher) JournalStoreForTenant(tenant sessionwire.TenantID) (*ha
 		return nil, errors.New("carbon: nil pooled launcher")
 	}
 	l.mu.Lock()
-	defer l.mu.Unlock()
 	if l.closed {
+		l.mu.Unlock()
 		return nil, &StoreClosedError{}
 	}
-	bundle, err := l.tenantStoresLocked(tenant)
+	l.active.Add(1)
+	l.mu.Unlock()
+	defer l.active.Done()
+	bundle, err := l.tenantStores(tenant)
 	if err != nil {
 		return nil, err
 	}
 	return bundle.stores.session, nil
 }
 
-func (l *PooledLauncher) tenantStoresLocked(tenant sessionwire.TenantID) (*pooledTenantStores, error) {
+func (l *PooledLauncher) tenantStores(tenant sessionwire.TenantID) (*pooledTenantStores, error) {
 	if err := tenant.Validate(); err != nil {
 		return nil, err
 	}
+	l.mu.Lock()
 	if bundle := l.tenants[tenant]; bundle != nil {
-		return bundle, nil
+		l.mu.Unlock()
+		<-bundle.ready
+		return bundle, bundle.err
 	}
+	bundle := &pooledTenantStores{ready: make(chan struct{})}
+	l.tenants[tenant] = bundle
+	l.mu.Unlock()
 	sum := sha256.Sum256([]byte(tenantJournalDigestDomain + "\x00" + string(tenant)))
 	root := filepath.Join(l.dataDir, "tenant-journals", hex.EncodeToString(sum[:]))
 	fs, err := fsstore.Open(fsstore.Options{Root: root})
 	if err != nil {
-		return nil, &StoreInitError{Stage: "tenant-fsstore", Cause: err}
+		bundle.err = &StoreInitError{Stage: "tenant-fsstore", Cause: err}
+	} else {
+		stores, openErr := openTenantStores(fs.Backend(), tenant)
+		if openErr != nil {
+			_ = fs.Close()
+			bundle.err = openErr
+		} else {
+			stores.resourceStorage = newPersistedResourceStorageProvider(root)
+			bundle.fs, bundle.stores = fs, stores
+		}
 	}
-	stores, err := openTenantStores(fs.Backend(), tenant)
-	if err != nil {
-		_ = fs.Close()
-		return nil, err
+	l.mu.Lock()
+	if bundle.err != nil {
+		delete(l.tenants, tenant)
 	}
-	stores.resourceStorage = newPersistedResourceStorageProvider(root)
-	bundle := &pooledTenantStores{fs: fs, stores: stores}
-	l.tenants[tenant] = bundle
-	return bundle, nil
+	close(bundle.ready)
+	l.mu.Unlock()
+	return bundle, bundle.err
 }
 
 // Launch always builds session-scoped bindings. It returns the harness controller
@@ -136,11 +161,32 @@ func (l *PooledLauncher) Launch(ctx context.Context, scope LaunchScope) (session
 	if l == nil {
 		return nil, errors.New("carbon: nil pooled launcher")
 	}
+	if scope.RigSessionID.IsZero() {
+		return nil, fmt.Errorf("carbon: pooled launch needs a runtime session id")
+	}
 	l.mu.Lock()
-	defer l.mu.Unlock()
 	if l.closed {
+		l.mu.Unlock()
 		return nil, &StoreClosedError{}
 	}
+	_, live := l.live[scope.RigSessionID]
+	_, reserved := l.reserved[scope.RigSessionID]
+	if live || reserved {
+		l.mu.Unlock()
+		return nil, fmt.Errorf("carbon: runtime session %s is already live", scope.RigSessionID)
+	}
+	l.reserved[scope.RigSessionID] = struct{}{}
+	l.active.Add(1)
+	l.mu.Unlock()
+	defer func() {
+		l.mu.Lock()
+		delete(l.reserved, scope.RigSessionID)
+		l.mu.Unlock()
+		l.active.Done()
+	}()
+	launchCtx, cancel := context.WithCancel(ctx)
+	stopCloseCancel := context.AfterFunc(l.closeContext, cancel)
+	defer func() { stopCloseCancel(); cancel() }()
 	root, err := materializeSessionWorkspaceRoot(l.dataDir, scope.TenantID, scope.SessionID)
 	if err != nil {
 		return nil, err
@@ -148,13 +194,7 @@ func (l *PooledLauncher) Launch(ctx context.Context, scope LaunchScope) (session
 	if scope.WorkspaceRoot != "" && scope.WorkspaceRoot != root {
 		return nil, &ForeignWorkspaceRootError{SessionID: scope.SessionID, Want: scope.WorkspaceRoot, Served: root}
 	}
-	if scope.RigSessionID.IsZero() {
-		return nil, fmt.Errorf("carbon: pooled launch needs a runtime session id")
-	}
-	if _, exists := l.live[scope.RigSessionID]; exists {
-		return nil, fmt.Errorf("carbon: runtime session %s is already live", scope.RigSessionID)
-	}
-	bundle, err := l.tenantStoresLocked(scope.TenantID)
+	bundle, err := l.tenantStores(scope.TenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -170,7 +210,7 @@ func (l *PooledLauncher) Launch(ctx context.Context, scope LaunchScope) (session
 		if load == nil {
 			load = loadProductionModelsWithContext
 		}
-		resolved, resolveErr := resolveServeModelsAtRoot(ctx, cfg, load, loadProductionModels, root)
+		resolved, resolveErr := resolveServeModelsAtRoot(launchCtx, cfg, load, loadProductionModels, root)
 		err = resolveErr
 		if err == nil {
 			cfg, client, factory = resolved.cfg, resolved.client, resolved.factory
@@ -219,7 +259,7 @@ func (l *PooledLauncher) Launch(ctx context.Context, scope LaunchScope) (session
 	if err != nil {
 		return fail(err)
 	}
-	ctx = detachSessionLifetime(ctx)
+	ctx = detachSessionLifetime(launchCtx)
 	var controller session.SessionController
 	if scope.Restore {
 		controller, err = assembled.RestoreSession(ctx, scope.RigSessionID)
@@ -234,7 +274,14 @@ func (l *PooledLauncher) Launch(ctx context.Context, scope LaunchScope) (session
 		return fail(err)
 	}
 	entry := &pooledSession{controller: controller, access: access, mcp: mcp, credentialRuntime: credentials, credentialLease: lease}
+	l.mu.Lock()
+	if l.closed {
+		l.mu.Unlock()
+		_ = controller.Shutdown(context.Background())
+		return fail(&StoreClosedError{})
+	}
 	l.live[scope.RigSessionID] = entry
+	l.mu.Unlock()
 	if signal, ok := controller.(session.Liveness); ok {
 		go func() {
 			<-signal.Done()
@@ -266,11 +313,33 @@ func (l *PooledLauncher) Close(ctx context.Context) error {
 		return nil
 	}
 	l.mu.Lock()
-	if l.closed {
-		l.mu.Unlock()
-		return nil
+	if !l.closed {
+		l.closed = true
+		l.closeCancel()
+		// #nosec G118 -- cleanup outlives this caller's deadline so admitted
+		// launches cannot lose their journal backend while still using it.
+		go l.closeOwned()
 	}
-	l.closed = true
+	l.mu.Unlock()
+	select {
+	case <-l.closeDone:
+		return l.closeErr
+	default:
+	}
+	select {
+	case <-l.closeDone:
+		return l.closeErr
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// closeOwned waits for admitted launches and journal opens before closing their
+// stores. A dependency that ignores cancellation may retain resources; caller
+// deadlines bound waiting for Close, not this single ownership cleanup.
+func (l *PooledLauncher) closeOwned() {
+	l.active.Wait()
+	l.mu.Lock()
 	entries := make(map[uuid.UUID]*pooledSession, len(l.live))
 	for id, entry := range l.live {
 		entries[id] = entry
@@ -278,7 +347,7 @@ func (l *PooledLauncher) Close(ctx context.Context) error {
 	l.mu.Unlock()
 	var first error
 	for id, entry := range entries {
-		if err := entry.controller.Shutdown(ctx); err != nil && first == nil {
+		if err := entry.controller.Shutdown(context.Background()); err != nil && first == nil {
 			first = err
 		}
 		l.release(id, entry)
@@ -288,5 +357,6 @@ func (l *PooledLauncher) Close(ctx context.Context) error {
 			first = err
 		}
 	}
-	return first
+	l.closeErr = first
+	close(l.closeDone)
 }

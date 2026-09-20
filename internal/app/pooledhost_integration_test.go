@@ -3,6 +3,8 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -206,10 +208,43 @@ func pooledHostRPC(t *testing.T, link *websocket.Conn, id uint32, method string,
 	if err != nil {
 		t.Fatal(err)
 	}
-	pooledHostFrame(t, link, id, map[string]any{"rpc": map[string]any{"method": method, "data": json.RawMessage(data)}})
+	reply := pooledHostFrame(t, link, id, map[string]any{"rpc": map[string]any{"method": method, "data": json.RawMessage(data)}})
+	if err := pooledHostRPCAccepted(reply); err != nil {
+		t.Fatalf("HostLink %s refused: %v", method, err)
+	}
 }
 
-func pooledHostFrame(t *testing.T, link *websocket.Conn, id uint32, command map[string]any) {
+type pooledHostRPCData struct {
+	Data json.RawMessage `json:"data"`
+}
+type pooledHostReply struct {
+	ID    uint32             `json:"id"`
+	RPC   *pooledHostRPCData `json:"rpc"`
+	Error *struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+func pooledHostRPCAccepted(reply pooledHostReply) error {
+	if reply.Error != nil {
+		return fmt.Errorf("transport error %d: %s", reply.Error.Code, reply.Error.Message)
+	}
+	if reply.RPC == nil {
+		return errors.New("missing RPC reply")
+	}
+	data := strings.TrimSpace(string(reply.RPC.Data))
+	if data == "" || data == "null" {
+		return nil
+	}
+	var refusal sessionwire.HostLinkError
+	if err := json.Unmarshal(reply.RPC.Data, &refusal); err == nil {
+		return fmt.Errorf("Core refusal %s", refusal.Code)
+	}
+	return fmt.Errorf("unexpected RPC body %s", data)
+}
+
+func pooledHostFrame(t *testing.T, link *websocket.Conn, id uint32, command map[string]any) pooledHostReply {
 	t.Helper()
 	command["id"] = id
 	if err := link.WriteJSON(command); err != nil {
@@ -223,13 +258,7 @@ func pooledHostFrame(t *testing.T, link *websocket.Conn, id uint32, command map[
 		if err != nil {
 			t.Fatal(err)
 		}
-		var reply struct {
-			ID    uint32 `json:"id"`
-			Error *struct {
-				Code    int    `json:"code"`
-				Message string `json:"message"`
-			} `json:"error"`
-		}
+		var reply pooledHostReply
 		if err := json.Unmarshal(frame, &reply); err != nil {
 			t.Fatalf("frame %s: %v", frame, err)
 		}
@@ -239,6 +268,22 @@ func pooledHostFrame(t *testing.T, link *websocket.Conn, id uint32, command map[
 		if reply.Error != nil {
 			t.Fatalf("HostLink RPC %d refused: %+v", id, reply.Error)
 		}
-		return
+		return reply
+	}
+}
+
+func TestPooledHostRPCAcceptanceRejectsBareCoreRefusal(t *testing.T) {
+	refusal, err := json.Marshal(sessionwire.HostLinkError{Code: sessionwire.HostLinkErrorEpochMismatch, CurrentLeaseEpoch: 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pooledHostRPCAccepted(pooledHostReply{RPC: &pooledHostRPCData{Data: refusal}}); err == nil {
+		t.Fatalf("bare Core refusal %s was accepted", refusal)
+	}
+	if err := pooledHostRPCAccepted(pooledHostReply{RPC: &pooledHostRPCData{Data: json.RawMessage(`{}`)}}); err == nil {
+		t.Fatal("unknown nonempty RPC body was accepted")
+	}
+	if err := pooledHostRPCAccepted(pooledHostReply{RPC: &pooledHostRPCData{}}); err != nil {
+		t.Fatalf("empty RPC acceptance rejected: %v", err)
 	}
 }

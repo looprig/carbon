@@ -2,9 +2,13 @@ package app
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	sessionwire "github.com/looprig/core/sessionwire/v1"
 	"github.com/looprig/core/uuid"
@@ -173,5 +177,147 @@ func TestPooledLauncherProvidesDistinctDurableTenantJournals(t *testing.T) {
 	}
 	if _, err := reopened.JournalStoreForTenant("tenant-b"); err != nil {
 		t.Fatalf("reopen tenant-b journal: %v", err)
+	}
+}
+
+func TestPooledLauncherDoesNotSerializeOtherTenantBehindSlowLaunch(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	var calls atomic.Int32
+	launcher, err := OpenPooledLauncher(context.Background(), Config{HomeDir: t.TempDir()}, t.TempDir(),
+		WithServeInferenceClient(func() (inference.Client, ModelFactory, error) {
+			if calls.Add(1) == 1 {
+				close(entered)
+				<-release
+			}
+			return &fakeLLM{}, newModelFactoryFor(testModel()), nil
+		}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { unblock(); _ = launcher.Close(context.Background()) })
+	firstID, _ := uuid.New()
+	secondID, _ := uuid.New()
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := launcher.Launch(context.Background(), LaunchScope{TenantID: "tenant-a", SessionID: "session-a", AgentID: CarbonAgentID, RigSessionID: firstID})
+		firstDone <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first launch did not enter client construction")
+	}
+	duplicateDone := make(chan error, 1)
+	go func() {
+		_, err := launcher.Launch(context.Background(), LaunchScope{TenantID: "tenant-a", SessionID: "session-a", AgentID: CarbonAgentID, RigSessionID: firstID})
+		duplicateDone <- err
+	}()
+	select {
+	case err := <-duplicateDone:
+		if err == nil {
+			t.Fatal("second launch reused an in-flight runtime ID")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("in-flight runtime ID was not reserved promptly")
+	}
+	otherDone := make(chan error, 1)
+	go func() {
+		if _, err := launcher.JournalStoreForTenant("tenant-b"); err != nil {
+			otherDone <- err
+			return
+		}
+		_, err := launcher.Launch(context.Background(), LaunchScope{TenantID: "tenant-b", SessionID: "session-b", AgentID: CarbonAgentID, RigSessionID: secondID})
+		otherDone <- err
+	}()
+	select {
+	case err := <-otherDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("second tenant blocked behind first launch")
+	}
+	unblock()
+	select {
+	case err := <-firstDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("first launch did not finish")
+	}
+}
+
+func TestPooledLauncherCloseWaitIsBoundedWhileLaunchCleanupContinues(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	data := t.TempDir()
+	launcher, err := OpenPooledLauncher(context.Background(), Config{HomeDir: t.TempDir()}, data,
+		WithServeInferenceClient(func() (inference.Client, ModelFactory, error) {
+			close(entered)
+			<-release
+			return &fakeLLM{}, newModelFactoryFor(testModel()), nil
+		}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { unblock(); _ = launcher.Close(context.Background()) })
+	id, _ := uuid.New()
+	launchDone := make(chan error, 1)
+	go func() {
+		_, err := launcher.Launch(context.Background(), LaunchScope{TenantID: "tenant-a", SessionID: "session-a", AgentID: CarbonAgentID, RigSessionID: id})
+		launchDone <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("launch did not stall")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if err := launcher.Close(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Close wait = %v, want caller deadline", err)
+	}
+	if _, err := launcher.JournalStoreForTenant("tenant-a"); err == nil {
+		t.Fatal("closing launcher issued journal reader")
+	}
+	duplicateDone := make(chan error, 1)
+	go func() {
+		_, err := launcher.Launch(context.Background(), LaunchScope{TenantID: "tenant-b", SessionID: "other", AgentID: CarbonAgentID, RigSessionID: id})
+		duplicateDone <- err
+	}()
+	select {
+	case err := <-duplicateDone:
+		if err == nil {
+			t.Fatal("closing launcher admitted launch")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("closing launcher blocked new launch")
+	}
+	unblock()
+	select {
+	case err := <-launchDone:
+		var closed *StoreClosedError
+		if !errors.As(err, &closed) {
+			t.Fatalf("inflight launch = %v, want closed", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("inflight launch did not leave")
+	}
+	if err := launcher.Close(context.Background()); err != nil {
+		t.Fatalf("later Close did not observe cleanup: %v", err)
+	}
+	reopened, err := OpenPooledLauncher(context.Background(), Config{}, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close(context.Background()) })
+	if _, err := reopened.JournalStoreForTenant("tenant-a"); err != nil {
+		t.Fatalf("tenant journal did not reopen after final Close: %v", err)
 	}
 }
