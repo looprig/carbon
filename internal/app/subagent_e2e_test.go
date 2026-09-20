@@ -40,10 +40,13 @@ func init() {
 }
 
 func runTask6ACPPermissionHelper(postureMatrix bool) int {
-	conn := protocol.NewConn(os.Stdin, os.Stdout, protocol.ConnOptions{})
+	// NewConn starts reading immediately. Hold its first read until every
+	// handler is installed, or a fast parent can receive method-not-found for
+	// initialize before this fixture has registered it.
+	ready := make(chan struct{})
+	conn := protocol.NewConn(acpFixtureReadyReader{Reader: os.Stdin, ready: ready}, os.Stdout, protocol.ConnOptions{})
 	peer := protocol.NewClientConn(conn)
 	defer conn.Close()
-	ready := make(chan struct{})
 	var workspace string
 	var stateMu sync.Mutex
 	setWorkspace := func(root string) {
@@ -58,7 +61,6 @@ func runTask6ACPPermissionHelper(postureMatrix bool) int {
 	}
 
 	conn.Handle(string(protocol.MethodInitialize), func(context.Context, string, json.RawMessage) (any, error) {
-		<-ready
 		return protocol.InitializeResponse{ProtocolVersion: protocol.CurrentProtocolVersion}, nil
 	})
 	conn.Handle(string(protocol.MethodSessionNew), func(_ context.Context, _ string, params json.RawMessage) (any, error) {
@@ -149,6 +151,16 @@ func runTask6ACPPermissionHelper(postureMatrix bool) int {
 	close(ready)
 	<-conn.Done()
 	return 0
+}
+
+type acpFixtureReadyReader struct {
+	io.Reader
+	ready <-chan struct{}
+}
+
+func (r acpFixtureReadyReader) Read(p []byte) (int, error) {
+	<-r.ready
+	return r.Reader.Read(p)
 }
 
 func posturePermissionNewSessionResponse(sessionID protocol.SessionID) protocol.NewSessionResponse {
