@@ -530,6 +530,7 @@ func TestACPCompositionWithoutProfilesUsesManagedNativeFallback(t *testing.T) {
 	ctx := context.Background()
 	client := &managedScript{}
 	var schema string
+	var resultMu sync.Mutex
 	var result string
 	step := 0
 	client.fn = func(_ context.Context, req inference.Request) ([]content.Chunk, error) {
@@ -542,7 +543,14 @@ func TestACPCompositionWithoutProfilesUsesManagedNativeFallback(t *testing.T) {
 			step++
 			return startAgentCall("no-acp", `{"agent_type":"carbon","instructions":"do it","wait_for_response":false}`), nil
 		}
-		result = lastToolText(req)
+		// The nonblocking StartAgent also invokes this shared model client.
+		// Its request has no StartAgent tool result and may arrive after the
+		// parent's continuation; it must not erase the result under test.
+		if text := lastToolText(req); text != "" {
+			resultMu.Lock()
+			result = text
+			resultMu.Unlock()
+		}
 		return finalText("parent done"), nil
 	}
 	probe := &delegateProbe{}
@@ -586,15 +594,18 @@ func TestACPCompositionWithoutProfilesUsesManagedNativeFallback(t *testing.T) {
 			t.Errorf("ordinary native catalog schema omitted %q", field)
 		}
 	}
+	resultMu.Lock()
+	observedResult := result
+	resultMu.Unlock()
 	var queued struct {
 		AgentID string `json:"agent_id"`
 		Name    string `json:"name"`
 		State   string `json:"state"`
 	}
-	if err := json.Unmarshal([]byte(result), &queued); err != nil {
-		t.Fatalf("managed native fallback result = %q: %v", result, err)
+	if err := json.Unmarshal([]byte(observedResult), &queued); err != nil {
+		t.Fatalf("managed native fallback result = %q: %v", observedResult, err)
 	}
 	if queued.AgentID == "" || queued.Name == "" || queued.State != "working" {
-		t.Fatalf("managed native fallback result = %q, want working agent handle", result)
+		t.Fatalf("managed native fallback result = %q, want working agent handle", observedResult)
 	}
 }
