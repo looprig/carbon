@@ -293,6 +293,20 @@ and authorizer through `FactoryConfig.UIRoutes` and `AuthorizeUI`; both are
 required together. The old `ServeHost` handoff behavior remains internal to its
 legacy standalone seam and does not describe the browser API.
 
+An embedding application must also supply CSRF/trusted-origin policy and a
+separate HostLink service token. Keep HostLink internal and protect any
+non-loopback Factory endpoint with TLS. The local composition supports one
+pooled Host, not a dedicated/cloud controller. Back up the stopped control
+root, hashed `tenant-journals/` roots, layout marker, and its
+`session-workspaces/` tree together. TUI/headless may use separate workspace
+roots; browser serve has no legacy-layout migrator.
+
+Factory's object resolver deliberately reports unavailable. Carbon has no
+SessionObjectStore, object-serving route, large-tool-result capture wiring, or
+`read_tool_result` tool. Resident gate answers work, but cold AskUser
+continuation does not. Do not infer object serving from SessionStore's legacy
+`PutObject` API or infer durable AskUser continuation from gate projection.
+
 ## Collaboration MessageAgent support
 
 Carbon exposes only the existing `MessageAgent` operation to foreign ACP
