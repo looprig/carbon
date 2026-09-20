@@ -10,10 +10,11 @@ import (
 	"github.com/looprig/sessionstore"
 )
 
-// ShutdownPolicy bounds the ordered Factory admission, command observation,
-// Host drain and final cleanup phases. Zero fields derive conservative values
-// from Factory's effective reconciler limits and this Host's drain options.
-// Budgets are ceilings, not proof that a blocked applying command settled.
+// ShutdownPolicy bounds Factory quiescence and command observation. CleanupTimeout
+// reserves time for Host drain and final cleanup inside ForcedCeiling; it is not
+// a timer on owned cleanup. Zero fields derive conservative values from Factory's
+// effective limits and this Host's drain options. Budgets are ceilings, not proof
+// that a blocked applying command settled.
 type ShutdownPolicy struct {
 	QuiesceTimeout    time.Duration
 	SettlementTimeout time.Duration
@@ -44,12 +45,14 @@ func effectiveShutdownPolicy(cfg Config) (ShutdownPolicy, error) {
 	}
 	p := cfg.Shutdown
 	if p.QuiesceTimeout == 0 {
-		bound := clientLinks.CommandTimeout
-		if bound < 30*time.Second {
-			bound = 30 * time.Second
+		admission := clientLinks.CommandTimeout
+		if admission < 30*time.Second {
+			admission = 30 * time.Second
 		}
 		var err error
-		p.QuiesceTimeout, err = sumDurations(bound, 5*time.Second)
+		// Factory first joins durable admissions, then gives ClientLink
+		// shutdown a separate CommandTimeout+DemandTimeout window.
+		p.QuiesceTimeout, err = sumDurations(admission, clientLinks.CommandTimeout, clientLinks.DemandTimeout, 5*time.Second)
 		if err != nil {
 			return ShutdownPolicy{}, err
 		}

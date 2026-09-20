@@ -289,8 +289,12 @@ func TestUnexpectedPublicFailureReportsWhileHostCleanupRetries(t *testing.T) {
 		t.Fatal("Done closed during failed Host Stop")
 	default:
 	}
+	s.mu.Lock()
+	firstAttempt := s.attempt
+	s.mu.Unlock()
 	close(releaseFirst)
-	if err := s.Stop(context.Background()); err == nil {
+	<-firstAttempt.done
+	if firstAttempt.err == nil {
 		t.Fatal("first cleanup attempt reported success")
 	}
 	if err := s.Stop(context.Background()); err != nil && !errors.Is(err, want) {
