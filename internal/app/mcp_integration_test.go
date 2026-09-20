@@ -378,9 +378,22 @@ func TestMCPSessionAssemblyAttachAlwaysBindsEventPublisher(t *testing.T) {
 			if err := assembly.events.PublishEvent(ctx, ev); err != nil {
 				t.Fatalf("PublishEvent() error = %v", err)
 			}
-			calls := sess.publishedEvents()
-			if len(calls) != 1 {
-				t.Fatalf("session PublishEvent calls = %d, want 1", len(calls))
+			// BindSession can publish the MCP server's current IntegrationStatus
+			// while attach is running. That independent notice must not make the
+			// explicit forwarding assertion timing-dependent.
+			forwarded := 0
+			for _, got := range sess.publishedEvents() {
+				switch got.(type) {
+				case event.SessionActive:
+					forwarded++
+				case event.IntegrationStatus:
+					// Current server status may arrive before or after the probe.
+				default:
+					t.Fatalf("unexpected published event %T", got)
+				}
+			}
+			if forwarded != 1 {
+				t.Fatalf("forwarded SessionActive events = %d, want 1", forwarded)
 			}
 		})
 	}
