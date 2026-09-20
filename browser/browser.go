@@ -156,6 +156,9 @@ func Start(ctx context.Context, cfg Config) (*Server, error) {
 	if err := startFactory(ctx, s); err != nil {
 		return failStart(s, err)
 	}
+	s.quiesceFactory = f.Quiesce
+	s.pendingReader = storage.ControlStore()
+	s.pendingTenant = cfg.Factory.DefaultTenant
 	if err := ctx.Err(); err != nil {
 		return failStart(s, err)
 	}
@@ -359,7 +362,7 @@ func (s *Server) cleanup(attempt *stopAttempt) {
 	}
 	if s.serveDone != nil {
 		serveErr := <-s.serveDone
-		if serveErr != nil && !errors.Is(serveErr, factory.ErrServerStopped) && !errors.Is(serveErr, net.ErrClosed) {
+		if serveErr != nil && !errors.Is(serveErr, factory.ErrServerStopped) && !errors.Is(serveErr, factory.ErrServerQuiesced) && !errors.Is(serveErr, net.ErrClosed) {
 			diagnostic = errors.Join(diagnostic, serveErr)
 		}
 		s.serveDone = nil

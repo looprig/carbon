@@ -118,3 +118,18 @@ func TestFactoryStartFailureWithdrawsHostAndReleasesOwners(t *testing.T) {
 		t.Fatalf("Stop reopened server: %v", err)
 	}
 }
+
+func TestSuccessfulStartWiresFactoryAdmissionBoundaryToShutdown(t *testing.T) {
+	cfg := factoryStartFailureFixture(t)
+	s, err := Start(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Stop(context.Background()) }()
+	if s.quiesceFactory == nil || s.pendingReader != s.storage.ControlStore() || s.pendingTenant != cfg.Factory.DefaultTenant {
+		t.Fatal("successful Factory Start did not wire quiescence and durable pending observation")
+	}
+	if err := s.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
