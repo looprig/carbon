@@ -1,0 +1,153 @@
+package app
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"path/filepath"
+	"sync"
+
+	sessionwire "github.com/looprig/core/sessionwire/v1"
+	"github.com/looprig/fsstore"
+	harnessstore "github.com/looprig/harness/pkg/sessionstore"
+	"github.com/looprig/sessionstore"
+)
+
+// ServeStoreLayout is the explicit layout of Carbon's control SessionStore.
+// An empty value selects tenant-v1. The historical layout is recognized but
+// browser composition refuses it until a stopped-store migration exists.
+type ServeStoreLayout string
+
+const (
+	ServeStoreLayoutTenantV1           ServeStoreLayout = "tenant-v1"
+	ServeStoreLayoutLegacySingleTenant ServeStoreLayout = "legacy-single-tenant-v1"
+)
+
+type ServeStorageConfig struct {
+	DataDir       string
+	DefaultTenant sessionwire.TenantID
+	Layout        ServeStoreLayout
+}
+
+type ServeStorageConfigError struct {
+	Field string
+	Cause error
+}
+
+func (e *ServeStorageConfigError) Error() string {
+	return fmt.Sprintf("carbon: invalid serve storage %s: %v", e.Field, e.Cause)
+}
+func (e *ServeStorageConfigError) Unwrap() error { return e.Cause }
+
+// ServeStoreLayoutMismatchError preserves SessionStore's typed marker cause.
+type ServeStoreLayoutMismatchError struct {
+	Layout ServeStoreLayout
+	Tenant sessionwire.TenantID
+	Cause  error
+}
+
+func (e *ServeStoreLayoutMismatchError) Error() string {
+	return fmt.Sprintf("carbon: control store layout %q for tenant %q disagrees with persisted marker: %v", e.Layout, e.Tenant, e.Cause)
+}
+func (e *ServeStoreLayoutMismatchError) Unwrap() error { return e.Cause }
+
+// ServeLegacyCompatibilityError reports an affirmative legacy request that
+// browser composition cannot yet serve. The TUI legacy path remains available.
+type ServeLegacyCompatibilityError struct{}
+
+func (*ServeLegacyCompatibilityError) Error() string {
+	return "carbon: browser serve cannot open legacy-single-tenant-v1 until stopped-store migration is supported"
+}
+
+// ServeStorage owns separate control and harness journal stores under one
+// configured data root. The control store uses the root's own fsstore layout;
+// tenant journals use PooledLauncher's hashed child roots. Host must stop before
+// Close, so its journal readers never outlive these backends.
+type ServeStorage struct {
+	mu             sync.Mutex
+	closed         bool
+	controlFS      *fsstore.Store
+	control        *sessionstore.Store
+	launcher       *PooledLauncher
+	defaultJournal *harnessstore.Store
+}
+
+func (s *ServeStorage) ControlStore() *sessionstore.Store        { return s.control }
+func (s *ServeStorage) Launcher() *PooledLauncher                { return s.launcher }
+func (s *ServeStorage) DefaultJournalStore() *harnessstore.Store { return s.defaultJournal }
+
+// OpenServeStorage validates layout before opening anything. Legacy browser
+// composition is explicitly refused; tenant-v1 against an old marker aborts
+// before creating a tenant journal or any runtime dependency.
+func OpenServeStorage(ctx context.Context, cfg Config, selected ServeStorageConfig, opts ...ServeHostOption) (*ServeStorage, error) {
+	if !filepath.IsAbs(selected.DataDir) || filepath.Clean(selected.DataDir) != selected.DataDir {
+		return nil, &ServeStorageConfigError{Field: "data_dir", Cause: ErrNoDataRoot}
+	}
+	if err := selected.DefaultTenant.Validate(); err != nil {
+		return nil, &ServeStorageConfigError{Field: "default_tenant", Cause: err}
+	}
+	layout := selected.Layout
+	if layout == "" {
+		layout = ServeStoreLayoutTenantV1
+	}
+	if layout != ServeStoreLayoutTenantV1 && layout != ServeStoreLayoutLegacySingleTenant {
+		return nil, &ServeStorageConfigError{Field: "layout", Cause: fmt.Errorf("unsupported layout %q", layout)}
+	}
+	if layout == ServeStoreLayoutLegacySingleTenant {
+		return nil, &ServeLegacyCompatibilityError{}
+	}
+	fs, err := fsstore.Open(fsstore.Options{Root: selected.DataDir})
+	if err != nil {
+		return nil, &StoreInitError{Stage: "control-fsstore", Cause: err}
+	}
+	backend := *fs.Backend()
+	backend.Blobs = newBoundedBlobs(backend.Blobs)
+	// No legacy option: SessionStore's unmarked default is tenant-v1, and its
+	// persisted marker comparison refuses a historical legacy root.
+	control, err := sessionstore.Open(ctx, &backend)
+	if err != nil {
+		_ = fs.Close()
+		var marker *sessionstore.KeyspaceError
+		if errors.As(err, &marker) && marker.Code == sessionstore.KeyspaceLayoutMismatch {
+			return nil, &ServeStoreLayoutMismatchError{Layout: layout, Tenant: selected.DefaultTenant, Cause: err}
+		}
+		return nil, &StoreInitError{Stage: "control-sessionstore", Cause: err}
+	}
+	launcher, err := OpenPooledLauncher(ctx, cfg, selected.DataDir, opts...)
+	if err != nil {
+		_ = control.Close(ctx)
+		_ = fs.Close()
+		return nil, err
+	}
+	journal, err := launcher.JournalStoreForTenant(selected.DefaultTenant)
+	if err != nil {
+		_ = launcher.Close(ctx)
+		_ = control.Close(ctx)
+		_ = fs.Close()
+		return nil, &StoreInitError{Stage: "default-tenant-journal", Cause: err}
+	}
+	return &ServeStorage{controlFS: fs, control: control, launcher: launcher, defaultJournal: journal}, nil
+}
+
+func (s *ServeStorage) Close(ctx context.Context) error {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return nil
+	}
+	s.closed = true
+	var errs []error
+	if err := s.launcher.Close(ctx); err != nil {
+		errs = append(errs, err)
+	}
+	if err := s.control.Close(ctx); err != nil {
+		errs = append(errs, err)
+	}
+	if err := s.controlFS.Close(); err != nil {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
+}
