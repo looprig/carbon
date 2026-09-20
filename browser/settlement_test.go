@@ -90,6 +90,17 @@ func TestScanOutstandingRefusesQueryFailureAndCancellation(t *testing.T) {
 	}
 }
 
+func TestScanOutstandingRejectsCancelledContextEvenIfReaderReturnsEmpty(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	p := &pendingPages{shards: 1}
+	_, err := scanOutstanding(ctx, p, "local", 2)
+	var incomplete *PendingObservationError
+	if !errors.As(err, &incomplete) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled empty scan = %v", err)
+	}
+}
+
 func TestWaitOutstandingKeepsNonterminalCommandsUntilCleanPass(t *testing.T) {
 	p := &pendingPages{shards: 1, pages: map[int][]sessionstore.DispositionDueCommandPage{0: {{Commands: []sessionstore.DispositionInboxEntry{pendingFor("local")}}}}}
 	waits := 0

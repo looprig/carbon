@@ -49,6 +49,9 @@ func scanOutstanding(ctx context.Context, reader outstandingReader, tenant sessi
 	for shard := 0; shard < reader.ControlShards(); shard++ {
 		cursor := sessionwire.Cursor("")
 		for {
+			if err := ctx.Err(); err != nil {
+				return count, &PendingObservationError{Cause: err}
+			}
 			if pages >= pageBudget {
 				return count, &PendingObservationError{Cause: errors.New("page budget exhausted")}
 			}
@@ -59,6 +62,9 @@ func scanOutstanding(ctx context.Context, reader outstandingReader, tenant sessi
 			}
 			page, err := reader.ListDueDispositionCommands(ctx, req)
 			if err != nil {
+				return count, &PendingObservationError{Cause: err}
+			}
+			if err := ctx.Err(); err != nil {
 				return count, &PendingObservationError{Cause: err}
 			}
 			if page.Unreadable != 0 {
@@ -74,6 +80,9 @@ func scanOutstanding(ctx context.Context, reader outstandingReader, tenant sessi
 			}
 			cursor = page.NextCursor
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return count, &PendingObservationError{Cause: err}
 	}
 	return count, nil
 }
