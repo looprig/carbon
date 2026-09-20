@@ -9,11 +9,12 @@ tool (
 )
 
 require (
+	github.com/gorilla/websocket v1.5.3
 	github.com/looprig/acp v0.3.2
 	github.com/looprig/classifiers v0.2.1
 	github.com/looprig/core v0.11.0
 	github.com/looprig/credentials v0.2.0
-	github.com/looprig/factory v0.5.0
+	github.com/looprig/factory v0.6.0
 	github.com/looprig/foreignloops v0.3.2
 	github.com/looprig/fsstore v0.5.1
 	github.com/looprig/harness v0.36.0
@@ -23,6 +24,7 @@ require (
 	github.com/looprig/mcp v0.7.1
 	github.com/looprig/sandbox v0.9.0
 	github.com/looprig/secrets v0.2.0
+	github.com/looprig/sessionstore v0.12.0
 	github.com/looprig/storage v0.6.1
 	github.com/looprig/tools v0.12.0
 	github.com/looprig/tui v0.21.0
@@ -81,12 +83,10 @@ require (
 	github.com/googleapis/gax-go/v2 v2.24.0 // indirect
 	github.com/gookit/color v1.6.1 // indirect
 	github.com/gorilla/css v1.0.1 // indirect
-	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/invopop/jsonschema v0.14.0 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/jpillora/backoff v1.0.0 // indirect
 	github.com/landlock-lsm/go-landlock v0.9.0 // indirect
-	github.com/looprig/sessionstore v0.12.0 // indirect
 	github.com/lucasb-eyer/go-colorful v1.4.1 // indirect
 	github.com/mailru/easyjson v0.9.2 // indirect
 	github.com/mattn/go-runewidth v0.0.27 // indirect
