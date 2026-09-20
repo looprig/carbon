@@ -38,6 +38,8 @@ type ServePooledHostConfig struct {
 // Stop.
 type ServePooledHost struct {
 	service       *host.Service
+	authToken     string
+	bindingID     string
 	listener      net.Listener
 	server        *http.Server
 	endpoint      sessionwire.InternalEndpoint
@@ -142,7 +144,7 @@ func OpenServePooledHost(ctx context.Context, stores *ServeStorage, cfg ServePoo
 		_ = listener.Close()
 		return nil, err
 	}
-	return &ServePooledHost{service: service, listener: listener, server: &http.Server{Handler: service.Routes(), ReadHeaderTimeout: 5 * time.Second}, endpoint: endpoint, compatibility: compatibility, serveDone: make(chan error, 1)}, nil
+	return &ServePooledHost{service: service, authToken: cfg.AuthToken, bindingID: cfg.StorageBindingID, listener: listener, server: &http.Server{Handler: service.Routes(), ReadHeaderTimeout: 5 * time.Second}, endpoint: endpoint, compatibility: compatibility, serveDone: make(chan error, 1)}, nil
 }
 
 // Start opens the internal listener before Host publishes capacity.
