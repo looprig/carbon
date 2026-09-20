@@ -43,6 +43,9 @@ var (
 	_ = host.Compose
 	_ = department.New
 	_ = department.NewRigTarget
+	// Host v0.6: failed composition can dispose a service before Start without
+	// closing the caller's borrowed storage backend.
+	_ = (*host.Service).CloseUnstarted
 	_ department.LaunchTarget
 	_ department.Runtime
 	// The optional capability a product runtime MUST implement. Naming it here
@@ -97,7 +100,7 @@ func looprigImportOffenders(root, prefix string) ([]string, error) {
 // their interfaces.
 //
 // The runbook's narrower phrasing is "internal Carbon runtime packages do not
-// import Factory HTTP/Centrifuge adapters", and on released factory v0.5.0 that
+// import Factory HTTP/Centrifuge adapters", and on released factory v0.6.0 that
 // rule collapses into this one: the HTTP api, routing, realtime and placement
 // packages are all under factory/internal, so they are UNREACHABLE from Carbon by
 // construction. Asserting the whole module is therefore the strictly stronger rule

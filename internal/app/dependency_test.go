@@ -158,8 +158,8 @@ func TestOrchestrationPinsAreTheReleasedOnes(t *testing.T) {
 			"runtimecommand.Kind names five kinds. Below it a create and a restore are refused AFTER the attempt is durable and the session's whole command stream wedges",
 		},
 		{
-			"github.com/looprig/host", "v0.5.0",
-			"the release that decodes a create's body. host v0.4.0 + harness v0.36.0 is not a supported pair, and a v0.4.0 Host must never share a pool with a v0.5.0 one",
+			"github.com/looprig/host", "v0.6.0",
+			"the release that safely disposes an unstarted Host and prechecks malformed creates before a durable attempt; Carbon's browser lifecycle relies on that unstarted-close contract",
 		},
 		{
 			"github.com/looprig/factory", "v0.6.0",
