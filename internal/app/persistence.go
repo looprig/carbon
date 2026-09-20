@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/looprig/carbon/internal/catalog/carbon"
+	sessionwire "github.com/looprig/core/sessionwire/v1"
 	"github.com/looprig/core/uuid"
 	"github.com/looprig/fsstore"
 	"github.com/looprig/harness/pkg/loop"
@@ -108,6 +109,14 @@ type sessionStores struct {
 // original (fsstore returns its own *storage.Composite from Backend()), and mutating it
 // in place would reach back into the provider's state.
 func openStores(backend *storage.Composite) (*sessionStores, error) {
+	return openStoresWithOptions(backend)
+}
+
+func openTenantStores(backend *storage.Composite, tenant sessionwire.TenantID) (*sessionStores, error) {
+	return openStoresWithOptions(backend, sessionstore.WithTenant(tenant))
+}
+
+func openStoresWithOptions(backend *storage.Composite, options ...sessionstore.Option) (*sessionStores, error) {
 	if backend == nil {
 		return nil, &StoreInitError{Stage: "sessionstore", Cause: errors.New("nil storage composite")}
 	}
@@ -115,7 +124,7 @@ func openStores(backend *storage.Composite) (*sessionStores, error) {
 	adapted.Blobs = newBoundedBlobs(backend.Blobs)
 	backend = &adapted
 
-	sessionStore, err := sessionstore.Open(backend)
+	sessionStore, err := sessionstore.Open(backend, options...)
 	if err != nil {
 		return nil, &StoreInitError{Stage: "sessionstore", Cause: err}
 	}
@@ -627,6 +636,17 @@ type resolvedProductionModels struct {
 // as long as it holds the client. Every failure path after the begin releases it
 // here, so an error return never leaves an admission outstanding.
 func resolveServeModels(ctx context.Context, cfg Config, loadWithContext productionModelsContextLoader, load productionModelsLoader) (resolvedProductionModels, error) {
+	return resolveServeModelsConfigured(ctx, cfg, loadWithContext, load, "")
+}
+
+func resolveServeModelsAtRoot(ctx context.Context, cfg Config, loadWithContext productionModelsContextLoader, load productionModelsLoader, root string) (resolvedProductionModels, error) {
+	if !filepath.IsAbs(root) || filepath.Clean(root) != root {
+		return resolvedProductionModels{}, &WorkspaceRootError{Cause: errors.New("ACP workspace root must be a clean absolute path")}
+	}
+	return resolveServeModelsConfigured(ctx, cfg, loadWithContext, load, root)
+}
+
+func resolveServeModelsConfigured(ctx context.Context, cfg Config, loadWithContext productionModelsContextLoader, load productionModelsLoader, root string) (resolvedProductionModels, error) {
 	home, err := looprigHome(cfg)
 	if err != nil {
 		return resolvedProductionModels{}, err
@@ -673,7 +693,11 @@ func resolveServeModels(ctx context.Context, cfg Config, loadWithContext product
 	cfg.PrimerEfforts = append([]model.Effort(nil), configured.PrimerEfforts...)
 	cfg.PrimerCandidates = append([]PrimerCandidate(nil), configured.PrimerCandidates...)
 	cfg.DelegateModels = delegateModelsFrom(configured.ACP)
-	cfg, err = withProductionACPChildren(ctx, cfg, configured)
+	if root == "" {
+		cfg, err = withProductionACPChildren(ctx, cfg, configured)
+	} else {
+		cfg, err = withProductionACPChildrenAtRoot(ctx, cfg, configured, root)
+	}
 	if err != nil {
 		return fail(err)
 	}

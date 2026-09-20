@@ -116,8 +116,9 @@ func CarbonCompatibilityID(cfg Config) department.CompatibilityID {
 // ServeHostLauncher places every session over one root using
 // rig.WithExclusiveWorkspace, whose root lease conflicts even within one process.
 // Advertising a pooled seat for it would leave Factory selecting a Host that
-// cannot launch the session. PooledLauncher instead creates one durable root and
-// one rig per session. NewCarbonDepartment reads that launcher's capability and
+// cannot launch the session. PooledLauncher instead creates one durable workspace
+// root and rig per session, with a separate journal backend per tenant.
+// NewCarbonDepartment reads that launcher's capability and
 // advertises pooling only for it.
 //
 // # The rest

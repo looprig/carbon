@@ -66,6 +66,14 @@ type ACPNativeAuthProbe struct {
 }
 
 func withProductionACPChildren(ctx context.Context, cfg Config, configured productionModels) (Config, error) {
+	return withProductionACPChildrenConfigured(ctx, cfg, configured, "")
+}
+
+func withProductionACPChildrenAtRoot(ctx context.Context, cfg Config, configured productionModels, root string) (Config, error) {
+	return withProductionACPChildrenConfigured(ctx, cfg, configured, root)
+}
+
+func withProductionACPChildrenConfigured(ctx context.Context, cfg Config, configured productionModels, root string) (Config, error) {
 	collabExecutable := ""
 	if cfg.CollabMCPExecutable != "" {
 		resolved, err := resolveCollabMCPExecutable(cfg.CollabMCPExecutable)
@@ -74,7 +82,13 @@ func withProductionACPChildren(ctx context.Context, cfg Config, configured produ
 		}
 		collabExecutable = resolved
 	}
-	composition, err := newProductionACPCompositionWithCollabRequired(ctx, cfg.AccessProfile, configured, collabExecutable, true)
+	var composition *ACPComposition
+	var err error
+	if root == "" {
+		composition, err = newProductionACPCompositionWithCollabRequired(ctx, cfg.AccessProfile, configured, collabExecutable, true)
+	} else {
+		composition, err = newProductionACPCompositionWithCollabRequiredAtRoot(ctx, cfg.AccessProfile, configured, collabExecutable, true, root)
+	}
 	if err != nil {
 		return Config{}, err
 	}
@@ -94,13 +108,20 @@ func newProductionACPCompositionWithPreflight(_ context.Context, accessProfile A
 }
 
 func newProductionACPCompositionWithCollabRequired(_ context.Context, accessProfile AccessProfile, configured productionModels, collabExecutable string, requireCollabMCP bool) (*ACPComposition, error) {
-	effectiveProfile, err := normalizeAccessProfile(accessProfile)
-	if err != nil {
+	if _, err := normalizeAccessProfile(accessProfile); err != nil {
 		return nil, errACPAccessProfileUnavailable
 	}
 	root, err := os.Getwd()
 	if err != nil {
 		return nil, fmt.Errorf("carbon: resolve ACP workspace root: %w", err)
+	}
+	return newProductionACPCompositionWithCollabRequiredAtRoot(context.Background(), accessProfile, configured, collabExecutable, requireCollabMCP, root)
+}
+
+func newProductionACPCompositionWithCollabRequiredAtRoot(_ context.Context, accessProfile AccessProfile, configured productionModels, collabExecutable string, requireCollabMCP bool, root string) (*ACPComposition, error) {
+	effectiveProfile, err := normalizeAccessProfile(accessProfile)
+	if err != nil {
+		return nil, errACPAccessProfileUnavailable
 	}
 	catalog, err := CompileAgentRuntimeCatalog(AgentRuntimeCatalogInput{
 		GatewayTargets: configured.ACP,

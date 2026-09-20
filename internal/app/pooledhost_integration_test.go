@@ -2,9 +2,15 @@ package app
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
+	"github.com/looprig/core/content"
 	sessionwire "github.com/looprig/core/sessionwire/v1"
 	"github.com/looprig/core/uuid"
 	"github.com/looprig/host"
@@ -28,7 +34,7 @@ func TestRealPooledHostHoldsTwoCarbonTenantsConcurrently(t *testing.T) {
 	ctx := context.Background()
 	launcher, err := OpenPooledLauncher(ctx, Config{HomeDir: t.TempDir()}, t.TempDir(),
 		WithServeInferenceClient(func() (inference.Client, ModelFactory, error) {
-			return &fakeLLM{}, newModelFactoryFor(testModel()), nil
+			return &fakeLLM{streamSteps: []fakeStreamStep{{chunks: []content.Chunk{&content.TextChunk{Text: "reply"}}}}}, newModelFactoryFor(testModel()), nil
 		}))
 	if err != nil {
 		t.Fatal(err)
@@ -53,23 +59,30 @@ func TestRealPooledHostHoldsTwoCarbonTenantsConcurrently(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = other.Close(ctx) })
 	journalStores := make(map[host.EvidenceKey]sessionstore.DispositionEvidenceReader)
+	bindings := make(map[sessionwire.TenantID]sessionstore.SessionBinding)
 	for _, tenant := range []sessionwire.TenantID{"tenant-a", "tenant-b"} {
 		id, err := uuid.New()
 		if err != nil {
 			t.Fatal(err)
 		}
 		now := time.Now().UTC()
+		binding := sessionstore.SessionBinding{StorageBindingID: "carbon-test", BindingVersion: "v1", RuntimeSessionID: id.String(), ProtocolMode: sessionstore.ProtocolModeDisposition}
+		bindings[tenant] = binding
 		_, _, err = other.CreateCatalogEntry(ctx, sessionstore.CreateCatalogEntryRequest{
 			TenantID: tenant, SessionID: "same-session-name", AgentID: CarbonAgentID,
 			RuntimeCompatibilityID: string(compatibility), CreatedAt: now, LastActiveAt: now,
 			State: sessionwire.SessionStateRunning, Residency: sessionwire.SessionResidencyCold,
 			DesiredPlacement: sessionwire.HostPlacementPooled, IdempotencyKey: "create-" + string(tenant),
-			Binding: sessionstore.SessionBinding{StorageBindingID: "carbon-test", BindingVersion: "v1", RuntimeSessionID: id.String(), ProtocolMode: sessionstore.ProtocolModeDisposition},
+			Binding: binding,
 		})
 		if err != nil {
 			t.Fatalf("seed %s: %v", tenant, err)
 		}
-		journalStores[host.EvidenceKey{TenantID: tenant, StorageBindingID: "carbon-test"}] = launcher.stores.session
+		journal, err := launcher.JournalStoreForTenant(tenant)
+		if err != nil {
+			t.Fatalf("journal for %s: %v", tenant, err)
+		}
+		journalStores[host.EvidenceKey{TenantID: tenant, StorageBindingID: "carbon-test"}] = journal
 	}
 	blueprint := host.Composition{
 		Options: host.Options{HostID: "pooled-carbon", InternalEndpoint: "ws://127.0.0.1:7100", IsolationClass: sessionwire.HostIsolationClassCrossTenantIsolated,
@@ -113,5 +126,119 @@ func TestRealPooledHostHoldsTwoCarbonTenantsConcurrently(t *testing.T) {
 	}
 	if residences[0].TenantID == residences[1].TenantID {
 		t.Fatal("two residences name one tenant")
+	}
+	server := httptest.NewServer(service.Handler())
+	defer server.Close()
+	for _, resident := range residences {
+		tenant := resident.TenantID
+		commandID := sessionwire.CommandID("create-" + string(tenant))
+		request := sessionwire.CreateRequest{CommandEnvelope: sessionwire.CommandEnvelope{Version: sessionwire.CurrentWireVersion, CommandID: commandID},
+			SessionID: resident.SessionID, AgentID: CarbonAgentID, Blocks: json.RawMessage(`[{"type":"text","text":"hello"}]`)}
+		payload, err := json.Marshal(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		runtimeCommand, err := uuid.New()
+		if err != nil {
+			t.Fatal(err)
+		}
+		now := time.Now().UTC()
+		if _, _, err := other.AdmitDispositionCommand(ctx, sessionstore.AdmitDispositionCommandRequest{
+			TenantID: tenant, SessionID: resident.SessionID, CommandID: commandID, Binding: bindings[tenant],
+			ProposedRuntimeCommandID: sessionstore.RuntimeCommandID(runtimeCommand.String()), Kind: "create", Payload: payload,
+			AcceptedAt: now, ApplyDeadline: now.Add(time.Minute),
+		}); err != nil {
+			t.Fatalf("admit %s: %v", tenant, err)
+		}
+		link := dialPooledHostLink(t, server.URL, tenant)
+		bind := sessionwire.HostLinkBindRequest{Version: sessionwire.CurrentWireVersion, TenantID: tenant, SessionID: resident.SessionID,
+			HostID: "pooled-carbon", HostGeneration: 1, LeaseEpoch: resident.LeaseEpoch,
+			RuntimeCompatibilityID: string(compatibility), IdempotencyKey: "bind-" + string(tenant)}
+		pooledHostRPC(t, link, 2, sessionwire.HostLinkMethodBind, bind)
+		pooledHostRPC(t, link, 3, sessionwire.HostLinkChannel(tenant, resident.SessionID), sessionwire.HostLinkCommandDelivery{CommandID: commandID})
+		_ = link.Close()
+		var entry sessionstore.DispositionInboxEntry
+		deadline := time.Now().Add(15 * time.Second)
+		for {
+			entry, err = other.GetDispositionCommand(ctx, sessionstore.GetDispositionCommandRequest{TenantID: tenant, SessionID: resident.SessionID, CommandID: commandID})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if entry.Record.State == sessionstore.InboxStateApplied || time.Now().After(deadline) {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		if entry.Record.State != sessionstore.InboxStateApplied {
+			t.Fatalf("%s command state %s, want applied", tenant, entry.Record.State)
+		}
+		if entry.Record.Attempt == nil {
+			t.Fatalf("%s applied without attempt", tenant)
+		}
+		evidence, err := journalStores[host.EvidenceKey{TenantID: tenant, StorageBindingID: "carbon-test"}].ReadDispositionEvidence(ctx, sessionstore.DispositionEvidenceRequest{
+			TenantID: tenant, SessionID: resident.SessionID, CommandID: commandID, Kind: "create",
+			RuntimeCommandID: entry.Record.Descriptor.RuntimeCommandID, Binding: bindings[tenant], Attempt: *entry.Record.Attempt,
+		})
+		if err != nil || evidence.Kind != sessionstore.DispositionApplied {
+			t.Fatalf("%s journal evidence %+v, %v", tenant, evidence, err)
+		}
+	}
+}
+
+func dialPooledHostLink(t *testing.T, serverURL string, tenant sessionwire.TenantID) *websocket.Conn {
+	t.Helper()
+	endpoint, err := sessionwire.HostLinkEndpoint(sessionwire.InternalEndpoint("ws"+strings.TrimPrefix(serverURL, "http")), tenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	link, _, err := websocket.DefaultDialer.Dial(string(endpoint), http.Header{"Sec-WebSocket-Protocol": {"centrifuge-json"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	negotiation, _ := json.Marshal(sessionwire.VersionNegotiationRequest{SupportedVersions: []sessionwire.WireVersion{1}})
+	pooledHostFrame(t, link, 1, map[string]any{"connect": map[string]any{"token": "test", "data": json.RawMessage(negotiation)}})
+	return link
+}
+
+func pooledHostRPC(t *testing.T, link *websocket.Conn, id uint32, method string, body any) {
+	t.Helper()
+	data, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pooledHostFrame(t, link, id, map[string]any{"rpc": map[string]any{"method": method, "data": json.RawMessage(data)}})
+}
+
+func pooledHostFrame(t *testing.T, link *websocket.Conn, id uint32, command map[string]any) {
+	t.Helper()
+	command["id"] = id
+	if err := link.WriteJSON(command); err != nil {
+		t.Fatal(err)
+	}
+	if err := link.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		_, frame, err := link.ReadMessage()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var reply struct {
+			ID    uint32 `json:"id"`
+			Error *struct {
+				Code    int    `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(frame, &reply); err != nil {
+			t.Fatalf("frame %s: %v", frame, err)
+		}
+		if reply.ID != id {
+			continue
+		}
+		if reply.Error != nil {
+			t.Fatalf("HostLink RPC %d refused: %+v", id, reply.Error)
+		}
+		return
 	}
 }

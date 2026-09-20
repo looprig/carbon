@@ -9,8 +9,10 @@ import (
 
 	"github.com/looprig/acp/launch"
 	"github.com/looprig/carbon/internal/catalog/carbon"
+	"github.com/looprig/harness/pkg/foreign"
 	"github.com/looprig/harness/pkg/loop"
 	"github.com/looprig/inference/model"
+	"github.com/looprig/mcp/pkg/collab"
 )
 
 func TestPreflightProductionACPExecutableEnforcesAdapterSpecificSelectors(t *testing.T) {
@@ -119,6 +121,53 @@ func TestProductionACPCompositionRejectsInvalidAccessProfileBeforeCatalog(t *tes
 	_, err := newProductionACPCompositionWithPreflight(context.Background(), AccessProfile("invalid"), productionModels{}, nil)
 	if err != errACPAccessProfileUnavailable {
 		t.Fatalf("invalid production ACP access profile error = %v, want bounded access-profile error", err)
+	}
+}
+
+func TestProductionACPCompositionUsesEachSessionRootForBothLaunchers(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(acpClaudeExecutableEnv, executable)
+	t.Setenv(acpCodexExecutableEnv, executable)
+	configured := configuredProductionModelsForTest("configured-only")
+	first, second := t.TempDir(), t.TempDir()
+	for _, root := range []string{first, second} {
+		loader := func(context.Context, string) (productionModels, error) { return configured, nil }
+		resolvedModels, err := resolveServeModelsAtRoot(context.Background(), Config{HomeDir: t.TempDir(), CollabMCPExecutable: executable}, loader, nil, root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		composition := resolvedModels.cfg.ACPChildren
+		if composition == nil {
+			t.Fatal("production model resolution dropped ACP composition")
+		}
+		services := foreign.NewServices(foreign.NewBrokerDescriptor("/tmp/broker.sock", make([]byte, collab.CapabilityBytes)), nil)
+		for _, harness := range []loop.AgentHarnessName{"claude-code", "codex"} {
+			profile := loop.RuntimeProfileName("acp/" + string(harness))
+			if !composition.Catalog.HasProfile(profile) {
+				t.Fatalf("missing %s launcher", profile)
+			}
+			resolved, err := composition.Catalog.RuntimeCatalog.Resolve(carbon.Name, harness, "configured-only", model.EffortNone)
+			if err != nil {
+				t.Fatalf("resolve %s: %v", harness, err)
+			}
+			bound := testACPChildBound(t, resolved)
+			_, driverConfig, gateway, err := composition.factory.configForServices(context.Background(), bound, "", services)
+			if gateway != nil {
+				_ = gateway.Close(context.Background())
+			}
+			if err != nil {
+				t.Fatalf("driver config for %s: %v", harness, err)
+			}
+			if driverConfig.WorkspaceRoot != root {
+				t.Fatalf("%s driver workspace %q, want %q", harness, driverConfig.WorkspaceRoot, root)
+			}
+		}
+	}
+	if first == second {
+		t.Fatal("test used one root")
 	}
 }
 

@@ -131,3 +131,47 @@ func TestPooledLauncherWorkspaceProviderUsesTheLaunchRoot(t *testing.T) {
 		t.Fatalf("release erased restorable work: %v", err)
 	}
 }
+
+func TestPooledLauncherProvidesDistinctDurableTenantJournals(t *testing.T) {
+	ctx := context.Background()
+	data := t.TempDir()
+	launcher, err := OpenPooledLauncher(ctx, Config{}, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := launcher.JournalStoreForTenant("tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := launcher.JournalStoreForTenant("tenant-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a == b {
+		t.Fatal("two tenants received the same journal store")
+	}
+	again, err := launcher.JournalStoreForTenant("tenant-a")
+	if err != nil || again != a {
+		t.Fatalf("tenant-a journal cache = %p, %v, want %p", again, err, a)
+	}
+	if err := launcher.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := launcher.JournalStoreForTenant("tenant-a"); err == nil {
+		t.Fatal("closed launcher issued a journal reader")
+	}
+	if _, err := launcher.Launch(ctx, LaunchScope{TenantID: "tenant-a", SessionID: "closed", AgentID: CarbonAgentID}); err == nil {
+		t.Fatal("closed launcher accepted a launch")
+	}
+	reopened, err := OpenPooledLauncher(ctx, Config{}, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close(ctx) })
+	if _, err := reopened.JournalStoreForTenant("tenant-a"); err != nil {
+		t.Fatalf("reopen tenant-a journal: %v", err)
+	}
+	if _, err := reopened.JournalStoreForTenant("tenant-b"); err != nil {
+		t.Fatalf("reopen tenant-b journal: %v", err)
+	}
+}

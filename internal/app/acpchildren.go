@@ -404,6 +404,9 @@ type ACPComposition struct {
 	accessProfile       AccessProfile
 	posture             driver.Posture
 	collabMCPExecutable string
+	// This is the same factory whose methods Registry captures for both live
+	// and restored builders; retaining it permits composition inspection.
+	factory *acpChildFactory
 }
 
 // NewACPComposition performs only static executable/path checks, registers
@@ -484,18 +487,18 @@ func NewACPComposition(config ACPChildrenConfig) (*ACPComposition, error) {
 		}
 		config.collabMCPSnapshot = &snapshot
 	}
-	factory := &acpChildFactory{config: config}
+	composition := &ACPComposition{factory: &acpChildFactory{config: config}}
 	for _, profile := range []loop.RuntimeProfileName{"acp/claude-code", "acp/codex"} {
 		if !config.Catalog.HasProfile(profile) {
 			continue
 		}
 		if config.CollabMCPExecutable != "" {
-			if err := registry.RegisterServices(profile, factory.liveServices, factory.restoredServices); err != nil {
+			if err := registry.RegisterServices(profile, composition.factory.liveServices, composition.factory.restoredServices); err != nil {
 				return nil, err
 			}
 			continue
 		}
-		if err := registry.Register(profile, factory.live, factory.restored); err != nil {
+		if err := registry.Register(profile, composition.factory.live, composition.factory.restored); err != nil {
 			return nil, err
 		}
 	}
@@ -505,18 +508,17 @@ func NewACPComposition(config ACPChildrenConfig) (*ACPComposition, error) {
 		liveServices = dispatchACPServicesBuilder(registry)
 		restoredServices = dispatchACPServicesRestoredBuilder(registry)
 	}
-	return &ACPComposition{
-		Catalog:             config.Catalog,
-		Registry:            registry,
-		Live:                dispatchACPBuilder(registry),
-		Restored:            dispatchACPRestoredBuilder(registry),
-		LiveServices:        liveServices,
-		RestoredServices:    restoredServices,
-		Diagnostics:         diagnostics,
-		accessProfile:       config.AccessProfile,
-		posture:             config.posture,
-		collabMCPExecutable: config.CollabMCPExecutable,
-	}, nil
+	composition.Catalog = config.Catalog
+	composition.Registry = registry
+	composition.Live = dispatchACPBuilder(registry)
+	composition.Restored = dispatchACPRestoredBuilder(registry)
+	composition.LiveServices = liveServices
+	composition.RestoredServices = restoredServices
+	composition.Diagnostics = diagnostics
+	composition.accessProfile = config.AccessProfile
+	composition.posture = config.posture
+	composition.collabMCPExecutable = config.CollabMCPExecutable
+	return composition, nil
 }
 
 // acpDiagnosticNoExecutable produces a fixed, secret-free category string.
