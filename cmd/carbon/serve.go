@@ -21,6 +21,24 @@ import (
 	carbon "github.com/looprig/carbon/internal/app"
 	"github.com/looprig/core/uuid"
 	"github.com/looprig/harness/pkg/rig"
+	// The two SA1019 suppressions below are R1.1's known cost and R1.3's work.
+	//
+	// harness/pkg/serve carries a package-level Deprecated: marker as of harness
+	// v0.33.0, so SA1019 fires at every import site on the version bump ALONE,
+	// before any code change. wui.Handler is deprecated for the same class of
+	// reason: its protected route set is frozen and a new integration is meant to
+	// compose Assets and Guard explicitly.
+	//
+	// They are SUPPRESSED rather than migrated here because R1.1 is a pin and
+	// runbook 08's R1.1 step 3 says in terms to keep the existing construction
+	// paths compiling WHILE the browser serve migrates. Migrating the composition
+	// inside a dependency-pin commit would mix a mechanical change with a
+	// behavioural one and make the parity tests R1.3 owes impossible to attribute.
+	//
+	// REMOVE BOTH IN R1.3, which replaces this composition with Factory's public
+	// listener over a local HostLink. A suppression that outlives its migration is
+	// how a frozen compatibility surface becomes permanent.
+	//lint:ignore SA1019 R1.3 replaces this composition with Factory; see the note above.
 	"github.com/looprig/harness/pkg/serve"
 	"github.com/looprig/harness/pkg/serve/catalogreader"
 	"github.com/looprig/harness/pkg/session"
@@ -120,6 +138,7 @@ var _ serve.Rig[session.SessionController, rig.SessionOption] = (*serveRig)(nil)
 func buildServeHandler(r serve.Rig[session.SessionController, rig.SessionOption], reads serve.Reader, host uiHost) http.Handler {
 	root := http.NewServeMux()
 	root.Handle(uiPrefix, uiHandler(host))
+	//lint:ignore SA1019 R1.3 composes wui.Assets and wui.Guard explicitly; see the import note.
 	root.Handle("/", wui.Handler(serve.Handler(r, reads)))
 	return wui.Guard(root)
 }

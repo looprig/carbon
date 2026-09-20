@@ -15,6 +15,7 @@ import (
 
 	carbon "github.com/looprig/carbon/internal/app"
 	"github.com/looprig/core/uuid"
+	//lint:ignore SA1019 the deprecation is harness v0.33.0's; R1.3 migrates this composition.
 	"github.com/looprig/harness/pkg/serve"
 	"github.com/looprig/harness/pkg/session"
 )
