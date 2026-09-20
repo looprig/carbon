@@ -46,6 +46,7 @@ type Config struct {
 	Shutdown      ShutdownPolicy
 	Address       string
 	ClientBuilder func() (inference.Client, func() model.Model, error)
+	startFactory  func(context.Context, *Server) error
 }
 
 // Server retains every owned stage until an orderly shutdown completes.
@@ -148,7 +149,11 @@ func Start(ctx context.Context, cfg Config) (*Server, error) {
 		return failStart(s, err)
 	}
 	s.factory = f
-	if err := f.Start(ctx); err != nil {
+	startFactory := cfg.startFactory
+	if startFactory == nil {
+		startFactory = func(ctx context.Context, owner *Server) error { return owner.factory.Start(ctx) }
+	}
+	if err := startFactory(ctx, s); err != nil {
 		return failStart(s, err)
 	}
 	if err := ctx.Err(); err != nil {
