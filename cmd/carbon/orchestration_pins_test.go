@@ -102,7 +102,7 @@ func looprigImportOffenders(root, prefix string) ([]string, error) {
 // packages are all under factory/internal, so they are UNREACHABLE from Carbon by
 // construction. Asserting the whole module is therefore the strictly stronger rule
 // and the only one that can actually be violated.
-func TestFactoryIsComposedOnlyInTheCommand(t *testing.T) {
+func TestFactoryIsComposedOnlyAtTheBrowserProductBoundary(t *testing.T) {
 	t.Parallel()
 
 	offenders, err := looprigImportOffenders(filepath.Join("..", "..", "internal"), "github.com/looprig/factory")
@@ -110,7 +110,14 @@ func TestFactoryIsComposedOnlyInTheCommand(t *testing.T) {
 		t.Fatalf("scan internal: %v", err)
 	}
 	for _, path := range offenders {
-		t.Errorf("%s imports Factory; the Factory composition belongs to cmd/carbon alone", path)
+		t.Errorf("%s imports Factory; the Factory composition belongs to the public browser product boundary", path)
+	}
+	boundary, err := looprigImportOffenders(filepath.Join("..", "..", "browser"), "github.com/looprig/factory")
+	if err != nil {
+		t.Fatalf("scan browser: %v", err)
+	}
+	if len(boundary) == 0 {
+		t.Fatal("browser product boundary no longer imports Factory")
 	}
 }
 
@@ -159,12 +166,12 @@ func TestHostIsComposedOnlyAtTheProductBoundary(t *testing.T) {
 	}
 }
 
-// TestWUIIsInjectedOnlyByTheCommand keeps the embedded browser bundle at the
-// process root. wui's Go API is http.Handler in, http.Handler out and names no
+// TestWUIIsInjectedOnlyByTheProductBoundary keeps the embedded browser bundle at the
+// public browser root. wui's Go API is http.Handler in, http.Handler out and names no
 // looprig type, so an internal package importing it would compile perfectly and
 // merely mean the SPA bundle had been welded to a runtime package that has no
 // business embedding 2 MiB of JavaScript.
-func TestWUIIsInjectedOnlyByTheCommand(t *testing.T) {
+func TestWUIIsInjectedOnlyByTheProductBoundary(t *testing.T) {
 	t.Parallel()
 
 	offenders, err := looprigImportOffenders(filepath.Join("..", "..", "internal"), "github.com/looprig/wui")
@@ -172,7 +179,14 @@ func TestWUIIsInjectedOnlyByTheCommand(t *testing.T) {
 		t.Fatalf("scan internal: %v", err)
 	}
 	for _, path := range offenders {
-		t.Errorf("%s imports wui; the SPA bundle is injected by cmd/carbon", path)
+		t.Errorf("%s imports wui; the SPA bundle is injected by browser", path)
+	}
+	boundary, err := looprigImportOffenders(filepath.Join("..", "..", "browser"), "github.com/looprig/wui")
+	if err != nil {
+		t.Fatalf("scan browser: %v", err)
+	}
+	if len(boundary) == 0 {
+		t.Fatal("browser product boundary no longer imports WUI")
 	}
 }
 
