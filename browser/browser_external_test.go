@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -45,12 +46,17 @@ func (verifier) VerifyCredential(_ context.Context, credential identity.Credenti
 type client struct {
 	release  <-chan struct{}
 	requests chan<- struct{}
+	replies  *atomic.Int32
 }
 
 func (client) Invoke(context.Context, inference.Request) (*inference.Response, error) {
 	return nil, errors.New("unexpected Invoke")
 }
 func (c client) Stream(context.Context, inference.Request) (*stream.StreamReader[content.Chunk], error) {
+	reply := "browser reply"
+	if c.replies != nil {
+		reply = fmt.Sprintf("browser reply %d", c.replies.Add(1))
+	}
 	if c.requests != nil {
 		select {
 		case c.requests <- struct{}{}:
@@ -66,7 +72,7 @@ func (c client) Stream(context.Context, inference.Request) (*stream.StreamReader
 		if c.release != nil {
 			<-c.release
 		}
-		return &content.TextChunk{Text: "browser reply"}, nil
+		return &content.TextChunk{Text: reply}, nil
 	}, nil), nil
 }
 
@@ -169,10 +175,11 @@ func TestExternalApplicationCanStartCreateAndStop(t *testing.T) {
 	cfg := browserFixture(t)
 	release := make(chan struct{})
 	modelRequests := make(chan struct{}, 4)
+	replyCounter := &atomic.Int32{}
 	var releaseOnce sync.Once
 	defer releaseOnce.Do(func() { close(release) })
 	cfg.ClientBuilder = func() (inference.Client, func() model.Model, error) {
-		return client{release: release, requests: modelRequests}, func() model.Model {
+		return client{release: release, requests: modelRequests, replies: replyCounter}, func() model.Model {
 			return model.CustomModel(model.ProviderName(llm.ProviderLMStudio), model.APIFormatOpenAI,
 				"http://localhost:1234/v1", "browser-test", model.WithTools(),
 				model.WithContextLimits(model.ContextLimits{WindowTokens: 128_000}))
@@ -293,7 +300,8 @@ func TestExternalApplicationCanStartCreateAndStop(t *testing.T) {
 		body, _ := io.ReadAll(page.Body)
 		page.Body.Close()
 		var journal sessionwire.JournalPage
-		if page.StatusCode == http.StatusOK && json.Unmarshal(body, &journal) == nil && journal.CapturedTip > firstLive.JournalSeq {
+		if page.StatusCode == http.StatusOK && json.Unmarshal(body, &journal) == nil &&
+			journal.CapturedTip > firstLive.JournalSeq && strings.Contains(string(body), "browser reply 3") {
 			offlineTip = journal.CapturedTip
 			break
 		}
