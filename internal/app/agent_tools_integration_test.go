@@ -717,29 +717,51 @@ func carbonCallOffendersUnder(root, pkg, name string) ([]string, error) {
 }
 
 // TestCarbonGuardsScanTheModuleRoot pins the property the falsifiers below cannot:
-// that the root the guards actually use REACHES cmd/carbon.
+// that the root the guards actually use REACHES BOTH package trees.
 //
 // The falsifiers take a root, so they prove the scanners work over a tree — not that
 // the tree the guards scan is the right one. Narrowing carbonModuleRoot back to this
 // package would leave every scanner correct, every falsifier green, and the tripwire
-// blind to the exact package R1.3 composes in. `package main` is the needle because
-// only cmd/carbon declares it, so finding it IS the proof the scan left internal/app.
+// blind to the exact package R1.3 composes in.
+//
+// BOTH HALVES ARE REQUIRED, and the second half is this case's own correction. Until
+// the R1.3 round it asserted only that the scan reached cmd/carbon, which is HALF the
+// rule it states: narrowing carbonModuleRoot to filepath.Join("..","..","cmd") left
+// this case green, both falsifiers green, both capture guards green, and the whole
+// internal/app suite green — while blinding the tripwire to the package the guards
+// themselves live in. That was measured (regate mutant G2, exit 0, twice). An
+// assertion narrower than the rule it states is the defect this file has now grown
+// three times; when adding a scan-root claim here, assert every tree it must reach.
+//
+// The needles are the two package clauses: only cmd/carbon declares `package main`
+// and only this tree declares `package app`, so a hit under each path IS the proof
+// the scan spans the module rather than one subtree of it.
 func TestCarbonGuardsScanTheModuleRoot(t *testing.T) {
 	t.Parallel()
 
-	found, err := carbonSourceOffendersUnder(carbonModuleRoot(), "package main")
-	if err != nil {
-		t.Fatalf("carbonSourceOffendersUnder: %v", err)
-	}
-	var reachedCommand bool
-	for _, path := range found {
-		if strings.Contains(filepath.ToSlash(path), "cmd/carbon/") {
-			reachedCommand = true
-			break
+	for _, reach := range []struct {
+		needle string
+		under  string
+		blind  string
+	}{
+		{needle: "package main", under: "cmd/carbon/", blind: "the package R1.3 composes in"},
+		{needle: "package app", under: "internal/app/", blind: "the package the capture guards themselves live in"},
+	} {
+		found, err := carbonSourceOffendersUnder(carbonModuleRoot(), reach.needle)
+		if err != nil {
+			t.Fatalf("carbonSourceOffendersUnder(%q): %v", reach.needle, err)
 		}
-	}
-	if !reachedCommand {
-		t.Fatalf("the guards' scan root reached %v and no file under cmd/carbon; the capture tripwire is blind to the package R1.3 composes in", found)
+		var reached bool
+		for _, path := range found {
+			if strings.Contains(filepath.ToSlash(path), reach.under) {
+				reached = true
+				break
+			}
+		}
+		if !reached {
+			t.Fatalf("the guards' scan root reached %v and no file under %s; the capture tripwire is blind to %s",
+				found, reach.under, reach.blind)
+		}
 	}
 }
 

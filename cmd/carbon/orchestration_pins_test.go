@@ -123,15 +123,39 @@ func TestFactoryIsComposedOnlyInTheCommand(t *testing.T) {
 // boundary. The rule is that Host stops THERE — the catalog, which holds the one
 // Carbon identity and prompt, has no business knowing a Host exists, and neither does
 // any package added beside it.
+//
+// SO THE SCAN IS internal/ WITH internal/app ALLOW-LISTED, not internal/catalog. Until
+// the R1.3 round this case scanned internal/catalog alone while its comment claimed
+// "neither does any package added beside it" — and a NEW package under internal/
+// importing host/department passed (regate mutant H2, exit 0). The allow-list states
+// the exception once, in the one place the rule is enforced, so a third package added
+// beside the two is caught the day it is added rather than the day internal/ is
+// re-read. Widening the allow-list is a visible diff; widening a scan root is not.
 func TestHostIsComposedOnlyAtTheProductBoundary(t *testing.T) {
 	t.Parallel()
 
-	offenders, err := looprigImportOffenders(filepath.Join("..", "..", "internal", "catalog"), "github.com/looprig/host")
+	// The ONE package permitted to name Host, and why: internal/app/department.go is
+	// where a harness session.SessionController is made to satisfy host/department's
+	// contracts, and that adapter has to live inside the product boundary.
+	const permitted = "internal/app/"
+
+	offenders, err := looprigImportOffenders(filepath.Join("..", "..", "internal"), "github.com/looprig/host")
 	if err != nil {
-		t.Fatalf("scan internal/catalog: %v", err)
+		t.Fatalf("scan internal: %v", err)
 	}
+	var permittedSeen bool
 	for _, path := range offenders {
+		if strings.Contains(filepath.ToSlash(path), permitted) {
+			permittedSeen = true
+			continue
+		}
 		t.Errorf("%s imports Host; Host is composed in internal/app's launch target and cmd/carbon, nowhere else", path)
+	}
+	// The allow-list is held to a real importer, so the day internal/app stops naming
+	// Host this case says so instead of silently becoming an exception for nothing —
+	// an allow-list nobody exercises is a hole waiting for the next package.
+	if !permittedSeen {
+		t.Errorf("no file under %s imports Host; the allow-list exempts a package that no longer needs it", permitted)
 	}
 }
 
