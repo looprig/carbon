@@ -3,9 +3,11 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,10 +15,80 @@ import (
 	"github.com/looprig/core/content"
 	sessionwire "github.com/looprig/core/sessionwire/v1"
 	"github.com/looprig/core/uuid"
+	"github.com/looprig/fsstore"
 	"github.com/looprig/host"
 	"github.com/looprig/inference"
 	"github.com/looprig/sessionstore"
 )
+
+func TestServePooledHostTimedStopWaitsForHostStoreCleanup(t *testing.T) {
+	ctx := context.Background()
+	fs, err := fsstore.Open(fsstore.Options{Root: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := *fs.Backend()
+	backend.Blobs = newBoundedBlobs(backend.Blobs)
+	held := &heldControlCloser{entered: make(chan struct{}), release: make(chan struct{})}
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(held.release) }); _ = fs.Close() })
+	hostStore, err := sessionstore.Open(ctx, &backend, sessionstore.WithProviderOwnership(held))
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	h := &ServePooledHost{listener: listener, server: &http.Server{}, stopService: func(stopCtx context.Context) (host.DrainReport, error) {
+		return host.DrainReport{}, hostStore.Close(stopCtx)
+	}}
+	stopCtx, cancel := context.WithTimeout(ctx, 20*time.Millisecond)
+	defer cancel()
+	if _, err := h.Stop(stopCtx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("timed Stop = %v, want caller deadline", err)
+	}
+	select {
+	case <-held.entered:
+	case <-time.After(time.Second):
+		t.Fatal("Host store cleanup did not start")
+	}
+	providerClosed := make(chan struct{})
+	finished := make(chan error, 1)
+	go func() {
+		_, err := h.Stop(ctx)
+		if err == nil {
+			err = fs.Close() // composition releases the provider after Host Stop
+			close(providerClosed)
+		}
+		finished <- err
+	}()
+	select {
+	case err := <-finished:
+		t.Fatalf("later Stop returned during Host store cleanup: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	select {
+	case <-providerClosed:
+		t.Fatal("provider closed before Host store cleanup")
+	default:
+	}
+	releaseOnce.Do(func() { close(held.release) })
+	select {
+	case err := <-finished:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("later Stop did not complete")
+	}
+	select {
+	case <-providerClosed:
+	default:
+		t.Fatal("provider not closed after Host cleanup")
+	}
+}
 
 func TestServePooledHostStopBeforeStartClosesPreboundListener(t *testing.T) {
 	ctx := context.Background()
