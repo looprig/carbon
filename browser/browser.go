@@ -319,6 +319,25 @@ func (s *Server) cleanup(attempt *stopAttempt) {
 				cancel()
 			}
 		}
+	}
+	// Host publishes nonaccepting capacity and drains while Factory's links and
+	// reconciliation are still alive. An incomplete Host drain keeps the
+	// provider open, but Factory's public planes are stopped below regardless.
+	if !s.hostStopped && (s.host != nil || s.stopHost != nil) {
+		var report host.DrainReport
+		stop := s.stopHost
+		if stop == nil {
+			stop = s.host.Stop
+		}
+		report, err = stop(context.Background())
+		if err == nil && len(report.Failures) != 0 {
+			err = &DrainIncompleteError{Report: report}
+		}
+		if err == nil {
+			s.hostStopped = true
+		}
+	}
+	if !s.factoryStopped && (s.factory != nil || s.stopFactory != nil) {
 		// Factory's first Stop is idempotently terminal even when it reports an
 		// HTTP error. The uncancelled call has completed its sweep join.
 		stop := s.stopFactory
@@ -339,20 +358,6 @@ func (s *Server) cleanup(attempt *stopAttempt) {
 			diagnostic = errors.Join(diagnostic, serveErr)
 		}
 		s.serveDone = nil
-	}
-	if !s.hostStopped && (s.host != nil || s.stopHost != nil) {
-		var report host.DrainReport
-		stop := s.stopHost
-		if stop == nil {
-			stop = s.host.Stop
-		}
-		report, err = stop(context.Background())
-		if err == nil && len(report.Failures) != 0 {
-			err = &DrainIncompleteError{Report: report}
-		}
-		if err == nil {
-			s.hostStopped = true
-		}
 	}
 	if err == nil && !s.storageClosed && (s.storage != nil || s.closeStorage != nil) {
 		closeStore := s.closeStorage

@@ -71,7 +71,7 @@ func TestStopRetriesHostBeforeClosingStorage(t *testing.T) {
 	if err := s.Stop(context.Background()); err == nil {
 		t.Fatal("failed Host Stop reported success")
 	}
-	if got := strings.Join(order, ","); got != "factory,host" {
+	if got := strings.Join(order, ","); got != "host,factory" {
 		t.Fatalf("early cleanup = %s", got)
 	}
 	select {
@@ -82,7 +82,7 @@ func TestStopRetriesHostBeforeClosingStorage(t *testing.T) {
 	if err := s.Stop(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(order, ","); got != "factory,host,host,storage" {
+	if got := strings.Join(order, ","); got != "host,factory,host,storage" {
 		t.Fatalf("retry cleanup = %s", got)
 	}
 }
@@ -109,7 +109,7 @@ func TestStopQuiescesAndObservesBeforeFactoryAndHost(t *testing.T) {
 	if err := s.Stop(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(order, ","); got != "quiesce,pending,factory,host,storage" {
+	if got := strings.Join(order, ","); got != "quiesce,pending,host,factory,storage" {
 		t.Fatalf("shutdown order = %s", got)
 	}
 }
@@ -133,7 +133,7 @@ func TestStopReportsUnsettledCommandAndStillDrainsHost(t *testing.T) {
 	if !errors.As(err, &pending) || pending.Count != 1 {
 		t.Fatalf("Stop = %v, want one last-observed pending command", err)
 	}
-	if got := strings.Join(order, ","); got != "quiesce,factory,host,storage" {
+	if got := strings.Join(order, ","); got != "quiesce,host,factory,storage" {
 		t.Fatalf("shutdown after settlement timeout = %s", got)
 	}
 	if p.pages[0][0].Commands[0].Record.State != sessionstore.InboxStatePending {
@@ -156,7 +156,7 @@ func TestQuiesceFailureStillStopsFactoryAndHost(t *testing.T) {
 	if err := s.Stop(context.Background()); !errors.Is(err, want) {
 		t.Fatalf("Stop = %v", err)
 	}
-	if got := strings.Join(order, ","); got != "quiesce,factory,host,storage" {
+	if got := strings.Join(order, ","); got != "quiesce,host,factory,storage" {
 		t.Fatalf("shutdown after Quiesce error = %s", got)
 	}
 }
