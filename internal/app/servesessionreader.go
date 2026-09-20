@@ -126,15 +126,15 @@ func (r *ServeSessionReader) ReadPublicJournal(ctx context.Context, req sessions
 }
 
 const maxServeCursorBytes = 8192
-const serveCursorVersion = "c1"
-const serveCursorDomain = "looprig/carbon/serve-public-journal-cursor/v1\x00"
+const serveCursorVersion = "c2"
+const serveCursorDomain = "looprig/carbon/serve-public-journal-cursor/v2\x00"
 
 func serveCursorScope(tenant sessionwire.TenantID, publicID sessionwire.SessionID, b sessionstore.SessionBinding) string {
 	h := sha256.New()
 	_, _ = h.Write([]byte(serveCursorDomain))
 	for _, part := range []string{string(tenant), string(publicID), b.StorageBindingID, b.BindingVersion, b.RuntimeSessionID, string(b.ProtocolMode)} {
-		var length [4]byte
-		binary.BigEndian.PutUint32(length[:], uint32(len(part)))
+		var length [8]byte
+		binary.BigEndian.PutUint64(length[:], uint64(len(part)))
 		_, _ = h.Write(length[:])
 		_, _ = h.Write([]byte(part))
 	}

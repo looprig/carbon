@@ -32,6 +32,7 @@ func TestServeCursorPreservesInnerTokenAndRejectsMalformedOrWrongScope(t *testin
 		{name: "other tenant", token: wrapped, tenant: "tenant-b", publicID: "public-a", binding: binding},
 		{name: "other binding version", token: wrapped, tenant: "tenant-a", publicID: "public-a", binding: func() sessionstore.SessionBinding { b := binding; b.BindingVersion = "v2"; return b }()},
 		{name: "malformed", token: "c1.not-a-digest.!", tenant: "tenant-a", publicID: "public-a", binding: binding},
+		{name: "previous envelope version", token: sessionwire.Cursor("c1." + strings.SplitN(string(wrapped), ".", 2)[1]), tenant: "tenant-a", publicID: "public-a", binding: binding},
 		{name: "oversized", token: sessionwire.Cursor(strings.Repeat("x", maxServeCursorBytes+1)), tenant: "tenant-a", publicID: "public-a", binding: binding},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
