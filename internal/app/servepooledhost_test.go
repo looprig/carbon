@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,7 +20,20 @@ import (
 	"github.com/looprig/host"
 	"github.com/looprig/inference"
 	"github.com/looprig/sessionstore"
+	"github.com/looprig/storage"
 )
+
+type failHostTargetUpdateOnce struct {
+	storage.OrderedIndex
+	armed atomic.Bool
+}
+
+func (f *failHostTargetUpdateOnce) Update(ctx context.Context, id storage.OrderedID, expected uint64, value []byte, rank storage.Rank, due storage.Due) (storage.OrderedRecord, error) {
+	if id.Namespace == "sessionstore/hosttargets" && f.armed.CompareAndSwap(true, false) {
+		return storage.OrderedRecord{}, errors.New("injected host target withdrawal refusal")
+	}
+	return f.OrderedIndex.Update(ctx, id, expected, value, rank, due)
+}
 
 func TestServePooledHostTimedStopWaitsForHostStoreCleanup(t *testing.T) {
 	ctx := context.Background()
@@ -90,17 +104,68 @@ func TestServePooledHostTimedStopWaitsForHostStoreCleanup(t *testing.T) {
 	}
 }
 
-func TestServePooledHostStopBeforeStartClosesPreboundListener(t *testing.T) {
+func TestServePooledHostRetriesFailedDrainBeforeClosingStoreOrListener(t *testing.T) {
 	ctx := context.Background()
-	storage, err := OpenServeStorage(ctx, Config{HomeDir: t.TempDir()}, ServeStorageConfig{DataDir: t.TempDir(), DefaultTenant: "local"},
+	fs, err := fsstore.Open(fsstore.Options{Root: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = fs.Close() })
+	backend := *fs.Backend()
+	backend.Blobs = newBoundedBlobs(backend.Blobs)
+	hostStore, err := sessionstore.Open(ctx, &backend)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	attempts := 0
+	refusal := errors.New("drain publication refused")
+	h := &ServePooledHost{listener: listener, server: &http.Server{}, stopService: func(stopCtx context.Context) (host.DrainReport, error) {
+		attempts++
+		if attempts == 1 {
+			return host.DrainReport{}, refusal
+		}
+		return host.DrainReport{}, hostStore.Close(stopCtx)
+	}}
+	if _, err := h.Stop(ctx); !errors.Is(err, refusal) {
+		t.Fatalf("first Stop = %v, want refusal", err)
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts after refusal = %d", attempts)
+	}
+	conn, err := net.DialTimeout("tcp", listener.Addr().String(), time.Second)
+	if err != nil {
+		t.Fatalf("listener closed after incomplete Host Stop: %v", err)
+	}
+	_ = conn.Close()
+	if _, err := h.Stop(ctx); err != nil {
+		t.Fatalf("retry Stop: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts after retry = %d", attempts)
+	}
+	if _, err := net.DialTimeout("tcp", listener.Addr().String(), time.Second); err == nil {
+		t.Fatal("listener remains open after completed Host Stop")
+	}
+}
+
+func TestServePooledHostRetriesRealDrainPublicationFailure(t *testing.T) {
+	ctx := context.Background()
+	stores, err := OpenServeStorage(ctx, Config{HomeDir: t.TempDir()}, ServeStorageConfig{DataDir: t.TempDir(), DefaultTenant: "local"},
 		WithServeInferenceClient(func() (inference.Client, ModelFactory, error) {
 			return &fakeLLM{}, newModelFactoryFor(testModel()), nil
 		}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = storage.Close(ctx) })
-	service, err := OpenServePooledHost(ctx, storage, ServePooledHostConfig{
+	t.Cleanup(func() { _ = stores.Close(ctx) })
+	index := &failHostTargetUpdateOnce{OrderedIndex: stores.controlBackend.OrderedIndex}
+	stores.controlBackend.OrderedIndex = index
+	h, err := OpenServePooledHost(ctx, stores, ServePooledHostConfig{
 		ListenAddress: "127.0.0.1:0", AuthToken: "test", StorageBindingID: "carbon-local-v1",
 		Options: host.Options{HostID: "carbon-local", IsolationClass: sessionwire.HostIsolationClassCrossTenantIsolated,
 			Placement: sessionwire.HostPlacementPooled, Capacity: 1, WarmTTL: time.Minute, RegistryHeartbeat: 10 * time.Second,
@@ -113,11 +178,43 @@ func TestServePooledHostStopBeforeStartClosesPreboundListener(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	address := service.listener.Addr().String()
-	_, _ = service.Stop(ctx)
+	if err := h.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	index.armed.Store(true)
+	if _, err := h.Stop(ctx); err == nil {
+		t.Fatal("first real Host drain unexpectedly succeeded")
+	}
+	if index.armed.Load() {
+		t.Fatal("drain withdrawal did not reach injected storage failure")
+	}
+	conn, err := net.DialTimeout("tcp", h.listener.Addr().String(), time.Second)
+	if err != nil {
+		t.Fatalf("listener closed after refused drain: %v", err)
+	}
+	_ = conn.Close()
+	report, err := h.Stop(ctx)
+	if err != nil || len(report.Failures) != 0 {
+		t.Fatalf("retry Stop report=%+v err=%v", report, err)
+	}
+}
+
+func TestServePooledHostStopBeforeStartClosesPreboundListener(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	address := listener.Addr().String()
+	h := &ServePooledHost{listener: listener, server: &http.Server{}, stopService: func(context.Context) (host.DrainReport, error) {
+		return host.DrainReport{}, nil
+	}}
+	if _, err := h.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	rebound, err := net.Listen("tcp", address)
 	if err != nil {
-		t.Fatalf("prebound listener remains open after Stop: %v", err)
+		t.Fatalf("listener remains open after completed Stop: %v", err)
 	}
 	_ = rebound.Close()
 }
