@@ -664,10 +664,9 @@ func (h *ServeHost) closeLiveLocked(ctx context.Context) error {
 // A ServeHost binds one process-lifetime rig placed with rig.WithExclusiveWorkspace,
 // which acquires a lease named workspace-roots/<sha256(canonical root)> per session.
 // fsstore's advisory lock conflicts even inside one process, so at most one session
-// can be live over a given workspace root. Carbon's product target legitimately
-// declares SupportsPooled — a pooled Host handing each tenant its OWN root is
-// perfectly served by Carbon — but THIS launcher has exactly one root and cannot be
-// that Host.
+// can be live over a given workspace root. This launcher has exactly one root;
+// NewCarbonDepartment advertises it as dedicated only. PooledLauncher derives a
+// separate root for each session and advertises pooled capacity.
 //
 // So a pooled placement is REFUSED here rather than accepted and then failed deep
 // inside the rig on a lease conflict, where the error names a lock and not the

@@ -183,10 +183,10 @@ func TestCarbonDepartmentRefusesAMissingLauncher(t *testing.T) {
 // retried every sweep forever. An operator sees a session that never places on a Host
 // advertising free seats.
 //
-// So this test is coupled to the launcher on purpose: it asserts that the ONLY
-// launcher Carbon ships refuses pooled, and that the declaration agrees. Flip one
-// without the other and it fails.
-func TestCarbonIsDedicatedOnlyUntilAPerSessionRootLauncherExists(t *testing.T) {
+// This holds the conservative capability set used for the single-root
+// ServeHostLauncher. TestCarbonDepartmentDerivesPoolingFromLauncher covers the
+// separate per-session-root launcher.
+func TestSingleRootLauncherRemainsDedicated(t *testing.T) {
 	t.Parallel()
 
 	capabilities := carbonCapabilities()
@@ -195,7 +195,7 @@ func TestCarbonIsDedicatedOnlyUntilAPerSessionRootLauncherExists(t *testing.T) {
 	}
 
 	if capabilities.SupportsPooled {
-		t.Error("SupportsPooled = true: Carbon ships one launcher and it serves a single workspace root, so a pooled seat is a promise the composition cannot keep — Host advertises it, Factory attaches, and the session loops on no-capacity with no error")
+		t.Error("SupportsPooled = true for the single-root launcher")
 	}
 	if capabilities.PoolingPermitted() {
 		t.Error("PoolingPermitted() = true; Host would publish a pooled seat")
@@ -218,7 +218,7 @@ func TestCarbonIsDedicatedOnlyUntilAPerSessionRootLauncherExists(t *testing.T) {
 	})
 	var pooled *PooledPlacementUnsupportedError
 	if !errors.As(err, &pooled) {
-		t.Fatalf("the shipped launcher answered a pooled placement with %v; if it can now serve pooled, carbonCapabilities must say so", err)
+		t.Fatalf("the single-root launcher answered a pooled placement with %v", err)
 	}
 
 	// The capture value still has to be a legal pooled declaration, because it is what

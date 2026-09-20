@@ -106,39 +106,19 @@ func CarbonCompatibilityID(cfg Config) department.CompatibilityID {
 	return department.CompatibilityID(carbonCompatibilityPrefix + hex.EncodeToString(sum[:]))
 }
 
-// carbonCapabilities is what Carbon declares about how it may be placed.
+// carbonCapabilities is the conservative capability set for a launcher that
+// makes no pooling claim. NewCarbonDepartment derives the pooled bit from the
+// supplied launcher, so a single-root ServeHost cannot advertise pooled seats
+// and a PooledLauncher can.
 //
-// # SupportsPooled is FALSE, and it is false because of what Carbon SHIPS
+// # SupportsPooled is FALSE here
 //
-// A capability is a promise made to a pool, not a description of what the product
-// could do in principle. Carbon ships exactly one launcher — ServeHostLauncher — and
-// it serves ONE workspace root: the rig is placed with rig.WithExclusiveWorkspace and
-// fsstore's advisory lock on workspace-roots/<sha256(root)> conflicts even inside one
-// process. A pooled declaration would therefore be a promise the shipped composition
-// cannot keep, and the breach does not fail cleanly:
-//
-//  1. Host publishes a pooled seat for any target whose Capabilities.PoolingPermitted()
-//     holds, so it advertises seats it cannot serve.
-//  2. Factory's placement policy selects the first admissible candidate for a pooled
-//     record, and admissibility is the agent/runtime/placement triple. Nothing
-//     consults whether the target's launcher can serve pooled — it cannot; that fact
-//     lives below the wire.
-//  3. The launcher's refusal is flattened into a skipped candidate, and with one Host
-//     the round ends OutcomeNoCapacity and returns NO ERROR AT ALL.
-//  4. The PendingSweeper retries every sweep. There is no terminal state and no
-//     operator signal: an operator sees a session that never places, a log line
-//     saying no capacity, and a Host advertising free pooled seats.
-//
-// So the typed PooledPlacementUnsupportedError buys a better message in the Host's
-// log and nothing at the decision point. It stays — it is the right guard for the day
-// this flips back, and for any second launcher — but the DECLARATION is what Factory
-// reads, and it must be true.
-//
-// FLIPPING IT BACK is cheap and needs no migration: capabilities are re-advertised on
-// every Host start. The prerequisite is a launcher that materializes a workspace root
-// PER SESSION, which is R1.2 step 3's debt in full. The structurally better fix, when
-// that launcher exists, is to derive this from the launcher rather than declare it
-// beside one, so the two cannot drift again.
+// ServeHostLauncher places every session over one root using
+// rig.WithExclusiveWorkspace, whose root lease conflicts even within one process.
+// Advertising a pooled seat for it would leave Factory selecting a Host that
+// cannot launch the session. PooledLauncher instead creates one durable root and
+// one rig per session. NewCarbonDepartment reads that launcher's capability and
+// advertises pooling only for it.
 //
 // # The rest
 //
@@ -146,9 +126,7 @@ func CarbonCompatibilityID(cfg Config) department.CompatibilityID {
 // tools (Bash and ReadFile) return a materialized result: the bytes are resident
 // before the loop can bound them, and the bound is harness's declared ceiling
 // (loop.DefaultMaterializedToolResultBytes) rather than a stream. It is declared
-// honestly even though nothing reads it while pooling is off, because it is exactly
-// the value that decides pooling the day the flag flips — and a field nobody checks
-// is a field that rots.
+// honestly because it decides whether a PooledLauncher may be advertised.
 //
 // RequiresWorkspace is true because every Carbon launch materializes a workspace and
 // takes an exclusive lease on its root. RequiresCheckpoint is false: Carbon restores a
@@ -170,19 +148,14 @@ func carbonCapabilities() department.Capabilities {
 //
 // # It is the SEAM for R1.2 step 3, not evidence that step 3 is met
 //
-// Step 3 requires every session-dependent binding to stay per-session in pooled mode:
-// the access evaluator, the gate, the workspace, the process supervisor, the
-// credentials, the MCP managers and the object prefix. THAT IS NOT MET TODAY and
-// cannot be by the launcher Carbon ships. ServeHostLauncher admits ONE live session
-// at a time, and a property about what two concurrent sessions share is not partly
-// proven when there is never more than one — it is vacuous. Of the seven bindings,
-// only the MCP composition is genuinely built per session (mcpharness.Manager.BindSession
-// is a compare-and-swap that permanently binds one Manager to one session id, so it
-// cannot be hoisted); the access evaluator, the sandbox executor set and the gate are
-// built once in OpenServeHost and are per-WORKSPACE by construction.
+// Step 3 requires every session-dependent binding to stay per-session in pooled mode.
+// PooledLauncher constructs the access evaluator, gate, workspace, process
+// supervisor, credential admission and MCP manager within each Launch. Carbon
+// does not yet capture session objects, so an object prefix will be added only
+// together with its writer and reader. ServeHostLauncher retains its one-root
+// behavior for the existing UI path.
 //
-// So this type exists to make the per-session context EXPRESSIBLE, so that the
-// per-session-root launcher R1.3 owes has somewhere to read it from. A launcher that
+// So this type exists to make the per-session context EXPRESSIBLE. A launcher that
 // ignored it and reused one process-wide binding would compile perfectly and would
 // cross-wire two tenants' sessions; the scope is a value, and the obligation is stated
 // on it, precisely because nothing in the type system will catch that.
@@ -738,7 +711,11 @@ func NewCarbonDepartment(launcher SessionLauncher, compatibility department.Comp
 	if launcher == nil {
 		return nil, errors.New("carbon: a Carbon launch target needs a session launcher")
 	}
-	target, err := department.NewRigTarget(&carbonRig{launcher: launcher}, compatibility, carbonCapabilities())
+	capabilities := carbonCapabilities()
+	if capable, ok := launcher.(interface{ SupportsPooled() bool }); ok {
+		capabilities.SupportsPooled = capable.SupportsPooled()
+	}
+	target, err := department.NewRigTarget(&carbonRig{launcher: launcher}, compatibility, capabilities)
 	if err != nil {
 		return nil, err
 	}
