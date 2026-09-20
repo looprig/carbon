@@ -1,12 +1,15 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	sessionwire "github.com/looprig/core/sessionwire/v1"
 	"github.com/looprig/core/uuid"
@@ -40,6 +43,9 @@ type realRigFixture struct {
 	llm    *fakeLLM
 	cfg    Config
 	root   string
+
+	mu       sync.Mutex
+	launched []session.SessionController
 }
 
 func newRealRigFixture(t *testing.T) *realRigFixture {
@@ -64,13 +70,42 @@ func newRealRigFixture(t *testing.T) *realRigFixture {
 
 // launcher returns a SessionLauncher over the fixture's rig that HONOURS
 // LaunchScope.RigSessionID, which is what a product launcher must do.
+//
+// It RECORDS every controller it launches, and that is not bookkeeping. Host hands a
+// test a department.Runtime, whose AttemptCloser returns only an error — so the
+// ClosureResult harness actually produced, and with it the proof that a tombstone
+// LANDED, is invisible from that side. Holding the controller is the only way to ask
+// harness directly.
 func (f *realRigFixture) launcher() SessionLauncher {
 	return launcherFunc(func(ctx context.Context, scope LaunchScope) (session.SessionController, error) {
+		var (
+			controller session.SessionController
+			err        error
+		)
 		if scope.Restore {
-			return f.rig.RestoreSession(ctx, scope.RigSessionID)
+			controller, err = f.rig.RestoreSession(ctx, scope.RigSessionID)
+		} else {
+			controller, err = f.rig.NewSession(ctx, carbonRigSessionOptions(scope)...)
 		}
-		return f.rig.NewSession(ctx, carbonRigSessionOptions(scope)...)
+		if err != nil {
+			return nil, err
+		}
+		f.mu.Lock()
+		f.launched = append(f.launched, controller)
+		f.mu.Unlock()
+		return controller, nil
 	})
+}
+
+// lastLaunched returns the most recently launched controller.
+func (f *realRigFixture) lastLaunched(t *testing.T) session.SessionController {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.launched) == 0 {
+		t.Fatal("no session has been launched")
+	}
+	return f.launched[len(f.launched)-1]
 }
 
 func mustUUIDForTest(t *testing.T) uuid.UUID {
@@ -137,27 +172,71 @@ func TestCarbonDepartmentRefusesAMissingLauncher(t *testing.T) {
 
 // ---- capabilities ----------------------------------------------------------
 
-// TestCarbonCapabilitiesAreAValidPooledDeclaration proves the declaration Carbon
-// makes about its own placement is one department.New will accept, and that its
-// capture safety actually permits pooling.
+// TestCarbonIsDedicatedOnlyUntilAPerSessionRootLauncherExists holds the capability
+// declaration against what Carbon actually ships.
 //
-// The capture-safety row is the one that can go quietly wrong. PoolingPermitted
-// lists the SAFE values and defaults everything else to unsafe, so a typo, a zero
-// value, or a future Core constant all land on the unsafe side — and a target that
-// declared SupportsPooled while carrying an unsafe capture value is DEDICATED-ONLY
-// regardless of what it says. That would silently halve a pool's utility with no
-// error anywhere.
-func TestCarbonCapabilitiesAreAValidPooledDeclaration(t *testing.T) {
+// The pooled row is the one with consequences, and they are not a clean failure. Host
+// publishes a pooled seat for any target whose PoolingPermitted() holds; Factory's
+// placement policy selects the first admissible candidate on the agent/runtime/placement
+// triple and cannot see that the launcher will refuse; the refusal is flattened into a
+// skipped candidate; and with one Host the round ends OutcomeNoCapacity with NO ERROR,
+// retried every sweep forever. An operator sees a session that never places on a Host
+// advertising free seats.
+//
+// So this test is coupled to the launcher on purpose: it asserts that the ONLY
+// launcher Carbon ships refuses pooled, and that the declaration agrees. Flip one
+// without the other and it fails.
+func TestCarbonIsDedicatedOnlyUntilAPerSessionRootLauncherExists(t *testing.T) {
 	t.Parallel()
 
 	capabilities := carbonCapabilities()
 	if err := capabilities.Validate(); err != nil {
 		t.Fatalf("carbonCapabilities().Validate() = %v, want nil", err)
 	}
-	if !capabilities.PoolingPermitted() {
-		t.Errorf("PoolingPermitted() = false; Carbon declares SupportsPooled but its capture safety %q forbids it",
-			capabilities.CaptureSafety)
+
+	if capabilities.SupportsPooled {
+		t.Error("SupportsPooled = true: Carbon ships one launcher and it serves a single workspace root, so a pooled seat is a promise the composition cannot keep — Host advertises it, Factory attaches, and the session loops on no-capacity with no error")
 	}
+	if capabilities.PoolingPermitted() {
+		t.Error("PoolingPermitted() = true; Host would publish a pooled seat")
+	}
+	if !capabilities.SupportsDedicated {
+		t.Fatal("SupportsDedicated = false: Carbon would be unplaceable altogether")
+	}
+	placements := capabilities.PermittedPlacements()
+	if len(placements) != 1 || placements[0] != sessionwire.HostPlacementDedicated {
+		t.Errorf("PermittedPlacements() = %v, want exactly [dedicated]", placements)
+	}
+
+	// The declaration and the shipped launcher must agree. This is the coupling: the
+	// day a per-session-root launcher exists, THIS assertion is what forces the
+	// capability to be revisited rather than left false out of caution.
+	launcher := NewServeHostLauncher(&ServeHost{workspace: "/served/root"})
+	_, err := launcher.Launch(context.Background(), LaunchScope{
+		SessionID: sessionwire.SessionID("session-a"),
+		Placement: sessionwire.HostPlacementPooled,
+	})
+	var pooled *PooledPlacementUnsupportedError
+	if !errors.As(err, &pooled) {
+		t.Fatalf("the shipped launcher answered a pooled placement with %v; if it can now serve pooled, carbonCapabilities must say so", err)
+	}
+
+	// The capture value still has to be a legal pooled declaration, because it is what
+	// decides pooling the day the flag flips and a field nobody checks is a field that
+	// rots. PoolingPermitted lists the SAFE values and defaults everything else to
+	// unsafe, so a typo, a zero value or a future Core constant all land on the unsafe
+	// side.
+	if capabilities.CaptureSafety != department.CaptureSafetyBoundedMaterialized {
+		t.Errorf("CaptureSafety = %q, want bounded_materialized: Carbon's highest-output tools materialize their result under harness's declared ceiling", capabilities.CaptureSafety)
+	}
+	if !(department.Capabilities{
+		SupportsPooled:  true,
+		AdmissionWeight: 1,
+		CaptureSafety:   capabilities.CaptureSafety,
+	}).PoolingPermitted() {
+		t.Error("the declared capture safety would forbid pooling even with SupportsPooled set; flipping the flag back would silently produce a dedicated-only target")
+	}
+
 	if capabilities.AdmissionWeight == 0 {
 		t.Error("AdmissionWeight = 0; a target that costs nothing admits without bound")
 	}
@@ -166,10 +245,6 @@ func TestCarbonCapabilitiesAreAValidPooledDeclaration(t *testing.T) {
 	}
 	if capabilities.RequiresCheckpoint {
 		t.Error("RequiresCheckpoint = true; Carbon restores a conversation from the journal, so requiring a checkpoint would refuse every restore of a session that never made one")
-	}
-	placements := capabilities.PermittedPlacements()
-	if len(placements) != 2 {
-		t.Errorf("PermittedPlacements() = %v, want both pooled and dedicated", placements)
 	}
 }
 
@@ -540,8 +615,45 @@ func TestASuccessorClosesAPredecessorsStrandedAttempt(t *testing.T) {
 	if !ok {
 		t.Fatal("the successor offers no recovery closure: the stranded attempt is unclosable and this session's whole command stream is wedged permanently")
 	}
+	successorController := fixture.lastLaunched(t)
+
 	if err := closer.CloseAttempt(ctx, strandedCommand, strandedRuntimeCommand, carbonKindInput, strandedAttempt, predecessorEpoch); err != nil {
 		t.Fatalf("CloseAttempt: %v", err)
+	}
+
+	// THE TOMBSTONE MUST HAVE LANDED, and a nil error is not that assertion.
+	//
+	// host reads `err == nil` from this method as "the closure is durable" and
+	// proceeds straight to settling the record. An adapter that returned nil while
+	// harness had refused would make Host settle a command with NO tombstone written,
+	// and would specifically skip the ErrEnduringEffect arm — the case where the
+	// predecessor's effect committed and only its evidence is missing, which settling
+	// `not_applied` durably denies. So the landing is asserted, not inferred.
+	//
+	// It is asserted from the CONTROLLER because department.AttemptCloser returns only
+	// an error: harness's ClosureResult, which carries Appended and the sequence, does
+	// not cross that seam. Re-offering the identical closure to harness directly must
+	// report Appended=false at a non-zero sequence, which is exactly "an identical
+	// closure was already durable, and here is where the original landed".
+	harnessCloser, ok := successorController.(runtimecommand.AttemptCloser)
+	if !ok {
+		t.Fatal("the launched controller offers no runtimecommand.AttemptCloser")
+	}
+	replay, err := harnessCloser.CloseAttempt(ctx, runtimecommand.Closure{
+		CommandID:           runtimecommand.CommandID(strandedCommand),
+		RuntimeCommandID:    strandedRuntimeCommand,
+		Kind:                runtimecommand.KindInput,
+		AttemptID:           runtimecommand.AttemptID(strandedAttempt),
+		AttemptJournalEpoch: predecessorEpoch,
+	})
+	if err != nil {
+		t.Fatalf("re-offering the closure to harness: %v", err)
+	}
+	if replay.Appended {
+		t.Error("harness appended a SECOND tombstone for the same attempt; the adapter's call did not land, so nothing was durable to deduplicate against")
+	}
+	if replay.Sequence == 0 {
+		t.Error("harness reports the original closure at sequence 0; the adapter's call never landed")
 	}
 
 	// A REDELIVERED recovery is not a second tombstone. Host may re-offer the
@@ -549,6 +661,21 @@ func TestASuccessorClosesAPredecessorsStrandedAttempt(t *testing.T) {
 	// refusal here would put the session right back where it started.
 	if err := closer.CloseAttempt(ctx, strandedCommand, strandedRuntimeCommand, carbonKindInput, strandedAttempt, predecessorEpoch); err != nil {
 		t.Fatalf("CloseAttempt (redelivered): %v, want the original closure replayed", err)
+	}
+
+	// AND A REFUSAL MUST REACH HOST. A closure whose attempt grant is not strictly
+	// earlier than the runtime's own is refused by harness; the adapter must surface
+	// that refusal rather than swallow it. This is the same hazard as the landing
+	// assertion above, measured against the real dependency instead of a double: the
+	// two together are what make "the adapter reports what harness decided" a fact.
+	err = closer.CloseAttempt(ctx, sessionwire.CommandID("command-not-earlier"), mustUUIDForTest(t),
+		carbonKindInput, "attempt-not-earlier", successorEpoch)
+	if err == nil {
+		t.Fatal("a closure at the runtime's OWN grant was reported successful; host would settle the record with no tombstone written")
+	}
+	var unauthorized *runtimecommand.ClosureNotAuthorizedError
+	if !errors.As(err, &unauthorized) {
+		t.Errorf("the refusal is %v, want harness's *ClosureNotAuthorizedError carried through unchanged", err)
 	}
 }
 
@@ -571,46 +698,15 @@ func TestARuntimeWithNoCloserRefusesRatherThanConcluding(t *testing.T) {
 	if !errors.Is(err, ErrCarbonRuntimeCannotClose) {
 		t.Fatalf("CloseAttempt on a closerless runtime = %v, want ErrCarbonRuntimeCannotClose", err)
 	}
-}
-
-// TestCloseAttemptRefusesAClosureThatCannotNameAnAttempt proves the adapter
-// validates on the RELEASED type's own rule before reaching the runtime.
-//
-// A closure that cannot name an attempt is one that could tombstone the wrong
-// command, and a tombstone over a committed effect is the one error this protocol
-// cannot recover from. The unknown kind used here is in NEITHER vocabulary and never
-// has been: "restore" and "gate_response" were each an unknown kind once, and a
-// fixture built on either went green the day the vocabulary widened.
-func TestCloseAttemptRefusesAClosureThatCannotNameAnAttempt(t *testing.T) {
-	t.Parallel()
-
-	fixture := newRealRigFixture(t)
-	target := mustCarbonTarget(t, fixture)
-	runtime, err := target.Create(context.Background(), department.CreateRequest{
-		TenantID:     sessionwire.TenantID("tenant-a"),
-		SessionID:    sessionwire.SessionID("session-a"),
-		AgentID:      CarbonAgentID,
-		Placement:    sessionwire.HostPlacementDedicated,
-		RigSessionID: mustUUIDForTest(t),
-	})
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	t.Cleanup(func() { _ = runtime.ReleaseResidency(context.Background()) })
-	closer := runtime.(department.AttemptCloser)
-
-	for _, tc := range []struct {
-		name    string
-		kind    string
-		attempt string
-	}{
-		{"no attempt id", carbonKindInput, ""},
-		{"a kind neither vocabulary has ever held", "carbon_no_such_kind", "attempt-1"},
-	} {
-		if err := closer.CloseAttempt(context.Background(),
-			sessionwire.CommandID("command-1"), mustUUIDForTest(t), tc.kind, tc.attempt, 1); err == nil {
-			t.Errorf("CloseAttempt with %s = nil error, want a refusal", tc.name)
-		}
+	// AND IT MUST REACH HOST'S "no closer" ARM. host's disposition applier branches
+	// on department.ErrNoAttemptCloser and has a case written for exactly this
+	// composition shape — a composed runtime that declares the method for every
+	// runtime, so an absent closer arrives as a refusal rather than a failed type
+	// assertion. An unwrapped sentinel falls into the default arm and surfaces as
+	// RefusalStore, "ambiguous durable-store failure", which sends a composer to read
+	// the store for a composition problem.
+	if !errors.Is(err, department.ErrNoAttemptCloser) {
+		t.Fatalf("CloseAttempt on a closerless runtime = %v, which does not wrap department.ErrNoAttemptCloser; host will report it as an ambiguous store failure", err)
 	}
 }
 
@@ -620,49 +716,176 @@ func TestCloseAttemptRefusesAClosureThatCannotNameAnAttempt(t *testing.T) {
 // would satisfy every assertion and the discovery would never be exercised.
 type closerlessController struct{ session.SessionController }
 
-// recordingCloserController offers a closure that RECORDS and always succeeds. It
-// exists for one assertion that nothing else can make: that a malformed closure is
-// refused BEFORE the runtime is touched.
+// recordingCloserController offers a closure that RECORDS what it was handed and
+// answers from a script.
+//
+// It is PERMISSIVE by default, and that is what makes it useful. harness's own closer
+// validates and fences, so against a real session a malformed or misdirected closure
+// errs either way and a test asserting only "an error happened" cannot tell which
+// layer refused — nor can it see what the adapter actually forwarded, since
+// department.AttemptCloser returns only an error. Here the runtime accepts
+// everything, so what is recorded IS what the adapter built.
 type recordingCloserController struct {
 	session.SessionController
-	calls int
+	calls    []runtimecommand.Closure
+	failWith error
 }
 
-func (c *recordingCloserController) CloseAttempt(context.Context, runtimecommand.Closure) (runtimecommand.ClosureResult, error) {
-	c.calls++
-	return runtimecommand.ClosureResult{Appended: true, Sequence: 1}, nil
+func (c *recordingCloserController) CloseAttempt(_ context.Context, closure runtimecommand.Closure) (runtimecommand.ClosureResult, error) {
+	c.calls = append(c.calls, closure)
+	if c.failWith != nil {
+		return runtimecommand.ClosureResult{}, c.failWith
+	}
+	return runtimecommand.ClosureResult{Appended: true, Sequence: uint64(len(c.calls))}, nil
 }
 
-// TestCloseAttemptValidatesBeforeTouchingTheRuntime is the falsifier for the
-// adapter's own Closure.Validate call, and it needs a permissive runtime to make.
+// TestCloseAttemptForwardsTheCallersIdentities proves the tombstone is about the
+// command Host named, under the kind and attempt Host named.
 //
-// harness's closer validates too, so against a real session a malformed closure errs
-// either way and a test asserting only "an error happened" cannot tell which layer
-// refused. The distinction is not academic: a tombstone is the one record that must
-// never be written on a caller's say-so, and an adapter that forwarded an
-// unvalidated closure would be relying on a guard in another module to hold a rule
-// this one states. Here the runtime would ACCEPT it, so only the adapter's own check
-// can produce the refusal.
-func TestCloseAttemptValidatesBeforeTouchingTheRuntime(t *testing.T) {
+// EVERY FIELD IS A DIFFERENT WAY TO TOMBSTONE THE WRONG THING, and none of them is
+// caught downstream. harness keys closure idempotency on `command-disposition:<attemptID>`,
+// so a closure carrying the wrong CommandID still deduplicates cleanly on redelivery
+// and a redelivery assertion cannot see it; a wrong Kind writes a disposition the
+// settlement verifier correlates against a different record; and a substituted
+// AttemptID names an attempt no evidence was ever about. The author grant is
+// deliberately absent from this list — harness stamps that from the live lease it
+// holds, because a caller-supplied author epoch would be a caller-authored proof.
+func TestCloseAttemptForwardsTheCallersIdentities(t *testing.T) {
 	t.Parallel()
 
 	controller := &recordingCloserController{}
 	runtime := &carbonRuntime{controller: controller}
 
-	if err := runtime.CloseAttempt(context.Background(),
-		sessionwire.CommandID("command-1"), mustUUIDForTest(t), carbonKindInput, "", 1); err == nil {
-		t.Fatal("a closure naming no attempt was accepted; it could tombstone the wrong command")
+	command := sessionwire.CommandID("command-forwarded-1")
+	runtimeCommand := mustUUIDForTest(t)
+	const attempt = "attempt-forwarded-1"
+	const attemptEpoch = uint64(7)
+
+	if err := runtime.CloseAttempt(context.Background(), command, runtimeCommand, carbonKindGateResponse, attempt, attemptEpoch); err != nil {
+		t.Fatalf("CloseAttempt: %v", err)
 	}
-	if controller.calls != 0 {
-		t.Errorf("the runtime's closer was called %d times for a malformed closure, want 0: the adapter must refuse before the runtime is touched", controller.calls)
+	if len(controller.calls) != 1 {
+		t.Fatalf("the runtime's closer saw %d closures, want exactly 1", len(controller.calls))
+	}
+	got := controller.calls[0]
+	want := runtimecommand.Closure{
+		CommandID:           runtimecommand.CommandID(command),
+		RuntimeCommandID:    runtimeCommand,
+		Kind:                runtimecommand.KindGateResponse,
+		AttemptID:           runtimecommand.AttemptID(attempt),
+		AttemptJournalEpoch: attemptEpoch,
+	}
+	if got != want {
+		t.Errorf("the forwarded closure is %+v, want %+v", got, want)
+	}
+}
+
+// TestCloseAttemptPropagatesTheRuntimesRefusal is the assertion host's applier
+// depends on and the suite previously did not make.
+//
+// host reads a nil error from this method as "the tombstone is durable" and settles
+// the record. So an adapter that discarded harness's refusal would make Host settle a
+// command with NOTHING written — and the row that matters most is ErrEnduringEffect,
+// where the predecessor's effect COMMITTED and only its evidence is missing. Settling
+// `not_applied` there durably denies work the user actually received, and it is the
+// one error in this protocol that can never be recovered from.
+//
+// Each row asserts the error arrives UNWRAPPED ENOUGH to branch on, because host
+// branches on the type, not on a message.
+func TestCloseAttemptPropagatesTheRuntimesRefusal(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{
+			"an enduring effect: the predecessor's work committed and only its evidence is missing",
+			&runtimecommand.EnduringEffectError{
+				AttemptID:        runtimecommand.AttemptID("attempt-1"),
+				CommandID:        runtimecommand.CommandID("command-1"),
+				RuntimeCommandID: mustUUIDForTest(t),
+				EffectSeq:        4,
+			},
+		},
+		{
+			"a grant that is not strictly later",
+			&runtimecommand.ClosureNotAuthorizedError{
+				AttemptID:           runtimecommand.AttemptID("attempt-1"),
+				AttemptJournalEpoch: 2,
+				Current:             2,
+				Held:                true,
+			},
+		},
+		{
+			"an unreadable journal",
+			errors.New("runtimecommand: the journal could not be fully read"),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			controller := &recordingCloserController{failWith: tc.err}
+			runtime := &carbonRuntime{controller: controller}
+
+			err := runtime.CloseAttempt(context.Background(),
+				sessionwire.CommandID("command-1"), mustUUIDForTest(t), carbonKindInput, "attempt-1", 1)
+			if err == nil {
+				t.Fatal("the refusal was reported as success; host would settle the record with no tombstone written")
+			}
+			if !errors.Is(err, tc.err) {
+				t.Errorf("CloseAttempt = %v, want the runtime's own refusal carried through", err)
+			}
+		})
+	}
+}
+
+// TestCloseAttemptValidatesBeforeTouchingTheRuntime is the falsifier for the
+// adapter's own Closure.Validate call, and it needs a permissive runtime to make.
+//
+// A tombstone is the one record that must never be written on a caller's say-so, and
+// an adapter that forwarded an unvalidated closure would be relying on a guard in
+// another module to hold a rule this one states. Here the runtime would ACCEPT every
+// row, so only the adapter's own check can produce the refusal — and the assertion
+// that the closer was NOT CALLED is what makes that specific.
+//
+// The unknown-kind row is here rather than against a real session for exactly this
+// reason. Against a real session it passed on harness's EPOCH fence (author grant 1
+// against attempt epoch 1), not on the kind check it claimed to test: a vacuous row
+// that would have stayed green with the kind forwarding removed.
+func TestCloseAttemptValidatesBeforeTouchingTheRuntime(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name    string
+		kind    string
+		attempt string
+	}{
+		{"no attempt id", carbonKindInput, ""},
+		{"a kind neither vocabulary has ever held", "carbon_no_such_kind", "attempt-1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			controller := &recordingCloserController{}
+			runtime := &carbonRuntime{controller: controller}
+
+			if err := runtime.CloseAttempt(context.Background(),
+				sessionwire.CommandID("command-1"), mustUUIDForTest(t), tc.kind, tc.attempt, 1); err == nil {
+				t.Fatal("the closure was accepted; it could tombstone the wrong command")
+			}
+			if len(controller.calls) != 0 {
+				t.Errorf("the runtime's closer was called %d times for a malformed closure, want 0: the adapter must refuse before the runtime is touched", len(controller.calls))
+			}
+		})
 	}
 
+	controller := &recordingCloserController{}
+	runtime := &carbonRuntime{controller: controller}
 	if err := runtime.CloseAttempt(context.Background(),
 		sessionwire.CommandID("command-1"), mustUUIDForTest(t), carbonKindInput, "attempt-1", 1); err != nil {
 		t.Fatalf("a well-formed closure was refused: %v", err)
 	}
-	if controller.calls != 1 {
-		t.Errorf("the runtime's closer was called %d times for a well-formed closure, want 1", controller.calls)
+	if len(controller.calls) != 1 {
+		t.Errorf("the runtime's closer was called %d times for a well-formed closure, want 1", len(controller.calls))
 	}
 }
 
@@ -829,4 +1052,286 @@ func mustBlocksJSON(t *testing.T, raw string) json.RawMessage {
 		t.Fatalf("the fixture blocks are not valid JSON: %s", raw)
 	}
 	return json.RawMessage(raw)
+}
+
+// ---- what ApplyCommand actually hands harness -------------------------------
+
+// recordingApplierController records every Admitted record the adapter builds and
+// accepts all of them.
+//
+// It reports a held lease at a distinctive epoch so the forwarded LeaseEpoch can be
+// told apart from a zero or a constant. It is permissive for the same reason
+// recordingCloserController is: harness validates, so against a real session a
+// mis-built Admitted errs either way — and what the adapter FORWARDED never crosses
+// the department seam at all, because ApplyCommand returns only an error.
+type recordingApplierController struct {
+	session.SessionController
+	epoch    uint64
+	held     bool
+	admitted []runtimecommand.Admitted
+}
+
+func (c *recordingApplierController) LeaseEpoch() (uint64, bool) { return c.epoch, c.held }
+
+func (c *recordingApplierController) ApplyRuntimeCommand(_ context.Context, admitted runtimecommand.Admitted) (runtimecommand.Disposition, error) {
+	c.admitted = append(c.admitted, admitted)
+	return runtimecommand.Disposition{CommandID: admitted.CommandID, RuntimeCommandID: admitted.RuntimeCommandID}, nil
+}
+
+// TestApplyCommandForwardsTheAttemptAndTheIdentities is the ApplyCommand counterpart
+// of the closure identity test, and the AttemptID row is the one with teeth.
+//
+// harness REQUIRES an attempt id only for gate_response; for the other four kinds it
+// is optional, because a legacy admitted record carries none and an applier handed
+// one writes no disposition at all. So a Carbon that dropped the attempt id would
+// still be accepted by harness for input, interrupt, create and restore — and the
+// disposition frame would lose the attempt identity SILENTLY. The store settles from
+// that frame, and evidence about one attempt is not evidence about another.
+//
+// The record is also validated on the RELEASED type's own rule, so a shape harness
+// would refuse after the attempt is already durable is caught here instead.
+func TestApplyCommandForwardsTheAttemptAndTheIdentities(t *testing.T) {
+	t.Parallel()
+
+	const epoch = uint64(9)
+	createBody := mustJSON(t, sessionwire.CreateRequest{
+		CommandEnvelope: sessionwire.CommandEnvelope{Version: sessionwire.CurrentWireVersion, CommandID: "command-1"},
+		SessionID:       sessionwire.SessionID("session-a"),
+		AgentID:         CarbonAgentID,
+		Blocks:          mustBlocksJSON(t, `[{"Type":"text","Text":"first"}]`),
+	})
+	inputBody := mustJSON(t, sessionwire.InputRequest{
+		CommandEnvelope: sessionwire.CommandEnvelope{Version: sessionwire.CurrentWireVersion, CommandID: "command-1"},
+		SessionID:       sessionwire.SessionID("session-a"),
+		Blocks:          mustBlocksJSON(t, `[{"Type":"text","Text":"more"}]`),
+	})
+	gateBody := mustJSON(t, sessionwire.GateResponseRequest{
+		CommandEnvelope: sessionwire.CommandEnvelope{Version: sessionwire.CurrentWireVersion, CommandID: "command-1"},
+		SessionID:       sessionwire.SessionID("session-a"),
+		GateID:          sessionwire.GateID(mustUUIDForTest(t).String()),
+		Action:          "approve",
+		Values:          map[string]json.RawMessage{},
+		// Core requires EXACTLY ONE optimistic-open version, so an answer cannot be
+		// applied to a different incarnation of the same gate id. A fixture omitting
+		// both is refused, which is the decode arm working.
+		ExpectedOpenJournalSeq: 3,
+	})
+
+	for _, tc := range []struct {
+		kind       string
+		payload    []byte
+		wantKind   runtimecommand.Kind
+		wantBlocks int
+		wantAnswer bool
+	}{
+		{carbonKindCreate, createBody, runtimecommand.KindCreate, 1, false},
+		{carbonKindRestore, nil, runtimecommand.KindRestore, 0, false},
+		{carbonKindInput, inputBody, runtimecommand.KindInput, 1, false},
+		{carbonKindInterrupt, nil, runtimecommand.KindInterrupt, 0, false},
+		{carbonKindGateResponse, gateBody, runtimecommand.KindGateResponse, 0, true},
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
+			t.Parallel()
+			controller := &recordingApplierController{epoch: epoch, held: true}
+			runtime := &carbonRuntime{controller: controller}
+
+			command := sessionwire.CommandID("command-" + tc.kind)
+			runtimeCommand := mustUUIDForTest(t)
+			attempt := "attempt-" + tc.kind
+
+			if err := runtime.ApplyCommand(context.Background(), department.RuntimeCommand{
+				CommandID:        command,
+				RuntimeCommandID: runtimeCommand,
+				Kind:             tc.kind,
+				Payload:          tc.payload,
+				AttemptID:        attempt,
+			}); err != nil {
+				t.Fatalf("ApplyCommand: %v", err)
+			}
+			if len(controller.admitted) != 1 {
+				t.Fatalf("the applier saw %d admitted records, want exactly 1", len(controller.admitted))
+			}
+			got := controller.admitted[0]
+
+			if got.AttemptID != runtimecommand.AttemptID(attempt) {
+				t.Errorf("AttemptID = %q, want %q: the disposition frame the store settles from would name the wrong attempt, or none",
+					got.AttemptID, attempt)
+			}
+			if got.CommandID != runtimecommand.CommandID(command) {
+				t.Errorf("CommandID = %q, want %q", got.CommandID, command)
+			}
+			if got.RuntimeCommandID != runtimeCommand {
+				t.Errorf("RuntimeCommandID = %v, want %v", got.RuntimeCommandID, runtimeCommand)
+			}
+			if got.Kind != tc.wantKind {
+				t.Errorf("Kind = %q, want %q", got.Kind, tc.wantKind)
+			}
+			if got.LeaseEpoch != epoch {
+				t.Errorf("LeaseEpoch = %d, want the epoch the runtime reports holding (%d); harness checks it for EQUALITY against its own lease",
+					got.LeaseEpoch, epoch)
+			}
+			if len(got.Blocks) != tc.wantBlocks {
+				t.Errorf("Blocks = %d, want %d", len(got.Blocks), tc.wantBlocks)
+			}
+			if (got.GateResponse != nil) != tc.wantAnswer {
+				t.Errorf("GateResponse present = %t, want %t", got.GateResponse != nil, tc.wantAnswer)
+			}
+			// The released type's own rule, so a record harness would refuse AFTER the
+			// attempt is durable is caught here instead of there.
+			if err := got.Validate(); err != nil {
+				t.Errorf("the admitted record harness was handed does not validate: %v", err)
+			}
+		})
+	}
+}
+
+// ---- R1.2 step 4: the committed publication projection ----------------------
+
+// TestSubscribeCommittedCarriesTheCommittedBytes drives the event projection end to
+// end over a real session, which nothing did before.
+//
+// # Why a driven case and not a shape check
+//
+// The projection is about fifty lines of filter, goroutine and body carry, and every
+// one of its failure modes is SILENT. The worst is the filter: an EventFilter is
+// DECLARED INTEREST evaluated before the send, so the zero value selects no loop at
+// all — it is "nothing", not "everything" — and a Carbon composed with it would open
+// a link, publish no events for the life of the session, and report no error anywhere.
+// Nothing but a driven case can tell those apart.
+//
+// # What is asserted
+//
+// The publication must carry the COMMITTED bytes verbatim, not a re-projection: a
+// consumer joining a durable tail to this live stream would otherwise render two
+// different bodies for one event. It must carry the public EventID the durable append
+// committed under, because that is what a consumer dedupes on, and the CoveredThrough
+// watermark, because that is what a consumer resumes from. And it must be stamped with
+// the scope's tenant and session, since Host relays the record unchanged.
+func TestSubscribeCommittedCarriesTheCommittedBytes(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	fixture := newRealRigFixture(t)
+	target := mustCarbonTarget(t, fixture)
+	runtime, err := target.Create(ctx, department.CreateRequest{
+		TenantID:     sessionwire.TenantID("tenant-a"),
+		SessionID:    sessionwire.SessionID("session-a"),
+		AgentID:      CarbonAgentID,
+		Placement:    sessionwire.HostPlacementDedicated,
+		RigSessionID: mustUUIDForTest(t),
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	t.Cleanup(func() { _ = runtime.ReleaseResidency(context.Background()) })
+
+	streamCtx, stopStream := context.WithCancel(ctx)
+	defer stopStream()
+	publications, err := runtime.SubscribeCommitted(streamCtx, sessionwire.EventID(""))
+	if err != nil {
+		t.Fatalf("SubscribeCommitted: %v", err)
+	}
+
+	// Drive one real turn through the PRODUCT path — an admitted input command — so
+	// the events are the ones a placed session actually produces.
+	if err := runtime.ApplyCommand(ctx, department.RuntimeCommand{
+		CommandID:        sessionwire.CommandID("command-input-1"),
+		RuntimeCommandID: mustUUIDForTest(t),
+		Kind:             carbonKindInput,
+		AttemptID:        "attempt-input-1",
+		Payload: mustJSON(t, sessionwire.InputRequest{
+			CommandEnvelope: sessionwire.CommandEnvelope{Version: sessionwire.CurrentWireVersion, CommandID: "command-input-1"},
+			SessionID:       sessionwire.SessionID("session-a"),
+			Blocks:          mustBlocksJSON(t, `[{"Type":"text","Text":"hello"}]`),
+		}),
+	}); err != nil {
+		t.Fatalf("ApplyCommand(input): %v", err)
+	}
+
+	// WAIT FOR A LOOP-SCOPED EVENT, not merely for "a publication", and this is the
+	// assertion that gives the case teeth.
+	//
+	// Measured: with the zero EventFilter the stream still delivers the SESSION-scoped
+	// events (SessionActive, SessionIdle) and delivers NO loop events at all — no
+	// TurnStarted, no ContextMeasured, no LoopIdle. So a case that accepted the first
+	// publication it saw passed under the broken filter about two runs in three, which
+	// is worse than not testing it: a flaky green reads as an infrastructure problem.
+	// TurnStarted is loop-scoped, is produced by every input, and carries the user's
+	// own message, so asserting on it proves the filter selects loops AND that the
+	// committed bytes are the real ones.
+	var got sessionwire.EnduringPublication
+	deadline := time.After(20 * time.Second)
+	for got.EventID == "" {
+		select {
+		case publication, ok := <-publications:
+			if !ok {
+				t.Fatal("the publication channel closed before any loop-scoped event; the subscription ended without publishing the turn")
+			}
+			if bytes.Contains(publication.Body, []byte(`"type":"TurnStarted"`)) {
+				got = publication
+			}
+		case <-deadline:
+			t.Fatal("no loop-scoped publication within the deadline: an EventFilter is DECLARED INTEREST evaluated before the send, so the zero value selects no loop at all — a Carbon composed with it opens a link, publishes no turn for the life of the session, and reports no error anywhere")
+		}
+	}
+
+	if got.TenantID != sessionwire.TenantID("tenant-a") || got.SessionID != sessionwire.SessionID("session-a") {
+		t.Errorf("the publication is stamped tenant=%q session=%q, want the launch scope's; Host relays this record unchanged", got.TenantID, got.SessionID)
+	}
+	if got.EventID == "" {
+		t.Error("the publication carries no public EventID; a consumer has nothing to dedupe on")
+	}
+	if got.JournalSeq == 0 {
+		t.Error("the publication carries journal sequence 0")
+	}
+	if got.CoveredThrough != got.JournalSeq {
+		t.Errorf("CoveredThrough = %d and JournalSeq = %d; they are equal by contract — the append that produced a delivery is the newest record it may claim",
+			got.CoveredThrough, got.JournalSeq)
+	}
+	if !json.Valid(got.Body) {
+		t.Fatalf("the publication body is not valid JSON: %q", got.Body)
+	}
+	if err := got.Validate(); err != nil {
+		t.Errorf("the publication Core would carry does not validate: %v", err)
+	}
+	// The COMMITTED BYTES, carried rather than re-projected: the body is the durable
+	// append's own, so it still holds the loop this turn ran in and the words the user
+	// sent. A re-projection would be free to drop either.
+	if !bytes.Contains(got.Body, []byte(`"loop_id"`)) {
+		t.Errorf("the committed body names no loop: %s", got.Body)
+	}
+	if !bytes.Contains(got.Body, []byte("hello")) {
+		t.Errorf("the committed body does not carry the input's own words: %s", got.Body)
+	}
+
+	// The subscription is bound to the context the caller passed, so a Host that stops
+	// relaying stops the goroutine and closes the channel rather than leaking both for
+	// the life of the session.
+	stopStream()
+	closeDeadline := time.After(20 * time.Second)
+	for {
+		select {
+		case _, ok := <-publications:
+			if !ok {
+				return
+			}
+		case <-closeDeadline:
+			t.Fatal("the publication channel stayed open after the subscription context was cancelled; the projection goroutine outlives its caller")
+		}
+	}
+}
+
+// TestSubscribeCommittedRefusesASessionThatCannotReportCommittedBytes holds the
+// two-result capability's whole point.
+//
+// A consumer must learn it is not one of those sessions BEFORE it starts persisting
+// cursors, not after. A projection that served a re-rendered approximation instead
+// would let a consumer join a durable tail to a live stream that disagrees with it.
+func TestSubscribeCommittedRefusesASessionThatCannotReportCommittedBytes(t *testing.T) {
+	t.Parallel()
+
+	runtime := &carbonRuntime{controller: &closerlessController{}}
+	if _, err := runtime.SubscribeCommitted(context.Background(), sessionwire.EventID("")); !errors.Is(err, ErrCarbonNoPublications) {
+		t.Fatalf("SubscribeCommitted on a session with no committed stream = %v, want ErrCarbonNoPublications", err)
+	}
 }

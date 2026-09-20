@@ -108,22 +108,56 @@ func CarbonCompatibilityID(cfg Config) department.CompatibilityID {
 
 // carbonCapabilities is what Carbon declares about how it may be placed.
 //
-// CaptureSafety is BOUNDED_MATERIALIZED and not streaming, and the difference
-// decides whether Carbon may share a Host at all. Carbon's highest-output tools
-// (Bash and ReadFile) return a materialized result: the bytes are resident before
-// the loop can bound them, and the bound is harness's declared ceiling
-// (loop.DefaultMaterializedToolResultBytes) rather than a stream. Declaring
-// streaming would be a claim about memory residency that Carbon cannot keep, and
-// the consequence lands on the Host's capacity budget rather than here.
+// # SupportsPooled is FALSE, and it is false because of what Carbon SHIPS
 //
-// RequiresWorkspace is true because every Carbon launch materializes a workspace
-// and takes an exclusive lease on its root. RequiresCheckpoint is false: Carbon
-// restores a conversation from the session journal, and a workspace checkpoint is
-// an optional convenience rather than a precondition — a target that required one
-// would refuse every restore of a session that never made one.
+// A capability is a promise made to a pool, not a description of what the product
+// could do in principle. Carbon ships exactly one launcher — ServeHostLauncher — and
+// it serves ONE workspace root: the rig is placed with rig.WithExclusiveWorkspace and
+// fsstore's advisory lock on workspace-roots/<sha256(root)> conflicts even inside one
+// process. A pooled declaration would therefore be a promise the shipped composition
+// cannot keep, and the breach does not fail cleanly:
+//
+//  1. Host publishes a pooled seat for any target whose Capabilities.PoolingPermitted()
+//     holds, so it advertises seats it cannot serve.
+//  2. Factory's placement policy selects the first admissible candidate for a pooled
+//     record, and admissibility is the agent/runtime/placement triple. Nothing
+//     consults whether the target's launcher can serve pooled — it cannot; that fact
+//     lives below the wire.
+//  3. The launcher's refusal is flattened into a skipped candidate, and with one Host
+//     the round ends OutcomeNoCapacity and returns NO ERROR AT ALL.
+//  4. The PendingSweeper retries every sweep. There is no terminal state and no
+//     operator signal: an operator sees a session that never places, a log line
+//     saying no capacity, and a Host advertising free pooled seats.
+//
+// So the typed PooledPlacementUnsupportedError buys a better message in the Host's
+// log and nothing at the decision point. It stays — it is the right guard for the day
+// this flips back, and for any second launcher — but the DECLARATION is what Factory
+// reads, and it must be true.
+//
+// FLIPPING IT BACK is cheap and needs no migration: capabilities are re-advertised on
+// every Host start. The prerequisite is a launcher that materializes a workspace root
+// PER SESSION, which is R1.2 step 3's debt in full. The structurally better fix, when
+// that launcher exists, is to derive this from the launcher rather than declare it
+// beside one, so the two cannot drift again.
+//
+// # The rest
+//
+// CaptureSafety is BOUNDED_MATERIALIZED and not streaming. Carbon's highest-output
+// tools (Bash and ReadFile) return a materialized result: the bytes are resident
+// before the loop can bound them, and the bound is harness's declared ceiling
+// (loop.DefaultMaterializedToolResultBytes) rather than a stream. It is declared
+// honestly even though nothing reads it while pooling is off, because it is exactly
+// the value that decides pooling the day the flag flips — and a field nobody checks
+// is a field that rots.
+//
+// RequiresWorkspace is true because every Carbon launch materializes a workspace and
+// takes an exclusive lease on its root. RequiresCheckpoint is false: Carbon restores a
+// conversation from the session journal, and a workspace checkpoint is an optional
+// convenience rather than a precondition — a target that required one would refuse
+// every restore of a session that never made one.
 func carbonCapabilities() department.Capabilities {
 	return department.Capabilities{
-		SupportsPooled:     true,
+		SupportsPooled:     false,
 		SupportsDedicated:  true,
 		RequiresWorkspace:  true,
 		RequiresCheckpoint: false,
@@ -132,14 +166,26 @@ func carbonCapabilities() department.Capabilities {
 	}
 }
 
-// LaunchScope is the per-session context ONE Carbon launch is built under.
+// LaunchScope is the context ONE Carbon launch is built under.
 //
-// It exists because runbook 08 R1.2 step 3 requires every session-dependent binding
-// to remain per-session in pooled mode — the access evaluator, the gate, the
-// workspace, the process supervisor, the credentials, the MCP managers and the
-// object prefix. A launcher that ignored this value and reused one process-wide
-// binding would compile perfectly and would cross-wire two tenants' sessions, so the
-// scope is passed as a value and the launcher's contract is stated on it.
+// # It is the SEAM for R1.2 step 3, not evidence that step 3 is met
+//
+// Step 3 requires every session-dependent binding to stay per-session in pooled mode:
+// the access evaluator, the gate, the workspace, the process supervisor, the
+// credentials, the MCP managers and the object prefix. THAT IS NOT MET TODAY and
+// cannot be by the launcher Carbon ships. ServeHostLauncher admits ONE live session
+// at a time, and a property about what two concurrent sessions share is not partly
+// proven when there is never more than one — it is vacuous. Of the seven bindings,
+// only the MCP composition is genuinely built per session (mcpharness.Manager.BindSession
+// is a compare-and-swap that permanently binds one Manager to one session id, so it
+// cannot be hoisted); the access evaluator, the sandbox executor set and the gate are
+// built once in OpenServeHost and are per-WORKSPACE by construction.
+//
+// So this type exists to make the per-session context EXPRESSIBLE, so that the
+// per-session-root launcher R1.3 owes has somewhere to read it from. A launcher that
+// ignored it and reused one process-wide binding would compile perfectly and would
+// cross-wire two tenants' sessions; the scope is a value, and the obligation is stated
+// on it, precisely because nothing in the type system will catch that.
 type LaunchScope struct {
 	TenantID  sessionwire.TenantID
 	SessionID sessionwire.SessionID
@@ -149,9 +195,21 @@ type LaunchScope struct {
 	// WorkspaceRoot is the materialized workspace this launch runs against.
 	WorkspaceRoot string
 
-	// ObjectNamespace is the durable prefix every object this session writes lives
-	// under. It is Host's StorageContext.Namespace, opaque here and never parsed.
-	ObjectNamespace string
+	// THERE IS DELIBERATELY NO ObjectNamespace FIELD, and its absence is the honest
+	// state rather than an oversight.
+	//
+	// Step 3 names an "object prefix", and Host does supply one in
+	// StorageContext.Namespace. An earlier revision of this type carried it — and
+	// nothing read it. A field that is populated on every launch and consulted by
+	// nothing is worse than a missing one: a later reader assumes it is honoured, and
+	// the day Carbon gains durable object capture a pooled Carbon would write every
+	// tenant's objects under one un-namespaced prefix with this struct apparently
+	// saying otherwise.
+	//
+	// Carbon captures no objects at all today (it wires no rig.WithToolResultCapture),
+	// so there is nothing to scope. The field belongs with the code that scopes
+	// something, which is R1.3's per-session-root launcher, and it should be added
+	// there together with its reader.
 
 	// RigSessionID is HARNESS'S identity to launch under: the runtime session id the
 	// session's immutable durable binding names, derived by Factory at create time
@@ -203,7 +261,19 @@ type SessionLauncher interface {
 var (
 	ErrCarbonRuntimeCannotApply = errors.New("carbon: the launched session cannot apply an admitted runtime command")
 	ErrCarbonRuntimeNoLease     = errors.New("carbon: the launched session reports no held journal lease")
-	ErrCarbonRuntimeCannotClose = errors.New("carbon: the launched session offers no recovery closure")
+	// ErrCarbonRuntimeCannotClose WRAPS department.ErrNoAttemptCloser, and the wrap
+	// is the whole value of the error.
+	//
+	// host's disposition applier branches on that sentinel and has an arm written for
+	// exactly this composition shape — a composed runtime reaches it through a wrapper
+	// that declares the method for every runtime, so "no closer" arrives as a REFUSAL
+	// rather than as a failed type assertion. Without the wrap this lands in the
+	// default arm and surfaces as RefusalStore, "ambiguous durable-store failure",
+	// which sends an operator to look at the store for a composition problem. Both
+	// outcomes block the command, so this is a diagnosis fix and not a correctness one
+	// — but the whole reason a composer reads that refusal is to find out what to fix.
+	ErrCarbonRuntimeCannotClose = fmt.Errorf("%w: carbon: the launched session offers no recovery closure",
+		department.ErrNoAttemptCloser)
 	ErrCarbonUnknownCommandKind = errors.New("carbon: this product runtime does not apply this command kind")
 	ErrCarbonNoPublications     = errors.New("carbon: the launched session cannot report committed public events")
 )
@@ -241,13 +311,12 @@ var _ department.Rig = (*carbonRig)(nil)
 // IDENTITY. See LaunchScope.RigSessionID for why that is not cosmetic.
 func (r *carbonRig) NewSession(ctx context.Context, req department.RigCreateRequest) (department.RigSession, error) {
 	return r.launch(ctx, LaunchScope{
-		TenantID:        req.TenantID,
-		SessionID:       req.SessionID,
-		AgentID:         req.AgentID,
-		Placement:       req.Placement,
-		WorkspaceRoot:   req.WorkspaceRoot,
-		ObjectNamespace: req.Storage.Namespace,
-		RigSessionID:    req.RigSessionID,
+		TenantID:      req.TenantID,
+		SessionID:     req.SessionID,
+		AgentID:       req.AgentID,
+		Placement:     req.Placement,
+		WorkspaceRoot: req.WorkspaceRoot,
+		RigSessionID:  req.RigSessionID,
 	})
 }
 
@@ -257,14 +326,13 @@ func (r *carbonRig) NewSession(ctx context.Context, req department.RigCreateRequ
 // restore FROM.
 func (r *carbonRig) RestoreSession(ctx context.Context, id uuid.UUID, req department.RigRestoreRequest) (department.RigSession, error) {
 	return r.launch(ctx, LaunchScope{
-		TenantID:        req.TenantID,
-		SessionID:       req.SessionID,
-		AgentID:         req.AgentID,
-		Placement:       req.Placement,
-		WorkspaceRoot:   req.WorkspaceRoot,
-		ObjectNamespace: req.Storage.Namespace,
-		RigSessionID:    id,
-		Restore:         true,
+		TenantID:      req.TenantID,
+		SessionID:     req.SessionID,
+		AgentID:       req.AgentID,
+		Placement:     req.Placement,
+		WorkspaceRoot: req.WorkspaceRoot,
+		RigSessionID:  id,
+		Restore:       true,
 	})
 }
 

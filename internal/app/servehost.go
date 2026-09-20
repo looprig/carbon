@@ -727,13 +727,29 @@ func (e *ForeignWorkspaceRootError) Error() string {
 // channel on the value it was handed. A wrapper that dropped either would opt the
 // session out silently.
 //
-// Every session-dependent binding stays per-session: adoptLocked builds this
-// session's OWN MCP composition (mcpharness.Manager.BindSession is a
-// compare-and-swap that permanently binds one Manager to one session id, so it
-// cannot be hoisted), and the rig materializes this session's own workspace lease,
-// executor set, gate and process supervisor. What the host DOES share across
-// sessions is the definition, the access wiring and the credential admission, all of
-// which are properties of the one root it serves.
+// # WHAT IS PER-SESSION HERE, EXACTLY — and it is less than runbook 08 step 3 asks
+//
+// An earlier version of this comment claimed the rig materializes this session's own
+// executor set and gate. IT DOES NOT, and this file's own header says so: the sandbox
+// ExecutorSet and the loop.AccessGate are per-WORKSPACE, built once in OpenServeHost
+// (buildSessionAccess is called exactly once), and the loop.Definition closes over
+// both — so under a shared rig, access CANNOT be per-session. The claim is corrected
+// rather than deleted because it is the kind of sentence a future composer acts on.
+//
+// Genuinely per session: the MCP composition, which adoptLocked builds here because
+// mcpharness.Manager.BindSession is a compare-and-swap that permanently binds one
+// Manager to one session id and therefore cannot be hoisted; and the session's own
+// workspace-root lease and journal.
+//
+// Shared, because they are properties of the ONE root this host serves: the loop
+// definition, the access evaluator, the executor set, the gate, the process
+// supervisor and the credential admission.
+//
+// That is not a problem TODAY, because this launcher admits one live session at a
+// time — a second concurrent launch is refused below — so there is never a second
+// session to be isolated from. It becomes the whole problem for a pooled Carbon,
+// which is why carbonCapabilities declares SupportsPooled false and why step 3 is
+// carried to R1.3's per-session-root launcher in full, object prefix included.
 func (l *ServeHostLauncher) Launch(ctx context.Context, scope LaunchScope) (session.SessionController, error) {
 	if l == nil || l.host == nil {
 		return nil, errors.New("carbon: the serve-host launcher has no host")
