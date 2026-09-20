@@ -271,13 +271,17 @@ Host and a shared durable SessionStore. Factory is the public listener; HostLink
 internal. Several sessions may be resident in the Host, subject to its capacity and
 workspace isolation. A browser tab is a viewer, not the owner of the durable
 session: closing or reconnecting it does not discard the session. The public
-journal provides events missed while a viewer was disconnected.
+journal provides events missed while a viewer was disconnected. An embedding
+application must inject a credential verifier and authorizer into `browser.Start`;
+the stock `carbon serve` command has neither and refuses before opening storage.
 
-Cold sessions remain in the durable catalog. `GET /v1/sessions`,
+Cold disposition sessions remain in the durable catalog. `GET /v1/sessions`,
 `GET /v1/sessions/{sid}/status`, `GET /v1/sessions/{sid}/journal`, and a realtime
-subscription read them without launching Carbon. An explicit create or input
-command can place a cold session on the Host. The CLI/TUI and headless paths still
-construct their own rig without connecting to Factory.
+subscription read them without launching a Carbon session runtime. An explicit create or input
+command can place a cold session on the Host. Browser composition defaults to the
+`tenant-v1` store layout and refuses `legacy-single-tenant-v1`; it does not migrate
+old stores automatically. The CLI/TUI and headless paths still construct their own
+rig without connecting to Factory.
 
 The old `/ui/live`, `/ui/session-presentation`, and `/ui/handoff` routes described
 a single process-global live session. The pooled Host has no such incumbent.

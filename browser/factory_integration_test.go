@@ -149,13 +149,13 @@ func TestServeFactoryAuthenticatesBootstrapAndProductUI(t *testing.T) {
 		var unavailable struct {
 			Error struct {
 				Code      string `json:"code"`
-				Retryable bool   `json:"retryable"`
+				Retryable *bool  `json:"retryable"`
 			} `json:"error"`
 		}
 		if err := json.Unmarshal(response.Body.Bytes(), &unavailable); err != nil {
 			t.Fatalf("retired %s %s response is not JSON: %v", route.method, route.path, err)
 		}
-		if response.Code != http.StatusServiceUnavailable || unavailable.Error.Code != "ui_route_unavailable" || unavailable.Error.Retryable {
+		if response.Code != http.StatusServiceUnavailable || unavailable.Error.Code != "ui_route_unavailable" || unavailable.Error.Retryable == nil || *unavailable.Error.Retryable {
 			t.Fatalf("retired %s %s = %d %q", route.method, route.path, response.Code, response.Body.String())
 		}
 	}

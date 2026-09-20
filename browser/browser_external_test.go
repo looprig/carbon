@@ -307,6 +307,7 @@ func connectBrowserViewer(t *testing.T, base string) (*centrifugego.Client, <-ch
 
 func TestExternalApplicationCanStartCreateAndStop(t *testing.T) {
 	cfg := browserFixture(t)
+	cfg.Factory.ReconcileLimits.Interval = 25 * time.Millisecond
 	release := make(chan struct{})
 	modelRequests := make(chan struct{}, 4)
 	replyCounter := &atomic.Int32{}
@@ -422,8 +423,15 @@ func TestExternalApplicationCanStartCreateAndStop(t *testing.T) {
 	case <-time.After(15 * time.Second):
 		t.Fatal("model output reached journal but not live browser viewer")
 	}
-	viewer.Close()
 	buildsBeforeDisconnect := runtimeBuilds.Load()
+	viewer.Close()
+	// Let Factory observe the lost viewer before the offline command. The
+	// configured demand debounce is shorter than a production browser refresh.
+	select {
+	case <-time.After(cfg.Factory.ClientLinkLimits.DemandReleaseDebounce + cfg.Factory.ReconcileLimits.Interval):
+	case <-s.Done():
+		t.Fatal("server stopped while viewer was disconnected")
+	}
 	postInput("browser-input-3")
 	select {
 	case <-modelRequests:
@@ -452,6 +460,14 @@ func TestExternalApplicationCanStartCreateAndStop(t *testing.T) {
 	}
 	reconnected, continued, _ := connectBrowserViewer(t, base)
 	defer reconnected.Close()
+	// A refreshed viewer recovers the gap from Factory's durable journal
+	// starting just after the last event it saw before disconnect.
+	recovery := request(http.MethodGet, fmt.Sprintf("/v1/sessions/browser-session-1/journal?from_seq=%d&limit=100", firstLive.JournalSeq+1), nil)
+	recoveredBody, _ := io.ReadAll(recovery.Body)
+	recovery.Body.Close()
+	if recovery.StatusCode != http.StatusOK || !strings.Contains(string(recoveredBody), "browser reply 3") {
+		t.Fatalf("reconnected viewer could not recover offline output: %d %s", recovery.StatusCode, recoveredBody)
+	}
 	postInput("browser-input-4")
 	select {
 	case <-modelRequests:
@@ -488,10 +504,16 @@ func TestExternalApplicationCanStartCreateAndStop(t *testing.T) {
 
 func TestColdSessionReadsDoNotLaunchUntilExplicitInput(t *testing.T) {
 	cfg := browserFixture(t)
+	cfg.Factory.ReconcileLimits.Interval = 25 * time.Millisecond
 	builds := &atomic.Int32{}
+	buildNotices := make(chan struct{}, 8)
 	modelCalls := make(chan struct{}, 4)
 	cfg.ClientBuilder = func() (inference.Client, func() model.Model, error) {
 		builds.Add(1)
+		select {
+		case buildNotices <- struct{}{}:
+		default:
+		}
 		return client{requests: modelCalls}, func() model.Model {
 			return model.CustomModel(model.ProviderName(llm.ProviderLMStudio), model.APIFormatOpenAI,
 				"http://localhost:1234/v1", "browser-test", model.WithTools(),
@@ -553,10 +575,19 @@ func TestColdSessionReadsDoNotLaunchUntilExplicitInput(t *testing.T) {
 	t.Cleanup(func() { _ = reopened.Stop(context.Background()) })
 	base = "http://" + reopened.Addr().String()
 	buildsBeforeReads := builds.Load()
+	for len(buildNotices) > 0 {
+		<-buildNotices
+	}
 	for _, path := range []string{"/v1/sessions", "/v1/sessions/browser-session-1/status", "/v1/sessions/browser-session-1/journal"} {
 		status, body := request(base, http.MethodGet, path, nil)
 		if status != http.StatusOK {
 			t.Fatalf("cold GET %s = %d %s", path, status, body)
+		}
+		if path == "/v1/sessions" && !strings.Contains(string(body), "browser-session-1") {
+			t.Fatalf("cold list omitted seeded session: %s", body)
+		}
+		if strings.HasSuffix(path, "/journal") && !strings.Contains(string(body), "browser reply") {
+			t.Fatalf("cold journal omitted seeded history: %s", body)
 		}
 		if strings.HasSuffix(path, "/status") {
 			var status sessionwire.SessionStatus
@@ -566,6 +597,18 @@ func TestColdSessionReadsDoNotLaunchUntilExplicitInput(t *testing.T) {
 		}
 	}
 	viewer, _, _ := connectBrowserViewer(t, base)
+	// Factory exposes no sweep-complete hook. Observe beyond two nominal
+	// 16-shard rounds at this fixture's 25ms cadence while the viewer is live.
+	// This bounds delayed placement; it does not claim every sweep completed.
+	observation := time.NewTimer(1200 * time.Millisecond)
+	defer observation.Stop()
+	select {
+	case <-buildNotices:
+		t.Fatal("cold reads or subscription launched a runtime during observation")
+	case <-modelCalls:
+		t.Fatal("cold reads or subscription reached model during observation")
+	case <-observation.C:
+	}
 	viewer.Close()
 	if got := builds.Load(); got != buildsBeforeReads {
 		t.Fatalf("cold reads and subscription caused %d additional runtime builds", got-buildsBeforeReads)
