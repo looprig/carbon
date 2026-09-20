@@ -11,6 +11,7 @@ import (
 	"time"
 
 	carbon "github.com/looprig/carbon/internal/app"
+	sessionwire "github.com/looprig/core/sessionwire/v1"
 	"github.com/looprig/factory"
 	"github.com/looprig/host"
 	"github.com/looprig/inference"
@@ -66,6 +67,10 @@ type Server struct {
 	hostStopped       bool
 	storageClosed     bool
 	shutdownPolicy    ShutdownPolicy
+	quiesceFactory    func(context.Context) error
+	pendingReader     outstandingReader
+	pendingTenant     sessionwire.TenantID
+	waitPending       func(context.Context) error
 	stopFactory       func(context.Context) error
 	stopHost          func(context.Context) (host.DrainReport, error)
 	closeStorage      func(context.Context) error
@@ -293,13 +298,29 @@ func (s *Server) Wait(ctx context.Context) error {
 func (s *Server) cleanup(attempt *stopAttempt) {
 	var diagnostic, err error
 	if !s.factoryStopped && (s.factory != nil || s.stopFactory != nil) {
+		if s.quiesceFactory != nil {
+			quiesceCtx, cancel := context.WithTimeout(context.Background(), s.shutdownPolicy.QuiesceTimeout)
+			quiesceErr := s.quiesceFactory(quiesceCtx)
+			cancel()
+			if quiesceErr != nil {
+				diagnostic = errors.Join(diagnostic, fmt.Errorf("carbon: Factory quiesce: %w", quiesceErr))
+			} else if s.pendingReader != nil {
+				settleCtx, cancel := context.WithTimeout(context.Background(), s.shutdownPolicy.SettlementTimeout)
+				wait := s.waitPending
+				if wait == nil {
+					wait = waitPendingPoll
+				}
+				diagnostic = errors.Join(diagnostic, waitOutstanding(settleCtx, s.pendingReader, s.pendingTenant, 4096, wait))
+				cancel()
+			}
+		}
 		// Factory's first Stop is idempotently terminal even when it reports an
 		// HTTP error. The uncancelled call has completed its sweep join.
 		stop := s.stopFactory
 		if stop == nil {
 			stop = s.factory.Stop
 		}
-		diagnostic = stop(context.Background())
+		diagnostic = errors.Join(diagnostic, stop(context.Background()))
 		s.factoryStopped = true
 	}
 	// Factory.Stop closes its active HTTP listener. If Stop overtook Serve's

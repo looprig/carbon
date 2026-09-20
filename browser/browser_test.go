@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/looprig/sessionstore"
 )
 
 func TestStopClosesListenerWhenServeWasOvertaken(t *testing.T) {
@@ -82,6 +84,80 @@ func TestStopRetriesHostBeforeClosingStorage(t *testing.T) {
 	}
 	if got := strings.Join(order, ","); got != "factory,host,host,storage" {
 		t.Fatalf("retry cleanup = %s", got)
+	}
+}
+
+func TestStopQuiescesAndObservesBeforeFactoryAndHost(t *testing.T) {
+	var order []string
+	p := &pendingPages{shards: 1, pages: map[int][]sessionstore.DispositionDueCommandPage{0: {{Commands: []sessionstore.DispositionInboxEntry{pendingFor("local")}}}}}
+	s := &Server{done: make(chan struct{}), shutdownPolicy: ShutdownPolicy{QuiesceTimeout: time.Second, SettlementTimeout: time.Second},
+		quiesceFactory: func(context.Context) error { order = append(order, "quiesce"); return nil },
+		pendingReader:  p, pendingTenant: "local",
+		waitPending: func(context.Context) error {
+			order = append(order, "pending")
+			p.pages[0] = nil
+			p.reads = nil
+			return nil
+		},
+		stopFactory: func(context.Context) error { order = append(order, "factory"); return nil },
+		stopHost: func(context.Context) (host.DrainReport, error) {
+			order = append(order, "host")
+			return host.DrainReport{}, nil
+		},
+		closeStorage: func(context.Context) error { order = append(order, "storage"); return nil },
+	}
+	if err := s.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(order, ","); got != "quiesce,pending,factory,host,storage" {
+		t.Fatalf("shutdown order = %s", got)
+	}
+}
+
+func TestStopReportsUnsettledCommandAndStillDrainsHost(t *testing.T) {
+	var order []string
+	p := &pendingPages{shards: 1, pages: map[int][]sessionstore.DispositionDueCommandPage{0: {{Commands: []sessionstore.DispositionInboxEntry{pendingFor("local")}}}}}
+	s := &Server{done: make(chan struct{}), shutdownPolicy: ShutdownPolicy{QuiesceTimeout: time.Second, SettlementTimeout: time.Second},
+		quiesceFactory: func(context.Context) error { order = append(order, "quiesce"); return nil },
+		pendingReader:  p, pendingTenant: "local",
+		waitPending: func(context.Context) error { return context.DeadlineExceeded },
+		stopFactory: func(context.Context) error { order = append(order, "factory"); return nil },
+		stopHost: func(context.Context) (host.DrainReport, error) {
+			order = append(order, "host")
+			return host.DrainReport{}, nil
+		},
+		closeStorage: func(context.Context) error { order = append(order, "storage"); return nil },
+	}
+	err := s.Stop(context.Background())
+	var pending *PendingCommandsError
+	if !errors.As(err, &pending) || pending.Count != 1 {
+		t.Fatalf("Stop = %v, want one last-observed pending command", err)
+	}
+	if got := strings.Join(order, ","); got != "quiesce,factory,host,storage" {
+		t.Fatalf("shutdown after settlement timeout = %s", got)
+	}
+	if p.pages[0][0].Commands[0].Record.State != sessionstore.InboxStatePending {
+		t.Fatal("shutdown altered pending command")
+	}
+}
+
+func TestQuiesceFailureStillStopsFactoryAndHost(t *testing.T) {
+	want := errors.New("quiesce failed")
+	var order []string
+	s := &Server{done: make(chan struct{}), shutdownPolicy: ShutdownPolicy{QuiesceTimeout: time.Second},
+		quiesceFactory: func(context.Context) error { order = append(order, "quiesce"); return want },
+		stopFactory:    func(context.Context) error { order = append(order, "factory"); return nil },
+		stopHost: func(context.Context) (host.DrainReport, error) {
+			order = append(order, "host")
+			return host.DrainReport{}, nil
+		},
+		closeStorage: func(context.Context) error { order = append(order, "storage"); return nil },
+	}
+	if err := s.Stop(context.Background()); !errors.Is(err, want) {
+		t.Fatalf("Stop = %v", err)
+	}
+	if got := strings.Join(order, ","); got != "quiesce,factory,host,storage" {
+		t.Fatalf("shutdown after Quiesce error = %s", got)
 	}
 }
 

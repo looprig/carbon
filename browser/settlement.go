@@ -94,3 +94,14 @@ func waitOutstanding(ctx context.Context, reader outstandingReader, tenant sessi
 		}
 	}
 }
+
+func waitPendingPoll(ctx context.Context) error {
+	timer := time.NewTimer(100 * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
