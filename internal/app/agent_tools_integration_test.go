@@ -612,8 +612,15 @@ func TestCarbonWiresNoToolResultCapture(t *testing.T) {
 // wired. A guard that cannot see the place the thing will be written is a guard that
 // stays green through the event it exists to catch.
 func carbonSourceOffenders(needle string) ([]string, error) {
-	return carbonSourceOffendersUnder(filepath.Join("..", ".."), needle)
+	return carbonSourceOffendersUnder(carbonModuleRoot(), needle)
 }
+
+// carbonModuleRoot is the ONE place the guards' scan root is written.
+//
+// It is a function rather than two literals because the root is the property that
+// was wrong before, and a value stated twice is a value that can be narrowed once.
+// TestCarbonGuardsScanTheModuleRoot pins what it actually reaches.
+func carbonModuleRoot() string { return filepath.Join("..", "..") }
 
 // carbonSourceOffendersUnder is the scanner proper, taking its root so it can be
 // falsified against a tree a test builds. carbonSourceOffenders has no falsifier of
@@ -660,7 +667,7 @@ func carbonSourceOffendersUnder(root, needle string) ([]string, error) {
 // absence as evidence of the presence, which is the most confusing possible false
 // positive. Matching a call expression is exact and cannot be tripped by prose.
 func carbonCallOffenders(pkg, name string) ([]string, error) {
-	return carbonCallOffendersUnder(filepath.Join("..", ".."), pkg, name)
+	return carbonCallOffendersUnder(carbonModuleRoot(), pkg, name)
 }
 
 // carbonCallOffendersUnder is carbonCallOffenders with its root supplied, so it can
@@ -707,6 +714,33 @@ func carbonCallOffendersUnder(root, pkg, name string) ([]string, error) {
 		return nil, err
 	}
 	return offenders, nil
+}
+
+// TestCarbonGuardsScanTheModuleRoot pins the property the falsifiers below cannot:
+// that the root the guards actually use REACHES cmd/carbon.
+//
+// The falsifiers take a root, so they prove the scanners work over a tree — not that
+// the tree the guards scan is the right one. Narrowing carbonModuleRoot back to this
+// package would leave every scanner correct, every falsifier green, and the tripwire
+// blind to the exact package R1.3 composes in. `package main` is the needle because
+// only cmd/carbon declares it, so finding it IS the proof the scan left internal/app.
+func TestCarbonGuardsScanTheModuleRoot(t *testing.T) {
+	t.Parallel()
+
+	found, err := carbonSourceOffendersUnder(carbonModuleRoot(), "package main")
+	if err != nil {
+		t.Fatalf("carbonSourceOffendersUnder: %v", err)
+	}
+	var reachedCommand bool
+	for _, path := range found {
+		if strings.Contains(filepath.ToSlash(path), "cmd/carbon/") {
+			reachedCommand = true
+			break
+		}
+	}
+	if !reachedCommand {
+		t.Fatalf("the guards' scan root reached %v and no file under cmd/carbon; the capture tripwire is blind to the package R1.3 composes in", found)
+	}
 }
 
 // TestCarbonCallOffendersFindsCallsAndNotProse is the falsifier for the capture
