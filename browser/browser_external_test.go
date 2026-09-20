@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -31,6 +32,50 @@ func TestStartRequiresInjectedVerifier(t *testing.T) {
 	server, err := browser.Start(context.Background(), browser.Config{})
 	if server != nil || !errors.Is(err, browser.ErrVerifierRequired) {
 		t.Fatalf("Start without verifier = (%v, %v)", server, err)
+	}
+}
+
+func TestInternalBindFailureClosesStorageBeforeRetry(t *testing.T) {
+	cfg := browserFixture(t)
+	internal, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Host.ListenAddress = internal.Addr().String()
+	s, err := browser.Start(context.Background(), cfg)
+	if err == nil || s != nil {
+		if s != nil {
+			_ = s.Stop(context.Background())
+		}
+		t.Fatalf("occupied internal bind = (%v, %v)", s, err)
+	}
+	internal.Close()
+	s, err = browser.Start(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("reopen after internal bind failure: %v", err)
+	}
+	if err := s.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop reopened owner: %v (net.ErrClosed=%t)", err, errors.Is(err, net.ErrClosed))
+	}
+}
+
+func TestCancelledStartupClosesStorageBeforeRetry(t *testing.T) {
+	cfg := browserFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	s, err := browser.Start(ctx, cfg)
+	if err == nil || s != nil {
+		if s != nil {
+			_ = s.Stop(context.Background())
+		}
+		t.Fatalf("cancelled startup = (%v, %v)", s, err)
+	}
+	s, err = browser.Start(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("reopen after cancelled startup: %v", err)
+	}
+	if err := s.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop reopened owner: %v (net.ErrClosed=%t)", err, errors.Is(err, net.ErrClosed))
 	}
 }
 

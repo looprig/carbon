@@ -268,10 +268,6 @@ func (s *Server) Wait(ctx context.Context) error {
 }
 
 func (s *Server) cleanup(attempt *stopAttempt) {
-	// The listener is ours even if Factory.Stop overtakes Serve's state claim.
-	if s.listener != nil {
-		_ = s.listener.Close()
-	}
 	var diagnostic, err error
 	if !s.factoryStopped && (s.factory != nil || s.stopFactory != nil) {
 		// Factory's first Stop is idempotently terminal even when it reports an
@@ -282,6 +278,11 @@ func (s *Server) cleanup(attempt *stopAttempt) {
 		}
 		diagnostic = stop(context.Background())
 		s.factoryStopped = true
+	}
+	// Factory.Stop closes its active HTTP listener. If Stop overtook Serve's
+	// state claim, the unclaimed listener still belongs to this Server.
+	if s.listener != nil {
+		_ = s.listener.Close()
 	}
 	if s.serveDone != nil {
 		serveErr := <-s.serveDone
