@@ -123,6 +123,26 @@ func TestServeFactoryAuthenticatesBootstrapAndProductUI(t *testing.T) {
 	if _, err := composeServeFactory(otherStores, hostService, factoryCfg); err == nil {
 		t.Fatal("Factory accepted a Host from a different storage root")
 	}
+	legacyCfg := factoryCfg
+	legacyCfg.UIRoutes, legacyCfg.AuthorizeUI = nil, nil
+	legacyUI, err := composeServeFactory(stores, hostService, legacyCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, route := range []struct{ method, path string }{
+		{http.MethodGet, "/ui/live"},
+		{http.MethodGet, "/ui/session-presentation"},
+		{http.MethodPost, "/ui/handoff"},
+	} {
+		request := httptest.NewRequest(route.method, "http://localhost:8765"+route.path, nil)
+		request.Header.Set("Authorization", "Bearer test-browser-token")
+		request.Header.Set("Origin", "http://localhost:8765")
+		response := httptest.NewRecorder()
+		legacyUI.Handler().ServeHTTP(response, request)
+		if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "ui_route_unavailable") {
+			t.Fatalf("retired %s %s = %d %q", route.method, route.path, response.Code, response.Body.String())
+		}
+	}
 	server, err := composeServeFactory(stores, hostService, factoryCfg)
 	if err != nil {
 		t.Fatal(err)
@@ -192,6 +212,9 @@ func TestServeFactoryAuthenticatesBootstrapAndProductUI(t *testing.T) {
 	if got := cookieRequest(http.MethodPost, "/v1/sessions", csrf.Token); got.Code == http.StatusForbidden {
 		t.Fatalf("valid cookie CSRF was refused: %s", got.Body.String())
 	}
+	if got := cookieRequest(http.MethodGet, "/v1/bootstrap", ""); got.Code != http.StatusOK || !strings.Contains(got.Body.String(), "local") {
+		t.Fatalf("cookie bootstrap = %d %q", got.Code, got.Body.String())
+	}
 	if err := hostService.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -207,9 +230,10 @@ func TestServeFactoryAuthenticatesBootstrapAndProductUI(t *testing.T) {
 		t.Fatal(err)
 	}
 	post := httptest.NewRequest(http.MethodPost, "http://localhost:8765/v1/sessions", bytes.NewReader(body))
-	post.Header.Set("Authorization", "Bearer test-browser-token")
+	post.AddCookie(&http.Cookie{Name: "carbon_session", Value: "test-browser-token"})
 	post.Header.Set("Content-Type", "application/json")
 	post.Header.Set("Origin", "http://localhost:8765")
+	post.Header.Set("X-CSRF-Token", csrf.Token)
 	response := httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, post)
 	if response.Code != http.StatusCreated {

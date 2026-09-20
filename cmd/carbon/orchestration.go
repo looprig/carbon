@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -108,6 +109,15 @@ func composeServeFactory(stores *carbon.ServeStorage, localHost *carbon.ServePoo
 	if (cfg.UIRoutes == nil) != (cfg.AuthorizeUI == nil) {
 		return nil, errors.New("carbon: browser UI routes require a handler and authorizer together")
 	}
+	if cfg.UIRoutes == nil {
+		cfg.UIRoutes = unavailableLegacyUIRoutes()
+		cfg.AuthorizeUI = func(ctx context.Context, principal identity.Principal, _, _ string) error {
+			if principal.Tenant() != cfg.DefaultTenant || principal.IsService() {
+				return identity.ErrUnauthorized
+			}
+			return cfg.Authorizer.AuthorizeSessionList(ctx, principal)
+		}
+	}
 	reader, err := carbon.NewServeSessionReader(stores.ControlStore(), stores.Launcher(), cfg.StorageBindingID, cfg.BindingVersion)
 	if err != nil {
 		return nil, err
@@ -139,11 +149,27 @@ func composeServeFactory(stores *carbon.ServeStorage, localHost *carbon.ServePoo
 		}),
 		factory.WithUIHandler(wui.Assets()),
 	}
-	if cfg.UIRoutes != nil {
-		opts = append(opts, factory.WithUIRoutes(cfg.UIRoutes, cfg.AuthorizeUI))
-	}
+	opts = append(opts, factory.WithUIRoutes(cfg.UIRoutes, cfg.AuthorizeUI))
 	if cfg.ReconcileLimits != (factory.ReconcileLimits{}) {
 		opts = append(opts, factory.WithReconcileLimits(cfg.ReconcileLimits))
 	}
 	return factory.New(opts...)
+}
+
+// The old routes describe one process-global live workspace. A pooled Host
+// can serve several sessions, so these names cannot truthfully answer until
+// Carbon defines per-session replacements. Keep them protected and explicit.
+func unavailableLegacyUIRoutes() http.Handler {
+	mux := http.NewServeMux()
+	unavailable := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{
+			"code": "ui_route_unavailable", "message": "this route requires per-session browser semantics", "retryable": false,
+		}})
+	})
+	mux.Handle("GET /ui/live", unavailable)
+	mux.Handle("GET /ui/session-presentation", unavailable)
+	mux.Handle("POST /ui/handoff", unavailable)
+	return mux
 }
