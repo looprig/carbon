@@ -519,7 +519,10 @@ func runWithServeOpener(ctx context.Context, args []string, openServe serveHostO
 	// call site, and serve exposes the selected profile's authority over HTTP.
 	if flags.serve {
 		if openServe == nil {
-			return runServeCommand(ctx, flags, cfg, dataDir, nil, out, errOut, browserComposition{})
+			return runBrowserLifecycle(ctx, cfg, browserStartConfig{
+				Storage: carbon.ServeStorageConfig{DataDir: dataDir, DefaultTenant: "local"},
+				Address: flags.serveAddr,
+			}, out, errOut)
 		}
 		return runServeCommand(ctx, flags, cfg, dataDir, openServe, out, errOut)
 	}

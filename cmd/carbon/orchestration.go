@@ -14,6 +14,7 @@ import (
 	sessionwire "github.com/looprig/core/sessionwire/v1"
 	"github.com/looprig/factory"
 	"github.com/looprig/factory/identity"
+	"github.com/looprig/host"
 	"github.com/looprig/sessionstore"
 	"github.com/looprig/wui"
 )
@@ -29,16 +30,141 @@ type browserComposition struct {
 	cfg    ServeFactoryConfig
 }
 
+// browserStartConfig holds the choices an embedding application must make.
+// The stock binary supplies no verifier and is refused before opening storage.
+type browserStartConfig struct {
+	Storage        carbon.ServeStorageConfig
+	Host           carbon.ServePooledHostConfig
+	Factory        ServeFactoryConfig
+	Address        string
+	RuntimeOptions []carbon.ServeHostOption
+}
+
+// runBrowserLifecycle owns the successful composition stages in start order.
+// Failed Host construction/start cleanup waits for Host v0.6's unstarted-close
+// contract; until then those failures return without closing the borrowed
+// storage provider, which the process must discard on exit.
+func runBrowserLifecycle(ctx context.Context, appCfg carbon.Config, cfg browserStartConfig, out, errOut io.Writer) int {
+	if cfg.Factory.Verifier == nil {
+		fmt.Fprintln(errOut, "serve:", ErrServeFactoryVerifierRequired)
+		return exitFailed
+	}
+	stores, err := carbon.OpenServeStorage(ctx, appCfg, cfg.Storage, cfg.RuntimeOptions...)
+	if err != nil {
+		fmt.Fprintln(errOut, "serve: storage:", err)
+		return exitFailed
+	}
+	localHost, err := carbon.OpenServePooledHost(ctx, stores, cfg.Host)
+	if err != nil {
+		fmt.Fprintln(errOut, "serve: Host compose:", err)
+		return exitFailed
+	}
+	if err := localHost.Start(ctx); err != nil {
+		fmt.Fprintln(errOut, "serve: Host start:", err)
+		return exitFailed
+	}
+	disposal := browserDisposal{stopHost: localHost.Stop, closeStorage: stores.Close}
+	server, err := composeServeFactory(stores, localHost, cfg.Factory)
+	if err != nil {
+		fmt.Fprintln(errOut, "serve: Factory compose:", err)
+		if stopErr := disposal.Close(context.Background()); stopErr != nil {
+			fmt.Fprintln(errOut, "serve: cleanup:", stopErr)
+		}
+		return exitFailed
+	}
+	disposal.stopFactory = server.Stop
+	exit := serveFactoryUntil(ctx, cfg.Address, server, out, errOut)
+	shutdown := startBrowserShutdown(&disposal)
+	waitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := shutdown.Wait(waitCtx); err != nil {
+		fmt.Fprintln(errOut, "serve: cleanup:", err)
+		return exitFailed
+	}
+	return exit
+}
+
+// browserDisposal keeps storage alive until Factory's sweeps and Host's own
+// SessionStore have fully stopped. A failed Host Stop remains retryable.
+type browserDisposal struct {
+	stopFactory  func(context.Context) error
+	stopHost     func(context.Context) (host.DrainReport, error)
+	closeStorage func(context.Context) error
+	factoryDone  bool
+	hostDone     bool
+	storageDone  bool
+}
+
+func (d *browserDisposal) Close(ctx context.Context) error {
+	if !d.factoryDone && d.stopFactory != nil {
+		if err := d.stopFactory(ctx); err != nil {
+			return err
+		}
+		d.factoryDone = true
+	}
+	if !d.hostDone && d.stopHost != nil {
+		if _, err := d.stopHost(ctx); err != nil {
+			return err
+		}
+		d.hostDone = true
+	}
+	if !d.storageDone && d.closeStorage != nil {
+		if err := d.closeStorage(ctx); err != nil {
+			return err
+		}
+		d.storageDone = true
+	}
+	return nil
+}
+
+// The worker owns teardown beyond a caller's deadline. In particular, it
+// never cancels Factory.Stop, whose first invocation is not safely retryable.
+type browserShutdown struct {
+	done chan struct{}
+	err  error
+}
+
+func startBrowserShutdown(disposal *browserDisposal) *browserShutdown {
+	shutdown := &browserShutdown{done: make(chan struct{})}
+	go func() {
+		shutdown.err = disposal.Close(context.Background())
+		close(shutdown.done)
+	}()
+	return shutdown
+}
+
+func (s *browserShutdown) Wait(ctx context.Context) error {
+	select {
+	case <-s.done:
+		return s.err
+	default:
+	}
+	select {
+	case <-s.done:
+		return s.err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 func runComposedFactory(ctx context.Context, addr string, composition browserComposition, out, errOut io.Writer) int {
 	server, err := composeServeFactory(composition.stores, composition.host, composition.cfg)
 	if err != nil {
 		fmt.Fprintln(errOut, "serve:", err)
 		return exitFailed
 	}
+	exit := serveFactoryUntil(ctx, addr, server, out, errOut)
+	if err := server.Stop(context.Background()); err != nil {
+		fmt.Fprintln(errOut, "serve: shutdown Factory:", err)
+		return exitFailed
+	}
+	return exit
+}
+
+func serveFactoryUntil(ctx context.Context, addr string, server *factory.Server, out, errOut io.Writer) int {
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		fmt.Fprintln(errOut, "serve: listen:", err)
-		_ = server.Stop(context.Background())
 		return exitFailed
 	}
 	fmt.Fprintf(out, "carbon serve listening on http://%s\n", listener.Addr())
@@ -52,12 +178,6 @@ func runComposedFactory(ctx context.Context, addr string, composition browserCom
 			fmt.Fprintln(errOut, "serve:", err)
 			exit = exitFailed
 		}
-	}
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := server.Stop(shutdownCtx); err != nil {
-		fmt.Fprintln(errOut, "serve: shutdown Factory:", err)
-		exit = exitFailed
 	}
 	return exit
 }
