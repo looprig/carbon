@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/looprig/carbon/browser"
@@ -42,9 +43,9 @@ type Dependencies struct {
 	ClientBuilder func() (inference.Client, func() model.Model, error)
 }
 
-// NewConfig describes a private, loopback-only deployment. The public listener
-// is also loopback; an embedding application can put an authenticated TLS edge
-// in front of it. Carbon's stock CLI does not supply browser credentials.
+// NewConfig describes a private, loopback-only deployment. The browser's HTTP
+// origin must equal the public listener's IP and port. Carbon's stock CLI does
+// not supply browser credentials.
 func NewConfig(s Settings, d Dependencies) (browser.Config, error) {
 	if !filepath.IsAbs(s.HomeDir) || !filepath.IsAbs(s.DataDir) ||
 		filepath.Clean(s.HomeDir) != s.HomeDir || filepath.Clean(s.DataDir) != s.DataDir {
@@ -54,17 +55,26 @@ func NewConfig(s Settings, d Dependencies) (browser.Config, error) {
 	if err := tenant.Validate(); err != nil {
 		return browser.Config{}, err
 	}
-	publicHost, _, err := net.SplitHostPort(s.PublicAddress)
+	publicHost, publicPortText, err := net.SplitHostPort(s.PublicAddress)
 	if err != nil || net.ParseIP(publicHost) == nil || !net.ParseIP(publicHost).IsLoopback() {
 		return browser.Config{}, fmt.Errorf("local browser: public address must bind a loopback IP")
+	}
+	publicPort, err := strconv.Atoi(publicPortText)
+	if err != nil || publicPort < 1 || publicPort > 65535 {
+		return browser.Config{}, fmt.Errorf("local browser: public address needs a fixed numeric port")
 	}
 	origin, err := url.Parse(s.TrustedOrigin)
 	if err != nil || origin.Scheme != "http" || origin.Host == "" || origin.User != nil || origin.Path != "" || origin.RawQuery != "" || origin.Fragment != "" {
 		return browser.Config{}, fmt.Errorf("local browser: trusted origin must be a bare http origin")
 	}
-	originHost := origin.Hostname()
-	if net.ParseIP(originHost) == nil || !net.ParseIP(originHost).IsLoopback() {
-		return browser.Config{}, fmt.Errorf("local browser: trusted origin must name a loopback IP")
+	originIP := net.ParseIP(origin.Hostname())
+	originPortText := origin.Port()
+	if originPortText == "" {
+		originPortText = "80"
+	}
+	originPort, err := strconv.Atoi(originPortText)
+	if originIP == nil || !originIP.Equal(net.ParseIP(publicHost)) || err != nil || originPort != publicPort {
+		return browser.Config{}, fmt.Errorf("local browser: trusted origin must match the public listener IP and port")
 	}
 	if s.HostID == "" || s.HostGeneration == 0 || s.ReplicaID == "" || s.StorageBindingID == "" || s.BindingVersion == "" {
 		return browser.Config{}, fmt.Errorf("local browser: Host, replica and binding identity are required")

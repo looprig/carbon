@@ -3,7 +3,9 @@ package localbrowser
 import (
 	"context"
 	"errors"
+	"net"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -25,9 +27,17 @@ func (testVerifier) VerifyCredential(context.Context, identity.Credential) (iden
 
 func validInputs(t *testing.T) (Settings, Dependencies) {
 	t.Helper()
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := probe.Addr().String()
+	if err := probe.Close(); err != nil {
+		t.Fatal(err)
+	}
 	return Settings{
 		HomeDir: filepath.Join(t.TempDir(), "home"), DataDir: filepath.Join(t.TempDir(), "store"),
-		Tenant: "local", PublicAddress: "127.0.0.1:0", TrustedOrigin: "http://127.0.0.1",
+		Tenant: "local", PublicAddress: address, TrustedOrigin: "http://" + address,
 		HostID: "local-host", HostGeneration: 1, ReplicaID: "local-factory",
 		StorageBindingID: "local-store-v1", BindingVersion: "v1",
 	}, Dependencies{
@@ -80,6 +90,11 @@ func TestNewConfigRejectsMissingSecurityInputsAndPublicHost(t *testing.T) {
 		{"public listener", func(s *Settings, _ *Dependencies) { s.PublicAddress = "0.0.0.0:8080" }},
 		{"relative data dir", func(s *Settings, _ *Dependencies) { s.DataDir = "relative" }},
 		{"missing origin", func(s *Settings, _ *Dependencies) { s.TrustedOrigin = "" }},
+		{"different origin port", func(s *Settings, _ *Dependencies) { s.TrustedOrigin = "http://127.0.0.1:1" }},
+		{"different loopback host", func(s *Settings, _ *Dependencies) {
+			s.TrustedOrigin = "http://127.0.0.2" + strings.TrimPrefix(s.TrustedOrigin, "http://127.0.0.1")
+		}},
+		{"ephemeral public port", func(s *Settings, _ *Dependencies) { s.PublicAddress = "127.0.0.1:0" }},
 		{"zero generation", func(s *Settings, _ *Dependencies) { s.HostGeneration = 0 }},
 	}
 	for _, tc := range cases {

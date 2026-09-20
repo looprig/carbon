@@ -47,10 +47,11 @@ if err != nil {
 The code block is an embedding call site: `appVerifier`, `appAuthorizer`,
 `appModelBuilder`, secret values, generation storage, and lifecycle contexts
 are application owned. It is not a standalone `main` or a credential recipe.
-The exact trusted origin must match the browser's served origin, including its
-port. Both listeners bind loopback; protect any reverse proxy with TLS and the
-same origin, authorization, and CSRF policy before allowing remote browsers.
-Do not expose the HostLink listener.
+The trusted origin must be HTTP on the exact loopback listener IP and port;
+`PublicAddress` requires a fixed port. This helper is for a browser on the
+same machine. Serving remote browsers through a TLS proxy requires a different
+embedding configuration that validates the external HTTPS origin and its
+proxy boundary; do not reuse this helper unchanged. Never expose HostLink.
 
 `HostGeneration` must rise when the same Host ID restarts; persist that
 counter outside this example. The Host holds at most two resident sessions,
