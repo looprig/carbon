@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"sync"
@@ -13,6 +14,24 @@ import (
 	"github.com/looprig/fsstore"
 	"github.com/looprig/sessionstore"
 )
+
+func TestServeStorageControlStoreOutlivesStartupContext(t *testing.T) {
+	startup, cancel := context.WithCancel(context.Background())
+	s, err := OpenServeStorage(startup, Config{}, ServeStorageConfig{DataDir: t.TempDir(), DefaultTenant: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close(context.Background()) }()
+	cancel()
+	for range 100 {
+		_, err = s.ControlStore().ListDueDispositionCommands(context.Background(), sessionstore.ListDueDispositionCommandsRequest{
+			Shard: 0, DueAtOrBefore: time.Unix(0, math.MaxInt64).UTC(), Limit: 1,
+		})
+		if err != nil {
+			t.Fatalf("durable shutdown observation after startup cancellation: %v", err)
+		}
+	}
+}
 
 func TestServeStorageDefaultsToTenantLayoutAndRegistersDefaultJournal(t *testing.T) {
 	ctx := context.Background()

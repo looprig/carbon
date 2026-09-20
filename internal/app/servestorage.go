@@ -113,7 +113,15 @@ func OpenServeStorage(ctx context.Context, cfg Config, selected ServeStorageConf
 	backend.Blobs = newBoundedBlobs(backend.Blobs)
 	// No legacy option: SessionStore's unmarked default is tenant-v1, and its
 	// persisted marker comparison refuses a historical legacy root.
-	control, err := sessionstore.Open(ctx, &backend)
+	if err := ctx.Err(); err != nil {
+		_ = fs.Close()
+		return nil, err
+	}
+	// SessionStore retains Open's context for its entire lifetime. The caller's
+	// startup context also governs Serve's run loop and is cancelled to begin
+	// shutdown, when this control store must still answer pending-command reads.
+	// ServeStorage owns the store and closes it after Host and Factory stop.
+	control, err := sessionstore.Open(context.WithoutCancel(ctx), &backend)
 	if err != nil {
 		_ = fs.Close()
 		var marker *sessionstore.KeyspaceError
@@ -121,6 +129,10 @@ func OpenServeStorage(ctx context.Context, cfg Config, selected ServeStorageConf
 			return nil, &ServeStoreLayoutMismatchError{Layout: layout, Tenant: selected.DefaultTenant, Cause: err}
 		}
 		return nil, &StoreInitError{Stage: "control-sessionstore", Cause: err}
+	}
+	if err := ctx.Err(); err != nil {
+		_ = closeServeStorageResources(nil, control, fs.Close)
+		return nil, err
 	}
 	launcher, err := OpenPooledLauncher(ctx, cfg, selected.DataDir, opts...)
 	if err != nil {

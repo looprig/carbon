@@ -80,6 +80,9 @@ func TestFactoryStartFailureWithdrawsHostAndReleasesOwners(t *testing.T) {
 		if err != nil || len(page.Hosts) != 1 {
 			t.Fatalf("Host capacity before Factory Start = (%+v, %v)", page, err)
 		}
+		if err := owner.factory.Start(context.Background()); err != nil {
+			t.Fatalf("real Factory Start before injected failure: %v", err)
+		}
 		return want
 	}
 	s, err := Start(context.Background(), cfg)
@@ -131,5 +134,64 @@ func TestSuccessfulStartWiresFactoryAdmissionBoundaryToShutdown(t *testing.T) {
 	}
 	if err := s.Stop(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestStartupCancellationAfterPublishedHostAndStartedFactory(t *testing.T) {
+	for _, phase := range []string{"published-host", "started-factory"} {
+		t.Run(phase, func(t *testing.T) {
+			cfg := factoryStartFailureFixture(t)
+			port, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg.Host.ListenAddress = port.Addr().String()
+			_ = port.Close()
+			startup, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			var key sessionstore.HostTargetKey
+			cfg.startFactory = func(ctx context.Context, owner *Server) error {
+				key = sessionstore.HostTargetKey{AgentID: carbon.CarbonAgentID,
+					RuntimeCompatibilityID: string(owner.host.CompatibilityID()), Placement: sessionwire.HostPlacementPooled}
+				page, err := owner.storage.ControlStore().ListCompatibleHosts(ctx, sessionstore.ListCompatibleHostsRequest{Key: key})
+				if err != nil || len(page.Hosts) != 1 {
+					t.Fatalf("Host publication at cancellation boundary = (%+v, %v)", page, err)
+				}
+				if phase == "started-factory" {
+					if err := owner.factory.Start(ctx); err != nil {
+						t.Fatalf("Factory Start: %v", err)
+					}
+				}
+				cancel()
+				return ctx.Err()
+			}
+			s, err := Start(startup, cfg)
+			if s != nil || !errors.Is(err, context.Canceled) {
+				if s != nil {
+					_ = s.Stop(context.Background())
+				}
+				t.Fatalf("Start after %s cancellation = (%v, %v)", phase, s, err)
+			}
+			probe, err := net.Listen("tcp", cfg.Host.ListenAddress)
+			if err != nil {
+				t.Fatalf("HostLink listener retained after %s: %v", phase, err)
+			}
+			_ = probe.Close()
+			stores, err := carbon.OpenServeStorage(context.Background(), cfg.Runtime, cfg.Storage,
+				carbon.WithServeInferenceClient(func() (inference.Client, carbon.ModelFactory, error) {
+					client, build, err := cfg.ClientBuilder()
+					return client, carbon.ModelFactory(build), err
+				}))
+			if err != nil {
+				t.Fatalf("storage root retained after %s: %v", phase, err)
+			}
+			page, err := stores.ControlStore().ListCompatibleHosts(context.Background(), sessionstore.ListCompatibleHostsRequest{Key: key})
+			if err != nil || len(page.Hosts) != 0 {
+				t.Fatalf("Host publication after %s cancellation = (%+v, %v)", phase, page, err)
+			}
+			if err := stores.Close(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
