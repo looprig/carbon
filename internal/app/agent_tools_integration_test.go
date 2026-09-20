@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -526,4 +527,96 @@ func TestAssembledStartAgentACPFailureUsesSafeDetail(t *testing.T) {
 	if got := runManagedTurn(t, agent, "start the ACP child"); got != "ACP failure formatted safely" {
 		t.Fatalf("final = %q", got)
 	}
+}
+
+// ---- R1.2 step 7: the capture/truncation roster guard ----------------------
+
+// resultReaderToolName is the tool a truncated or captured tool result would tell
+// the model to call in order to read the rest. It is named here as a STRING rather
+// than imported because no released module ships it: see the test below.
+const resultReaderToolName = "read_tool_result"
+
+// TestCarbonAdvertisesNoUnregisteredResultReader is runbook 08 R1.2 step 7 in the
+// only shape that is honest against today's released modules.
+//
+// Step 7 asks for a roster test proving every model-visible capture/truncation
+// marker names an actually registered `read_tool_result`, and step 6 asks Carbon to
+// register that tool whenever a per-session SessionObjectStore reader is bound.
+// NEITHER IS EXECUTABLE: tools v0.12.0 ships no `read_tool_result` definition, and
+// neither does any other released module. The tool does not exist, so there is
+// nothing to register and no marker that could name it.
+//
+// What IS assertable is the rule step 6 states from the other side — "a composition
+// without object capture does not advertise a broken reader" — and this holds both
+// halves of it: the roster registers no such tool, and no production file in this
+// package so much as names one. The second half is what makes it non-vacuous: the
+// moment somebody writes the marker text without the registration, this fails.
+func TestCarbonAdvertisesNoUnregisteredResultReader(t *testing.T) {
+	t.Parallel()
+
+	set := mustExecutorSet(t, t.TempDir())
+	for _, def := range carbonToolDefinitions(set, nil, nil) {
+		if def.Name() == resultReaderToolName {
+			t.Fatalf("carbon registers %q; this guard was written for a roster that does not, and must be replaced by the positive test step 7 asks for",
+				resultReaderToolName)
+		}
+	}
+
+	offenders, err := carbonSourceOffenders(resultReaderToolName)
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	for _, path := range offenders {
+		t.Errorf("%s names %q, which no Carbon session registers; a composition without object capture must not advertise a reader that is not there",
+			path, resultReaderToolName)
+	}
+}
+
+// TestCarbonWiresNoToolResultCapture is the other half of the coupling above, and it
+// is a SOURCE assertion on purpose.
+//
+// The property it holds is an absence, and an absence cannot be observed from a
+// built rig: rig.Define exposes no accessor for the capture wiring, so a test that
+// tried to assert it from a value would have to assert something else instead and
+// would drift from the thing it claims. Scanning for the call is exact.
+//
+// When this test fails, it is NOT a regression. It means Carbon has gained durable
+// tool-result capture, and the correct response is to delete this test and write the
+// positive one step 6 and step 7 describe: register the reader whenever the
+// per-session object store is bound, and prove every truncation marker names it.
+func TestCarbonWiresNoToolResultCapture(t *testing.T) {
+	t.Parallel()
+
+	offenders, err := carbonSourceOffenders("WithToolResultCapture")
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	for _, path := range offenders {
+		t.Errorf("%s wires rig.WithToolResultCapture; Carbon now captures tool results, so it owes a registered %q and the roster test that names it (runbook 08 R1.2 steps 6-7)",
+			path, resultReaderToolName)
+	}
+}
+
+// carbonSourceOffenders reports every non-test .go file in this package that
+// mentions needle.
+func carbonSourceOffenders(needle string) ([]string, error) {
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		return nil, err
+	}
+	var offenders []string
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		source, err := os.ReadFile(name)
+		if err != nil {
+			return nil, err
+		}
+		if strings.Contains(string(source), needle) {
+			offenders = append(offenders, name)
+		}
+	}
+	return offenders, nil
 }

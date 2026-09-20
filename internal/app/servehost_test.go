@@ -8,8 +8,10 @@ import (
 	"testing"
 
 	"github.com/looprig/core/content"
+	sessionwire "github.com/looprig/core/sessionwire/v1"
 	"github.com/looprig/core/uuid"
 	"github.com/looprig/harness/pkg/session"
+	"github.com/looprig/host/department"
 	"github.com/looprig/inference"
 	mcpharness "github.com/looprig/mcp/pkg/harness"
 )
@@ -1010,5 +1012,178 @@ func TestServeHostSessionPresentationsRefuseAClosedHost(t *testing.T) {
 	}
 	if _, err := host.SessionPresentations(ctx); err == nil {
 		t.Fatal("SessionPresentations on a closed host succeeded; a broken read plane would present as an empty catalog")
+	}
+}
+
+// ---- R1.2: the Host launch seam --------------------------------------------
+
+// TestServeHostLauncherLaunchesUnderTheRequestedHarnessIdentity drives the launch
+// seam through the REAL product composition: a real ServeHost, its real
+// process-lifetime rig, its real access wiring and its real MCP adoption. Only the
+// inference client is injected.
+//
+// The identity is the assertion. Factory derives the runtime session id at create
+// time and writes it into the session's immutable durable binding; a launcher that
+// minted its own would write the conversation to a journal the binding does not
+// name, nothing could find it again, and the next placement would start the
+// conversation over in silence. department refuses such a launch, so getting this
+// wrong is a session that cannot be placed at all.
+func TestServeHostLauncherLaunchesUnderTheRequestedHarnessIdentity(t *testing.T) {
+	host := newTestServeHost(t)
+	launcher := NewServeHostLauncher(host)
+
+	wanted, err := uuid.New()
+	if err != nil {
+		t.Fatalf("uuid.New: %v", err)
+	}
+	controller, err := launcher.Launch(context.Background(), LaunchScope{
+		TenantID:     sessionwire.TenantID("tenant-a"),
+		SessionID:    sessionwire.SessionID("session-a"),
+		AgentID:      CarbonAgentID,
+		Placement:    sessionwire.HostPlacementDedicated,
+		RigSessionID: wanted,
+	})
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	if got := controller.SessionID(); got != wanted {
+		t.Fatalf("the launched session reports %v, want the binding's %v", got, wanted)
+	}
+
+	// A SECOND launch while that session is live is refused, not silently
+	// substituted. The incumbent may be mid-turn with a browser watching its event
+	// stream; a placement that killed it would end running work on a click.
+	second, err := uuid.New()
+	if err != nil {
+		t.Fatalf("uuid.New: %v", err)
+	}
+	_, err = launcher.Launch(context.Background(), LaunchScope{
+		SessionID:    sessionwire.SessionID("session-b"),
+		Placement:    sessionwire.HostPlacementDedicated,
+		RigSessionID: second,
+	})
+	var handoff *LiveSessionHandoffError
+	if !errors.As(err, &handoff) {
+		t.Fatalf("a second concurrent launch = %v, want *LiveSessionHandoffError", err)
+	}
+	if handoff.LiveID != wanted {
+		t.Errorf("the refusal names %v as live, want %v", handoff.LiveID, wanted)
+	}
+}
+
+// TestServeHostLauncherRefusesAPooledPlacement holds the one limit a Carbon
+// composition over a single workspace root actually has.
+//
+// A ServeHost binds one process-lifetime rig placed with rig.WithExclusiveWorkspace,
+// and fsstore's advisory lock on workspace-roots/<sha256(root)> conflicts even inside
+// one process. So a second concurrent session over the same root cannot exist. The
+// refusal happens at the seam rather than deep inside the rig on a lease conflict,
+// because there the error names a lock and not the reason, and an operator reading
+// "resource temporarily unavailable" has no way to reach "this composition serves
+// one workspace root".
+//
+// Carbon's PRODUCT target still declares SupportsPooled, and that is correct: a
+// pooled Host that gives each tenant its own materialized root is perfectly served
+// by Carbon. What cannot be that Host is this launcher.
+func TestServeHostLauncherRefusesAPooledPlacement(t *testing.T) {
+	t.Parallel()
+
+	launcher := NewServeHostLauncher(&ServeHost{workspace: "/served/root"})
+	_, err := launcher.Launch(context.Background(), LaunchScope{
+		SessionID: sessionwire.SessionID("session-a"),
+		Placement: sessionwire.HostPlacementPooled,
+	})
+
+	var pooled *PooledPlacementUnsupportedError
+	if !errors.As(err, &pooled) {
+		t.Fatalf("Launch(pooled) = %v, want *PooledPlacementUnsupportedError", err)
+	}
+	if pooled.Root != "/served/root" {
+		t.Errorf("the refusal names root %q, want the served root; an operator cannot act on a refusal that does not say which root is taken", pooled.Root)
+	}
+}
+
+// TestServeHostLauncherRefusesAForeignWorkspaceRoot is the cross-tenant guard.
+//
+// Launching a session whose named root is not the one this host serves would put one
+// tenant's agent in another tenant's checkout. That is the single failure a
+// composition root must never make quietly, so a NAMED disagreement is refused.
+//
+// An EMPTY root is accepted, and the asymmetry is deliberate: Host fills
+// WorkspaceRoot from its own configuration, and a deployment that has not configured
+// one must not have its zero value promoted into a cross-workspace launch.
+func TestServeHostLauncherRefusesAForeignWorkspaceRoot(t *testing.T) {
+	t.Parallel()
+
+	launcher := NewServeHostLauncher(&ServeHost{workspace: "/served/root"})
+	_, err := launcher.Launch(context.Background(), LaunchScope{
+		SessionID:     sessionwire.SessionID("session-a"),
+		Placement:     sessionwire.HostPlacementDedicated,
+		WorkspaceRoot: "/some/other/checkout",
+	})
+
+	var foreign *ForeignWorkspaceRootError
+	if !errors.As(err, &foreign) {
+		t.Fatalf("Launch(foreign root) = %v, want *ForeignWorkspaceRootError", err)
+	}
+	if foreign.Want != "/some/other/checkout" || foreign.Served != "/served/root" {
+		t.Errorf("the refusal names want=%q served=%q, want both roots so the mismatch is readable", foreign.Want, foreign.Served)
+	}
+}
+
+// TestServeHostLauncherRefusesAfterClose proves a launch on a torn-down host is a
+// typed refusal rather than a nil dereference deep in the rig.
+func TestServeHostLauncherRefusesAfterClose(t *testing.T) {
+	t.Parallel()
+
+	launcher := NewServeHostLauncher(&ServeHost{workspace: "/served/root", closed: true})
+	_, err := launcher.Launch(context.Background(), LaunchScope{
+		SessionID: sessionwire.SessionID("session-a"),
+		Placement: sessionwire.HostPlacementDedicated,
+	})
+
+	var closed *StoreClosedError
+	if !errors.As(err, &closed) {
+		t.Fatalf("Launch after Close = %v, want *StoreClosedError", err)
+	}
+}
+
+// TestCarbonRigSessionOptionsHonourAZeroIdentity pins the one rule a launcher must
+// not get wrong, in the one place it is stated.
+//
+// rig.WithSessionID REFUSES a zero id — deliberately, unlike the internal option
+// that ignores one — because silently substituting a minted id would put a name in a
+// caller's immutable binding that resolves to nothing. A zero RigSessionID is
+// nevertheless legitimate: it is a create for a session with no catalog record, and
+// the rig mints the id. So the branch is made before harness sees it.
+func TestCarbonRigSessionOptionsHonourAZeroIdentity(t *testing.T) {
+	t.Parallel()
+
+	if got := carbonRigSessionOptions(LaunchScope{}); len(got) != 0 {
+		t.Errorf("a zero RigSessionID produced %d options, want none: rig.WithSessionID refuses a zero id", len(got))
+	}
+	id, err := uuid.New()
+	if err != nil {
+		t.Fatalf("uuid.New: %v", err)
+	}
+	if got := carbonRigSessionOptions(LaunchScope{RigSessionID: id}); len(got) != 1 {
+		t.Errorf("a named RigSessionID produced %d options, want exactly rig.WithSessionID", len(got))
+	}
+}
+
+// TestServeHostLauncherSatisfiesTheLaunchSeam is a compile-time check with a runtime
+// assertion, because the interface is the whole contract between this file and
+// department.go and nothing else in the package would notice it breaking.
+func TestServeHostLauncherSatisfiesTheLaunchSeam(t *testing.T) {
+	t.Parallel()
+
+	var launcher SessionLauncher = NewServeHostLauncher(nil)
+	if _, err := launcher.Launch(context.Background(), LaunchScope{}); err == nil {
+		t.Fatal("a launcher with no host returned no error; it must refuse rather than dereference nothing")
+	}
+	// And the Department it feeds is buildable from it, which is the composition
+	// R1.3 performs.
+	if _, err := NewCarbonDepartment(launcher, department.CompatibilityID("carbon-test-build")); err != nil {
+		t.Fatalf("NewCarbonDepartment over a ServeHostLauncher: %v", err)
 	}
 }

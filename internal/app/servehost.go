@@ -2,9 +2,12 @@ package app
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"sync"
 
+	sessionwire "github.com/looprig/core/sessionwire/v1"
 	"github.com/looprig/core/uuid"
 	"github.com/looprig/fsstore"
 	"github.com/looprig/harness/pkg/rig"
@@ -649,4 +652,136 @@ func (h *ServeHost) closeLiveLocked(ctx context.Context) error {
 	h.live = nil
 	live.mcp.close(ctx)
 	return live.session.Shutdown(ctx)
+}
+
+// ---- the Host launch seam -------------------------------------------------
+
+// ServeHostLauncher adapts a *ServeHost into the SessionLauncher a Carbon
+// Department launch target needs (see department.go).
+//
+// # It is a SINGLE-ROOT launcher, and that is a property of the rig, not a bug
+//
+// A ServeHost binds one process-lifetime rig placed with rig.WithExclusiveWorkspace,
+// which acquires a lease named workspace-roots/<sha256(canonical root)> per session.
+// fsstore's advisory lock conflicts even inside one process, so at most one session
+// can be live over a given workspace root. Carbon's product target legitimately
+// declares SupportsPooled — a pooled Host handing each tenant its OWN root is
+// perfectly served by Carbon — but THIS launcher has exactly one root and cannot be
+// that Host.
+//
+// So a pooled placement is REFUSED here rather than accepted and then failed deep
+// inside the rig on a lease conflict, where the error names a lock and not the
+// reason. A refusal at the seam is the difference between an operator reading
+// "this composition serves one workspace root" and an operator reading
+// "resource temporarily unavailable".
+type ServeHostLauncher struct {
+	host *ServeHost
+}
+
+// NewServeHostLauncher returns the launcher for host.
+func NewServeHostLauncher(host *ServeHost) *ServeHostLauncher {
+	return &ServeHostLauncher{host: host}
+}
+
+var _ SessionLauncher = (*ServeHostLauncher)(nil)
+
+// PooledPlacementUnsupportedError reports a pooled placement offered to a launcher
+// that serves one workspace root.
+//
+// It is a distinct type rather than a formatted error because the remedy is a
+// DEPLOYMENT decision — place this Carbon dedicated, or compose a launcher that
+// materializes a root per session — and a caller that cannot tell this apart from a
+// transient launch failure will retry it forever.
+type PooledPlacementUnsupportedError struct {
+	SessionID sessionwire.SessionID
+	Root      string
+}
+
+func (e *PooledPlacementUnsupportedError) Error() string {
+	return fmt.Sprintf(
+		"carbon: session %s asked for pooled placement, but this composition serves the single workspace root %q; place it dedicated or compose a launcher that materializes a root per session",
+		e.SessionID, e.Root)
+}
+
+// ForeignWorkspaceRootError reports a launch for a workspace root this host does not
+// serve. Silently launching it against the served root would put one tenant's agent
+// in another tenant's checkout, which is the one failure a composition root must
+// never make quietly.
+type ForeignWorkspaceRootError struct {
+	SessionID sessionwire.SessionID
+	Want      string
+	Served    string
+}
+
+func (e *ForeignWorkspaceRootError) Error() string {
+	return fmt.Sprintf(
+		"carbon: session %s asked for workspace root %q, but this composition serves %q",
+		e.SessionID, e.Want, e.Served)
+}
+
+// Launch satisfies SessionLauncher.
+//
+// The controller is the rig's own, UNWRAPPED, for the reason ServeHost.NewSession
+// documents: Host discovers six segregated capabilities by type assertion and
+// harness's live registry evicts a dead session by watching an optional Done()
+// channel on the value it was handed. A wrapper that dropped either would opt the
+// session out silently.
+//
+// Every session-dependent binding stays per-session: adoptLocked builds this
+// session's OWN MCP composition (mcpharness.Manager.BindSession is a
+// compare-and-swap that permanently binds one Manager to one session id, so it
+// cannot be hoisted), and the rig materializes this session's own workspace lease,
+// executor set, gate and process supervisor. What the host DOES share across
+// sessions is the definition, the access wiring and the credential admission, all of
+// which are properties of the one root it serves.
+func (l *ServeHostLauncher) Launch(ctx context.Context, scope LaunchScope) (session.SessionController, error) {
+	if l == nil || l.host == nil {
+		return nil, errors.New("carbon: the serve-host launcher has no host")
+	}
+	if scope.Placement == sessionwire.HostPlacementPooled {
+		return nil, &PooledPlacementUnsupportedError{SessionID: scope.SessionID, Root: l.host.workspace}
+	}
+	// An EMPTY root is accepted and means "whatever this host serves". Host fills
+	// WorkspaceRoot from its own configuration, and a composition that has not
+	// configured one must not be turned into a cross-workspace launch by a zero
+	// value; a NAMED root that disagrees is the case worth refusing.
+	if scope.WorkspaceRoot != "" && scope.WorkspaceRoot != l.host.workspace {
+		return nil, &ForeignWorkspaceRootError{SessionID: scope.SessionID, Want: scope.WorkspaceRoot, Served: l.host.workspace}
+	}
+	if scope.Restore {
+		return l.host.RestoreSession(ctx, scope.RigSessionID)
+	}
+	return l.host.NewSessionWithID(ctx, scope.RigSessionID)
+}
+
+// NewSessionWithID is NewSession under a caller-supplied harness identity.
+//
+// It exists because a Host-placed create must launch under the runtime session id
+// the session's immutable durable binding already names. Factory derives that id at
+// create time and it is NOT the sessionwire SessionID; a session launched under a
+// minted id writes its conversation to a journal the binding does not name, nothing
+// can find it again, and the next placement starts the conversation over in silence.
+//
+// A ZERO id mints one, which is NewSession's behaviour and is the legitimate case
+// for a session with no catalog record. rig.WithSessionID itself refuses a zero id —
+// deliberately, unlike the internal option that ignores one — so the choice is made
+// here rather than pushed into harness as an error.
+func (h *ServeHost) NewSessionWithID(ctx context.Context, id uuid.UUID) (session.SessionController, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.closed {
+		return nil, &StoreClosedError{}
+	}
+	if h.live != nil {
+		return nil, &LiveSessionHandoffError{LiveID: h.live.id}
+	}
+	ctx = detachSessionLifetime(ctx)
+	sess, err := h.rig.NewSession(ctx, carbonRigSessionOptions(LaunchScope{RigSessionID: id})...)
+	if err != nil {
+		return nil, err
+	}
+	if err := h.adoptLocked(ctx, sess); err != nil {
+		return nil, err
+	}
+	return sess, nil
 }
