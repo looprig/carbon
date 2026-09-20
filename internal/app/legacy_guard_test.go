@@ -149,6 +149,7 @@ func legacyPackageDiagnostics(sources map[string][]byte) []string {
 }
 
 func legacyASTDiagnostics(fset *token.FileSet, file *ast.File, typeInfo *types.Info) []string {
+	allowedCheckpoint := allowedPooledCheckpointCall(fset, file)
 
 	imports := make(map[string]string)
 	dotImports := make(map[string]bool)
@@ -186,7 +187,9 @@ func legacyASTDiagnostics(fset *token.FileSet, file *ast.File, typeInfo *types.I
 		switch n := node.(type) {
 		case *ast.Ident:
 			if legacy, ok := forbiddenIdentifiers[n.Name]; ok {
-				report(n.Pos(), legacy)
+				if n.Pos() != allowedCheckpoint || n.Name != "CheckpointWorkspace" {
+					report(n.Pos(), legacy)
+				}
 			}
 			if n.Name == "AcceptsImages" {
 				if obj := typeInfo.Defs[n]; obj != nil && isZeroArgumentCallable(obj.Type()) {
@@ -257,6 +260,74 @@ func legacyASTDiagnostics(fset *token.FileSet, file *ast.File, typeInfo *types.I
 		return true
 	})
 	return diagnostics
+}
+
+// The Host Checkpointer must call the controller's durable checkpoint API.
+// Keep the legacy ban everywhere except that one reviewed call site.
+func allowedPooledCheckpointCall(fset *token.FileSet, file *ast.File) token.Pos {
+	if filepath.Base(fset.Position(file.Pos()).Filename) != "pooledlauncher.go" {
+		return token.NoPos
+	}
+	for _, declaration := range file.Decls {
+		fn, ok := declaration.(*ast.FuncDecl)
+		if !ok || fn.Name.Name != "Checkpoint" || fn.Recv == nil || len(fn.Recv.List) != 1 {
+			continue
+		}
+		receiver, ok := fn.Recv.List[0].Type.(*ast.StarExpr)
+		if !ok {
+			continue
+		}
+		name, ok := receiver.X.(*ast.Ident)
+		if !ok || name.Name != "PooledLauncher" {
+			continue
+		}
+		var allowed token.Pos
+		ast.Inspect(fn.Body, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok || len(call.Args) != 1 {
+				return true
+			}
+			selector, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || selector.Sel.Name != "CheckpointWorkspace" {
+				return true
+			}
+			object, ok := selector.X.(*ast.Ident)
+			if ok && object.Name == "controller" {
+				allowed = selector.Sel.Pos()
+			}
+			return true
+		})
+		return allowed
+	}
+	return token.NoPos
+}
+
+func TestLegacyCheckpointGuardAllowsOnlyPooledCheckpointer(t *testing.T) {
+	source := []byte(`package app
+type PooledLauncher struct{}
+type controllerType struct{}
+func (controllerType) CheckpointWorkspace(any) (string, error) { return "", nil }
+func (l *PooledLauncher) Checkpoint(ctx any) {
+	controller := controllerType{}
+	_, _ = controller.CheckpointWorkspace(ctx)
+}
+`)
+	// The fixture's method declaration remains forbidden; only the call is exempt.
+	if diagnostics := legacySourceDiagnostics("pooledlauncher.go", source); len(diagnostics) != 1 || !strings.Contains(diagnostics[0], "4:23") {
+		t.Fatalf("approved pooled checkpoint call rejected: %v", diagnostics)
+	}
+	if diagnostics := legacySourceDiagnostics("other.go", source); len(diagnostics) != 2 {
+		t.Fatal("checkpoint call outside pooled launcher accepted")
+	}
+	otherMethod := append(append([]byte(nil), source...), []byte(`
+func (l *PooledLauncher) Other(ctx any) {
+	controller := controllerType{}
+	_, _ = controller.CheckpointWorkspace(ctx)
+}
+`)...)
+	if diagnostics := legacySourceDiagnostics("pooledlauncher.go", otherMethod); len(diagnostics) != 2 {
+		t.Fatal("checkpoint call outside approved method accepted")
+	}
 }
 
 func selectorFromPackage(expr ast.Expr, imports map[string]string, importPath, member string) bool {

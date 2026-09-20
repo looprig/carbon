@@ -11,6 +11,7 @@ import (
 	"github.com/looprig/fsstore"
 	harnessstore "github.com/looprig/harness/pkg/sessionstore"
 	"github.com/looprig/sessionstore"
+	"github.com/looprig/storage"
 )
 
 // ServeStoreLayout is the explicit layout of Carbon's control SessionStore.
@@ -69,14 +70,19 @@ type ServeStorage struct {
 	closeErr       error
 	closeProvider  func() error
 	controlFS      *fsstore.Store
+	controlBackend *storage.Composite
 	control        *sessionstore.Store
 	launcher       *PooledLauncher
 	defaultJournal *harnessstore.Store
+	defaultTenant  sessionwire.TenantID
 }
 
 func (s *ServeStorage) ControlStore() *sessionstore.Store        { return s.control }
 func (s *ServeStorage) Launcher() *PooledLauncher                { return s.launcher }
 func (s *ServeStorage) DefaultJournalStore() *harnessstore.Store { return s.defaultJournal }
+
+// ControlBackend is borrowed by Host.Compose; ServeStorage remains its owner.
+func (s *ServeStorage) ControlBackend() *storage.Composite { return s.controlBackend }
 
 // OpenServeStorage validates layout before opening anything. Legacy browser
 // composition is explicitly refused; tenant-v1 against an old marker aborts
@@ -133,7 +139,7 @@ func OpenServeStorage(ctx context.Context, cfg Config, selected ServeStorageConf
 		_ = closeServeStorageResources(launcher, control, fs.Close)
 		return nil, err
 	}
-	return &ServeStorage{controlFS: fs, control: control, launcher: launcher, defaultJournal: journal, closeProvider: fs.Close, closeDone: make(chan struct{})}, nil
+	return &ServeStorage{controlFS: fs, controlBackend: &backend, control: control, launcher: launcher, defaultJournal: journal, defaultTenant: selected.DefaultTenant, closeProvider: fs.Close, closeDone: make(chan struct{})}, nil
 }
 
 // The provider must outlive SessionStore's background shutdown. In particular,

@@ -85,6 +85,14 @@ func normalizeAccessProfile(profile AccessProfile) (AccessProfile, error) {
 // carries the explicit AckUnconfined so sandbox validation accepts direct host
 // execution; any other name is rejected.
 func carbonProfile(name AccessProfile, workspace string) (*sandbox.Profile, error) {
+	config, err := carbonProfileConfig(name, workspace)
+	if err != nil {
+		return nil, err
+	}
+	return sandbox.NewProfile(config)
+}
+
+func carbonProfileConfig(name AccessProfile, workspace string) (sandbox.ProfileConfig, error) {
 	config := sandbox.ProfileConfig{
 		WorkspaceRoot: workspace,
 		Home:          sandbox.IsolatedHome,
@@ -117,10 +125,9 @@ func carbonProfile(name AccessProfile, workspace string) (*sandbox.Profile, erro
 		config.Isolation = sandbox.Unconfined
 		config.AckUnconfined = true
 	default:
-		return nil, fmt.Errorf("carbon: unknown access profile %q", name)
+		return sandbox.ProfileConfig{}, fmt.Errorf("carbon: unknown access profile %q", name)
 	}
-
-	return sandbox.NewProfile(config)
+	return config, nil
 }
 
 // productAccessSource is Carbon's small, immutable access source for the two
@@ -188,4 +195,21 @@ func accessConfigDigest(selected AccessProfile, profile *sandbox.Profile, route 
 	})
 	digest := sha256.Sum256(payload)
 	return "carbon-access-v1:" + hex.EncodeToString(digest[:])
+}
+
+// pooledAccessConfigDigest changes only the workspace-root dimension of the
+// policy fingerprint. Its caller supplies a COPY of the actual session
+// ProfileConfig with a fixed logical root. Harness separately fingerprints
+// the real exclusive workspace root in its placement manifest.
+func pooledAccessConfigDigest(selected AccessProfile, logical sandbox.ProfileConfig, route sandbox.EgressRoute) string {
+	encoded, _ := json.Marshal(struct {
+		Version          uint16
+		Selected         AccessProfile
+		Profile          sandbox.ProfileConfig
+		Route            string
+		TargetGuarantee  bool
+		AddressGuarantee bool
+	}{productAccessVersion, selected, logical, route.Fingerprint(), route.TargetGuarantee(), route.AddressGuarantee()})
+	sum := sha256.Sum256(append([]byte("looprig/carbon/pooled-access/v1\x00"), encoded...))
+	return "carbon-pooled-access-v1:" + hex.EncodeToString(sum[:])
 }

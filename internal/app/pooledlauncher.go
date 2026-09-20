@@ -16,6 +16,7 @@ import (
 	"github.com/looprig/harness/pkg/rig"
 	"github.com/looprig/harness/pkg/session"
 	harnessstore "github.com/looprig/harness/pkg/sessionstore"
+	"github.com/looprig/host/department"
 	"github.com/looprig/inference"
 )
 
@@ -24,19 +25,22 @@ import (
 // Each tenant owns a durable backend because Harness's journal layout marker
 // binds one backend to one tenant. A restore resolves the same backend and root.
 type PooledLauncher struct {
-	mu           sync.Mutex
-	dataDir      string
-	cfg          Config
-	options      serveHostConfig
-	tenants      map[sessionwire.TenantID]*pooledTenantStores
-	live         map[uuid.UUID]*pooledSession
-	reserved     map[uuid.UUID]struct{}
-	active       sync.WaitGroup
-	closeDone    chan struct{}
-	closeContext context.Context
-	closeCancel  context.CancelFunc
-	closeErr     error
-	closed       bool
+	mu            sync.Mutex
+	dataDir       string
+	cfg           Config
+	options       serveHostConfig
+	tenants       map[sessionwire.TenantID]*pooledTenantStores
+	live          map[uuid.UUID]*pooledSession
+	reserved      map[uuid.UUID]struct{}
+	active        sync.WaitGroup
+	closeDone     chan struct{}
+	closeContext  context.Context
+	closeCancel   context.CancelFunc
+	closeErr      error
+	closed        bool
+	preparing     bool
+	prepared      bool
+	compatibility department.CompatibilityID
 }
 
 type pooledTenantStores struct {
@@ -49,12 +53,115 @@ type pooledTenantStores struct {
 const tenantJournalDigestDomain = "looprig/carbon/tenant-journal-root/v1"
 
 type pooledSession struct {
+	checkpointMu      sync.Mutex
+	tenant            sessionwire.TenantID
+	sessionID         sessionwire.SessionID
 	controller        session.SessionController
 	access            *sessionAccess
 	mcp               mcpSessionAssembly
 	credentialRuntime *credentialRuntime
 	credentialLease   *credentialRegistryLease
 	once              sync.Once
+}
+
+// PooledCompatibilityDriftError refuses a session whose effective rig identity
+// differs from the capability the Host advertised at startup.
+type PooledCompatibilityDriftError struct {
+	Prepared department.CompatibilityID
+	Current  department.CompatibilityID
+}
+
+func (e *PooledCompatibilityDriftError) Error() string {
+	return fmt.Sprintf("carbon: pooled runtime compatibility drift: prepared %q, current %q", e.Prepared, e.Current)
+}
+
+// PrepareCompatibility freezes the effective, secret-free runtime identity
+// before Host publishes capacity. The probe owns and closes every temporary
+// model, credential, access and MCP dependency; Launch builds fresh ones.
+func (l *PooledLauncher) PrepareCompatibility(ctx context.Context) (department.CompatibilityID, error) {
+	if l == nil {
+		return "", errors.New("carbon: nil pooled launcher")
+	}
+	l.mu.Lock()
+	if l.closed {
+		l.mu.Unlock()
+		return "", &StoreClosedError{}
+	}
+	if l.prepared {
+		id := l.compatibility
+		l.mu.Unlock()
+		return id, nil
+	}
+	if l.preparing || len(l.live) != 0 || len(l.reserved) != 0 {
+		l.mu.Unlock()
+		return "", errors.New("carbon: compatibility preparation requires an idle launcher")
+	}
+	l.preparing = true
+	l.active.Add(1)
+	l.mu.Unlock()
+	prepareCtx, cancel := context.WithCancel(ctx)
+	stopCloseCancel := context.AfterFunc(l.closeContext, cancel)
+	defer func() { stopCloseCancel(); cancel() }()
+	defer func() {
+		l.mu.Lock()
+		l.preparing = false
+		l.mu.Unlock()
+		l.active.Done()
+	}()
+	root, err := os.MkdirTemp(l.dataDir, "compatibility-probe-")
+	if err != nil {
+		return "", err
+	}
+	defer os.RemoveAll(root)
+	cfg := l.cfg
+	var credentials *credentialRuntime
+	var lease *credentialRegistryLease
+	if l.options.buildClient == nil {
+		load := l.options.loadModels
+		if load == nil {
+			load = loadProductionModelsWithContext
+		}
+		resolved, err := resolveServeModelsAtRoot(prepareCtx, cfg, load, loadProductionModels, root)
+		if err != nil {
+			return "", err
+		}
+		cfg, credentials, lease = resolved.cfg, resolved.credentialRuntime, resolved.credentialLease
+	} else {
+		if _, _, err := l.options.buildClient(); err != nil {
+			return "", err
+		}
+	}
+	defer func() {
+		if credentials != nil {
+			credentials.endSession()
+			releaseCredentialComposition(credentials, lease)
+		}
+	}()
+	access, err := buildSessionAccess(cfg, root, true)
+	if err != nil {
+		return "", err
+	}
+	defer access.Close()
+	cfg.AccessConfigRev = access.pooledConfigRev
+	mcp, err := newMCPSessionAssembly(cfg)
+	if err != nil {
+		return "", err
+	}
+	defer mcp.close(context.Background())
+	cfg.MCPConfigRev = mcp.configRev()
+	id := CarbonCompatibilityID(cfg)
+	l.mu.Lock()
+	if l.closed {
+		l.mu.Unlock()
+		return "", &StoreClosedError{}
+	}
+	if err := prepareCtx.Err(); err != nil {
+		l.mu.Unlock()
+		return "", err
+	}
+	l.compatibility, l.prepared = id, true
+	l.mu.Unlock()
+	return id, nil
 }
 
 // OpenPooledLauncher fixes the durable data root. Tenant backends are opened
@@ -169,6 +276,10 @@ func (l *PooledLauncher) Launch(ctx context.Context, scope LaunchScope) (session
 		l.mu.Unlock()
 		return nil, &StoreClosedError{}
 	}
+	if l.preparing {
+		l.mu.Unlock()
+		return nil, errors.New("carbon: pooled compatibility preparation is in progress")
+	}
 	_, live := l.live[scope.RigSessionID]
 	_, reserved := l.reserved[scope.RigSessionID]
 	if live || reserved {
@@ -232,7 +343,7 @@ func (l *PooledLauncher) Launch(ctx context.Context, scope LaunchScope) (session
 		return nil, err
 	}
 	access.diagnostics = append(access.diagnostics, cfg.ACPDiagnostics...)
-	cfg.AccessConfigRev = access.configRev
+	cfg.AccessConfigRev = access.pooledConfigRev
 	mcp, err := newMCPSessionAssembly(cfg)
 	if err != nil {
 		_ = access.Close()
@@ -245,6 +356,15 @@ func (l *PooledLauncher) Launch(ctx context.Context, scope LaunchScope) (session
 		_ = access.Close()
 		cleanupCredentials()
 		return nil, err
+	}
+	l.mu.Lock()
+	prepared, advertised := l.prepared, l.compatibility
+	l.mu.Unlock()
+	if prepared {
+		current := CarbonCompatibilityID(cfg)
+		if current != advertised {
+			return fail(&PooledCompatibilityDriftError{Prepared: advertised, Current: current})
+		}
 	}
 	definition, err := carbonDefinition(client, factory(), cfg, access, nil)
 	if err != nil {
@@ -273,7 +393,7 @@ func (l *PooledLauncher) Launch(ctx context.Context, scope LaunchScope) (session
 		_ = controller.Shutdown(ctx)
 		return fail(err)
 	}
-	entry := &pooledSession{controller: controller, access: access, mcp: mcp, credentialRuntime: credentials, credentialLease: lease}
+	entry := &pooledSession{tenant: scope.TenantID, sessionID: scope.SessionID, controller: controller, access: access, mcp: mcp, credentialRuntime: credentials, credentialLease: lease}
 	l.mu.Lock()
 	if l.closed {
 		l.mu.Unlock()
@@ -292,8 +412,62 @@ func (l *PooledLauncher) Launch(ctx context.Context, scope LaunchScope) (session
 	return controller, nil
 }
 
+// Checkpoint commits a live session's workspace before Host begins a
+// nonterminal release. The conversation is already journaled. Host later asks
+// the runtime to ReleaseResidency, which writes its own checked release anchor.
+func (l *PooledLauncher) Checkpoint(ctx context.Context, tenant sessionwire.TenantID, sessionID sessionwire.SessionID) error {
+	if l == nil {
+		return errors.New("carbon: nil pooled launcher")
+	}
+	l.mu.Lock()
+	if l.closed {
+		l.mu.Unlock()
+		return &StoreClosedError{}
+	}
+	var selected *pooledSession
+	for _, entry := range l.live {
+		if entry.tenant == tenant && entry.sessionID == sessionID {
+			selected = entry
+			break
+		}
+	}
+	if selected == nil {
+		l.mu.Unlock()
+		return fmt.Errorf("carbon: no live session for tenant %q session %q", tenant, sessionID)
+	}
+	l.active.Add(1)
+	l.mu.Unlock()
+	defer l.active.Done()
+	selected.checkpointMu.Lock()
+	defer selected.checkpointMu.Unlock()
+	controller := selected.controller
+	checkpointCtx, cancel := context.WithTimeout(ctx, snapshotTimeout)
+	defer cancel()
+	if idle, ok := controller.(session.IdleWaiter); ok {
+		if err := idle.WaitIdle(checkpointCtx); err != nil {
+			return err
+		}
+	} else {
+		return errors.New("carbon: pooled session has no idle waiter")
+	}
+	ref, err := controller.CheckpointWorkspace(checkpointCtx)
+	if err != nil {
+		return err
+	}
+	if ref == "" {
+		return errors.New("carbon: workspace checkpoint returned no reference")
+	}
+	probe, ok := controller.(interface{ FaultErr() error })
+	if !ok {
+		return errors.New("carbon: pooled session cannot report durable checkpoint faults")
+	}
+	return probe.FaultErr()
+}
+
 func (l *PooledLauncher) release(id uuid.UUID, entry *pooledSession) {
 	entry.once.Do(func() {
+		entry.checkpointMu.Lock()
+		defer entry.checkpointMu.Unlock()
 		entry.mcp.close(context.Background())
 		_ = entry.access.Close()
 		if entry.credentialRuntime != nil {

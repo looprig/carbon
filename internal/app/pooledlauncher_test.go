@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -70,6 +71,194 @@ func TestPooledLauncherKeepsTwoTenantSessionsLiveAndRestoresTheirOwnRoots(t *tes
 	}
 	if b, err := os.ReadFile(filepath.Join(first, "owned-by-a")); err != nil || string(b) != "a" {
 		t.Fatalf("restore lost workspace: %q %v", b, err)
+	}
+}
+
+func TestPooledLauncherCheckpointSelectsExactTenantSession(t *testing.T) {
+	ctx := context.Background()
+	launcher, err := OpenPooledLauncher(ctx, Config{HomeDir: t.TempDir()}, t.TempDir(),
+		WithServeInferenceClient(func() (inference.Client, ModelFactory, error) {
+			return &fakeLLM{}, newModelFactoryFor(testModel()), nil
+		}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = launcher.Close(ctx) })
+	id, err := uuid.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	controller, err := launcher.Launch(ctx, LaunchScope{TenantID: "tenant-a", SessionID: "same-session", AgentID: CarbonAgentID, Placement: sessionwire.HostPlacementPooled, RigSessionID: id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := launcher.Checkpoint(ctx, "tenant-b", "same-session"); err == nil {
+		t.Fatal("other tenant checkpointed session")
+	}
+	if err := launcher.Checkpoint(ctx, "tenant-a", "other-session"); err == nil {
+		t.Fatal("other session checkpointed")
+	}
+	if err := launcher.Checkpoint(ctx, "tenant-a", "same-session"); err != nil {
+		t.Fatalf("checkpoint: %v", err)
+	}
+	if err := controller.Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPooledLauncherPreparedCompatibilityRejectsDrift(t *testing.T) {
+	ctx := context.Background()
+	launcher, err := OpenPooledLauncher(ctx, Config{HomeDir: t.TempDir()}, t.TempDir(), WithServeInferenceClient(func() (inference.Client, ModelFactory, error) {
+		return &fakeLLM{}, newModelFactoryFor(testModel()), nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = launcher.Close(ctx) })
+	id, err := launcher.PrepareCompatibility(ctx)
+	if err != nil || id == "" {
+		t.Fatalf("prepare: %q %v", id, err)
+	}
+	launcher.cfg.AccessProfile = AccessTrusted
+	runtimeID, err := uuid.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = launcher.Launch(ctx, LaunchScope{TenantID: "tenant-a", SessionID: "session-a", AgentID: CarbonAgentID, Placement: sessionwire.HostPlacementPooled, RigSessionID: runtimeID})
+	var drift *PooledCompatibilityDriftError
+	if !errors.As(err, &drift) {
+		t.Fatalf("launch after drift = %v, want typed refusal", err)
+	}
+}
+
+func TestPooledHostCompatibilityNormalizesOnlyWorkspaceRoot(t *testing.T) {
+	cfg := Config{HomeDir: t.TempDir()}
+	a, err := buildSessionAccess(cfg, t.TempDir(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	b, err := buildSessionAccess(cfg, t.TempDir(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	if a.configRev == b.configRev {
+		t.Fatal("actual Harness access fingerprints must remain root-sensitive")
+	}
+	cfg.AccessConfigRev = a.pooledConfigRev
+	one := CarbonCompatibilityID(cfg)
+	cfg.AccessConfigRev = b.pooledConfigRev
+	if two := CarbonCompatibilityID(cfg); one != two {
+		t.Fatalf("pooled identity drifted across roots: %q vs %q", one, two)
+	}
+}
+
+func TestPooledCheckpointRefusesActualJournalAppendFault(t *testing.T) {
+	ctx := context.Background()
+	launcher, err := OpenPooledLauncher(ctx, Config{HomeDir: t.TempDir()}, t.TempDir(), WithServeInferenceClient(func() (inference.Client, ModelFactory, error) {
+		return &fakeLLM{}, newModelFactoryFor(testModel()), nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = launcher.Close(ctx) })
+	id, err := uuid.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := launcher.Launch(ctx, LaunchScope{TenantID: "tenant-a", SessionID: "session-a", AgentID: CarbonAgentID, Placement: sessionwire.HostPlacementPooled, RigSessionID: id}); err != nil {
+		t.Fatal(err)
+	}
+	journalRoot := launcher.tenants["tenant-a"].fs.StoragePaths()[0]
+	streams := filepath.Join(journalRoot, "streams")
+	moved := streams + "-offline"
+	if err := os.Rename(streams, moved); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Rename(moved, streams) }()
+	if err := launcher.Checkpoint(ctx, "tenant-a", "session-a"); err == nil {
+		t.Fatal("checkpoint accepted workspace snapshot whose durable journal append failed")
+	}
+}
+
+func TestPooledRigPersistsDistinctRootsAndRefusesMovedRootRestore(t *testing.T) {
+	ctx := context.Background()
+	data := t.TempDir()
+	home := t.TempDir()
+	build := func() ServeHostOption {
+		return WithServeInferenceClient(func() (inference.Client, ModelFactory, error) {
+			return &fakeLLM{}, newModelFactoryFor(testModel()), nil
+		})
+	}
+	first, err := OpenPooledLauncher(ctx, Config{HomeDir: home}, data, build())
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := first.PrepareCompatibility(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var controllers []session.SessionController
+	var ids []uuid.UUID
+	for _, name := range []sessionwire.SessionID{"session-a", "session-b"} {
+		runtimeID, err := uuid.New()
+		if err != nil {
+			t.Fatal(err)
+		}
+		controller, err := first.Launch(ctx, LaunchScope{TenantID: "tenant-a", SessionID: name, AgentID: CarbonAgentID, Placement: sessionwire.HostPlacementPooled, RigSessionID: runtimeID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		controllers, ids = append(controllers, controller), append(ids, runtimeID)
+	}
+	metas, err := first.tenants["tenant-a"].stores.catalog.ListSessions(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var roots []string
+	var revs []string
+	for _, meta := range metas {
+		for _, runtimeID := range ids {
+			if meta.SessionID == runtimeID {
+				roots = append(roots, meta.ConfigFingerprint.WorkspaceRoot)
+				revs = append(revs, meta.ConfigFingerprint.NativePermissionPolicyRev)
+			}
+		}
+	}
+	if len(roots) != 2 || roots[0] == "" || roots[1] == "" || roots[0] == roots[1] {
+		t.Fatalf("persisted pooled roots = %v", roots)
+	}
+	if len(revs) != 2 || revs[0] != revs[1] {
+		t.Fatalf("pooled access revisions differ across roots: %v", revs)
+	}
+	for _, controller := range controllers {
+		releaser, ok := controller.(session.Releaser)
+		if !ok {
+			t.Fatal("pooled controller lacks nonterminal release")
+		}
+		if err := releaser.ReleaseResidency(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := first.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	moved := filepath.Join(t.TempDir(), "moved-root")
+	if err := os.Rename(data, moved); err != nil {
+		t.Fatal(err)
+	}
+	second, err := OpenPooledLauncher(ctx, Config{HomeDir: home}, moved, build())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close(ctx)
+	if next, err := second.PrepareCompatibility(ctx); err != nil || next != id {
+		t.Fatalf("pooled compatibility changed with root: %q %v", next, err)
+	}
+	_, err = second.Launch(ctx, LaunchScope{TenantID: "tenant-a", SessionID: "session-a", AgentID: CarbonAgentID, Placement: sessionwire.HostPlacementPooled, RigSessionID: ids[0], Restore: true})
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "workspace") {
+		t.Fatalf("moved-root restore = %v, want workspace fingerprint refusal", err)
 	}
 }
 

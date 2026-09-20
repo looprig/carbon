@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sync"
 
 	"github.com/looprig/harness/pkg/gate"
@@ -254,13 +255,14 @@ func carbonToolDefinitions(set *sandbox.ExecutorSet, client *http.Client, skillT
 // permission-load diagnostics). It is built once per Open — interactive or
 // headless — and never mutated.
 type sessionAccess struct {
-	profileName string
-	workspace   string
-	configRev   string
-	diagnostics []string
-	set         *sandbox.ExecutorSet
-	gate        loop.AccessGate
-	policyRev   string
+	profileName     string
+	workspace       string
+	configRev       string
+	pooledConfigRev string
+	diagnostics     []string
+	set             *sandbox.ExecutorSet
+	gate            loop.AccessGate
+	policyRev       string
 
 	closeOnce sync.Once
 	closeErr  error
@@ -309,10 +311,16 @@ func buildSessionAccessWithPermissionFile(cfg Config, root string, interactive b
 	if err != nil {
 		return nil, err
 	}
-	selected, err := carbonProfile(profileName, root)
+	profileConfig, err := carbonProfileConfig(profileName, root)
 	if err != nil {
 		return nil, err
 	}
+	selected, err := sandbox.NewProfile(profileConfig)
+	if err != nil {
+		return nil, err
+	}
+	logicalConfig := profileConfig
+	logicalConfig.WorkspaceRoot = filepath.Join(string(filepath.Separator), "looprig-carbon-pooled-workspace-v1")
 	egress, err := resolveEgressRoute(os.Getenv)
 	if err != nil {
 		return nil, err
@@ -340,11 +348,12 @@ func buildSessionAccessWithPermissionFile(cfg Config, root string, interactive b
 	}
 
 	return &sessionAccess{
-		profileName: string(profileName),
-		workspace:   root,
-		diagnostics: diagnosticMessages(diagnostics),
-		configRev:   accessConfigDigest(profileName, selected, egress.Route),
-		set:         set,
+		profileName:     string(profileName),
+		workspace:       root,
+		diagnostics:     diagnosticMessages(diagnostics),
+		configRev:       accessConfigDigest(profileName, selected, egress.Route),
+		pooledConfigRev: pooledAccessConfigDigest(profileName, logicalConfig, egress.Route),
+		set:             set,
 		gate: &accessGate{
 			set:         set,
 			bindings:    sandboxAccessBindings(selected, product),
