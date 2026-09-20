@@ -115,3 +115,76 @@ func TestUnexpectedServeFailureAutomaticallyStopsOwner(t *testing.T) {
 		t.Fatal("unexpected Serve exit left storage open")
 	}
 }
+
+func TestUnexpectedPublicFailureReportsWhileHostCleanupRetries(t *testing.T) {
+	want := errors.New("public listener failed")
+	firstEntered := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	closed := false
+	calls := 0
+	s := &Server{serveDone: make(chan error, 1), done: make(chan struct{}), failureDone: make(chan struct{}),
+		stopHost: func(context.Context) (host.DrainReport, error) {
+			calls++
+			if calls == 1 {
+				close(firstEntered)
+				<-releaseFirst
+				return host.DrainReport{}, errors.New("drain publication failed")
+			}
+			return host.DrainReport{}, nil
+		}, closeStorage: func(context.Context) error { closed = true; return nil }}
+	go s.runServe(func(net.Listener) error { return want })
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := s.Wait(ctx); !errors.Is(err, want) {
+		t.Fatalf("Wait did not report listener failure: %v", err)
+	}
+	<-firstEntered
+	if closed {
+		t.Fatal("storage closed during failed Host Stop")
+	}
+	select {
+	case <-s.Done():
+		t.Fatal("Done closed during failed Host Stop")
+	default:
+	}
+	close(releaseFirst)
+	if err := s.Stop(context.Background()); err == nil {
+		t.Fatal("first cleanup attempt reported success")
+	}
+	if err := s.Stop(context.Background()); err != nil && !errors.Is(err, want) {
+		t.Fatalf("retry Stop = %v", err)
+	}
+	if !closed || calls != 2 {
+		t.Fatalf("retry closed=%t calls=%d", closed, calls)
+	}
+	select {
+	case <-s.Done():
+	default:
+		t.Fatal("Done open after successful retry")
+	}
+	if err := s.Wait(ctx); !errors.Is(err, want) {
+		t.Fatalf("terminal Wait lost listener failure: %v", err)
+	}
+}
+
+func TestHostListenerBroadcastTriggersBrowserShutdown(t *testing.T) {
+	hostDone := make(chan struct{})
+	want := errors.New("Host listener failed")
+	s := &Server{done: make(chan struct{}), failureDone: make(chan struct{}),
+		hostListenerDone: hostDone, hostListenerError: func() error { return want }}
+	go s.watchHost()
+	close(hostDone)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := s.Wait(ctx); !errors.Is(err, want) {
+		t.Fatalf("Wait = %v", err)
+	}
+	if err := s.Stop(ctx); err != nil && !errors.Is(err, want) {
+		t.Fatalf("Stop = %v", err)
+	}
+	select {
+	case <-s.Done():
+	default:
+		t.Fatal("host listener failure left owner active")
+	}
+}

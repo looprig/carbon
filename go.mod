@@ -9,6 +9,7 @@ tool (
 )
 
 require (
+	github.com/centrifugal/centrifuge-go v0.12.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/looprig/acp v0.3.2
 	github.com/looprig/classifiers v0.2.1
@@ -52,7 +53,6 @@ require (
 	github.com/buger/jsonparser v1.6.1 // indirect
 	github.com/ccojocar/zxcvbn-go v1.0.4 // indirect
 	github.com/centrifugal/centrifuge v0.38.0 // indirect
-	github.com/centrifugal/centrifuge-go v0.12.0 // indirect
 	github.com/centrifugal/protocol v0.19.2 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/charmbracelet/colorprofile v0.4.3 // indirect

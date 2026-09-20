@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/looprig/carbon/browser"
 	carbon "github.com/looprig/carbon/internal/app"
@@ -34,14 +35,17 @@ func runBrowserLifecycle(ctx context.Context, appCfg carbon.Config, cfg browserS
 		return exitFailed
 	}
 	fmt.Fprintf(out, "carbon serve listening on http://%s\n", server.Addr())
-	select {
-	case <-ctx.Done():
-	case <-server.Done():
+	waitErr := server.Wait(ctx)
+	if waitErr != nil && !errors.Is(waitErr, ctx.Err()) {
+		fmt.Fprintln(errOut, "serve: listener:", waitErr)
 	}
 	waitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := server.Stop(waitCtx); err != nil {
 		fmt.Fprintln(errOut, "serve: cleanup:", err)
+		return exitFailed
+	}
+	if waitErr != nil && !errors.Is(waitErr, ctx.Err()) {
 		return exitFailed
 	}
 	return exitOK

@@ -49,21 +49,26 @@ type Config struct {
 // Server retains every owned stage until an orderly shutdown completes.
 // A failed Stop attempt leaves the handle retryable.
 type Server struct {
-	mu             sync.Mutex
-	storage        *carbon.ServeStorage
-	host           *carbon.ServePooledHost
-	factory        *factory.Server
-	listener       net.Listener
-	serveDone      chan error
-	done           chan struct{}
-	attempt        *stopAttempt
-	terminalErr    error
-	factoryStopped bool
-	hostStopped    bool
-	storageClosed  bool
-	stopFactory    func(context.Context) error
-	stopHost       func(context.Context) (host.DrainReport, error)
-	closeStorage   func(context.Context) error
+	mu                sync.Mutex
+	storage           *carbon.ServeStorage
+	host              *carbon.ServePooledHost
+	factory           *factory.Server
+	listener          net.Listener
+	serveDone         chan error
+	done              chan struct{}
+	failureDone       chan struct{}
+	failureErr        error
+	stopping          bool
+	attempt           *stopAttempt
+	terminalErr       error
+	factoryStopped    bool
+	hostStopped       bool
+	storageClosed     bool
+	stopFactory       func(context.Context) error
+	stopHost          func(context.Context) (host.DrainReport, error)
+	closeStorage      func(context.Context) error
+	hostListenerDone  <-chan struct{}
+	hostListenerError func() error
 }
 
 // DrainIncompleteError means Host reported failures after Stop returned.
@@ -114,7 +119,7 @@ func Start(ctx context.Context, cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{storage: storage, done: make(chan struct{})}
+	s := &Server{storage: storage, done: make(chan struct{}), failureDone: make(chan struct{})}
 	h, err := carbon.OpenServePooledHost(ctx, storage, cfg.Host)
 	if err != nil {
 		if closeErr := storage.Close(context.Background()); closeErr != nil {
@@ -144,16 +149,52 @@ func Start(ctx context.Context, cfg Config) (*Server, error) {
 	}
 	s.listener = ln
 	s.serveDone = make(chan error, 1)
+	s.hostListenerDone, s.hostListenerError = h.ListenerDone(), h.ListenerError
+	// #nosec G118 -- the observer belongs to Server until HostLink terminates.
+	go s.watchHost()
 	// #nosec G118 -- Serve is owned by Server; Start's context only bounds startup.
 	go s.runServe(f.Serve)
 	return s, nil
 }
 
 func (s *Server) runServe(serve func(net.Listener) error) {
-	s.serveDone <- serve(s.listener)
+	err := serve(s.listener)
+	s.serveDone <- err
 	// Any return from the public listener begins owner cleanup, even when no
 	// caller is waiting on Stop. The result is retained for Wait.
+	s.mu.Lock()
+	if !s.stopping {
+		if err == nil {
+			err = errors.New("carbon: public browser listener stopped unexpectedly")
+		}
+		s.recordFailureLocked(fmt.Errorf("carbon: public browser listener: %w", err))
+	}
+	s.mu.Unlock()
 	_ = s.Stop(context.Background())
+}
+
+func (s *Server) watchHost() {
+	<-s.hostListenerDone
+	err := s.hostListenerError()
+	s.mu.Lock()
+	if !s.stopping {
+		if err == nil {
+			err = errors.New("HostLink listener stopped unexpectedly")
+		}
+		s.recordFailureLocked(fmt.Errorf("carbon: HostLink listener: %w", err))
+		s.mu.Unlock()
+		_ = s.Stop(context.Background())
+		return
+	}
+	s.mu.Unlock()
+}
+
+func (s *Server) recordFailureLocked(err error) {
+	s.terminalErr = errors.Join(s.terminalErr, err)
+	if s.failureDone != nil && s.failureErr == nil {
+		s.failureErr = err
+		close(s.failureDone)
+	}
 }
 
 func failStart(s *Server, cause error) (*Server, error) {
@@ -183,6 +224,7 @@ func (s *Server) Stop(ctx context.Context) error {
 	default:
 	}
 	if s.attempt == nil {
+		s.stopping = true
 		s.attempt = &stopAttempt{done: make(chan struct{})}
 		// #nosec G118 -- caller cancellation must not interrupt owned cleanup.
 		go s.cleanup(s.attempt)
@@ -205,6 +247,19 @@ func (s *Server) Wait(ctx context.Context) error {
 	case <-s.done:
 		s.mu.Lock()
 		err := s.terminalErr
+		s.mu.Unlock()
+		return err
+	default:
+	}
+	select {
+	case <-s.done:
+		s.mu.Lock()
+		err := s.terminalErr
+		s.mu.Unlock()
+		return err
+	case <-s.failureDone:
+		s.mu.Lock()
+		err := s.failureErr
 		s.mu.Unlock()
 		return err
 	case <-ctx.Done():
@@ -260,7 +315,12 @@ func (s *Server) cleanup(attempt *stopAttempt) {
 		}
 	}
 	s.mu.Lock()
-	s.terminalErr = errors.Join(s.terminalErr, diagnostic)
+	if diagnostic != nil {
+		s.recordFailureLocked(diagnostic)
+	}
+	if err != nil {
+		s.recordFailureLocked(err)
+	}
 	attempt.err = errors.Join(err, diagnostic)
 	if err == nil {
 		close(s.done)

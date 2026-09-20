@@ -260,6 +260,7 @@ func TestServePooledHostCancelledStopClosesActiveSocket(t *testing.T) {
 	if err := service.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
+	listenerDone := service.ListenerDone()
 	conn, err := net.Dial("tcp", service.listener.Addr().String())
 	if err != nil {
 		t.Fatal(err)
@@ -277,6 +278,17 @@ func TestServePooledHostCancelledStopClosesActiveSocket(t *testing.T) {
 		t.Fatal("active socket survived cancelled Stop")
 	} else if timeout, ok := err.(net.Error); ok && timeout.Timeout() {
 		t.Fatalf("active socket remained open until read deadline: %v", err)
+	}
+	if report, err := service.Stop(ctx); err != nil || len(report.Failures) != 0 {
+		t.Fatalf("later Stop = %+v %v", report, err)
+	}
+	select {
+	case <-listenerDone:
+	case <-time.After(time.Second):
+		t.Fatal("HostLink listener completion was not broadcast")
+	}
+	if err := service.ListenerError(); err != nil && !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("listener result = %v", err)
 	}
 }
 

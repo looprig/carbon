@@ -9,9 +9,11 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	centrifugego "github.com/centrifugal/centrifuge-go"
 	"github.com/looprig/carbon/browser"
 	"github.com/looprig/core/content"
 	sessionwire "github.com/looprig/core/sessionwire/v1"
@@ -40,18 +42,30 @@ func (verifier) VerifyCredential(_ context.Context, credential identity.Credenti
 	return identity.Claims{Subject: "browser-user", Kind: identity.KindActor, ExpiresAt: time.Now().Add(time.Hour)}, nil
 }
 
-type client struct{}
+type client struct {
+	release  <-chan struct{}
+	requests chan<- struct{}
+}
 
 func (client) Invoke(context.Context, inference.Request) (*inference.Response, error) {
 	return nil, errors.New("unexpected Invoke")
 }
-func (client) Stream(context.Context, inference.Request) (*stream.StreamReader[content.Chunk], error) {
+func (c client) Stream(context.Context, inference.Request) (*stream.StreamReader[content.Chunk], error) {
+	if c.requests != nil {
+		select {
+		case c.requests <- struct{}{}:
+		default:
+		}
+	}
 	used := false
 	return stream.NewStreamReader(func() (content.Chunk, error) {
 		if used {
 			return nil, io.EOF
 		}
 		used = true
+		if c.release != nil {
+			<-c.release
+		}
 		return &content.TextChunk{Text: "browser reply"}, nil
 	}, nil), nil
 }
@@ -61,6 +75,8 @@ func browserFixture(t *testing.T) browser.Config {
 	const tenant = sessionwire.TenantID("local")
 	reconcile := factory.DefaultReconcileLimits()
 	reconcile.Interval = time.Second
+	clientLinks := factory.DefaultClientLinkLimits()
+	clientLinks.DemandReleaseDebounce = time.Second
 	cfg := browser.Config{
 		Runtime: browser.RuntimeConfig{HomeDir: t.TempDir(), AccessProfile: "trusted"},
 		ClientBuilder: func() (inference.Client, func() model.Model, error) {
@@ -78,7 +94,8 @@ func browserFixture(t *testing.T) browser.Config {
 			CompatibilityTimeout: 20 * time.Second, WorkPoll: time.Second},
 		Factory: browser.FactoryConfig{DefaultTenant: tenant, StorageBindingID: "carbon-local-v1", BindingVersion: "v1", HostLinkToken: "host-token",
 			ReplicaID: "browser-test", CookieName: "browser_session", Verifier: verifier{}, Authorizer: factory.TenantAuthorizer{},
-			ReconcileLimits: reconcile,
+			ReconcileLimits:  reconcile,
+			ClientLinkLimits: clientLinks,
 			CSRF: identity.CSRFConfig{SharedKey: bytes.Repeat([]byte{'k'}, identity.MinCSRFSharedKeyBytes), TokenTTL: time.Hour,
 				TrustedOrigins: []string{"http://127.0.0.1"}}},
 		Address: "127.0.0.1:0",
@@ -86,8 +103,81 @@ func browserFixture(t *testing.T) browser.Config {
 	return cfg
 }
 
+func connectBrowserViewer(t *testing.T, base string) (*centrifugego.Client, <-chan sessionwire.EnduringPublication, <-chan sessionwire.SessionReset) {
+	t.Helper()
+	viewer := centrifugego.NewJsonClient("ws"+strings.TrimPrefix(base, "http")+"/v1/realtime", centrifugego.Config{
+		Token: "browser-test-token", Data: []byte(`{"protocol_version":"1"}`),
+		Header:           http.Header{"Authorization": {"Bearer browser-test-token"}, "Origin": {"http://127.0.0.1"}},
+		HandshakeTimeout: 10 * time.Second, LogLevel: centrifugego.LogLevelNone,
+	})
+	connected := make(chan struct{}, 1)
+	viewer.OnConnected(func(centrifugego.ConnectedEvent) {
+		select {
+		case connected <- struct{}{}:
+		default:
+		}
+	})
+	if err := viewer.Connect(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-connected:
+	case <-time.After(10 * time.Second):
+		t.Fatal("viewer did not connect")
+	}
+	sub, err := viewer.NewSubscription("session:local:browser-session-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	subscribed := make(chan struct{}, 1)
+	live := make(chan sessionwire.EnduringPublication, 8)
+	resets := make(chan sessionwire.SessionReset, 8)
+	sub.OnSubscribed(func(centrifugego.SubscribedEvent) {
+		select {
+		case subscribed <- struct{}{}:
+		default:
+		}
+	})
+	sub.OnPublication(func(event centrifugego.PublicationEvent) {
+		var reset sessionwire.SessionReset
+		if reset.UnmarshalJSON(event.Data) == nil {
+			select {
+			case resets <- reset:
+			default:
+			}
+		}
+		var publication sessionwire.EnduringPublication
+		if publication.UnmarshalJSON(event.Data) == nil && strings.Contains(string(publication.Body), "browser reply") {
+			select {
+			case live <- publication:
+			default:
+			}
+		}
+	})
+	if err := sub.Subscribe(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-subscribed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("viewer did not subscribe")
+	}
+	return viewer, live, resets
+}
+
 func TestExternalApplicationCanStartCreateAndStop(t *testing.T) {
 	cfg := browserFixture(t)
+	release := make(chan struct{})
+	modelRequests := make(chan struct{}, 4)
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(release) })
+	cfg.ClientBuilder = func() (inference.Client, func() model.Model, error) {
+		return client{release: release, requests: modelRequests}, func() model.Model {
+			return model.CustomModel(model.ProviderName(llm.ProviderLMStudio), model.APIFormatOpenAI,
+				"http://localhost:1234/v1", "browser-test", model.WithTools(),
+				model.WithContextLimits(model.ContextLimits{WindowTokens: 128_000}))
+		}, nil
+	}
 	s, err := browser.Start(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("Start = %v", err)
@@ -109,6 +199,21 @@ func TestExternalApplicationCanStartCreateAndStop(t *testing.T) {
 		}
 		return resp
 	}
+	postInput := func(command string) {
+		t.Helper()
+		input := sessionwire.InputRequest{CommandEnvelope: sessionwire.CommandEnvelope{Version: sessionwire.CurrentWireVersion,
+			CommandID: sessionwire.CommandID(command)}, SessionID: "browser-session-1", Blocks: json.RawMessage(`[{"type":"text","text":"again"}]`)}
+		inputBody, err := json.Marshal(input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response := request(http.MethodPost, "/v1/sessions/browser-session-1/input", inputBody)
+		message, _ := io.ReadAll(response.Body)
+		response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("input %s = %d %s", command, response.StatusCode, message)
+		}
+	}
 	boot := request(http.MethodGet, "/v1/bootstrap", nil)
 	boot.Body.Close()
 	if boot.StatusCode != http.StatusOK {
@@ -126,6 +231,9 @@ func TestExternalApplicationCanStartCreateAndStop(t *testing.T) {
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create = %d %s", resp.StatusCode, message)
 	}
+	viewer, live, resets := connectBrowserViewer(t, base)
+	defer viewer.Close()
+	releaseOnce.Do(func() { close(release) })
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		page := request(http.MethodGet, "/v1/sessions/browser-session-1/journal", nil)
@@ -141,6 +249,81 @@ func TestExternalApplicationCanStartCreateAndStop(t *testing.T) {
 	page.Body.Close()
 	if page.StatusCode != http.StatusOK || !strings.Contains(string(data), "browser reply") {
 		t.Fatalf("journal = %d %s", page.StatusCode, data)
+	}
+	select {
+	case reset := <-resets:
+		if reset.TenantID != "local" || reset.SessionID != "browser-session-1" || reset.JournalTip == 0 {
+			t.Fatalf("live reset has wrong scope/tip: %+v", reset)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("viewer never received a reset covering the first output")
+	}
+	select {
+	case <-modelRequests:
+	default:
+		t.Fatal("first input did not reach model")
+	}
+	postInput("browser-input-2")
+	select {
+	case <-modelRequests:
+	case <-time.After(15 * time.Second):
+		t.Fatal("second input never reached model")
+	}
+	var firstLive sessionwire.EnduringPublication
+	select {
+	case publication := <-live:
+		firstLive = publication
+		if publication.TenantID != "local" || publication.SessionID != "browser-session-1" || publication.JournalSeq == 0 {
+			t.Fatalf("live output has wrong scope/sequence: %+v", publication)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("model output reached journal but not live browser viewer")
+	}
+	viewer.Close()
+	postInput("browser-input-3")
+	select {
+	case <-modelRequests:
+	case <-time.After(15 * time.Second):
+		t.Fatal("offline input never reached model")
+	}
+	var offlineTip uint64
+	until := time.Now().Add(15 * time.Second)
+	for time.Now().Before(until) {
+		page := request(http.MethodGet, "/v1/sessions/browser-session-1/journal", nil)
+		body, _ := io.ReadAll(page.Body)
+		page.Body.Close()
+		var journal sessionwire.JournalPage
+		if page.StatusCode == http.StatusOK && json.Unmarshal(body, &journal) == nil && journal.CapturedTip > firstLive.JournalSeq {
+			offlineTip = journal.CapturedTip
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if offlineTip == 0 {
+		t.Fatal("offline model output was not replayable from the public journal")
+	}
+	reconnected, continued, _ := connectBrowserViewer(t, base)
+	defer reconnected.Close()
+	postInput("browser-input-4")
+	select {
+	case <-modelRequests:
+	case <-time.After(15 * time.Second):
+		t.Fatal("reconnected input never reached model")
+	}
+	continuedDeadline := time.After(15 * time.Second)
+	seenContinued := false
+	for !seenContinued {
+		select {
+		case publication := <-continued:
+			if publication.TenantID != "local" || publication.SessionID != "browser-session-1" {
+				t.Fatalf("reconnected live output has wrong scope: %+v", publication)
+			}
+			if publication.JournalSeq > offlineTip {
+				seenContinued = true
+			}
+		case <-continuedDeadline:
+			t.Fatal("reconnected browser viewer missed output after offline journal tip")
+		}
 	}
 	if err := s.Stop(context.Background()); err != nil {
 		t.Fatal(fmt.Errorf("Stop: %w", err))

@@ -29,6 +29,7 @@ type FactoryConfig struct {
 	UIRoutes         http.Handler
 	AuthorizeUI      factory.UIRouteAuthorizer
 	ReconcileLimits  factory.ReconcileLimits
+	ClientLinkLimits factory.ClientLinkLimits
 }
 
 type staticServeHostLinkCredential string
@@ -104,6 +105,9 @@ func composeFactory(stores *carbon.ServeStorage, localHost *carbon.ServePooledHo
 	opts = append(opts, factory.WithUIRoutes(cfg.UIRoutes, cfg.AuthorizeUI))
 	if cfg.ReconcileLimits != (factory.ReconcileLimits{}) {
 		opts = append(opts, factory.WithReconcileLimits(cfg.ReconcileLimits))
+	}
+	if cfg.ClientLinkLimits != (factory.ClientLinkLimits{}) {
+		opts = append(opts, factory.WithClientLinkLimits(cfg.ClientLinkLimits))
 	}
 	return factory.New(opts...)
 }
