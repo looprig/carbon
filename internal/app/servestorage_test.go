@@ -5,10 +5,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
 	sessionwire "github.com/looprig/core/sessionwire/v1"
+	"github.com/looprig/fsstore"
 	"github.com/looprig/sessionstore"
 )
 
@@ -155,6 +157,169 @@ func TestServeStorageJournalFailureClosesEarlierStages(t *testing.T) {
 		t.Fatalf("reopen after journal failure: %v", err)
 	}
 	if err := reopened.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type heldControlCloser struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (c *heldControlCloser) Close(context.Context) error {
+	c.once.Do(func() { close(c.entered) })
+	<-c.release
+	return nil
+}
+
+func TestServeStorageCancelledCloseKeepsProviderUntilControlCompletes(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenServeStorage(ctx, Config{}, ServeStorageConfig{DataDir: t.TempDir(), DefaultTenant: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.control.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	backend := *s.controlFS.Backend()
+	backend.Blobs = newBoundedBlobs(backend.Blobs)
+	held := &heldControlCloser{entered: make(chan struct{}), release: make(chan struct{})}
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(held.release) }) })
+	s.control, err = sessionstore.Open(ctx, &backend, sessionstore.WithProviderOwnership(held))
+	if err != nil {
+		t.Fatal(err)
+	}
+	providerClosed := make(chan struct{})
+	s.closeProvider = func() error { close(providerClosed); return s.controlFS.Close() }
+	closeCtx, cancel := context.WithTimeout(ctx, 20*time.Millisecond)
+	defer cancel()
+	if err := s.Close(closeCtx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("timed Close=%v, want caller deadline", err)
+	}
+	select {
+	case <-held.entered:
+	case <-time.After(time.Second):
+		t.Fatal("control close did not start")
+	}
+	select {
+	case <-providerClosed:
+		t.Fatal("provider closed before control completed")
+	default:
+	}
+	second := make(chan error, 1)
+	go func() { second <- s.Close(ctx) }()
+	select {
+	case err := <-second:
+		t.Fatalf("later Close returned before cleanup: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	releaseOnce.Do(func() { close(held.release) })
+	select {
+	case err := <-second:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("later Close did not finish")
+	}
+	select {
+	case <-providerClosed:
+	default:
+		t.Fatal("provider not closed after control")
+	}
+}
+
+func TestServeStorageFailedInitWaitsForControlBeforeProviderClose(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	fs, err := fsstore.Open(fsstore.Options{Root: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := *fs.Backend()
+	backend.Blobs = newBoundedBlobs(backend.Blobs)
+	held := &heldControlCloser{entered: make(chan struct{}), release: make(chan struct{})}
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(held.release) }) })
+	control, err := sessionstore.Open(ctx, &backend, sessionstore.WithProviderOwnership(held))
+	if err != nil {
+		t.Fatal(err)
+	}
+	providerClosed := make(chan struct{})
+	cancel() // Initialization failed after control opened.
+	done := make(chan error, 1)
+	go func() {
+		done <- closeServeStorageResources(nil, control, func() error { close(providerClosed); return fs.Close() })
+	}()
+	select {
+	case <-held.entered:
+	case <-time.After(time.Second):
+		t.Fatal("control cleanup did not start")
+	}
+	select {
+	case <-providerClosed:
+		t.Fatal("provider closed before control cleanup")
+	default:
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("failed init cleanup returned early: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	releaseOnce.Do(func() { close(held.release) })
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("failed init cleanup did not finish")
+	}
+	select {
+	case <-providerClosed:
+	default:
+		t.Fatal("provider was not closed")
+	}
+}
+
+func TestServeStorageCloseReturnsStableCleanupError(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenServeStorage(ctx, Config{}, ServeStorageConfig{DataDir: t.TempDir(), DefaultTenant: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	providerClose := s.closeProvider
+	want := errors.New("provider close failed")
+	s.closeProvider = func() error { return errors.Join(providerClose(), want) }
+	for i := 0; i < 2; i++ {
+		if err := s.Close(ctx); !errors.Is(err, want) {
+			t.Fatalf("Close %d = %v, want stable provider error", i, err)
+		}
+	}
+}
+
+func TestServeStorageJournalFailureAfterInitCancellationCanReopen(t *testing.T) {
+	root := t.TempDir()
+	obstacle := filepath.Join(root, "tenant-journals")
+	if err := os.WriteFile(obstacle, []byte("blocked"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	selected := ServeStorageConfig{DataDir: root, DefaultTenant: "local"}
+	_, err := OpenServeStorage(ctx, Config{}, selected, func(*serveHostConfig) { cancel() })
+	var init *StoreInitError
+	if !errors.As(err, &init) || init.Stage != "default-tenant-journal" {
+		t.Fatalf("cancelled initialization: %v, want journal init error", err)
+	}
+	if err := os.Remove(obstacle); err != nil {
+		t.Fatal(err)
+	}
+	s, err := OpenServeStorage(context.Background(), Config{}, selected)
+	if err != nil {
+		t.Fatalf("reopen after cancelled initialization: %v", err)
+	}
+	if err := s.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 }

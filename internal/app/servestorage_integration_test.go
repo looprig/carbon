@@ -8,7 +8,50 @@ import (
 	"testing"
 
 	"github.com/looprig/core/content"
+	"github.com/looprig/harness/pkg/journal"
+	harnessstore "github.com/looprig/harness/pkg/sessionstore"
 )
+
+func TestServeStorageRestartReplaysDefaultTenantJournal(t *testing.T) {
+	ctx := context.Background()
+	selected := ServeStorageConfig{DataDir: t.TempDir(), DefaultTenant: "local"}
+	first, err := OpenServeStorage(ctx, Config{}, selected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionID, loopID := mustUUID(t), mustUUID(t)
+	events := persistedVisibilityEvents(t, sessionID, loopID)
+	lease, err := first.DefaultJournalStore().AcquireLease(ctx, sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer, err := first.DefaultJournalStore().OpenJournal(ctx, sessionID, lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.Append(ctx, journal.NewEventRecord(events[0])); err != nil {
+		t.Fatal(err)
+	}
+	if err := lease.Release(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	second, err := OpenServeStorage(ctx, Config{}, selected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = second.Close(ctx) }()
+	replayer, err := second.DefaultJournalStore().OpenInternalEventReplayer(sessionID, harnessstore.ReplayRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := drainEventReplay(t, replayer)
+	if len(got) != 1 || got[0].EventHeader().EventID != events[0].EventHeader().EventID {
+		t.Fatalf("journal replay after restart: %#v, want event %s", got, events[0].EventHeader().EventID)
+	}
+}
 
 // A real historical Carbon root is a Harness journal and a legacy
 // SessionStore marker at the configured data root. Refusing tenant-v1 here is

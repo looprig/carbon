@@ -64,8 +64,10 @@ func (*ServeLegacyCompatibilityError) Error() string {
 // tenant journals use PooledLauncher's hashed child roots. Host must stop before
 // Close, so its journal readers never outlive these backends.
 type ServeStorage struct {
-	mu             sync.Mutex
-	closed         bool
+	closeOnce      sync.Once
+	closeDone      chan struct{}
+	closeErr       error
+	closeProvider  func() error
 	controlFS      *fsstore.Store
 	control        *sessionstore.Store
 	launcher       *PooledLauncher
@@ -115,39 +117,52 @@ func OpenServeStorage(ctx context.Context, cfg Config, selected ServeStorageConf
 	}
 	launcher, err := OpenPooledLauncher(ctx, cfg, selected.DataDir, opts...)
 	if err != nil {
-		_ = control.Close(ctx)
-		_ = fs.Close()
+		_ = closeServeStorageResources(nil, control, fs.Close)
 		return nil, err
 	}
 	journal, err := launcher.JournalStoreForTenant(selected.DefaultTenant)
 	if err != nil {
-		_ = launcher.Close(ctx)
-		_ = control.Close(ctx)
-		_ = fs.Close()
+		_ = closeServeStorageResources(launcher, control, fs.Close)
 		return nil, &StoreInitError{Stage: "default-tenant-journal", Cause: err}
 	}
-	return &ServeStorage{controlFS: fs, control: control, launcher: launcher, defaultJournal: journal}, nil
+	return &ServeStorage{controlFS: fs, control: control, launcher: launcher, defaultJournal: journal, closeProvider: fs.Close, closeDone: make(chan struct{})}, nil
+}
+
+// The provider must outlive SessionStore's background shutdown. In particular,
+// the caller's cancelled context cannot govern failure unwind.
+func closeServeStorageResources(launcher *PooledLauncher, control *sessionstore.Store, closeProvider func() error) error {
+	var errs []error
+	if launcher != nil {
+		errs = append(errs, launcher.Close(context.Background()))
+	}
+	if control != nil {
+		errs = append(errs, control.Close(context.Background()))
+	}
+	if closeProvider != nil {
+		errs = append(errs, closeProvider())
+	}
+	return errors.Join(errs...)
 }
 
 func (s *ServeStorage) Close(ctx context.Context) error {
 	if s == nil {
 		return nil
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closed {
-		return nil
+	s.closeOnce.Do(func() {
+		go func() {
+			s.closeErr = closeServeStorageResources(s.launcher, s.control, s.closeProvider)
+			close(s.closeDone)
+		}()
+	})
+	select {
+	case <-s.closeDone:
+		return s.closeErr
+	default:
 	}
-	s.closed = true
-	var errs []error
-	if err := s.launcher.Close(ctx); err != nil {
-		errs = append(errs, err)
+	select {
+	case <-s.closeDone:
+		return s.closeErr
+	case <-ctx.Done():
+		return ctx.Err()
 	}
-	if err := s.control.Close(ctx); err != nil {
-		errs = append(errs, err)
-	}
-	if err := s.controlFS.Close(); err != nil {
-		errs = append(errs, err)
-	}
-	return errors.Join(errs...)
 }
