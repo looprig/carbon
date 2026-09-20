@@ -30,7 +30,7 @@ type PendingCommandsError struct {
 }
 
 func (e *PendingCommandsError) Error() string {
-	return fmt.Sprintf("carbon: %d command(s) remain nonterminal at shutdown: %v", e.Count, e.Cause)
+	return fmt.Sprintf("carbon: last scan observed %d nonterminal command(s) before shutdown budget ended: %v", e.Count, e.Cause)
 }
 func (e *PendingCommandsError) Unwrap() error { return e.Cause }
 
@@ -92,16 +92,5 @@ func waitOutstanding(ctx context.Context, reader outstandingReader, tenant sessi
 		if err := wait(ctx); err != nil {
 			return &PendingCommandsError{Count: count, Cause: err}
 		}
-	}
-}
-
-func waitPendingPoll(ctx context.Context) error {
-	timer := time.NewTimer(100 * time.Millisecond)
-	defer timer.Stop()
-	select {
-	case <-timer.C:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
 	}
 }
