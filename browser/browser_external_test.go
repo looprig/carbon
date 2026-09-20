@@ -35,6 +35,95 @@ func TestStartRequiresInjectedVerifier(t *testing.T) {
 	}
 }
 
+func TestInvalidFactoryAuthorizerRefusesBeforeStorageOrRuntime(t *testing.T) {
+	cfg := browserFixture(t)
+	cfg.Factory.Authorizer = nil
+	calls := 0
+	build := cfg.ClientBuilder
+	cfg.ClientBuilder = func() (inference.Client, func() model.Model, error) {
+		calls++
+		return build()
+	}
+	s, err := browser.Start(context.Background(), cfg)
+	if s != nil || err == nil || calls != 0 {
+		if s != nil {
+			_ = s.Stop(context.Background())
+		}
+		t.Fatalf("invalid Factory Start = (%v, %v), runtime builds = %d", s, err, calls)
+	}
+}
+
+func TestPublicBindFailureUnwindsPublishedHostAndStorage(t *testing.T) {
+	cfg := browserFixture(t)
+	public, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer public.Close()
+	cfg.Address = public.Addr().String()
+	internal, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Host.ListenAddress = internal.Addr().String()
+	internal.Close()
+	s, err := browser.Start(context.Background(), cfg)
+	if err == nil {
+		if s != nil {
+			_ = s.Stop(context.Background())
+		}
+		t.Fatal("public bind unexpectedly succeeded")
+	}
+	if s != nil {
+		t.Fatalf("public bind failure retained ownership: %v", err)
+	}
+	probe, err := net.Listen("tcp", cfg.Host.ListenAddress)
+	if err != nil {
+		t.Fatalf("internal Host listener orphaned: %v", err)
+	}
+	probe.Close()
+	// The same provider root can be reopened after startup unwind.
+	cfg.Address = "127.0.0.1:0"
+	s, err = browser.Start(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("reopen after bind failure: %v", err)
+	}
+	if err := s.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop reopened owner: %v", err)
+	}
+}
+
+func TestFactoryCompositionFailureUnwindsPublishedHostAndStorage(t *testing.T) {
+	cfg := browserFixture(t)
+	internal, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Host.ListenAddress = internal.Addr().String()
+	internal.Close()
+	cfg.Factory.HostLinkToken = "wrong-host-token"
+	s, err := browser.Start(context.Background(), cfg)
+	if err == nil || s != nil {
+		if s != nil {
+			_ = s.Stop(context.Background())
+		}
+		t.Fatalf("Factory composition failure = (%v, %v)", s, err)
+	}
+	probe, err := net.Listen("tcp", cfg.Host.ListenAddress)
+	if err != nil {
+		t.Fatalf("Host listener orphaned: %v", err)
+	}
+	probe.Close()
+	cfg.Factory.HostLinkToken = "host-token"
+	s, err = browser.Start(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("reopen after Factory composition failure: %v", err)
+	}
+	if err := s.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop reopened owner: %v", err)
+	}
+}
+
 func TestInternalBindFailureClosesStorageBeforeRetry(t *testing.T) {
 	cfg := browserFixture(t)
 	internal, err := net.Listen("tcp", "127.0.0.1:0")
