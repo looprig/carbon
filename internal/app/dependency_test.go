@@ -171,7 +171,15 @@ func TestOrchestrationPinsAreTheReleasedOnes(t *testing.T) {
 		},
 		{
 			"github.com/looprig/tools", "v0.12.0",
-			"the release carrying read_tool_result, which R1.2 registers whenever a session object reader is bound",
+			// THIS ROW'S REASON WAS FALSE and is corrected rather than removed. It
+			// read "the release carrying read_tool_result, which R1.2 registers
+			// whenever a session object reader is bound" — and no released module
+			// ships a read_tool_result definition at all (see
+			// TestCarbonAdvertisesNoUnregisteredResultReader). The ledger is the
+			// artifact a release is audited from, and a row whose stated reason is
+			// measurably untrue is worse than an unreasoned one, because it is the
+			// reason that gets copied forward. The real reason is the ordinary one.
+			"the current release of Carbon's tool roster (ReadFile, WriteFile, EditFile, Bash, the process tools, WebSearch, Fetch, Task, AskUser, Skill); it ships NO read_tool_result, which is why R1.2 steps 6-7 were struck",
 		},
 	} {
 		got := requiredVersion(gomod, row.module)
