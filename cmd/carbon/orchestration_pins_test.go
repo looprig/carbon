@@ -114,6 +114,27 @@ func TestFactoryIsComposedOnlyInTheCommand(t *testing.T) {
 	}
 }
 
+// TestHostIsComposedOnlyAtTheProductBoundary completes R1.1 step 2a, which names
+// Factory, Host and WUI but whose Host half had no test.
+//
+// The rule is not "internal/ may not import Host": internal/app/department.go
+// legitimately imports host/department, because that is where a harness session is
+// made to satisfy Host's contracts and the adapter has to live inside the product
+// boundary. The rule is that Host stops THERE — the catalog, which holds the one
+// Carbon identity and prompt, has no business knowing a Host exists, and neither does
+// any package added beside it.
+func TestHostIsComposedOnlyAtTheProductBoundary(t *testing.T) {
+	t.Parallel()
+
+	offenders, err := looprigImportOffenders(filepath.Join("..", "..", "internal", "catalog"), "github.com/looprig/host")
+	if err != nil {
+		t.Fatalf("scan internal/catalog: %v", err)
+	}
+	for _, path := range offenders {
+		t.Errorf("%s imports Host; Host is composed in internal/app's launch target and cmd/carbon, nowhere else", path)
+	}
+}
+
 // TestWUIIsInjectedOnlyByTheCommand keeps the embedded browser bundle at the
 // process root. wui's Go API is http.Handler in, http.Handler out and names no
 // looprig type, so an internal package importing it would compile perfectly and

@@ -4,9 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
+	"io/fs"
 	"net"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -587,7 +592,7 @@ func TestCarbonAdvertisesNoUnregisteredResultReader(t *testing.T) {
 func TestCarbonWiresNoToolResultCapture(t *testing.T) {
 	t.Parallel()
 
-	offenders, err := carbonSourceOffenders("WithToolResultCapture")
+	offenders, err := carbonCallOffenders("rig", "WithToolResultCapture")
 	if err != nil {
 		t.Fatalf("scan: %v", err)
 	}
@@ -597,26 +602,204 @@ func TestCarbonWiresNoToolResultCapture(t *testing.T) {
 	}
 }
 
-// carbonSourceOffenders reports every non-test .go file in this package that
-// mentions needle.
+// carbonSourceOffenders reports every non-test .go file in the MODULE that mentions
+// needle, as a list of module-relative paths.
+//
+// THE SCOPE IS THE MODULE AND NOT THIS PACKAGE, and that is the whole difference
+// between a tripwire and a decoration. An earlier version read os.ReadDir(".") —
+// internal/app alone — and therefore could not see cmd/carbon, which is exactly where
+// R1.3 composes the rig and where rig.WithToolResultCapture would most naturally be
+// wired. A guard that cannot see the place the thing will be written is a guard that
+// stays green through the event it exists to catch.
 func carbonSourceOffenders(needle string) ([]string, error) {
-	entries, err := os.ReadDir(".")
+	return carbonSourceOffendersUnder(filepath.Join("..", ".."), needle)
+}
+
+// carbonSourceOffendersUnder is the scanner proper, taking its root so it can be
+// falsified against a tree a test builds. carbonSourceOffenders has no falsifier of
+// its own precisely because its root is fixed; this one does.
+func carbonSourceOffendersUnder(root, needle string) ([]string, error) {
+	var offenders []string
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			// .git holds packed objects that would match anything; bin holds a
+			// compiled binary; docs is prose about the code and not the code.
+			switch entry.Name() {
+			case ".git", "bin", "docs":
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		source, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		if strings.Contains(string(source), needle) {
+			offenders = append(offenders, path)
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
+	return offenders, nil
+}
+
+// carbonCallOffenders reports every non-test .go file in the module that CALLS
+// pkg.name, found in the syntax tree rather than in the text.
+//
+// A textual scan cannot do this job. The capture guard's own failure message names
+// rig.WithToolResultCapture, and so does LaunchScope's doc comment explaining why
+// Carbon has no object prefix — so a substring scan reports the explanation of the
+// absence as evidence of the presence, which is the most confusing possible false
+// positive. Matching a call expression is exact and cannot be tripped by prose.
+func carbonCallOffenders(pkg, name string) ([]string, error) {
+	return carbonCallOffendersUnder(filepath.Join("..", ".."), pkg, name)
+}
+
+// carbonCallOffendersUnder is carbonCallOffenders with its root supplied, so it can
+// be falsified against a tree a test builds.
+func carbonCallOffendersUnder(root, pkg, name string) ([]string, error) {
 	var offenders []string
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
-			continue
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
 		}
-		source, err := os.ReadFile(name)
-		if err != nil {
-			return nil, err
+		if entry.IsDir() {
+			switch entry.Name() {
+			case ".git", "bin", "docs":
+				return filepath.SkipDir
+			}
+			return nil
 		}
-		if strings.Contains(string(source), needle) {
-			offenders = append(offenders, name)
+		if filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+			return nil
 		}
+		file, parseErr := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+		if parseErr != nil {
+			return parseErr
+		}
+		ast.Inspect(file, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			selector, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || selector.Sel.Name != name {
+				return true
+			}
+			ident, ok := selector.X.(*ast.Ident)
+			if !ok || ident.Name != pkg {
+				return true
+			}
+			offenders = append(offenders, path)
+			return true
+		})
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return offenders, nil
+}
+
+// TestCarbonCallOffendersFindsCallsAndNotProse is the falsifier for the capture
+// tripwire, and the prose row is the one that earns it: this very package explains
+// in a comment why it does NOT wire rig.WithToolResultCapture, and a scanner that
+// counted that as a wiring would report the explanation of an absence as the
+// presence.
+func TestCarbonCallOffendersFindsCallsAndNotProse(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	write := func(rel, src string) string {
+		full := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(full), 0o750); err != nil {
+			t.Fatalf("mkdir %s: %v", rel, err)
+		}
+		if err := os.WriteFile(full, []byte(src), 0o600); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+		return full
+	}
+
+	const calls = "package p\n\nvar rig struct{ WithToolResultCapture func() int }\n\nvar _ = rig.WithToolResultCapture()\n"
+	const prose = "package p\n\n// This package does not call rig.WithToolResultCapture, deliberately.\nvar _ = 1\n"
+	const other = "package p\n\nvar other struct{ WithToolResultCapture func() int }\n\nvar _ = other.WithToolResultCapture()\n"
+
+	offender := write("cmd/carbon/orchestration.go", calls)
+	write("internal/app/explanation.go", prose)        // prose is not a wiring
+	write("internal/app/other.go", other)              // a different package's function
+	write("internal/app/orchestration_test.go", calls) // a test may call it
+
+	got, err := carbonCallOffendersUnder(root, "rig", "WithToolResultCapture")
+	if err != nil {
+		t.Fatalf("carbonCallOffendersUnder: %v", err)
+	}
+	if len(got) != 1 || got[0] != offender {
+		t.Fatalf("offenders = %v, want exactly [%s]", got, offender)
+	}
+}
+
+// TestCarbonSourceOffendersScansTheWholeModule is the falsifier the capture tripwire
+// did not have.
+//
+// It pins BOTH properties the guards depend on: the scan reaches a sibling package
+// (cmd/carbon is the one that matters), and it ignores _test.go files, since a test
+// may legitimately name the thing the guard forbids in production code — this very
+// file does.
+func TestCarbonSourceOffendersScansTheWholeModule(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	write := func(rel, src string) string {
+		full := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(full), 0o750); err != nil {
+			t.Fatalf("mkdir %s: %v", rel, err)
+		}
+		if err := os.WriteFile(full, []byte(src), 0o600); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+		return full
+	}
+
+	const mentions = "package p\n\nvar _ = \"needle-xyzzy\"\n"
+	const clean = "package p\n\nvar _ = \"something else\"\n"
+
+	// The sibling package is the whole point: this is where R1.3 composes.
+	command := write("cmd/carbon/orchestration.go", mentions)
+	internal := write("internal/app/wiring.go", mentions)
+	write("internal/app/wiring_test.go", mentions) // a test may name it
+	write("internal/app/clean.go", clean)
+	write("docs/plans/note.go", mentions) // prose tree, skipped
+
+	got, err := carbonSourceOffendersUnder(root, "needle-xyzzy")
+	if err != nil {
+		t.Fatalf("carbonSourceOffendersUnder: %v", err)
+	}
+	want := map[string]bool{command: true, internal: true}
+	if len(got) != len(want) {
+		t.Fatalf("offenders = %v, want exactly %v", got, want)
+	}
+	for _, path := range got {
+		if !want[path] {
+			t.Errorf("unexpected offender %s", path)
+		}
+	}
+
+	// And it must find nothing when there is nothing, or the guards above pass for
+	// the wrong reason forever.
+	empty, err := carbonSourceOffendersUnder(root, "no-such-needle-here")
+	if err != nil {
+		t.Fatalf("carbonSourceOffendersUnder: %v", err)
+	}
+	if len(empty) != 0 {
+		t.Errorf("offenders for an absent needle = %v, want none", empty)
+	}
 }
