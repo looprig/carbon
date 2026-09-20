@@ -162,8 +162,8 @@ func TestOrchestrationPinsAreTheReleasedOnes(t *testing.T) {
 			"the release that decodes a create's body. host v0.4.0 + harness v0.36.0 is not a supported pair, and a v0.4.0 Host must never share a pool with a v0.5.0 one",
 		},
 		{
-			"github.com/looprig/factory", "v0.5.0",
-			"the first Factory that places sessions on Hosts and admits every kind through the disposition family",
+			"github.com/looprig/factory", "v0.6.0",
+			"the release that protects authorized /ui routes and adds dedicated attach to ready Hosts; pooled placement remains the baseline",
 		},
 		{
 			"github.com/looprig/wui", "v0.2.0",
