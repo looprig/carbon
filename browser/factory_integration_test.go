@@ -134,12 +134,28 @@ func TestServeFactoryAuthenticatesBootstrapAndProductUI(t *testing.T) {
 		{http.MethodGet, "/ui/session-presentation"},
 		{http.MethodPost, "/ui/handoff"},
 	} {
+		anonymous := httptest.NewRequest(route.method, "http://localhost:8765"+route.path, nil)
+		anonymous.Header.Set("Origin", "http://localhost:8765")
+		denied := httptest.NewRecorder()
+		legacyUI.Handler().ServeHTTP(denied, anonymous)
+		if denied.Code != http.StatusUnauthorized {
+			t.Fatalf("anonymous retired %s %s = %d, want 401", route.method, route.path, denied.Code)
+		}
 		request := httptest.NewRequest(route.method, "http://localhost:8765"+route.path, nil)
 		request.Header.Set("Authorization", "Bearer test-browser-token")
 		request.Header.Set("Origin", "http://localhost:8765")
 		response := httptest.NewRecorder()
 		legacyUI.Handler().ServeHTTP(response, request)
-		if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "ui_route_unavailable") {
+		var unavailable struct {
+			Error struct {
+				Code      string `json:"code"`
+				Retryable bool   `json:"retryable"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &unavailable); err != nil {
+			t.Fatalf("retired %s %s response is not JSON: %v", route.method, route.path, err)
+		}
+		if response.Code != http.StatusServiceUnavailable || unavailable.Error.Code != "ui_route_unavailable" || unavailable.Error.Retryable {
 			t.Fatalf("retired %s %s = %d %q", route.method, route.path, response.Code, response.Body.String())
 		}
 	}

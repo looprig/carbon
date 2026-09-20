@@ -310,9 +310,11 @@ func TestExternalApplicationCanStartCreateAndStop(t *testing.T) {
 	release := make(chan struct{})
 	modelRequests := make(chan struct{}, 4)
 	replyCounter := &atomic.Int32{}
+	runtimeBuilds := &atomic.Int32{}
 	var releaseOnce sync.Once
 	defer releaseOnce.Do(func() { close(release) })
 	cfg.ClientBuilder = func() (inference.Client, func() model.Model, error) {
+		runtimeBuilds.Add(1)
 		return client{release: release, requests: modelRequests, replies: replyCounter}, func() model.Model {
 			return model.CustomModel(model.ProviderName(llm.ProviderLMStudio), model.APIFormatOpenAI,
 				"http://localhost:1234/v1", "browser-test", model.WithTools(),
@@ -421,6 +423,7 @@ func TestExternalApplicationCanStartCreateAndStop(t *testing.T) {
 		t.Fatal("model output reached journal but not live browser viewer")
 	}
 	viewer.Close()
+	buildsBeforeDisconnect := runtimeBuilds.Load()
 	postInput("browser-input-3")
 	select {
 	case <-modelRequests:
@@ -443,6 +446,9 @@ func TestExternalApplicationCanStartCreateAndStop(t *testing.T) {
 	}
 	if offlineTip == 0 {
 		t.Fatal("offline model output was not replayable from the public journal")
+	}
+	if runtimeBuilds.Load() != buildsBeforeDisconnect {
+		t.Fatalf("browser disconnect rebuilt runtime: before=%d after=%d", buildsBeforeDisconnect, runtimeBuilds.Load())
 	}
 	reconnected, continued, _ := connectBrowserViewer(t, base)
 	defer reconnected.Close()
@@ -467,6 +473,9 @@ func TestExternalApplicationCanStartCreateAndStop(t *testing.T) {
 			t.Fatal("reconnected browser viewer missed output after offline journal tip")
 		}
 	}
+	if runtimeBuilds.Load() != buildsBeforeDisconnect {
+		t.Fatalf("browser reconnect rebuilt runtime: before=%d after=%d", buildsBeforeDisconnect, runtimeBuilds.Load())
+	}
 	if err := s.Stop(context.Background()); err != nil {
 		t.Fatal(fmt.Errorf("Stop: %w", err))
 	}
@@ -474,6 +483,111 @@ func TestExternalApplicationCanStartCreateAndStop(t *testing.T) {
 	case <-s.Done():
 	default:
 		t.Fatal("Done not closed after Stop")
+	}
+}
+
+func TestColdSessionReadsDoNotLaunchUntilExplicitInput(t *testing.T) {
+	cfg := browserFixture(t)
+	builds := &atomic.Int32{}
+	modelCalls := make(chan struct{}, 4)
+	cfg.ClientBuilder = func() (inference.Client, func() model.Model, error) {
+		builds.Add(1)
+		return client{requests: modelCalls}, func() model.Model {
+			return model.CustomModel(model.ProviderName(llm.ProviderLMStudio), model.APIFormatOpenAI,
+				"http://localhost:1234/v1", "browser-test", model.WithTools(),
+				model.WithContextLimits(model.ContextLimits{WindowTokens: 128_000}))
+		}, nil
+	}
+	request := func(base, method, path string, payload any) (int, []byte) {
+		t.Helper()
+		var body []byte
+		if payload != nil {
+			var err error
+			body, err = json.Marshal(payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		r, err := http.NewRequest(method, base+path, bytes.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.Header.Set("Authorization", "Bearer browser-test-token")
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("Origin", "http://127.0.0.1")
+		response, err := http.DefaultClient.Do(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer response.Body.Close()
+		data, err := io.ReadAll(response.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return response.StatusCode, data
+	}
+	first, err := browser.Start(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := "http://" + first.Addr().String()
+	create := sessionwire.CreateRequest{CommandEnvelope: sessionwire.CommandEnvelope{Version: sessionwire.CurrentWireVersion,
+		CommandID: "cold-create-1"}, SessionID: "browser-session-1", AgentID: "carbon",
+		Blocks: json.RawMessage(`[{"type":"text","text":"first"}]`)}
+	if status, body := request(base, http.MethodPost, "/v1/sessions", create); status != http.StatusCreated {
+		t.Fatalf("create = %d %s", status, body)
+	}
+	select {
+	case <-modelCalls:
+	case <-time.After(15 * time.Second):
+		t.Fatal("seed create did not reach model")
+	}
+	if err := first.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Host.Generation++
+	reopened, err := browser.Start(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("reopen cold session: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Stop(context.Background()) })
+	base = "http://" + reopened.Addr().String()
+	buildsBeforeReads := builds.Load()
+	for _, path := range []string{"/v1/sessions", "/v1/sessions/browser-session-1/status", "/v1/sessions/browser-session-1/journal"} {
+		status, body := request(base, http.MethodGet, path, nil)
+		if status != http.StatusOK {
+			t.Fatalf("cold GET %s = %d %s", path, status, body)
+		}
+		if strings.HasSuffix(path, "/status") {
+			var status sessionwire.SessionStatus
+			if err := json.Unmarshal(body, &status); err != nil || status.Residency != sessionwire.SessionResidencyCold {
+				t.Fatalf("status after reopen = %+v (%s), decode %v; want cold", status, body, err)
+			}
+		}
+	}
+	viewer, _, _ := connectBrowserViewer(t, base)
+	viewer.Close()
+	if got := builds.Load(); got != buildsBeforeReads {
+		t.Fatalf("cold reads and subscription caused %d additional runtime builds", got-buildsBeforeReads)
+	}
+	select {
+	case <-modelCalls:
+		t.Fatal("cold reads reached model")
+	default:
+	}
+	input := sessionwire.InputRequest{CommandEnvelope: sessionwire.CommandEnvelope{Version: sessionwire.CurrentWireVersion,
+		CommandID: "cold-input-1"}, SessionID: "browser-session-1",
+		Blocks: json.RawMessage(`[{"type":"text","text":"again"}]`)}
+	if status, body := request(base, http.MethodPost, "/v1/sessions/browser-session-1/input", input); status != http.StatusOK {
+		t.Fatalf("cold input = %d %s", status, body)
+	}
+	select {
+	case <-modelCalls:
+	case <-time.After(15 * time.Second):
+		t.Fatal("explicit input did not start cold session")
+	}
+	if got := builds.Load(); got <= buildsBeforeReads {
+		t.Fatal("explicit input reached model without constructing a runtime")
 	}
 }
 
