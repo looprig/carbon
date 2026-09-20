@@ -36,15 +36,15 @@ func validInputs(t *testing.T) (Settings, Dependencies) {
 		t.Fatal(err)
 	}
 	return Settings{
-		HomeDir: filepath.Join(t.TempDir(), "home"), DataDir: filepath.Join(t.TempDir(), "store"),
-		Tenant: "local", PublicAddress: address, TrustedOrigin: "http://" + address,
-		HostID: "local-host", HostGeneration: 1, ReplicaID: "local-factory",
-		StorageBindingID: "local-store-v1", BindingVersion: "v1",
-	}, Dependencies{
-		Verifier: testVerifier{}, Authorizer: factory.TenantAuthorizer{},
-		HostLinkToken: "injected-hostlink-secret", CSRFKey: []byte("0123456789abcdef0123456789abcdef"),
-		ClientBuilder: func() (inference.Client, func() model.Model, error) { return nil, nil, errors.New("test only") },
-	}
+			HomeDir: filepath.Join(t.TempDir(), "home"), DataDir: filepath.Join(t.TempDir(), "store"),
+			Tenant: "local", PublicAddress: address, TrustedOrigin: "http://" + address,
+			HostID: "local-host", HostGeneration: 1, ReplicaID: "local-factory",
+			StorageBindingID: "local-store-v1", BindingVersion: "v1",
+		}, Dependencies{
+			Verifier: testVerifier{}, Authorizer: factory.TenantAuthorizer{},
+			HostLinkToken: "injected-hostlink-secret", CSRFKey: []byte("0123456789abcdef0123456789abcdef"),
+			ClientBuilder: func() (inference.Client, func() model.Model, error) { return nil, nil, errors.New("test only") },
+		}
 }
 
 func TestNewConfigBindsLocalDiskAndFiniteBudgets(t *testing.T) {
