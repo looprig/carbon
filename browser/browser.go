@@ -309,7 +309,12 @@ func (s *Server) cleanup(attempt *stopAttempt) {
 			cancel()
 			if quiesceErr != nil {
 				diagnostic = errors.Join(diagnostic, fmt.Errorf("carbon: Factory quiesce: %w", quiesceErr))
-			} else if s.pendingReader != nil {
+				// A caller timeout does not complete Factory's owned admission
+				// join. Wait for its stable result before draining Host; the
+				// process ceiling handles a join that never completes.
+				diagnostic = errors.Join(diagnostic, s.quiesceFactory(context.Background()))
+			}
+			if s.pendingReader != nil {
 				settleCtx, cancel := context.WithTimeout(context.Background(), s.shutdownPolicy.SettlementTimeout)
 				wait := s.waitPending
 				if wait == nil {

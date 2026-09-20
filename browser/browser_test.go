@@ -156,8 +156,53 @@ func TestQuiesceFailureStillStopsFactoryAndHost(t *testing.T) {
 	if err := s.Stop(context.Background()); !errors.Is(err, want) {
 		t.Fatalf("Stop = %v", err)
 	}
-	if got := strings.Join(order, ","); got != "quiesce,host,factory,storage" {
+	if got := strings.Join(order, ","); got != "quiesce,quiesce,host,factory,storage" {
 		t.Fatalf("shutdown after Quiesce error = %s", got)
+	}
+}
+
+func TestTimedQuiesceRejoinsAdmissionBoundaryBeforeHostDrain(t *testing.T) {
+	var order []string
+	enteredJoin := make(chan struct{})
+	releaseJoin := make(chan struct{})
+	quiesceCalls := 0
+	s := &Server{done: make(chan struct{}), shutdownPolicy: ShutdownPolicy{QuiesceTimeout: time.Second},
+		quiesceFactory: func(context.Context) error {
+			quiesceCalls++
+			if quiesceCalls == 1 {
+				order = append(order, "quiesce-timeout")
+				return context.DeadlineExceeded
+			}
+			order = append(order, "quiesce-join")
+			close(enteredJoin)
+			<-releaseJoin
+			return nil
+		},
+		stopFactory: func(context.Context) error { order = append(order, "factory"); return nil },
+		stopHost: func(context.Context) (host.DrainReport, error) {
+			order = append(order, "host")
+			return host.DrainReport{}, nil
+		},
+		closeStorage: func(context.Context) error { order = append(order, "storage"); return nil },
+	}
+	stopped := make(chan error, 1)
+	go func() { stopped <- s.Stop(context.Background()) }()
+	select {
+	case <-enteredJoin:
+	case err := <-stopped:
+		t.Fatalf("Stop returned before admission join: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("Stop never rejoined timed-out quiescence")
+	}
+	if got := strings.Join(order, ","); got != "quiesce-timeout,quiesce-join" {
+		t.Fatalf("Host drained before admission join: %s", got)
+	}
+	close(releaseJoin)
+	if err := <-stopped; !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Stop lost phase timeout: %v", err)
+	}
+	if got := strings.Join(order, ","); got != "quiesce-timeout,quiesce-join,host,factory,storage" {
+		t.Fatalf("shutdown after admission join = %s", got)
 	}
 }
 
