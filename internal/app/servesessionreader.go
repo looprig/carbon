@@ -95,7 +95,7 @@ func (r *ServeSessionReader) ReadPublicJournal(ctx context.Context, req sessions
 	b := entry.Record.Binding
 	runtimeID, parseErr := uuid.Parse(b.RuntimeSessionID)
 	if r.bindingID == "" || r.bindingVersion == "" || b.StorageBindingID != r.bindingID || b.BindingVersion != r.bindingVersion ||
-		b.ProtocolMode != sessionstore.ProtocolModeDisposition || parseErr != nil || runtimeID.String() != b.RuntimeSessionID {
+		b.ProtocolMode != sessionstore.ProtocolModeDisposition || parseErr != nil || runtimeID.IsZero() || runtimeID.String() != b.RuntimeSessionID {
 		return sessionwire.JournalPage{}, &ServeJournalBindingError{TenantID: req.TenantID, SessionID: req.SessionID}
 	}
 	inner := req

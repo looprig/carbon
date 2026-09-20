@@ -5,6 +5,7 @@ package app
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -95,6 +96,9 @@ func TestServeSessionReaderReadsBoundHarnessJournal(t *testing.T) {
 		{"wrong-binding-id", func(b *sessionstore.SessionBinding) { b.StorageBindingID = "other-binding" }},
 		{"wrong-binding-version", func(b *sessionstore.SessionBinding) { b.BindingVersion = "v2" }},
 		{"wrong-binding-protocol", func(b *sessionstore.SessionBinding) { b.ProtocolMode = sessionstore.ProtocolModeLegacy }},
+		{"zero-runtime-id", func(b *sessionstore.SessionBinding) { b.RuntimeSessionID = "00000000-0000-0000-0000-000000000000" }},
+		{"malformed-runtime-id", func(b *sessionstore.SessionBinding) { b.RuntimeSessionID = "not-a-uuid" }},
+		{"noncanonical-runtime-id", func(b *sessionstore.SessionBinding) { b.RuntimeSessionID = strings.ToUpper(runtimeID.String()) }},
 	} {
 		wrong := entry
 		wrong.SessionID = tc.id
