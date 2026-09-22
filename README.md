@@ -20,6 +20,12 @@ trusted origins and hosts, and require CSRF tokens for cookie-authenticated
 writes. Do not expose HostLink to browsers or reuse a browser credential as its
 service token.
 
+The local Host serves only the configured default tenant. Carbon wraps the
+injected authorizer so that a principal of any other tenant is refused with
+`browser.TenantNotServedError` (unwrapping to `identity.ErrUnauthorized`, so
+`403 not_authorized`) before Factory writes anything; otherwise its create would
+be admitted and never placed.
+
 Factory serves the official `wui.Assets()` bundle. One application-scoped
 ClientLink can view several sessions. REST list, status, and public journal
 reads work from the durable store while a session is cold; opening a session

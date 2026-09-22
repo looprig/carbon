@@ -53,6 +53,9 @@ func composeFactory(stores *carbon.ServeStorage, localHost *carbon.ServePooledHo
 	if !localHost.UsesServeStorage(stores) || !localHost.MatchesFactoryLinkConfig(cfg.StorageBindingID, cfg.HostLinkToken) {
 		return nil, errors.New("carbon: browser Factory storage, binding or HostLink token differs from the local Host")
 	}
+	// The local Host serves the default tenant only; refuse every other tenant
+	// at authorization, before Factory admits anything it could never place.
+	cfg.Authorizer = servedTenantAuthorizer{served: cfg.DefaultTenant, next: cfg.Authorizer}
 	if cfg.UIRoutes == nil {
 		cfg.UIRoutes = unavailableLegacyUIRoutes()
 		cfg.AuthorizeUI = func(ctx context.Context, principal identity.Principal, _, _ string) error {
