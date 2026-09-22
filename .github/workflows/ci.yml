@@ -37,6 +37,13 @@ jobs:
   # written and verified against.
   test-macos:
     runs-on: macos-latest
+    env:
+      # The macOS runner's real seatbelt sandbox can run git under a Trusted
+      # session (git ships preinstalled on macos-latest), so the git sandbox
+      # escape probes' inside-marker discrimination must not silently
+      # degrade to a skip here: require it (see runtime_context_escape_test.go
+      # and O5 in CLAUDE_REVIEW_CARBON_R1.5_REGATE.md).
+      CARBON_REQUIRE_SANDBOX_GIT: "1"
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
