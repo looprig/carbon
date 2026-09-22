@@ -392,18 +392,13 @@ func drainToTurnTerminal(t *testing.T, ctx context.Context, sub event.Subscripti
 	}
 }
 
-// respondApprove/respondApproveAlways/respondDeny answer gateID through the
+// respondApprove/respondDeny answer gateID through the
 // sessionadapter's public RespondGate(ctx, gateID, action, values), which
 // always stamps gate.ResponseSource{Kind: gate.ResponseFromUser} — the same
 // human provenance a CLI's approval prompt would produce.
 func respondApprove(t *testing.T, ctx context.Context, agent *RuntimeAgent, gateID gate.ID) error {
 	t.Helper()
 	return agent.RespondGate(ctx, gateID, string(gate.ApprovalApprove), nil)
-}
-
-func respondApproveAlways(t *testing.T, ctx context.Context, agent *RuntimeAgent, gateID gate.ID) error {
-	t.Helper()
-	return agent.RespondGate(ctx, gateID, string(gate.ApprovalApproveAlwaysWorkspace), nil)
 }
 
 func respondDeny(t *testing.T, ctx context.Context, agent *RuntimeAgent, gateID gate.ID) error {

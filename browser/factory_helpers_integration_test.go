@@ -8,14 +8,10 @@ package browser
 // covered by orchestration_integration_test.go.
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
-	"strings"
 	"sync"
-	"testing"
-	"time"
 
 	"github.com/looprig/core/content"
 	"github.com/looprig/inference"
@@ -23,37 +19,6 @@ import (
 	"github.com/looprig/inference/stream"
 	"github.com/looprig/llm"
 )
-
-// syncBuffer is read while browser lifecycle writes its resolved address.
-type syncBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *syncBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *syncBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
-}
-
-func waitForSubstring(t *testing.T, out *syncBuffer, want string) string {
-	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if got := out.String(); strings.Contains(got, want) {
-			return got
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatalf("output never contained %q; got %q", want, out.String())
-	return ""
-}
 
 // scriptedClient is a minimal inference.Client whose Stream is driven by a caller
 // supplied script. It is intentionally small because these tests exercise the
