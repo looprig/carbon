@@ -162,8 +162,8 @@ func TestOrchestrationPinsAreTheReleasedOnes(t *testing.T) {
 			"the release that safely disposes an unstarted Host and prechecks malformed creates before a durable attempt; Carbon's browser lifecycle relies on that unstarted-close contract",
 		},
 		{
-			"github.com/looprig/factory", "v0.7.0",
-			"the release that quiesces new public admission and joins preboundary commands while keeping reconciliation and HostLinks live for Carbon's ordered drain",
+			"github.com/looprig/factory", "v0.7.1",
+			"the release that quiesces new public admission and joins preboundary commands while keeping reconciliation and HostLinks live for Carbon's ordered drain; v0.7.1 is a no-API-change patch (async Host wake after ack, a routing lock fix)",
 		},
 		{
 			"github.com/looprig/wui", "v0.2.0",

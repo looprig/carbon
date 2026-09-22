@@ -100,7 +100,7 @@ func looprigImportOffenders(root, prefix string) ([]string, error) {
 // their interfaces.
 //
 // The runbook's narrower phrasing is "internal Carbon runtime packages do not
-// import Factory HTTP/Centrifuge adapters", and on released factory v0.7.0 that
+// import Factory HTTP/Centrifuge adapters", and on released factory v0.7.1 that
 // rule collapses into this one: the HTTP api, routing, realtime and placement
 // packages are all under factory/internal, so they are UNREACHABLE from Carbon by
 // construction. Asserting the whole module is therefore the strictly stronger rule
