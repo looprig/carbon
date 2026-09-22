@@ -367,6 +367,7 @@ func (l *PooledLauncher) Launch(ctx context.Context, scope LaunchScope) (session
 		return nil, err
 	}
 	access.diagnostics = append(access.diagnostics, cfg.ACPDiagnostics...)
+	access.sessionRootContext = true
 	cfg.AccessConfigRev = access.pooledConfigRev
 	mcp, err := newMCPSessionAssembly(cfg)
 	if err != nil {

@@ -55,7 +55,9 @@ provide per-session UI routes with a matching authorizer.
 The browser data root is the configured absolute `Storage.DataDir`. Its control
 SessionStore uses the root filesystem backend; Harness journals live under
 `tenant-journals/<tenant-hash>/`, and browser session workspaces under
-`session-workspaces/<tenant-and-session-hash>/`. The default layout is
+`session-workspaces/<tenant-and-session-hash>/`. A browser session's runtime
+context names that session workspace as its `cwd` (never the server process's
+directory), and reports git state only for a repository at or inside it. The default layout is
 `tenant-v1` for the configured default tenant. Browser serving refuses
 `legacy-single-tenant-v1` with `browser.LegacyLayoutRefusedError` before opening
 any store: Factory composition requires the tenant-v1 layout, and there is no

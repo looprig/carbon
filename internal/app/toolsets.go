@@ -263,6 +263,10 @@ type sessionAccess struct {
 	set             *sandbox.ExecutorSet
 	gate            loop.AccessGate
 	policyRev       string
+	// sessionRootContext reports workspace as the model-visible cwd. The pooled
+	// launcher sets it: its workspace is a per-session root, not the process
+	// directory the TUI and headless paths are launched from.
+	sessionRootContext bool
 
 	closeOnce sync.Once
 	closeErr  error

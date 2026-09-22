@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -275,16 +276,44 @@ func splitNonEmptyLines(s string) []string {
 	return out
 }
 
+// newSessionRuntimeContextProvider is the runtime-context provider for a
+// session whose workspace is a per-session root rather than the process working
+// directory (the pooled browser launcher). The model is told the session root —
+// the directory its tools actually serve — and git runs inside that root with
+// repository discovery stopped at the root, so a pooled session never reports
+// the server process's own directory or a repository enclosing the data root.
+func newSessionRuntimeContextProvider(root string, catalog func() []skill.SkillMeta) loop.RuntimeContextProvider {
+	return &defaultRuntimeContextProvider{
+		clock: time.Now,
+		getwd: func() (string, error) { return root, nil },
+		run: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+			return runGitCommandIn(ctx, root, name, args...)
+		},
+		catalog: catalog,
+	}
+}
+
 // runGitCommand is the default runtimeCommandRunner: a bounded, timeout-guarded
 // exec of a fixed binary with an argv list (no shell). stderr is discarded so a
 // repo path or error string can never leak into the block.
 func runGitCommand(ctx context.Context, name string, args ...string) ([]byte, error) {
+	return runGitCommandIn(ctx, "", name, args...)
+}
+
+// runGitCommandIn runs the command in dir. An empty dir is the process working
+// directory; a non-empty dir also becomes the git discovery ceiling's child, so
+// git never reports a repository above dir.
+func runGitCommandIn(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, runtimeGitTimeout)
 	defer cancel()
 
 	// #nosec G204 -- name is a fixed binary ("git") chosen by this package, never
 	// from user input; args are a static argv list (no shell, no interpolation).
 	cmd := exec.CommandContext(ctx, name, args...)
+	if dir != "" {
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_CEILING_DIRECTORIES="+filepath.Dir(dir))
+	}
 	var out bytes.Buffer
 	cmd.Stdout = &boundedWriter{buf: &out, limit: maxRuntimeGitBytes}
 	cmd.Stderr = io.Discard

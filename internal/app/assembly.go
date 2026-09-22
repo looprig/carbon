@@ -118,6 +118,9 @@ func carbonDefinition(client inference.Client, model model.Model, cfg Config, ac
 func carbonDefinitionWithContextPolicy(client inference.Client, model model.Model, cfg Config, contextPolicy conversationContextPolicy, access *sessionAccess, extras []tool.Definition) (loop.Definition, error) {
 	httpCl := newHTTPClient()
 	runtimeCtx := newRuntimeContextProvider(runtimeSkillCatalogForAccess(access))
+	if access.sessionRootContext {
+		runtimeCtx = newSessionRuntimeContextProvider(access.workspace, runtimeSkillCatalogForAccess(access))
+	}
 
 	loader := skill.NewEmbeddedSkillLoader(nil, nil)
 	definitions := append([]tool.Definition(nil), carbonToolDefinitions(access.set, httpCl, skillDefinitionFor(loader))...)
