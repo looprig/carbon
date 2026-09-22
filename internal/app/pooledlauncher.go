@@ -171,7 +171,7 @@ func (l *PooledLauncher) PrepareCompatibility(ctx context.Context) (department.C
 	}
 	defer access.Close()
 	cfg.AccessConfigRev = access.pooledConfigRev
-	mcp, err := newMCPSessionAssembly(cfg)
+	mcp, err := newMCPSessionAssemblyIn(cfg, root)
 	if err != nil {
 		return "", err
 	}
@@ -369,7 +369,7 @@ func (l *PooledLauncher) Launch(ctx context.Context, scope LaunchScope) (session
 	access.diagnostics = append(access.diagnostics, cfg.ACPDiagnostics...)
 	access.sessionRootContext = true
 	cfg.AccessConfigRev = access.pooledConfigRev
-	mcp, err := newMCPSessionAssembly(cfg)
+	mcp, err := newMCPSessionAssemblyIn(cfg, root)
 	if err != nil {
 		_ = access.Close()
 		cleanupCredentials()

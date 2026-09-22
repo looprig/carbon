@@ -338,6 +338,12 @@ type mcpSessionAssembly struct {
 // mcpSessionAssembly and no error -- zero change to the assembled rig or
 // session, matching every other touch point's nil-check.
 func newMCPSessionAssembly(cfg Config) (mcpSessionAssembly, error) {
+	return newMCPSessionAssemblyIn(cfg, "")
+}
+
+// newMCPSessionAssemblyIn is newMCPSessionAssembly with every stdio server
+// started in dir; the pooled launcher passes the session workspace root.
+func newMCPSessionAssemblyIn(cfg Config, dir string) (mcpSessionAssembly, error) {
 	specs, err := loadMCPConfig(cfg)
 	if err != nil {
 		return mcpSessionAssembly{}, err
@@ -345,7 +351,7 @@ func newMCPSessionAssembly(cfg Config) (mcpSessionAssembly, error) {
 	if len(specs) == 0 {
 		return mcpSessionAssembly{}, nil
 	}
-	bindings, err := mcpDefinitions(specs)
+	bindings, err := mcpDefinitionsIn(specs, dir)
 	if err != nil {
 		return mcpSessionAssembly{}, err
 	}

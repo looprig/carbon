@@ -41,9 +41,17 @@ var mcpEnvPassThrough = []string{"PATH", "HOME", "TMPDIR", "LANG", "LC_ALL"}
 // normalizeMCPConfig already returns them sorted by binding name, so the
 // result is deterministic for free.
 func mcpDefinitions(specs []mcpServerSpec) ([]mcpharness.Binding, error) {
+	return mcpDefinitionsIn(specs, "")
+}
+
+// mcpDefinitionsIn is mcpDefinitions with every stdio server started in dir.
+// An empty dir is the process working directory (the TUI/headless workspace);
+// the pooled launcher passes the session root so a server never runs in the
+// server process's own directory. dir is not part of any binding's digest.
+func mcpDefinitionsIn(specs []mcpServerSpec, dir string) ([]mcpharness.Binding, error) {
 	bindings := make([]mcpharness.Binding, 0, len(specs))
 	for _, spec := range specs {
-		binding, err := mcpBindingFor(spec)
+		binding, err := mcpBindingFor(spec, dir)
 		if err != nil {
 			return nil, err
 		}
@@ -66,8 +74,8 @@ func mcpDefinitions(specs []mcpServerSpec) ([]mcpharness.Binding, error) {
 // rather than having some mcp.json failures carry a typed, bounded
 // *MCPConfigError and others carry a raw *client.Error the rest of the
 // package does not otherwise handle.
-func mcpBindingFor(spec mcpServerSpec) (mcpharness.Binding, error) {
-	factory, err := mcpTransportFor(spec)
+func mcpBindingFor(spec mcpServerSpec, dir string) (mcpharness.Binding, error) {
+	factory, err := mcpTransportFor(spec, dir)
 	if err != nil {
 		return mcpharness.Binding{}, mcpConfigFailure(spec.name, "transport", err)
 	}
@@ -121,17 +129,19 @@ func mcpCompatFor(kind string) mcpclient.Profile {
 	return mcpclient.Profile{}
 }
 
-// mcpTransportFor builds the transport factory for one spec, per its kind.
+// mcpTransportFor builds the transport factory for one spec, per its kind. A
+// stdio server starts in dir (empty: the process working directory).
 // spec.kind is already validated to be exactly one of "stdio", "http", or
 // "sse" by normalizeMCPServer (Task 6); the default case is defense in
 // depth, not a reachable path for a spec that actually came from
 // loadMCPConfig.
-func mcpTransportFor(spec mcpServerSpec) (mcpclient.TransportFactory, error) {
+func mcpTransportFor(spec mcpServerSpec, dir string) (mcpclient.TransportFactory, error) {
 	switch spec.kind {
 	case "stdio":
 		return stdio.New(stdio.Config{
 			Command: spec.command,
 			Args:    spec.args,
+			Dir:     dir,
 			Env: stdio.EnvAllowlist{
 				PassThrough: mcpEnvPassThrough,
 				Vars:        mcpEnvVarsFrom(spec.env),

@@ -2,8 +2,10 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -508,5 +510,105 @@ func TestPooledLauncherCloseWaitIsBoundedWhileLaunchCleanupContinues(t *testing.
 	t.Cleanup(func() { _ = reopened.Close(context.Background()) })
 	if _, err := reopened.JournalStoreForTenant("tenant-a"); err != nil {
 		t.Fatalf("tenant journal did not reopen after final Close: %v", err)
+	}
+}
+
+// A pooled session's stdio MCP servers start in that session's workspace root,
+// never in the server process's working directory: a filesystem or git server
+// with relative/default roots must serve the tenant's session, not the process.
+func TestPooledLauncherStartsStdioMCPServersInTheSessionRoot(t *testing.T) {
+	ctx := context.Background()
+	shell, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("sh not installed")
+	}
+	t.Chdir(t.TempDir())
+	home := t.TempDir()
+	report := filepath.Join(canonicalTempDir(t), "mcp-cwd")
+	config, err := json.Marshal(map[string]any{"mcpServers": map[string]any{
+		"cwdprobe": map[string]any{"command": shell, "args": []string{"-c", `pwd -P > "$0"`, report}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "mcp.json"), config, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	data := t.TempDir()
+	launcher, err := OpenPooledLauncher(ctx, Config{HomeDir: home}, data,
+		WithServeInferenceClient(func() (inference.Client, ModelFactory, error) {
+			return &fakeLLM{}, newModelFactoryFor(testModel()), nil
+		}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = launcher.Close(ctx) })
+	id, err := uuid.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := launcher.Launch(ctx, LaunchScope{TenantID: "tenant-a", SessionID: "mcp-session", AgentID: CarbonAgentID,
+		Placement: sessionwire.HostPlacementPooled, RigSessionID: id})
+	if err != nil {
+		t.Fatalf("launch: %v", err)
+	}
+	t.Cleanup(func() { _ = sess.Shutdown(ctx) })
+	root, err := sessionWorkspaceRoot(data, "tenant-a", "mcp-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		got, err := os.ReadFile(report)
+		if err == nil && len(got) > 0 {
+			if strings.TrimSpace(string(got)) != want {
+				t.Fatalf("stdio MCP server started in %q, want the session root %q", strings.TrimSpace(string(got)), want)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("stdio MCP server never reported its working directory: %v", err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// PooledLauncher refuses a launch whose scope names a workspace root other than
+// the one it serves for that tenant session, before composing anything.
+func TestPooledLauncherRefusesAForeignWorkspaceRoot(t *testing.T) {
+	ctx := context.Background()
+	data := t.TempDir()
+	launcher, err := OpenPooledLauncher(ctx, Config{HomeDir: t.TempDir()}, data,
+		WithServeInferenceClient(func() (inference.Client, ModelFactory, error) {
+			return &fakeLLM{}, newModelFactoryFor(testModel()), nil
+		}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = launcher.Close(ctx) })
+	id, err := uuid.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreign := t.TempDir()
+	sess, err := launcher.Launch(ctx, LaunchScope{TenantID: "tenant-a", SessionID: "s1", AgentID: CarbonAgentID,
+		Placement: sessionwire.HostPlacementPooled, RigSessionID: id, WorkspaceRoot: foreign})
+	var foreignErr *ForeignWorkspaceRootError
+	if !errors.As(err, &foreignErr) {
+		if sess != nil {
+			_ = sess.Shutdown(ctx)
+		}
+		t.Fatalf("launch with a foreign workspace root = %v, want *ForeignWorkspaceRootError", err)
+	}
+	served, err := sessionWorkspaceRoot(data, "tenant-a", "s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if foreignErr.Want != foreign || foreignErr.Served != served || foreignErr.SessionID != "s1" {
+		t.Fatalf("ForeignWorkspaceRootError = %+v, want Want=%q Served=%q", foreignErr, foreign, served)
 	}
 }
