@@ -290,8 +290,8 @@ Carbon's default Factory composition keeps these routes authenticated and answer
 the session list/status/journal and explicit create/input commands instead of a
 process-global handoff. An embedding application may inject its own `/ui/` routes
 and authorizer through `FactoryConfig.UIRoutes` and `AuthorizeUI`; both are
-required together. The old `ServeHost` handoff behavior remains internal to its
-legacy standalone seam and does not describe the browser API.
+required together. The former single-root `ServeHost` and its handoff behavior
+have been removed; the pooled launcher is the only serve-path launcher.
 
 An embedding application must also supply CSRF/trusted-origin policy and a
 separate HostLink service token. Keep HostLink internal and protect any

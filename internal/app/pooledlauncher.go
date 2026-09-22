@@ -149,11 +149,7 @@ func (l *PooledLauncher) PrepareCompatibility(ctx context.Context) (department.C
 	var credentials *credentialRuntime
 	var lease *credentialRegistryLease
 	if l.options.buildClient == nil {
-		load := l.options.loadModels
-		if load == nil {
-			load = loadProductionModelsWithContext
-		}
-		resolved, err := resolveServeModelsAtRoot(prepareCtx, cfg, load, loadProductionModels, root)
+		resolved, err := resolveServeModelsAtRoot(prepareCtx, cfg, loadProductionModelsWithContext, loadProductionModels, root)
 		if err != nil {
 			return "", err
 		}
@@ -349,11 +345,7 @@ func (l *PooledLauncher) Launch(ctx context.Context, scope LaunchScope) (session
 	if l.options.buildClient != nil {
 		client, factory, err = l.options.buildClient()
 	} else {
-		load := l.options.loadModels
-		if load == nil {
-			load = loadProductionModelsWithContext
-		}
-		resolved, resolveErr := resolveServeModelsAtRoot(launchCtx, cfg, load, loadProductionModels, root)
+		resolved, resolveErr := resolveServeModelsAtRoot(launchCtx, cfg, loadProductionModelsWithContext, loadProductionModels, root)
 		err = resolveErr
 		if err == nil {
 			cfg, client, factory = resolved.cfg, resolved.client, resolved.factory

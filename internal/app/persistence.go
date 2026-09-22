@@ -550,32 +550,10 @@ func filterSameWorkspace(metas []sessionstore.SessionMeta, root string) []sessio
 	return kept
 }
 
-// sameWorkspace is filterSameWorkspace's per-session predicate, factored out so a
-// caller holding ONE SessionMeta (ServeHost.HasSession, which reads a single catalog
-// entry rather than the whole list) applies the same rule rather than a second,
-// drifting copy of it.
+// sameWorkspace is filterSameWorkspace's per-session predicate.
 func sameWorkspace(meta sessionstore.SessionMeta, root string) bool {
 	fp := meta.ConfigFingerprint.WorkspaceRoot
 	return fp == "" || strings.HasSuffix(fp, ":"+root)
-}
-
-// canonicalWorkspaceRoot recovers the canonical workspace ROOT from a session's
-// recorded fingerprint. harness folds the placement into
-// ConfigFingerprint.WorkspaceRoot as "<placement mode>:<canonical root>" (pkg/rig's
-// workspace.go), and a root is what a human is shown, so the mode prefix is dropped
-// here. A record with no fingerprint (or none of the expected shape) yields the value
-// unchanged, which for the empty case is the empty string sameWorkspace already treats
-// as "belongs to no particular project".
-//
-// It splits on the FIRST colon, which is what makes it the exact inverse of
-// sameWorkspace's ":"+root suffix match: the mode is a bare identifier and never
-// contains one.
-func canonicalWorkspaceRoot(meta sessionstore.SessionMeta) string {
-	fp := meta.ConfigFingerprint.WorkspaceRoot
-	if _, root, found := strings.Cut(fp, ":"); found {
-		return root
-	}
-	return fp
 }
 
 // sortSessionsByRecency orders metas most-recently-active first, in place.
@@ -622,9 +600,10 @@ type resolvedProductionModels struct {
 // revision, primer alias/efforts/candidates, delegate models, ACP children and
 // permission-review section into cfg.
 //
-// It exists as a package function because there are now TWO composition roots that
+// It exists as a package function because there are TWO composition roots that
 // need exactly this: SessionStoreFactory.Open (the TUI's one-rig-per-open path) and
-// OpenServeHost (carbon serve's one-rig-per-process path). A second inline copy
+// PooledLauncher (browser serve's one-rig-per-session path, through
+// resolveServeModelsAtRoot). A second inline copy
 // would drift — the folding here is nine assignments whose omission is silent, and
 // the credential begin/release discipline is the kind of thing a copy gets subtly
 // wrong. Keeping one implementation means a mutation of any folding step breaks both

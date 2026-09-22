@@ -183,9 +183,9 @@ func TestCarbonDepartmentRefusesAMissingLauncher(t *testing.T) {
 // retried every sweep forever. An operator sees a session that never places on a Host
 // advertising free seats.
 //
-// This holds the conservative capability set used for the single-root
-// ServeHostLauncher. TestCarbonDepartmentDerivesPoolingFromLauncher covers the
-// separate per-session-root launcher.
+// This holds the conservative capability set used for any launcher that makes
+// no pooling claim. TestCarbonDepartmentDerivesPoolingFromLauncher covers the
+// per-session-root launcher.
 func TestSingleRootLauncherRemainsDedicated(t *testing.T) {
 	t.Parallel()
 
@@ -206,19 +206,6 @@ func TestSingleRootLauncherRemainsDedicated(t *testing.T) {
 	placements := capabilities.PermittedPlacements()
 	if len(placements) != 1 || placements[0] != sessionwire.HostPlacementDedicated {
 		t.Errorf("PermittedPlacements() = %v, want exactly [dedicated]", placements)
-	}
-
-	// The declaration and the shipped launcher must agree. This is the coupling: the
-	// day a per-session-root launcher exists, THIS assertion is what forces the
-	// capability to be revisited rather than left false out of caution.
-	launcher := NewServeHostLauncher(&ServeHost{workspace: "/served/root"})
-	_, err := launcher.Launch(context.Background(), LaunchScope{
-		SessionID: sessionwire.SessionID("session-a"),
-		Placement: sessionwire.HostPlacementPooled,
-	})
-	var pooled *PooledPlacementUnsupportedError
-	if !errors.As(err, &pooled) {
-		t.Fatalf("the single-root launcher answered a pooled placement with %v", err)
 	}
 
 	// The capture value still has to be a legal pooled declaration, because it is what
@@ -1334,4 +1321,35 @@ func TestSubscribeCommittedRefusesASessionThatCannotReportCommittedBytes(t *test
 	if _, err := runtime.SubscribeCommitted(context.Background(), sessionwire.EventID("")); !errors.Is(err, ErrCarbonNoPublications) {
 		t.Fatalf("SubscribeCommitted on a session with no committed stream = %v, want ErrCarbonNoPublications", err)
 	}
+}
+
+// TestCarbonRigSessionOptionsHonourAZeroIdentity pins the one rule a launcher must
+// not get wrong, in the one place it is stated.
+//
+// rig.WithSessionID REFUSES a zero id — deliberately, unlike the internal option
+// that ignores one — because silently substituting a minted id would put a name in a
+// caller's immutable binding that resolves to nothing. A zero RigSessionID is
+// nevertheless legitimate: it is a create for a session with no catalog record, and
+// the rig mints the id. So the branch is made before harness sees it.
+func TestCarbonRigSessionOptionsHonourAZeroIdentity(t *testing.T) {
+	t.Parallel()
+
+	if got := carbonRigSessionOptions(LaunchScope{}); len(got) != 0 {
+		t.Errorf("a zero RigSessionID produced %d options, want none: rig.WithSessionID refuses a zero id", len(got))
+	}
+	id, err := uuid.New()
+	if err != nil {
+		t.Fatalf("uuid.New: %v", err)
+	}
+	if got := carbonRigSessionOptions(LaunchScope{RigSessionID: id}); len(got) != 1 {
+		t.Errorf("a named RigSessionID produced %d options, want exactly rig.WithSessionID", len(got))
+	}
+}
+
+// singleRootLauncher is a launcher that makes no pooling claim, standing in for
+// any composition that places every session over one workspace root.
+type singleRootLauncher struct{}
+
+func (singleRootLauncher) Launch(context.Context, LaunchScope) (session.SessionController, error) {
+	return nil, errors.New("carbon test: single-root launcher does not launch")
 }

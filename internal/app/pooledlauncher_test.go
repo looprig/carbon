@@ -277,7 +277,7 @@ func TestCarbonDepartmentDerivesPoolingFromLauncher(t *testing.T) {
 		pooled   bool
 	}{
 		{"pooled", pooled, true},
-		{"single-root", NewServeHostLauncher(&ServeHost{workspace: "/single"}), false},
+		{"single-root", singleRootLauncher{}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dept, err := NewCarbonDepartment(tc.launcher, department.CompatibilityID("test-build"))

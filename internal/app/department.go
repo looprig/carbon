@@ -108,15 +108,15 @@ func CarbonCompatibilityID(cfg Config) department.CompatibilityID {
 
 // carbonCapabilities is the conservative capability set for a launcher that
 // makes no pooling claim. NewCarbonDepartment derives the pooled bit from the
-// supplied launcher, so a single-root ServeHost cannot advertise pooled seats
-// and a PooledLauncher can.
+// supplied launcher, so a launcher that makes no pooling claim cannot advertise
+// pooled seats and a PooledLauncher can.
 //
 // # SupportsPooled is FALSE here
 //
-// ServeHostLauncher places every session over one root using
-// rig.WithExclusiveWorkspace, whose root lease conflicts even within one process.
-// Advertising a pooled seat for it would leave Factory selecting a Host that
-// cannot launch the session. PooledLauncher instead creates one durable workspace
+// A launcher that places every session over one root using
+// rig.WithExclusiveWorkspace takes a root lease that conflicts even within one
+// process. Advertising a pooled seat for it would leave Factory selecting a Host
+// that cannot launch the session. PooledLauncher instead creates one durable workspace
 // root and rig per session, with a separate journal backend per tenant.
 // NewCarbonDepartment reads that launcher's capability and
 // advertises pooling only for it.
@@ -153,8 +153,7 @@ func carbonCapabilities() department.Capabilities {
 // PooledLauncher constructs the access evaluator, gate, workspace, process
 // supervisor, credential admission and MCP manager within each Launch. Carbon
 // does not yet capture session objects, so an object prefix will be added only
-// together with its writer and reader. ServeHostLauncher retains its one-root
-// behavior for the existing UI path.
+// together with its writer and reader.
 //
 // So this type exists to make the per-session context EXPRESSIBLE. A launcher that
 // ignored it and reused one process-wide binding would compile perfectly and would

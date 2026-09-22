@@ -185,18 +185,17 @@ func TestSessionStoreFactoryOpenResolvesModelsThroughResolveServeModels(t *testi
 	}
 }
 
-// TestCredentialSessionAdmissionIsCountingNotOwnership is the precondition
-// OpenServeHost depends on and that no test previously pinned. The TUI ties one
+// TestCredentialSessionAdmissionIsCountingNotOwnership pins a precondition of any
+// composition that holds admissions across many sessions. The TUI ties one
 // beginSession/endSession pair to one agent, so the pair looks like an ownership
-// token; ServeHost holds ONE admission for the whole process across many sessions,
-// which is only sound if beginSession is a re-entrant COUNTER with no per-session
-// refresh or per-session state.
+// token; a long-lived holder is only sound if beginSession is a re-entrant COUNTER
+// with no per-session refresh or per-session state.
 //
 // It is: activeN and the per-reference active counters both increment, a second
 // admission is granted rather than refused, and the drain channel logout waits on
 // closes only when the LAST admission ends. That last property is the real cost of a
 // process-long hold and the reason it is recorded here — an in-process credential
-// logout cannot complete while `carbon serve` holds its admission.
+// logout cannot complete while a serve composition holds an admission.
 func TestCredentialSessionAdmissionIsCountingNotOwnership(t *testing.T) {
 	ref, err := credentials.ParseReference("credential://openai/personal")
 	if err != nil {
