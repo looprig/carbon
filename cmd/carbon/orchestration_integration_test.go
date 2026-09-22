@@ -37,30 +37,7 @@ func TestInjectedBrowserLifecycleStartsAndStopsInOrder(t *testing.T) {
 	dataDir := t.TempDir()
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
-	config := browserStartConfig{
-		Storage: carbon.ServeStorageConfig{DataDir: dataDir, DefaultTenant: "local"},
-		Host: carbon.ServePooledHostConfig{
-			ListenAddress: "127.0.0.1:0", AuthToken: "test-host-token", StorageBindingID: "carbon-local-v1",
-			Options: host.Options{HostID: "carbon-lifecycle", IsolationClass: sessionwire.HostIsolationClassCrossTenantIsolated,
-				Placement: sessionwire.HostPlacementPooled, Capacity: 2, WarmTTL: time.Minute, RegistryHeartbeat: 10 * time.Second,
-				RegistryExpiry: time.Minute, ClaimTTL: 5 * time.Second, ApplyDeadline: 30 * time.Second,
-				CommandQueueSize: 16, ReconcileInterval: time.Minute, ReconcileBatch: 32},
-			Generation: 1, Link: host.LinkOptions{MaxBindingsPerLink: 2, MaxBindings: 4, MaxTenantLinks: 2},
-			Drain:                host.DrainOptions{Grace: 30 * time.Second, IdleBoundary: 10 * time.Second, PublishBound: 5 * time.Second},
-			CompatibilityTimeout: 20 * time.Second, WorkPoll: time.Second,
-		},
-		Factory: browser.FactoryConfig{
-			DefaultTenant: "local", StorageBindingID: "carbon-local-v1", BindingVersion: "v1",
-			HostLinkToken: "test-host-token", ReplicaID: "carbon-lifecycle", CookieName: "carbon_session",
-			Verifier: serveTestVerifier{}, Authorizer: factory.TenantAuthorizer{},
-			CSRF: identity.CSRFConfig{SharedKey: bytes.Repeat([]byte{'k'}, identity.MinCSRFSharedKeyBytes), TokenTTL: time.Hour,
-				TrustedOrigins: []string{"http://127.0.0.1"}},
-		},
-		Address: "127.0.0.1:0",
-		ClientBuilder: func() (inference.Client, func() model.Model, error) {
-			return &scriptedClient{fn: func(int, inference.Request) []content.Chunk { return nil }}, func() model.Model { return testServeModel() }, nil
-		},
-	}
+	config := lifecycleBrowserConfig(dataDir)
 	done := make(chan int, 1)
 	go func() {
 		done <- runWithBrowserConfig(ctx, []string{"serve", "--addr", "127.0.0.1:0", "--data-dir", dataDir,
@@ -89,5 +66,34 @@ func TestInjectedBrowserLifecycleStartsAndStopsInOrder(t *testing.T) {
 		}
 	case <-time.After(15 * time.Second):
 		t.Fatal("browser lifecycle did not finish shutdown")
+	}
+}
+
+// lifecycleBrowserConfig is a complete injected browser configuration over
+// dataDir: every field a real `carbon serve` needs to compose Factory and Host.
+func lifecycleBrowserConfig(dataDir string) browserStartConfig {
+	return browserStartConfig{
+		Storage: carbon.ServeStorageConfig{DataDir: dataDir, DefaultTenant: "local"},
+		Host: carbon.ServePooledHostConfig{
+			ListenAddress: "127.0.0.1:0", AuthToken: "test-host-token", StorageBindingID: "carbon-local-v1",
+			Options: host.Options{HostID: "carbon-lifecycle", IsolationClass: sessionwire.HostIsolationClassCrossTenantIsolated,
+				Placement: sessionwire.HostPlacementPooled, Capacity: 2, WarmTTL: time.Minute, RegistryHeartbeat: 10 * time.Second,
+				RegistryExpiry: time.Minute, ClaimTTL: 5 * time.Second, ApplyDeadline: 30 * time.Second,
+				CommandQueueSize: 16, ReconcileInterval: time.Minute, ReconcileBatch: 32},
+			Generation: 1, Link: host.LinkOptions{MaxBindingsPerLink: 2, MaxBindings: 4, MaxTenantLinks: 2},
+			Drain:                host.DrainOptions{Grace: 30 * time.Second, IdleBoundary: 10 * time.Second, PublishBound: 5 * time.Second},
+			CompatibilityTimeout: 20 * time.Second, WorkPoll: time.Second,
+		},
+		Factory: browser.FactoryConfig{
+			DefaultTenant: "local", StorageBindingID: "carbon-local-v1", BindingVersion: "v1",
+			HostLinkToken: "test-host-token", ReplicaID: "carbon-lifecycle", CookieName: "carbon_session",
+			Verifier: serveTestVerifier{}, Authorizer: factory.TenantAuthorizer{},
+			CSRF: identity.CSRFConfig{SharedKey: bytes.Repeat([]byte{'k'}, identity.MinCSRFSharedKeyBytes), TokenTTL: time.Hour,
+				TrustedOrigins: []string{"http://127.0.0.1"}},
+		},
+		Address: "127.0.0.1:0",
+		ClientBuilder: func() (inference.Client, func() model.Model, error) {
+			return &scriptedClient{fn: func(int, inference.Request) []content.Chunk { return nil }}, func() model.Model { return testServeModel() }, nil
+		},
 	}
 }

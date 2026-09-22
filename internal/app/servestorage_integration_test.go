@@ -102,4 +102,16 @@ func TestServeStorageRefusesRealLegacyCarbonRootWithoutLosingItsSession(t *testi
 	if len(metas) != 1 || metas[0].SessionID != id {
 		t.Fatalf("legacy session after refused migration: %+v, want %s", metas, id)
 	}
+	// Listing reads only the catalog index. The TUI/headless path must still
+	// RESTORE the session, which replays its journal under a fresh lease.
+	resumed, err := reopened.openWithClient(ctx, &fakeLLM{}, newModelFactory(), SessionSelector{Resume: id}, Config{})
+	if err != nil {
+		t.Fatalf("resume legacy session after refused browser serve: %v", err)
+	}
+	if resumed.SessionID() != id {
+		t.Fatalf("resumed session %s, want %s", resumed.SessionID(), id)
+	}
+	if err := resumed.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
 }

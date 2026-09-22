@@ -441,3 +441,10 @@ const (
 // LegacyLayoutRefusedError is Start's refusal of StoreLayoutLegacySingleTenant,
 // returned before storage or any runtime is opened.
 type LegacyLayoutRefusedError = carbon.ServeLegacyCompatibilityError
+
+// StoreLayoutMismatchError is Start's refusal of a data root whose persisted
+// SessionStore marker disagrees with the selected layout — in particular a root
+// the TUI or headless path already uses, which carries the legacy marker. It is
+// returned before any tenant journal, workspace or runtime is created; nothing
+// is migrated or adopted, and the TUI/headless path still opens that root.
+type StoreLayoutMismatchError = carbon.ServeStoreLayoutMismatchError
