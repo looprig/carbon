@@ -34,3 +34,32 @@ func TestFailStartWaitsWithinShutdownPolicy(t *testing.T) {
 		t.Fatalf("failStart = (%v, %v), want retained Server and deadline", owner, err)
 	}
 }
+
+// failStart's budget is the whole ForcedCeiling, not CleanupTimeout: a start
+// failure after Factory started runs quiesce, settlement, and cleanup, so a
+// healthy drain that outlasts CleanupTimeout but finishes inside the ceiling
+// must complete, closing Done and returning no retained Server.
+func TestFailStartCompletesADrainLongerThanCleanupTimeoutWithinTheCeiling(t *testing.T) {
+	s := &Server{done: make(chan struct{}), failureDone: make(chan struct{}),
+		shutdownPolicy: ShutdownPolicy{QuiesceTimeout: 10 * time.Millisecond, SettlementTimeout: 10 * time.Millisecond,
+			CleanupTimeout: 20 * time.Millisecond, ForcedCeiling: 5 * time.Second},
+		stopHost: func(context.Context) (host.DrainReport, error) {
+			time.Sleep(200 * time.Millisecond) // > CleanupTimeout, << ForcedCeiling
+			return host.DrainReport{}, nil
+		},
+		closeStorage: func(context.Context) error { return nil },
+	}
+	cause := errors.New("start failed")
+	owner, err := failStart(s, cause)
+	if owner != nil {
+		t.Fatalf("failStart retained the Server (err %v); want the drain completed within ForcedCeiling", err)
+	}
+	if !errors.Is(err, cause) || errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("failStart error = %v, want only the start cause", err)
+	}
+	select {
+	case <-s.Done():
+	default:
+		t.Fatal("Done not closed after a completed failStart drain")
+	}
+}
