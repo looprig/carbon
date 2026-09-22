@@ -24,7 +24,14 @@ The local Host serves only the configured default tenant. Carbon wraps the
 injected authorizer so that a principal of any other tenant is refused with
 `browser.TenantNotServedError` (unwrapping to `identity.ErrUnauthorized`, so
 `403 not_authorized`) before Factory writes anything; otherwise its create would
-be admitted and never placed.
+be admitted and never placed. The pin covers every list, read, command, and
+subscribe. It does not cover routes Factory authenticates without consulting the
+authorizer: a foreign-tenant principal still gets `200` from `/v1/bootstrap`,
+`/v1/agents`, and `/v1/csrf-token`, and can open the `/v1/realtime` connection
+(every subscription on it is refused). None of these writes anything durable.
+Embedder-supplied `UIRoutes`/`AuthorizeUI` are not tenant-pinned by Carbon;
+an embedder that needs "a foreign tenant is refused everywhere" must pin those
+itself.
 
 Factory ships no UI; Carbon supplies the official `wui.Assets()` bundle through
 Factory's UI seam (`WithUIHandler`). One application-scoped
