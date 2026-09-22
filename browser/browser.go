@@ -87,6 +87,18 @@ func (e *DrainIncompleteError) Error() string {
 	return fmt.Sprintf("carbon: Host drain incomplete (%d failures)", len(e.Report.Failures))
 }
 
+// QuiesceIncompleteError means Factory's admission join did not complete
+// within the shutdown policy's forced ceiling, typically because a store call
+// is wedged inside an admitted request. Host and storage are retained, since
+// admission never fenced; a later Stop retries the join.
+type QuiesceIncompleteError struct{ Cause error }
+
+func (e *QuiesceIncompleteError) Error() string {
+	return fmt.Sprintf("carbon: Factory admission join incomplete; Host and storage retained: %v", e.Cause)
+}
+
+func (e *QuiesceIncompleteError) Unwrap() error { return e.Cause }
+
 type stopAttempt struct {
 	done chan struct{}
 	err  error
@@ -247,6 +259,9 @@ func failStart(s *Server, cause error) (*Server, error) {
 
 // Stop starts or joins one lifecycle-owned cleanup attempt. Caller cancellation
 // ends only this wait; a later Stop can join or retry an incomplete attempt.
+// Every wait inside an attempt is bounded by the shutdown policy: if Factory's
+// admission join has not completed by ForcedCeiling, the attempt ends with a
+// QuiesceIncompleteError and Host and storage are retained for a retry.
 func (s *Server) Stop(ctx context.Context) error {
 	if s == nil {
 		return nil
@@ -304,6 +319,7 @@ func (s *Server) Wait(ctx context.Context) error {
 }
 
 func (s *Server) cleanup(attempt *stopAttempt) {
+	started := time.Now()
 	var diagnostic, err error
 	if !s.factoryStopped && (s.factory != nil || s.stopFactory != nil) {
 		if s.quiesceFactory != nil {
@@ -313,9 +329,20 @@ func (s *Server) cleanup(attempt *stopAttempt) {
 			if quiesceErr != nil {
 				diagnostic = errors.Join(diagnostic, fmt.Errorf("carbon: Factory quiesce: %w", quiesceErr))
 				// A caller timeout does not complete Factory's owned admission
-				// join. Wait for its stable result before draining Host; the
-				// process ceiling handles a join that never completes.
-				diagnostic = errors.Join(diagnostic, s.quiesceFactory(context.Background()))
+				// join. Wait for its stable result before draining Host, but
+				// no longer than the forced ceiling: a join that has not
+				// completed by then ends this attempt with Host and storage
+				// retained, so a later Stop can retry instead of the owned
+				// cleanup blocking forever.
+				joinCtx, cancelJoin := context.WithTimeout(context.Background(), s.shutdownPolicy.ForcedCeiling-time.Since(started))
+				joinErr := s.quiesceFactory(joinCtx)
+				joinExpired := joinCtx.Err()
+				cancelJoin()
+				if joinErr != nil && joinExpired != nil && errors.Is(joinErr, joinExpired) {
+					s.finishAttempt(attempt, nil, errors.Join(diagnostic, &QuiesceIncompleteError{Cause: joinErr}), false)
+					return
+				}
+				diagnostic = errors.Join(diagnostic, joinErr)
 			}
 			if s.pendingReader != nil {
 				settleCtx, cancel := context.WithTimeout(context.Background(), s.shutdownPolicy.SettlementTimeout)
@@ -377,6 +404,12 @@ func (s *Server) cleanup(attempt *stopAttempt) {
 			s.storageClosed = true
 		}
 	}
+	s.finishAttempt(attempt, err, diagnostic, err == nil)
+}
+
+// finishAttempt records one cleanup attempt's result. terminal closes Done;
+// otherwise the handle stays retryable.
+func (s *Server) finishAttempt(attempt *stopAttempt, err, diagnostic error, terminal bool) {
 	s.mu.Lock()
 	if diagnostic != nil {
 		s.recordFailureLocked(diagnostic)
@@ -385,7 +418,7 @@ func (s *Server) cleanup(attempt *stopAttempt) {
 		s.recordFailureLocked(err)
 	}
 	attempt.err = errors.Join(err, diagnostic)
-	if err == nil {
+	if terminal {
 		close(s.done)
 	}
 	s.attempt = nil

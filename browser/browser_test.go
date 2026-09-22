@@ -144,7 +144,7 @@ func TestStopReportsUnsettledCommandAndStillDrainsHost(t *testing.T) {
 func TestQuiesceFailureStillStopsFactoryAndHost(t *testing.T) {
 	want := errors.New("quiesce failed")
 	var order []string
-	s := &Server{done: make(chan struct{}), shutdownPolicy: ShutdownPolicy{QuiesceTimeout: time.Second},
+	s := &Server{done: make(chan struct{}), shutdownPolicy: ShutdownPolicy{QuiesceTimeout: time.Second, ForcedCeiling: time.Minute},
 		quiesceFactory: func(context.Context) error { order = append(order, "quiesce"); return want },
 		stopFactory:    func(context.Context) error { order = append(order, "factory"); return nil },
 		stopHost: func(context.Context) (host.DrainReport, error) {
@@ -166,7 +166,7 @@ func TestTimedQuiesceRejoinsAdmissionBoundaryBeforeHostDrain(t *testing.T) {
 	enteredJoin := make(chan struct{})
 	releaseJoin := make(chan struct{})
 	quiesceCalls := 0
-	s := &Server{done: make(chan struct{}), shutdownPolicy: ShutdownPolicy{QuiesceTimeout: time.Second},
+	s := &Server{done: make(chan struct{}), shutdownPolicy: ShutdownPolicy{QuiesceTimeout: time.Second, ForcedCeiling: time.Minute},
 		quiesceFactory: func(context.Context) error {
 			quiesceCalls++
 			if quiesceCalls == 1 {
