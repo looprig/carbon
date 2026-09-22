@@ -26,7 +26,8 @@ injected authorizer so that a principal of any other tenant is refused with
 `403 not_authorized`) before Factory writes anything; otherwise its create would
 be admitted and never placed.
 
-Factory serves the official `wui.Assets()` bundle. One application-scoped
+Factory ships no UI; Carbon supplies the official `wui.Assets()` bundle through
+Factory's UI seam (`WithUIHandler`). One application-scoped
 ClientLink can view several sessions. REST list, status, and public journal
 reads work from the durable store while a session is cold; opening a session
 does not launch its runtime. An explicit create or input can place it. A
