@@ -572,7 +572,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "shutdown policy:", err)
 		os.Exit(exitFailed)
 	}
-	os.Exit(runWithTerminationSignals(context.Background(), signals, policy.ForcedCeiling, time.After,
+	os.Exit(runProcess(context.Background(), os.Args[1:], signals, policy.ForcedCeiling, time.After,
 		func() { os.Exit(exitFailed) },
-		func(ctx context.Context) int { return run(ctx, os.Args[1:], os.Stdout, os.Stderr) }))
+		func(ctx context.Context, args []string) int { return run(ctx, args, os.Stdout, os.Stderr) }))
 }

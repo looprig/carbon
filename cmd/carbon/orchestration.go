@@ -82,3 +82,29 @@ func runWithTerminationSignals(parent context.Context, signals <-chan os.Signal,
 	}()
 	return run(ctx)
 }
+
+// runProcess selects the process's termination handling from its arguments.
+// Only browser serve is supervised: its staged shutdown may be cut short by a
+// second signal or the forced ceiling. The TUI and headless paths restore the
+// terminal and close their store in deferred teardown, so for them the first
+// signal cancels and every later one is absorbed until run returns.
+func runProcess(parent context.Context, args []string, signals <-chan os.Signal, ceiling time.Duration, after func(time.Duration) <-chan time.Time, force func(), run func(context.Context, []string) int) int {
+	if flags, err := parseFlags(args); err == nil && flags.serve {
+		return runWithTerminationSignals(parent, signals, ceiling, after, force, func(ctx context.Context) int { return run(ctx, args) })
+	}
+	ctx, cancel := context.WithCancel(parent)
+	defer cancel()
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		for {
+			select {
+			case <-signals:
+				cancel()
+			case <-done:
+				return
+			}
+		}
+	}()
+	return run(ctx, args)
+}
