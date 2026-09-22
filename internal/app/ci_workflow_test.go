@@ -172,3 +172,14 @@ func assertNoDanglingNeeds(t *testing.T, jobs map[string]string) {
 		}
 	}
 }
+
+// The browser composition's end-to-end proofs -- the authenticated UI routes,
+// the gate answer reaching a resident agent, and the injected lifecycle -- are
+// integration-tagged. CI must run them, not only the supervised-process suite.
+func TestCIRunsBrowserIntegrationSuites(t *testing.T) {
+	jobs := workflowJobs(t, readCIWorkflow(t))
+	step := workflowStep(t, jobs["test-macos"], "go test -tags integration -race (browser composition end to end)")
+	if !strings.Contains(step, "run: go test -tags integration -race -count=1 ./browser ./cmd/carbon") {
+		t.Fatalf("browser integration step must run ./browser and ./cmd/carbon under -tags integration; step:\n%s", step)
+	}
+}

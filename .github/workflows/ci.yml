@@ -46,6 +46,10 @@ jobs:
         run: go test -race -count=1 ./...
       - name: go test -tags integration -race (supervised commands end to end)
         run: go test -tags integration -race -count=1 ./internal/app -run 'TestIntegrationProcess'
+      # Factory + pooled Host end to end: authenticated UI routes, gate answer
+      # reaching a resident agent, and the injected serve lifecycle (~1 min).
+      - name: go test -tags integration -race (browser composition end to end)
+        run: go test -tags integration -race -count=1 ./browser ./cmd/carbon
 
   # Compile every package's test binary independently. This catches
   # architecture-specific Windows issues even when the live worker is x64.
