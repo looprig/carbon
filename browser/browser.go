@@ -245,8 +245,11 @@ func (s *Server) recordFailureLocked(err error) {
 	}
 }
 
+// failStart unwinds a partial start within the resolved shutdown policy's
+// ForcedCeiling, the budget for every cleanup phase. If cleanup has not
+// finished by then the Server is returned so the caller can retry Stop.
 func failStart(s *Server, cause error) (*Server, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), s.shutdownPolicy.ForcedCeiling)
 	defer cancel()
 	cleanupErr := s.Stop(ctx)
 	select {
