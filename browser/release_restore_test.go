@@ -92,7 +92,8 @@ func modelVisibleCWD(req inference.Request) string {
 
 // R1.5 step 4. A released session keeps its history, the bytes its agent wrote
 // into its workspace, and the workspace path the model was told; a later local
-// Host generation restores it. The only release path the released Host (v0.6.0)
+// Host generation restores it — including the workspace bytes, from the durable
+// snapshot, after the local copy is removed. The only release path the released Host (v0.6.0)
 // exposes to a composition is the drain on Stop — host.Compose wires no
 // WorkStates source, so it never warm-evicts on WarmTTL — so the release under
 // test is the Host drain's checkpoint-and-release, followed by a new Host
@@ -196,6 +197,12 @@ func TestReleasedSessionKeepsHistoryWorkspaceAndPathAcrossHostGenerations(t *tes
 	if err := first.Stop(context.Background()); err != nil {
 		t.Fatalf("stop first Host generation: %v", err)
 	}
+	// A later generation may run on another machine, so the bytes must come back
+	// from the released session's durable workspace snapshot, not from a local
+	// directory that happened to survive: remove the local copy first.
+	if err := os.Remove(filepath.Join(told, "notes.txt")); err != nil {
+		t.Fatalf("remove the local copy before the next generation: %v", err)
+	}
 
 	cfg.Host.Generation++
 	second, err := browser.Start(context.Background(), cfg)
@@ -229,11 +236,44 @@ func TestReleasedSessionKeepsHistoryWorkspaceAndPathAcrossHostGenerations(t *tes
 			t.Fatalf("restored model context lacks %q: %s", want, history)
 		}
 	}
-	readBack, err := json.Marshal(recorded(3).Messages)
-	if err != nil {
-		t.Fatal(err)
+	// The restored agent's own ReadFile result — not the transcript, which already
+	// carries generation 1's WriteFile input — must hold the pre-release bytes.
+	readBack, found, isError := toolResultText(recorded(3).Messages, "read-notes")
+	if !found || isError || !strings.Contains(readBack, strings.TrimSpace(workspaceBytes)) {
+		t.Fatalf("restored agent's ReadFile of %s/notes.txt = found %v, error %v, %q; want the pre-release bytes %q",
+			told, found, isError, readBack, workspaceBytes)
 	}
-	if !strings.Contains(string(readBack), "workspace-bytes-v1") {
-		t.Fatalf("restored agent's ReadFile of %s/notes.txt did not return the pre-release bytes: %s", told, readBack)
+	if onDisk, err := os.ReadFile(filepath.Join(told, "notes.txt")); err != nil || string(onDisk) != workspaceBytes {
+		t.Fatalf("workspace bytes after the next generation restored = %q, %v; want %q", onDisk, err, workspaceBytes)
 	}
+}
+
+// toolResultText returns the text of the tool result answering toolUseID, whether
+// it is carried as a tool-result message or as a tool-result block.
+func toolResultText(messages content.AgenticMessages, toolUseID string) (text string, found, isError bool) {
+	var b strings.Builder
+	collect := func(blocks []content.Block) {
+		for _, block := range blocks {
+			if tb, ok := block.(*content.TextBlock); ok {
+				b.WriteString(tb.Text)
+			}
+		}
+	}
+	for _, message := range messages {
+		switch m := message.(type) {
+		case *content.ToolResultMessage:
+			if m.ToolUseID == toolUseID {
+				found, isError = true, isError || m.IsError
+				collect(m.Blocks)
+			}
+		case *content.UserMessage:
+			for _, block := range m.Blocks {
+				if r, ok := block.(*content.ToolResultBlock); ok && r.ToolUseID == toolUseID {
+					found, isError = true, isError || r.IsError
+					collect(r.Content)
+				}
+			}
+		}
+	}
+	return b.String(), found, isError
 }
