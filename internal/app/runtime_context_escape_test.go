@@ -15,12 +15,16 @@ import (
 // .gitattributes, and more that cannot be enumerated), so a model that plants
 // such configuration in its writable workspace would otherwise have its command
 // run unconfined by the host on the next turn. Each probe plants a command that
-// touches a marker OUTSIDE the workspace and outside any sandbox-writable path;
-// the marker must never appear.
+// touches a marker OUTSIDE the workspace and outside any sandbox-writable path
+// (the marker must never appear, proving confinement) and ALSO touches a
+// second marker INSIDE the workspace (proving the hook actually ran at all,
+// so the outside-marker-absent assertion is not vacuously satisfied by git
+// never invoking the hook in the first place — see O5 in
+// docs/plans/2026-08-29-factory-host-orchestration-implementation/CLAUDE_REVIEW_CARBON_R1.5_REGATE.md).
 
 type gitPlant struct {
 	name  string
-	plant func(t *testing.T, repo, marker string)
+	plant func(t *testing.T, repo, marker, insideMarker string)
 }
 
 func gitPlants() []gitPlant {
@@ -31,27 +35,28 @@ func gitPlants() []gitPlant {
 }
 
 // plantFSMonitor makes repo a repository whose core.fsmonitor hook touches
-// marker. `git status` consults the monitor on every run.
-func plantFSMonitor(t *testing.T, repo, marker string) {
+// insideMarker then marker. `git status` consults the monitor on every run.
+func plantFSMonitor(t *testing.T, repo, marker, insideMarker string) {
 	t.Helper()
 	gitRepo(t, repo, "planted")
-	runGit(t, repo, "config", "core.fsmonitor", "touch '"+marker+"'; false")
+	runGit(t, repo, "config", "core.fsmonitor", "touch '"+insideMarker+"'; touch '"+marker+"'; false")
 }
 
 // plantCleanFilter makes repo a repository with a tracked, modified *.txt file
-// whose .gitattributes clean filter touches marker. `git status` runs the clean
-// filter to compare a racily-modified file's content with the index.
-func plantCleanFilter(t *testing.T, repo, marker string) {
+// whose .gitattributes clean filter touches insideMarker then marker. `git
+// status` runs the clean filter to compare a racily-modified file's content
+// with the index.
+func plantCleanFilter(t *testing.T, repo, marker, insideMarker string) {
 	t.Helper()
 	gitRepo(t, repo, "planted")
-	runGit(t, repo, "config", "filter.x.clean", "sh -c 'touch \""+marker+"\"; cat'")
+	runGit(t, repo, "config", "filter.x.clean", "sh -c 'touch \""+insideMarker+"\"; touch \""+marker+"\"; cat'")
 	if err := os.WriteFile(filepath.Join(repo, ".gitattributes"), []byte("*.txt filter=x\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(repo, "notes.txt"), []byte("one\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// Commit with the filter disabled so the marker is not touched by setup.
+	// Commit with the filter disabled so the markers are not touched by setup.
 	runGit(t, repo, "-c", "filter.x.clean=cat", "add", ".gitattributes", "notes.txt")
 	runGit(t, repo, "-c", "filter.x.clean=cat", "-c", "user.name=t", "-c", "user.email=t@example.invalid",
 		"-c", "commit.gpgsign=false", "commit", "-q", "-m", "track")
@@ -60,6 +65,9 @@ func plantCleanFilter(t *testing.T, repo, marker string) {
 	}
 	if _, err := os.Stat(marker); err == nil {
 		t.Fatal("setup itself ran the planted filter")
+	}
+	if _, err := os.Stat(insideMarker); err == nil {
+		t.Fatal("setup itself ran the planted filter (inside marker)")
 	}
 }
 
@@ -77,6 +85,12 @@ func escapeMarker(t *testing.T) string {
 	return filepath.Join(canonicalTempDir(t), "host-executed-marker")
 }
 
+// insideMarker returns a path inside root that a planted hook touches to
+// prove it ran at all, regardless of whether it ran confined or escaped.
+func insideMarker(root string) string {
+	return filepath.Join(root, ".carbon-hook-ran-marker")
+}
+
 func assertNotHostExecuted(t *testing.T, marker string) {
 	t.Helper()
 	if _, err := os.Stat(marker); err == nil {
@@ -89,6 +103,40 @@ func requireGit(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not installed")
 	}
+}
+
+// requireSandboxGitEnv is the CI escape hatch for the "sandbox cannot run git
+// on this host" skip: set to "1" on any CI lane whose sandbox is known to be
+// able to run git (so the skip would otherwise silently hide a real
+// regression, per O5 in CLAUDE_REVIEW_CARBON_R1.5_REGATE.md).
+const requireSandboxGitEnv = "CARBON_REQUIRE_SANDBOX_GIT"
+
+// sandboxGitAvailable reports whether `git --version` runs successfully
+// inside the session sandbox for access, without skipping or failing — the
+// caller decides what an unavailable sandbox means for its own assertions.
+func sandboxGitAvailable(access *sessionAccess, dir string) (ok bool, reason string) {
+	executor, err := access.set.For(runtimeContextExecutorKey)
+	if err != nil {
+		return false, "session sandbox unavailable: " + err.Error()
+	}
+	if _, code, err := executor.RunArgv(context.Background(), dir, []string{"git", "--version"}); err != nil || code != 0 {
+		return false, "cannot run git inside the session sandbox on this host"
+	}
+	return true, ""
+}
+
+// skipOrFailUnlessRequired is the shared skip/fail decision for "this host's
+// sandbox cannot run git": an ordinary developer machine gets an explicit,
+// clearly-reasoned skip, while any CI lane that sets
+// CARBON_REQUIRE_SANDBOX_GIT=1 (because its sandbox is known to support git)
+// treats the same condition as a failure instead, so the underlying
+// discrimination this probe carries is never silently lost on that lane.
+func skipOrFailUnlessRequired(t *testing.T, reason string) {
+	t.Helper()
+	if os.Getenv(requireSandboxGitEnv) == "1" {
+		t.Fatalf("%s (failing rather than skipping because %s=1)", reason, requireSandboxGitEnv)
+	}
+	t.Skipf("%s (set %s=1 in CI to fail instead of skip)", reason, requireSandboxGitEnv)
 }
 
 // sessionAccessAt builds the real session access wiring (executor set, gate)
@@ -113,16 +161,13 @@ func runtimeContextText(t *testing.T, access *sessionAccess) string {
 
 // requireSandboxedCommands skips when this host cannot run a command inside a
 // Trusted session sandbox, so a positive "git state is still reported" check is
-// not mistaken for a regression on a host without sandbox support. The escape
-// probes never skip on this: omitting git is a safe outcome for them.
+// not mistaken for a regression on a host without sandbox support. On a CI lane
+// known to support sandboxed git, set CARBON_REQUIRE_SANDBOX_GIT=1 so the same
+// condition fails loudly instead of skipping silently.
 func requireSandboxedCommands(t *testing.T, access *sessionAccess, dir string) {
 	t.Helper()
-	executor, err := access.set.For(runtimeContextExecutorKey)
-	if err != nil {
-		t.Skipf("session sandbox unavailable: %v", err)
-	}
-	if _, code, err := executor.RunArgv(context.Background(), dir, []string{"git", "--version"}); err != nil || code != 0 {
-		t.Skipf("cannot run git inside the session sandbox on this host: code=%d err=%v", code, err)
+	if ok, reason := sandboxGitAvailable(access, dir); !ok {
+		skipOrFailUnlessRequired(t, reason)
 	}
 }
 
@@ -133,9 +178,22 @@ func TestPooledRuntimeContextNeverRunsPlantedGitConfigWithHostAuthority(t *testi
 		t.Run(plant.name, func(t *testing.T) {
 			root := canonicalTempDir(t)
 			marker := escapeMarker(t)
-			plant.plant(t, root, marker)
-			_ = runtimeContextText(t, sessionAccessAt(t, AccessTrusted, root, true))
+			inside := insideMarker(root)
+			plant.plant(t, root, marker, inside)
+			access := sessionAccessAt(t, AccessTrusted, root, true)
+			_ = runtimeContextText(t, access)
+			// The escape assertion below is unconditional: it never skips,
+			// because omitting git entirely is itself a safe (if weaker)
+			// outcome for it. The inside-marker assertion that follows is what
+			// proves the hook actually ran, so this test is not vacuous; it
+			// can only be checked where the sandbox can run git at all.
 			assertNotHostExecuted(t, marker)
+			if ok, reason := sandboxGitAvailable(access, root); !ok {
+				skipOrFailUnlessRequired(t, reason+"; cannot prove the planted hook ran (inside marker check skipped) though the outside-marker check above still ran and found no escape")
+			}
+			if _, err := os.Stat(inside); err != nil {
+				t.Fatalf("planted git hook never ran inside the sandbox (inside marker %s missing); the outside-marker-absent assertion above may be vacuous", inside)
+			}
 		})
 	}
 }
@@ -148,10 +206,18 @@ func TestProcessRuntimeContextNeverRunsPlantedGitConfigWithHostAuthority(t *test
 		t.Run(plant.name, func(t *testing.T) {
 			root := canonicalTempDir(t)
 			marker := escapeMarker(t)
-			plant.plant(t, root, marker)
+			inside := insideMarker(root)
+			plant.plant(t, root, marker, inside)
 			t.Chdir(root)
-			_ = runtimeContextText(t, sessionAccessAt(t, AccessTrusted, root, false))
+			access := sessionAccessAt(t, AccessTrusted, root, false)
+			_ = runtimeContextText(t, access)
 			assertNotHostExecuted(t, marker)
+			if ok, reason := sandboxGitAvailable(access, root); !ok {
+				skipOrFailUnlessRequired(t, reason+"; cannot prove the planted hook ran (inside marker check skipped) though the outside-marker check above still ran and found no escape")
+			}
+			if _, err := os.Stat(inside); err != nil {
+				t.Fatalf("planted git hook never ran inside the sandbox (inside marker %s missing); the outside-marker-absent assertion above may be vacuous", inside)
+			}
 		})
 	}
 }
@@ -164,10 +230,15 @@ func TestSandboxlessRuntimeContextNeverRunsGit(t *testing.T) {
 		t.Run(plant.name, func(t *testing.T) {
 			root := canonicalTempDir(t)
 			marker := escapeMarker(t)
-			plant.plant(t, root, marker)
+			inside := insideMarker(root)
+			plant.plant(t, root, marker, inside)
 			t.Chdir(root)
 			text := soleText(t, NewRuntimeContextProvider().Blocks(context.Background()))
 			assertNotHostExecuted(t, marker)
+			// Neither marker should exist: the sandbox-less provider invokes
+			// no git at all, so it cannot even confine the hook — it must
+			// never call it.
+			assertNotHostExecuted(t, inside)
 			if strings.Contains(text, "git ") {
 				t.Fatalf("sandbox-less provider reported git state:\n%s", text)
 			}
