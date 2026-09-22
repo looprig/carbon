@@ -36,9 +36,13 @@ func TestActualSIGINTAndSIGTERMSuperviseProcess(t *testing.T) {
 	for _, signalValue := range []os.Signal{os.Interrupt, syscall.SIGTERM} {
 		for _, mode := range []string{"first", "second"} {
 			t.Run(signalValue.String()+"/"+mode, func(t *testing.T) {
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-				cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestTerminationSignalChild$")
+				// No context timeout wraps Start(): re-exec and start-up of a
+				// -race test binary is unpredictable under host load and has
+				// nothing to do with what this test measures. A generous,
+				// separate watchdog bounds only the wait for READY, and the
+				// signal-round-trip budget below starts only once the child
+				// has actually reported ready.
+				cmd := exec.Command(os.Args[0], "-test.run=^TestTerminationSignalChild$")
 				cmd.Env = append(os.Environ(), "LOOPRIG_TERMINATION_CHILD="+mode)
 				stdout, err := cmd.StdoutPipe()
 				if err != nil {
@@ -49,9 +53,17 @@ func TestActualSIGINTAndSIGTERMSuperviseProcess(t *testing.T) {
 				}
 				defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
 				lines := bufio.NewScanner(stdout)
-				if !lines.Scan() || lines.Text() != "READY" {
+				readyTimer := time.AfterFunc(30*time.Second, func() { _ = cmd.Process.Kill() })
+				readyOK := lines.Scan() && lines.Text() == "READY"
+				readyTimer.Stop()
+				if !readyOK {
 					t.Fatalf("child readiness: %q %v", lines.Text(), lines.Err())
 				}
+				// The signal round-trip budget starts here, after READY, so
+				// it covers only the actual signal delivery and cancellation
+				// this test measures.
+				budgetTimer := time.AfterFunc(5*time.Second, func() { _ = cmd.Process.Kill() })
+				defer budgetTimer.Stop()
 				if err := cmd.Process.Signal(signalValue); err != nil {
 					t.Fatal(err)
 				}
@@ -64,6 +76,7 @@ func TestActualSIGINTAndSIGTERMSuperviseProcess(t *testing.T) {
 					}
 				}
 				err = cmd.Wait()
+				budgetTimer.Stop()
 				want := 0
 				if mode == "second" {
 					want = 23
