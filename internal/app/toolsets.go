@@ -56,8 +56,9 @@ const familyPolicyRev = "carbon-family:git-log-status-diff-show-push:v1"
 
 // executorScratchLimit bounds the number of memoized executor identities in the
 // session's set: every primer/delegate Loop plus every spawnable sub-loop the
-// delegation quota allows, with headroom.
-const executorScratchLimit = delegationSpawnQuota + 4
+// delegation quota allows, the runtime-context git probe's own executor
+// (runtimeContextExecutorKey), with headroom.
+const executorScratchLimit = delegationSpawnQuota + 5
 
 // errNoLoopProvenance reports that the access gate was consulted outside a live
 // loop step (no provenance), so the per-Loop executor cannot be resolved. It

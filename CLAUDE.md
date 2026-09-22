@@ -349,6 +349,7 @@ Prefer direct assembly over local wrappers that only rename another module's API
 - Give each Loop the minimum tool set and the least-authority access profile it needs.
 - Keep mutating, command, and network effects human-gated unless enforced guarantees justify automatic approval.
 - Treat `Bash` as intentionally shell-based. Permission checks and OS confinement are its boundaries.
+- Never execute git (or any program that honours repository-local configuration, such as `core.fsmonitor` or `.gitattributes` filters) with Carbon's own process authority in a directory the model can write. The runtime-context git probe runs through the session executor set (`runSandboxedGit`); `-c` flag hardening is not a substitute.
 - Validate CLI input before constructing the Rig.
 - Never log secrets or place them in audit summaries. Upstream proxy credentials live only inside the sandbox egress route and never enter the fingerprint, permission file, logs, or child environment.
 - Treat `~/.looprig/carbon/models.json` as a secret-bearing owner-only file. Never copy its inline API keys into a repository, `.env`, shell command, fingerprint, permission file, log, or ACP child environment.

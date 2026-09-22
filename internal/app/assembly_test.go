@@ -239,7 +239,7 @@ func legacyModefulCarbonDefinition(client inference.Client, m model.Model, cfg C
 		loop.WithTools(carbonToolDefinitions(access.set, newHTTPClient(), skillDefinitionFor(loader))...),
 		loop.WithAccessGate(access.gate),
 		loop.WithPolicyRevision(contextPolicy.policyRevision(access.policyRev + ":" + managedAgentToolsRevision)),
-		loop.WithRuntimeContext(newRuntimeContextProvider(runtimeSkillCatalogForAccess(access))),
+		loop.WithRuntimeContext(runtimeContextProviderFor(access)),
 		loop.WithDelegates(carbon.Name),
 		loop.WithDelegation(loop.Delegation{Style: loop.DelegationManaged}),
 		loop.WithModes(

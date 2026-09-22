@@ -1,19 +1,18 @@
 package app
 
 import (
-	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/looprig/core/content"
 )
 
 // A pooled session's runtime context names the session root, and git state is
 // read inside that root only: an enclosing repository (for example one holding
-// the server's data directory) is never reported to the model.
+// the server's data directory) is never reported to the model. Git runs inside
+// the session sandbox (runtime_context_escape_test.go holds that it never runs
+// with the server's own authority).
 func TestSessionRuntimeContextNamesRootAndStopsGitDiscoveryAtIt(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not installed")
@@ -27,11 +26,9 @@ func TestSessionRuntimeContextNamesRootAndStopsGitDiscoveryAtIt(t *testing.T) {
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	blocks := newSessionRuntimeContextProvider(root, nil).Blocks(context.Background())
-	if len(blocks) != 1 {
-		t.Fatalf("blocks = %d, want 1", len(blocks))
-	}
-	text := blocks[0].(*content.TextBlock).Text
+	access := sessionAccessAt(t, AccessTrusted, root, true)
+	requireSandboxedCommands(t, access, root)
+	text := runtimeContextText(t, access)
 	if !strings.Contains(text, "cwd: "+root+"\n") {
 		t.Fatalf("runtime context does not name the session root %q:\n%s", root, text)
 	}
@@ -41,10 +38,11 @@ func TestSessionRuntimeContextNamesRootAndStopsGitDiscoveryAtIt(t *testing.T) {
 		}
 	}
 
-	// A session root that is itself a repository still reports its own state.
+	// A session root that is itself a repository reports its own state — read by
+	// git running inside the session sandbox, never by the server process.
 	gitRepo(t, root, "session-branch")
-	text = newSessionRuntimeContextProvider(root, nil).Blocks(context.Background())[0].(*content.TextBlock).Text
-	if !strings.Contains(text, "session-branch") {
+	text = runtimeContextText(t, access)
+	if !strings.Contains(text, "git branch: session-branch\n") {
 		t.Fatalf("runtime context omits the session root's own repository:\n%s", text)
 	}
 }

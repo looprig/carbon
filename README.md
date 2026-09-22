@@ -57,7 +57,16 @@ SessionStore uses the root filesystem backend; Harness journals live under
 `tenant-journals/<tenant-hash>/`, and browser session workspaces under
 `session-workspaces/<tenant-and-session-hash>/`. A browser session's runtime
 context names that session workspace as its `cwd` (never the server process's
-directory), and reports git state only for a repository at or inside it. The default layout is
+directory), and reports git state only for a repository at or inside it.
+
+Carbon never runs git with the server's (or the TUI's) own authority in a
+directory the model can write: repository-local configuration such as
+`core.fsmonitor` or a `.gitattributes` clean filter would otherwise execute a
+command the model planted. The runtime context's branch/status probe runs inside
+the session's own sandbox, with exactly the authority the model's `Bash` already
+has, for browser, TUI, and headless sessions alike. Under the `readonly` profile
+commands are gated, so the runtime context carries no git lines there; the model
+can still ask to run `git status` itself. The default layout is
 `tenant-v1` for the configured default tenant. Browser serving refuses
 `legacy-single-tenant-v1` with `browser.LegacyLayoutRefusedError` before opening
 any store: Factory composition requires the tenant-v1 layout, and there is no

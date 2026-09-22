@@ -117,10 +117,7 @@ func carbonDefinition(client inference.Client, model model.Model, cfg Config, ac
 // focused fingerprint and compaction tests without introducing a roster map.
 func carbonDefinitionWithContextPolicy(client inference.Client, model model.Model, cfg Config, contextPolicy conversationContextPolicy, access *sessionAccess, extras []tool.Definition) (loop.Definition, error) {
 	httpCl := newHTTPClient()
-	runtimeCtx := newRuntimeContextProvider(runtimeSkillCatalogForAccess(access))
-	if access.sessionRootContext {
-		runtimeCtx = newSessionRuntimeContextProvider(access.workspace, runtimeSkillCatalogForAccess(access))
-	}
+	runtimeCtx := runtimeContextProviderFor(access)
 
 	loader := skill.NewEmbeddedSkillLoader(nil, nil)
 	definitions := append([]tool.Definition(nil), carbonToolDefinitions(access.set, httpCl, skillDefinitionFor(loader))...)
@@ -146,6 +143,19 @@ func carbonDefinitionWithContextPolicy(client inference.Client, model model.Mode
 		return loop.Definition{}, &LoopDefinitionError{Agent: string(carbon.Name), Cause: err}
 	}
 	return definition, nil
+}
+
+// runtimeContextProviderFor selects the session's runtime-context provider: a
+// pooled session (sessionRootContext) is told its session root and reads git
+// state only at or inside it; a TUI/headless session is told the process
+// working directory and still discovers an enclosing repository. Both run git
+// only inside the session's own sandbox executor set.
+func runtimeContextProviderFor(access *sessionAccess) loop.RuntimeContextProvider {
+	catalog := runtimeSkillCatalogForAccess(access)
+	if access.sessionRootContext {
+		return newSessionRuntimeContextProvider(access.set, access.workspace, catalog)
+	}
+	return newRuntimeContextProvider(access.set, catalog)
 }
 
 func runtimeSkillCatalogForAccess(access *sessionAccess) func() []skill.SkillMeta {

@@ -1,12 +1,10 @@
 package app
 
 import (
-	"bytes"
 	"context"
 	"encoding/xml"
-	"io"
+	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -16,6 +14,7 @@ import (
 
 	"github.com/looprig/core/content"
 	"github.com/looprig/harness/pkg/loop"
+	"github.com/looprig/sandbox"
 	"github.com/looprig/tools/skill"
 )
 
@@ -25,7 +24,7 @@ const (
 	runtimeGitTimeout = 2 * time.Second
 	// maxRuntimeGitBytes caps the bytes read from a single git command, so a
 	// pathological `git status` (huge untracked tree) cannot blow the buffer.
-	maxRuntimeGitBytes = 16 << 10 // 16 KiB
+	maxRuntimeGitBytes int64 = 16 << 10 // 16 KiB
 	// maxRuntimeStatusFiles caps the per-file lines we enumerate from status
 	// before collapsing to a count, keeping the block compact.
 	maxRuntimeStatusFiles = 20
@@ -46,9 +45,10 @@ const (
 )
 
 // runtimeCommandRunner is the command-execution seam. It runs a fixed binary with
-// an argv list (never a shell string) and returns its stdout. Defaulted to a
-// bounded exec.CommandContext wrapper; replaced by a fake in tests so the provider
-// never depends on a real git repo.
+// an argv list (never a shell string) and returns its stdout. Production wires
+// runSandboxedGit, which runs git inside the session's sandbox; tests replace it
+// with a fake so the provider never depends on a real git repo. A nil runner
+// omits every git line.
 type runtimeCommandRunner func(ctx context.Context, name string, args ...string) ([]byte, error)
 
 // defaultRuntimeContextProvider builds the volatile per-turn runtime block
@@ -61,21 +61,35 @@ type defaultRuntimeContextProvider struct {
 	catalog func() []skill.SkillMeta
 }
 
-// NewRuntimeContextProvider returns the default RuntimeContextProvider wired to the
-// real clock (time.Now), the real working directory (os.Getwd), and a bounded,
-// timeout-guarded git runner. The carbon composition root constructs it so
-// the engine-generic loop package stays free of os/exec.
+// NewRuntimeContextProvider returns a RuntimeContextProvider wired to the real
+// clock (time.Now) and the real working directory (os.Getwd). It has no session
+// sandbox, so it reports NO git state: Carbon never executes git with its own
+// process authority (see runSandboxedGit). Session composition uses
+// newRuntimeContextProvider with the session's executor set instead.
 func NewRuntimeContextProvider() loop.RuntimeContextProvider {
-	return newRuntimeContextProvider(nil)
+	return newRuntimeContextProvider(nil, nil)
 }
 
-func newRuntimeContextProvider(catalog func() []skill.SkillMeta) loop.RuntimeContextProvider {
-	return &defaultRuntimeContextProvider{
+// newRuntimeContextProvider is the TUI/headless provider: the model is told the
+// process working directory, and git state for it (including an enclosing
+// repository) is read by git running INSIDE the session sandbox set. A nil set
+// omits git.
+func newRuntimeContextProvider(set *sandbox.ExecutorSet, catalog func() []skill.SkillMeta) loop.RuntimeContextProvider {
+	p := &defaultRuntimeContextProvider{
 		clock:   time.Now,
 		getwd:   os.Getwd,
-		run:     runGitCommand,
 		catalog: catalog,
 	}
+	if set != nil {
+		p.run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+			dir, err := os.Getwd()
+			if err != nil {
+				return nil, &runtimeGitError{cmd: name, cause: err}
+			}
+			return runSandboxedGit(ctx, set, dir, "", name, args...)
+		}
+	}
+	return p
 }
 
 // Blocks renders exactly one <runtime_context> TextBlock. It is non-fatal by
@@ -216,8 +230,12 @@ func escapeXMLText(s string) string {
 
 // writeGit appends the git branch + status summary, degrading silently: a failed
 // branch lookup (not a repo) omits all git lines; a failed status omits only the
-// status line. No git error is ever surfaced or logged (it may contain paths).
+// status line. A nil runner (no session sandbox) omits every git line. No git
+// error is ever surfaced or logged (it may contain paths).
 func (p *defaultRuntimeContextProvider) writeGit(ctx context.Context, b *strings.Builder) {
+	if p.run == nil {
+		return
+	}
 	out, err := p.run(ctx, "git", "rev-parse", "--abbrev-ref", "HEAD")
 	if err != nil {
 		return
@@ -279,69 +297,89 @@ func splitNonEmptyLines(s string) []string {
 // newSessionRuntimeContextProvider is the runtime-context provider for a
 // session whose workspace is a per-session root rather than the process working
 // directory (the pooled browser launcher). The model is told the session root —
-// the directory its tools actually serve — and git runs inside that root with
-// repository discovery stopped at the root, so a pooled session never reports
-// the server process's own directory or a repository enclosing the data root.
-func newSessionRuntimeContextProvider(root string, catalog func() []skill.SkillMeta) loop.RuntimeContextProvider {
-	return &defaultRuntimeContextProvider{
-		clock: time.Now,
-		getwd: func() (string, error) { return root, nil },
-		run: func(ctx context.Context, name string, args ...string) ([]byte, error) {
-			return runGitCommandIn(ctx, root, name, args...)
-		},
+// the directory its tools actually serve — and git runs inside the session
+// sandbox in that root with repository discovery stopped at the root, so a
+// pooled session never reports the server process's own directory or a
+// repository enclosing the data root. A nil set omits git.
+func newSessionRuntimeContextProvider(set *sandbox.ExecutorSet, root string, catalog func() []skill.SkillMeta) loop.RuntimeContextProvider {
+	p := &defaultRuntimeContextProvider{
+		clock:   time.Now,
+		getwd:   func() (string, error) { return root, nil },
 		catalog: catalog,
 	}
+	if set != nil {
+		p.run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+			return runSandboxedGit(ctx, set, root, filepath.Dir(root), name, args...)
+		}
+	}
+	return p
 }
 
-// runGitCommand is the default runtimeCommandRunner: a bounded, timeout-guarded
-// exec of a fixed binary with an argv list (no shell). stderr is discarded so a
-// repo path or error string can never leak into the block.
-func runGitCommand(ctx context.Context, name string, args ...string) ([]byte, error) {
-	return runGitCommandIn(ctx, "", name, args...)
-}
+// runtimeContextExecutorKey names the session executor that runs the runtime
+// context's git probe. It is distinct from every Loop's executor (those are keyed
+// by Loop UUID), so the probe has its own scratch HOME and TMPDIR and never
+// shares a grant key with a tool call.
+const runtimeContextExecutorKey = "carbon-runtime-context"
 
-// runGitCommandIn runs the command in dir. An empty dir is the process working
-// directory; a non-empty dir also becomes the git discovery ceiling's child, so
-// git never reports a repository above dir.
-func runGitCommandIn(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
+// runtimeGitShim runs "$0" "$@" with stderr discarded. It is a FIXED string:
+// the binary and its arguments are passed as positional parameters, never
+// interpolated, so no path or argument is ever parsed by the shell.
+const runtimeGitShim = `exec "$0" "$@" 2>/dev/null`
+
+// runSandboxedGit runs git in dir INSIDE the session's sandbox, through the
+// session executor set, never as a child of the Carbon process.
+//
+// This is a security boundary, not a convenience. The model can write its
+// workspace (Trusted profile), and git honours repository-local configuration
+// that executes commands — core.fsmonitor, .gitattributes clean/smudge filters,
+// and other config-driven exec paths that cannot be enumerated or reliably
+// disabled with -c flags. Run with Carbon's own authority, a planted
+// configuration would execute unconfined on the next turn. Inside the sandbox,
+// anything git runs has exactly the authority the model's own Bash command has
+// (same profile, workspace, isolated HOME and scrubbed environment), so a plant
+// gains nothing. A profile whose commands are gated (ReadOnly) refuses the
+// ungranted run and git state is omitted.
+//
+// A non-empty ceiling becomes GIT_CEILING_DIRECTORIES. Inherited GIT_DIR-style
+// variables are removed so discovery always starts at dir. GIT_OPTIONAL_LOCKS=0
+// keeps `git status` from writing the index. Output is capped at
+// maxRuntimeGitBytes; an over-long output is returned truncated.
+func runSandboxedGit(ctx context.Context, set *sandbox.ExecutorSet, dir, ceiling, name string, args ...string) ([]byte, error) {
+	executor, err := set.For(runtimeContextExecutorKey)
+	if err != nil {
+		return nil, &runtimeGitError{cmd: name, cause: err}
+	}
 	ctx, cancel := context.WithTimeout(ctx, runtimeGitTimeout)
 	defer cancel()
 
-	// #nosec G204 -- name is a fixed binary ("git") chosen by this package, never
-	// from user input; args are a static argv list (no shell, no interpolation).
-	cmd := exec.CommandContext(ctx, name, args...)
-	if dir != "" {
-		cmd.Dir = dir
-		cmd.Env = append(os.Environ(), "GIT_CEILING_DIRECTORIES="+filepath.Dir(dir))
+	argv := []string{"env",
+		"-u", "GIT_DIR", "-u", "GIT_WORK_TREE", "-u", "GIT_INDEX_FILE", "-u", "GIT_COMMON_DIR",
+		"-u", "GIT_OBJECT_DIRECTORY", "-u", "GIT_CONFIG", "-u", "GIT_CONFIG_PARAMETERS",
+		"GIT_OPTIONAL_LOCKS=0", "GIT_TERMINAL_PROMPT=0",
 	}
-	var out bytes.Buffer
-	cmd.Stdout = &boundedWriter{buf: &out, limit: maxRuntimeGitBytes}
-	cmd.Stderr = io.Discard
-	if err := cmd.Run(); err != nil {
+	if ceiling != "" {
+		argv = append(argv, "GIT_CEILING_DIRECTORIES="+ceiling)
+	}
+	argv = append(argv, "sh", "-c", runtimeGitShim, name)
+	argv = append(argv, args...)
+	out, code, err := executor.RunArgvLimited(ctx, dir, argv, maxRuntimeGitBytes)
+	if errors.Is(err, sandbox.ErrOutputLimit) {
+		return out, nil
+	}
+	if err != nil {
 		return nil, &runtimeGitError{cmd: name, cause: err}
 	}
-	return out.Bytes(), nil
-}
-
-// boundedWriter caps how many bytes it accepts, discarding the rest, so a runaway
-// git command cannot grow the buffer without bound. It never errors (so it does
-// not abort the command); excess output is simply dropped.
-type boundedWriter struct {
-	buf   *bytes.Buffer
-	limit int
-}
-
-func (w *boundedWriter) Write(p []byte) (int, error) {
-	if remaining := w.limit - w.buf.Len(); remaining > 0 {
-		if len(p) > remaining {
-			w.buf.Write(p[:remaining])
-		} else {
-			w.buf.Write(p)
-		}
+	if code != 0 {
+		return nil, &runtimeGitError{cmd: name, cause: &runtimeGitExitError{code: code}}
 	}
-	// Report the full length so the writer is never treated as short by exec.
-	return len(p), nil
+	return out, nil
 }
+
+// runtimeGitExitError reports a sandboxed git run that exited non-zero (for
+// example, not a repository).
+type runtimeGitExitError struct{ code int }
+
+func (e *runtimeGitExitError) Error() string { return "exit status " + strconv.Itoa(e.code) }
 
 // runtimeGitError wraps a failed git invocation. It carries the command name and
 // cause for errors.As inspection, but the provider deliberately never surfaces it
