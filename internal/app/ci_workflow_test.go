@@ -183,3 +183,30 @@ func TestCIRunsBrowserIntegrationSuites(t *testing.T) {
 		t.Fatalf("browser integration step must run ./browser and ./cmd/carbon under -tags integration; step:\n%s", step)
 	}
 }
+
+// fmt-check must use the selected toolchain's gofmt: whatever gofmt is first on
+// PATH may be a different Go release whose formatting disagrees (Homebrew's
+// 1.27.1 flagged a file the 1.26.8 baseline accepts).
+func TestMakefileFormatsWithTheToolchainGofmt(t *testing.T) {
+	_, filename, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	data, err := os.ReadFile(filepath.Join(filepath.Dir(filename), "..", "..", "Makefile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	makefile := string(data)
+	if !strings.Contains(makefile, "GOFMT ?= $(shell go env GOROOT)/bin/gofmt") {
+		t.Fatal("Makefile must define GOFMT from the selected toolchain's GOROOT")
+	}
+	for _, line := range strings.Split(makefile, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if strings.Contains(trimmed, "gofmt -") || strings.Contains(trimmed, "$$(gofmt") {
+			t.Fatalf("Makefile invokes PATH gofmt instead of $(GOFMT): %q", trimmed)
+		}
+	}
+}

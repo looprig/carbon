@@ -38,13 +38,17 @@ test:
 test-integration:
 	go test -tags integration -race ./...
 
+# The selected toolchain's gofmt, never whichever gofmt is first on PATH: a
+# different Go release formats differently. `go env GOROOT` honours GOTOOLCHAIN.
+GOFMT ?= $(shell go env GOROOT)/bin/gofmt
+
 # Format this module's Go files in place.
 fmt:
-	gofmt -w $(GO_FILES)
+	$(GOFMT) -w $(GO_FILES)
 
 # Fail if any Go file is not gofmt-clean.
 fmt-check:
-	@unformatted=$$(gofmt -l $(GO_FILES)); \
+	@unformatted=$$($(GOFMT) -l $(GO_FILES)); \
 	if [ -n "$$unformatted" ]; then \
 		echo "gofmt needed (run 'make fmt'):"; echo "$$unformatted"; exit 1; \
 	fi
