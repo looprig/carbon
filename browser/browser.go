@@ -428,3 +428,16 @@ func (s *Server) finishAttempt(attempt *stopAttempt, err, diagnostic error, term
 	close(attempt.done)
 	s.mu.Unlock()
 }
+
+// StoreLayout selects the browser control store's layout. Browser serve
+// accepts only StoreLayoutTenantV1 (the default).
+type StoreLayout = carbon.ServeStoreLayout
+
+const (
+	StoreLayoutTenantV1           StoreLayout = carbon.ServeStoreLayoutTenantV1
+	StoreLayoutLegacySingleTenant StoreLayout = carbon.ServeStoreLayoutLegacySingleTenant
+)
+
+// LegacyLayoutRefusedError is Start's refusal of StoreLayoutLegacySingleTenant,
+// returned before storage or any runtime is opened.
+type LegacyLayoutRefusedError = carbon.ServeLegacyCompatibilityError

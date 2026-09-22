@@ -55,9 +55,10 @@ The browser data root is the configured absolute `Storage.DataDir`. Its control
 SessionStore uses the root filesystem backend; Harness journals live under
 `tenant-journals/<tenant-hash>/`, and browser session workspaces under
 `session-workspaces/<tenant-and-session-hash>/`. The default layout is
-`tenant-v1` for the configured default tenant. Carbon refuses
-`legacy-single-tenant-v1` for browser serving and has no automatic or
-stopped-store migrator. A persisted layout marker mismatch fails startup. The
+`tenant-v1` for the configured default tenant. Browser serving refuses
+`legacy-single-tenant-v1` with `browser.LegacyLayoutRefusedError` before opening
+any store: Factory composition requires the tenant-v1 layout, and there is no
+automatic or stopped-store migrator. A persisted layout marker mismatch fails startup. The
 TUI/headless legacy construction remains
 independent of Factory and can use its own session-store root (default
 `~/.looprig/carbon/store`, overridable with `--data-dir`). Do not point two

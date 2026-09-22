@@ -52,12 +52,16 @@ func (e *ServeStoreLayoutMismatchError) Error() string {
 }
 func (e *ServeStoreLayoutMismatchError) Unwrap() error { return e.Cause }
 
-// ServeLegacyCompatibilityError reports an affirmative legacy request that
-// browser composition cannot yet serve. The TUI legacy path remains available.
+// ServeLegacyCompatibilityError refuses an affirmative legacy-single-tenant-v1
+// request, before any store is opened or marked. Browser serve composes Factory,
+// whose control records and per-tenant journals require the tenant-v1 layout;
+// there is no stopped-store migrator. The TUI and headless paths do not use
+// Factory and still read legacy sessions from their own store root.
 type ServeLegacyCompatibilityError struct{}
 
 func (*ServeLegacyCompatibilityError) Error() string {
-	return "carbon: browser serve cannot open legacy-single-tenant-v1 until stopped-store migration is supported"
+	return "carbon: browser serve refuses store layout \"legacy-single-tenant-v1\": Factory composition requires the \"tenant-v1\" layout " +
+		"and no stopped-store migrator exists; legacy sessions remain readable from the TUI and headless paths"
 }
 
 // ServeStorage owns separate control and harness journal stores under one
