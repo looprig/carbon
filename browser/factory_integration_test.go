@@ -312,7 +312,21 @@ func TestServeFactoryAuthenticatesBootstrapAndProductUI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	page, err := reopenedReader.ReadPublicJournal(ctx, sessionstore.ReadPublicJournalRequest{TenantID: "local", SessionID: create.SessionID})
+	// A Host session's journal is the runtime's, reached through the resolver
+	// Factory composes (WithJournalResolver) under the binding's runtime id; the
+	// legacy half refuses it.
+	if _, err := reopenedReader.ReadPublicJournal(ctx, sessionstore.ReadPublicJournalRequest{TenantID: "local", SessionID: create.SessionID}); err == nil {
+		t.Fatal("the legacy journal half answered a disposition-bound session")
+	}
+	entry, err := reopened.ControlStore().GetCatalogEntry(ctx, sessionstore.GetCatalogEntryRequest{TenantID: "local", SessionID: create.SessionID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeJournal, err := reopenedReader.ResolveJournal(ctx, "local", entry.Record.Binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := runtimeJournal.ReadPublicJournal(ctx, sessionstore.ReadPublicJournalRequest{TenantID: "local", SessionID: sessionwire.SessionID(entry.Record.Binding.RuntimeSessionID)})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -467,6 +468,28 @@ func TestExternalApplicationCanStartCreateAndStop(t *testing.T) {
 	recovery.Body.Close()
 	if recovery.StatusCode != http.StatusOK || !strings.Contains(string(recoveredBody), "browser reply 3") {
 		t.Fatalf("reconnected viewer could not recover offline output: %d %s", recovery.StatusCode, recoveredBody)
+	}
+	// Factory (v0.9.0+) owns the journal cursor: a continuation is a Factory j1.
+	// cursor, and a cursor from Carbon's retired c2. envelope is refused 400, so
+	// a client holding one restarts its walk.
+	paged := request(http.MethodGet, "/v1/sessions/browser-session-1/journal?from_seq=1&limit=1", nil)
+	pagedBody, _ := io.ReadAll(paged.Body)
+	paged.Body.Close()
+	var firstPage sessionwire.JournalPage
+	if paged.StatusCode != http.StatusOK || json.Unmarshal(pagedBody, &firstPage) != nil || !strings.HasPrefix(string(firstPage.NextCursor), "j1.") {
+		t.Fatalf("paged journal = %d %s, want a j1. continuation", paged.StatusCode, pagedBody)
+	}
+	continued1 := request(http.MethodGet, "/v1/sessions/browser-session-1/journal?limit=1&cursor="+url.QueryEscape(string(firstPage.NextCursor)), nil)
+	_, _ = io.Copy(io.Discard, continued1.Body)
+	continued1.Body.Close()
+	if continued1.StatusCode != http.StatusOK {
+		t.Fatalf("j1. continuation = %d", continued1.StatusCode)
+	}
+	oldCursor := request(http.MethodGet, "/v1/sessions/browser-session-1/journal?cursor="+url.QueryEscape("c2."+strings.Repeat("0", 64)+".b3BhcXVl"), nil)
+	_, _ = io.Copy(io.Discard, oldCursor.Body)
+	oldCursor.Body.Close()
+	if oldCursor.StatusCode != http.StatusBadRequest {
+		t.Fatalf("retired c2. cursor = %d, want 400", oldCursor.StatusCode)
 	}
 	postInput("browser-input-4")
 	select {

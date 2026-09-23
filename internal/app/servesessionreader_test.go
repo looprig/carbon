@@ -6,42 +6,60 @@ import (
 	"strings"
 	"testing"
 
-	sessionwire "github.com/looprig/core/sessionwire/v1"
 	"github.com/looprig/sessionstore"
 )
 
-func TestServeCursorPreservesInnerTokenAndRejectsMalformedOrWrongScope(t *testing.T) {
-	binding := sessionstore.SessionBinding{StorageBindingID: "carbon-local-v1", BindingVersion: "v1", RuntimeSessionID: "2db05411-d065-4bdc-9d19-a23d1284ffb1", ProtocolMode: sessionstore.ProtocolModeDisposition}
-	inner := sessionwire.Cursor("opaque.inner+bytes/unchanged")
-	wrapped, err := wrapServeCursor(inner, "tenant-a", "public-a", binding)
+// TestServeJournalResolverRefusesAnUnservedBinding pins the resolver's refusal:
+// Factory hands it every disposition-bound catalog binding, and a binding this
+// deployment does not serve must be refused, never defaulted to the tenant's
+// journal — that would serve one deployment's journal under another's
+// configuration. The legacy half refuses every read, because Carbon creates no
+// legacy session and the control store's journal for a Host session is empty.
+func TestServeJournalResolverRefusesAnUnservedBinding(t *testing.T) {
+	const runtimeID = "2db05411-d065-4bdc-9d19-a23d1284ffb1"
+	served := sessionstore.SessionBinding{StorageBindingID: "carbon-local-v1", BindingVersion: "v1", RuntimeSessionID: runtimeID, ProtocolMode: sessionstore.ProtocolModeDisposition}
+	reader, err := NewServeSessionReader(&sessionstore.Store{}, &PooledLauncher{}, "carbon-local-v1", "v1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := unwrapServeCursor(wrapped, "tenant-a", "public-a", binding)
-	if err != nil || got != inner {
-		t.Fatalf("inner = %q, err %v; want %q", got, err, inner)
+	journal, err := reader.ResolveJournal(context.Background(), "tenant-a", served)
+	if err != nil || journal == nil {
+		t.Fatalf("served binding = %v, %v", journal, err)
+	}
+	// The resolved reader is bound to its runtime session and tenant.
+	for _, req := range []sessionstore.ReadPublicJournalRequest{
+		{TenantID: "tenant-a", SessionID: "public-a"},
+		{TenantID: "tenant-b", SessionID: runtimeID},
+	} {
+		var bindingErr *ServeJournalBindingError
+		if _, err := journal.ReadPublicJournal(context.Background(), req); !errors.As(err, &bindingErr) {
+			t.Fatalf("%+v: %v, want a binding refusal", req, err)
+		}
 	}
 	for _, tc := range []struct {
-		name     string
-		token    sessionwire.Cursor
-		tenant   sessionwire.TenantID
-		publicID sessionwire.SessionID
-		binding  sessionstore.SessionBinding
+		name   string
+		change func(*sessionstore.SessionBinding)
 	}{
-		{name: "other public session", token: wrapped, tenant: "tenant-a", publicID: "public-b", binding: binding},
-		{name: "other tenant", token: wrapped, tenant: "tenant-b", publicID: "public-a", binding: binding},
-		{name: "other binding version", token: wrapped, tenant: "tenant-a", publicID: "public-a", binding: func() sessionstore.SessionBinding { b := binding; b.BindingVersion = "v2"; return b }()},
-		{name: "malformed", token: "c1.not-a-digest.!", tenant: "tenant-a", publicID: "public-a", binding: binding},
-		{name: "previous envelope version", token: sessionwire.Cursor("c1." + strings.SplitN(string(wrapped), ".", 2)[1]), tenant: "tenant-a", publicID: "public-a", binding: binding},
-		{name: "oversized", token: sessionwire.Cursor(strings.Repeat("x", maxServeCursorBytes+1)), tenant: "tenant-a", publicID: "public-a", binding: binding},
+		{"other binding id", func(b *sessionstore.SessionBinding) { b.StorageBindingID = "other" }},
+		{"other binding version", func(b *sessionstore.SessionBinding) { b.BindingVersion = "v2" }},
+		{"legacy protocol", func(b *sessionstore.SessionBinding) { b.ProtocolMode = sessionstore.ProtocolModeLegacy }},
+		{"zero runtime id", func(b *sessionstore.SessionBinding) { b.RuntimeSessionID = "00000000-0000-0000-0000-000000000000" }},
+		{"malformed runtime id", func(b *sessionstore.SessionBinding) { b.RuntimeSessionID = "not-a-uuid" }},
+		{"noncanonical runtime id", func(b *sessionstore.SessionBinding) { b.RuntimeSessionID = strings.ToUpper(runtimeID) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := unwrapServeCursor(tc.token, tc.tenant, tc.publicID, tc.binding)
-			var journalErr *sessionstore.JournalError
-			if !errors.As(err, &journalErr) || journalErr.Code != sessionstore.JournalErrorCursor {
-				t.Fatalf("cursor refusal = %v, want JournalErrorCursor", err)
+			b := served
+			tc.change(&b)
+			got, err := reader.ResolveJournal(context.Background(), "tenant-a", b)
+			var bindingErr *ServeJournalBindingError
+			if !errors.As(err, &bindingErr) || got != nil {
+				t.Fatalf("resolve = %v, %v; want a binding refusal", got, err)
 			}
 		})
+	}
+	var bindingErr *ServeJournalBindingError
+	if _, err := reader.ReadPublicJournal(context.Background(), sessionstore.ReadPublicJournalRequest{TenantID: "tenant-a", SessionID: "public-a"}); !errors.As(err, &bindingErr) {
+		t.Fatalf("legacy journal half = %v, want a binding refusal", err)
 	}
 }
 

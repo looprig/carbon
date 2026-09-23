@@ -5,7 +5,6 @@ package app
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
@@ -61,7 +60,14 @@ func TestServeSessionReaderReadsBoundHarnessJournal(t *testing.T) {
 	if err := lease.Release(ctx); err != nil {
 		t.Fatal(err)
 	}
-	page, err := reader.ReadPublicJournal(ctx, sessionstore.ReadPublicJournalRequest{TenantID: "tenant-a", SessionID: publicID, Limit: 1, ScanLimit: 5})
+	// Factory reads the catalog under the public id and hands the resolver the
+	// binding; the resolved reader is addressed by the runtime id.
+	journal, err := reader.ResolveJournal(ctx, "tenant-a", entry.Binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeSession := sessionwire.SessionID(runtimeID.String())
+	page, err := journal.ReadPublicJournal(ctx, sessionstore.ReadPublicJournalRequest{TenantID: "tenant-a", SessionID: runtimeSession, Limit: 1, ScanLimit: 5})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,50 +77,24 @@ func TestServeSessionReaderReadsBoundHarnessJournal(t *testing.T) {
 	if page.NextCursor == "" {
 		t.Fatal("expected continuation cursor")
 	}
-	last, err := reader.ReadPublicJournal(ctx, sessionstore.ReadPublicJournalRequest{TenantID: "tenant-a", SessionID: publicID, Tail: true, Limit: 1})
+	last, err := journal.ReadPublicJournal(ctx, sessionstore.ReadPublicJournalRequest{TenantID: "tenant-a", SessionID: runtimeSession, Tail: true, Limit: 1})
 	if err != nil || len(last.Events) != 1 || last.Events[0].EventID != sessionwire.EventID(nextPublic.EventHeader().EventID.String()) {
 		t.Fatalf("tail page = %+v, err %v", last, err)
 	}
-	other := entry
-	other.SessionID = "other"
-	if _, _, err := stores.ControlStore().CreateCatalogEntry(ctx, other); err != nil {
-		t.Fatal(err)
+	// The public id is never a runtime journal address, and the legacy half
+	// refuses a disposition-bound session outright.
+	var bindingErr *ServeJournalBindingError
+	if _, err := journal.ReadPublicJournal(ctx, sessionstore.ReadPublicJournalRequest{TenantID: "tenant-a", SessionID: publicID}); !errors.As(err, &bindingErr) {
+		t.Fatalf("public id through the runtime reader = %v", err)
 	}
-	otherTenant := entry
-	otherTenant.TenantID = "tenant-b"
-	if _, _, err := stores.ControlStore().CreateCatalogEntry(ctx, otherTenant); err != nil {
-		t.Fatal(err)
-	}
-	_, err = reader.ReadPublicJournal(ctx, sessionstore.ReadPublicJournalRequest{TenantID: "tenant-b", SessionID: publicID, Cursor: page.NextCursor})
-	assertCursorError(t, err)
-	_, err = reader.ReadPublicJournal(ctx, sessionstore.ReadPublicJournalRequest{TenantID: "tenant-a", SessionID: "other", Cursor: page.NextCursor})
-	assertCursorError(t, err)
-	for _, tc := range []struct {
-		id     sessionwire.SessionID
-		change func(*sessionstore.SessionBinding)
-	}{
-		{"wrong-binding-id", func(b *sessionstore.SessionBinding) { b.StorageBindingID = "other-binding" }},
-		{"wrong-binding-version", func(b *sessionstore.SessionBinding) { b.BindingVersion = "v2" }},
-		{"wrong-binding-protocol", func(b *sessionstore.SessionBinding) { b.ProtocolMode = sessionstore.ProtocolModeLegacy }},
-		{"zero-runtime-id", func(b *sessionstore.SessionBinding) { b.RuntimeSessionID = "00000000-0000-0000-0000-000000000000" }},
-		{"malformed-runtime-id", func(b *sessionstore.SessionBinding) { b.RuntimeSessionID = "not-a-uuid" }},
-		{"noncanonical-runtime-id", func(b *sessionstore.SessionBinding) { b.RuntimeSessionID = strings.ToUpper(runtimeID.String()) }},
-	} {
-		wrong := entry
-		wrong.SessionID = tc.id
-		tc.change(&wrong.Binding)
-		if _, _, err := stores.ControlStore().CreateCatalogEntry(ctx, wrong); err != nil {
-			t.Fatal(err)
-		}
-		_, err = reader.ReadPublicJournal(ctx, sessionstore.ReadPublicJournalRequest{TenantID: "tenant-a", SessionID: wrong.SessionID})
-		var bindingErr *ServeJournalBindingError
-		if !errors.As(err, &bindingErr) {
-			t.Fatalf("%s: %v", tc.id, err)
-		}
+	if _, err := reader.ReadPublicJournal(ctx, sessionstore.ReadPublicJournalRequest{TenantID: "tenant-a", SessionID: publicID}); !errors.As(err, &bindingErr) {
+		t.Fatalf("legacy half = %v", err)
 	}
 	if err := stores.Close(ctx); err != nil {
 		t.Fatal(err)
 	}
+	// The runtime cursor survives a reopen: it names the runtime journal, not a
+	// process. (Factory wraps it as j1. and binds it to the public session.)
 	reopened, err := OpenServeStorage(ctx, Config{}, ServeStorageConfig{DataDir: stores.Launcher().dataDir, DefaultTenant: "tenant-a"})
 	if err != nil {
 		t.Fatal(err)
@@ -124,17 +104,13 @@ func TestServeSessionReaderReadsBoundHarnessJournal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	continued, err := reopenedReader.ReadPublicJournal(ctx,
-		sessionstore.ReadPublicJournalRequest{TenantID: "tenant-a", SessionID: publicID, Cursor: page.NextCursor, Limit: 1, ScanLimit: 5})
+	reopenedJournal, err := reopenedReader.ResolveJournal(ctx, "tenant-a", entry.Binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	continued, err := reopenedJournal.ReadPublicJournal(ctx,
+		sessionstore.ReadPublicJournalRequest{TenantID: "tenant-a", SessionID: runtimeSession, Cursor: page.NextCursor, Limit: 1, ScanLimit: 5})
 	if err != nil || len(continued.Events) != 1 || continued.Events[0].EventID != sessionwire.EventID(nextPublic.EventHeader().EventID.String()) {
 		t.Fatalf("continuation after reopen = %+v, err %v", continued, err)
-	}
-}
-
-func assertCursorError(t *testing.T, err error) {
-	t.Helper()
-	var journalErr *sessionstore.JournalError
-	if !errors.As(err, &journalErr) || journalErr.Code != sessionstore.JournalErrorCursor {
-		t.Fatalf("cursor refusal = %v, want JournalErrorCursor", err)
 	}
 }

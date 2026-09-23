@@ -85,6 +85,18 @@ func composeFactory(stores *carbon.ServeStorage, localHost *carbon.ServePooledHo
 		factory.WithCredentialVerifier(cfg.Verifier), factory.WithAuthorizer(cfg.Authorizer),
 		factory.WithSessionCookieName(cfg.CookieName), factory.WithDefaultTenant(cfg.DefaultTenant),
 		factory.WithCSRF(cfg.CSRF), factory.WithSessionReader(reader), factory.WithCommands(stores.ControlStore()),
+		// Every Host session is disposition bound, so its journal is the harness
+		// runtime's, under the binding's RuntimeSessionID: /journal, the
+		// journal_tip hint and every live-tail repair read it here. Factory wraps
+		// the cursors (j1.); a browser holding a pre-v0.28.0 c2. cursor gets 400
+		// and restarts its walk.
+		factory.WithJournalResolver(func(ctx context.Context, tenant sessionwire.TenantID, binding sessionstore.SessionBinding) (factory.JournalReader, error) {
+			journal, err := reader.ResolveJournal(ctx, tenant, binding)
+			if err != nil {
+				return nil, err // never a typed-nil reader
+			}
+			return journal, nil
+		}),
 		factory.WithCatalog(stores.ControlStore()), factory.WithGates(stores.ControlStore()), factory.WithHostTargets(stores.ControlStore()),
 		factory.WithPublicCreates(stores.ControlStore()), factory.WithPendingCommands(stores.ControlStore()),
 		factory.WithDirectory(directory), factory.WithDepartment(template),

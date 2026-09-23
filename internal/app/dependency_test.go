@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -154,16 +155,16 @@ func TestOrchestrationPinsAreTheReleasedOnes(t *testing.T) {
 			"the ROLLOUT RULE: every ReadGates caller must be on >= v0.12.0 BEFORE any Host publishes a gate; older readers refuse these gate pages",
 		},
 		{
-			"github.com/looprig/harness", "v0.36.0",
-			"runtimecommand.Kind names five kinds. Below it a create and a restore are refused AFTER the attempt is durable and the session's whole command stream wedges",
+			"github.com/looprig/harness", "v0.38.0",
+			"host v0.8.x's pair: session.PersistenceFaultReporter and session.ResidencyAbandoner, which Carbon forwards as department.PersistenceFaults so a storage outage releases the session for a successor's restore (five-kind runtimecommand.Kind since v0.36.0; applied-input durability since v0.37.0; relocated workspace restore since v0.37.1). NOT v0.39.0: no released host pairs with it yet",
 		},
 		{
-			"github.com/looprig/host", "v0.6.0",
-			"the release that safely disposes an unstarted Host and prechecks malformed creates before a durable attempt; Carbon's browser lifecycle relies on that unstarted-close contract",
+			"github.com/looprig/host", "v0.8.2",
+			"a faulted runtime is abandoned and restored by a successor (v0.8.0), a draining Host stops applying commands first (v0.8.1), and a lost residency grant is given up so the session can be placed again (v0.8.2); keeps v0.6.0's unstarted-close contract Carbon's browser lifecycle relies on",
 		},
 		{
-			"github.com/looprig/factory", "v0.7.1",
-			"the release that quiesces new public admission and joins preboundary commands while keeping reconciliation and HostLinks live for Carbon's ordered drain; v0.7.1 is a no-API-change patch (async Host wake after ack, a routing lock fix)",
+			"github.com/looprig/factory", "v0.9.0",
+			"WithJournalResolver: a Host session's journal (/journal, journal_tip, every live-tail repair) is read from its runtime under the binding's RuntimeSessionID, so viewers are repaired rather than dropped and a reconnecting browser can catch up; New refuses Carbon's composition without it. Keeps v0.7.x's ordered-drain quiescence",
 		},
 		{
 			"github.com/looprig/wui", "v0.2.0",
@@ -212,12 +213,40 @@ func TestHostAndHarnessPinsMoveTogether(t *testing.T) {
 	if host == "" || harnessVersion == "" {
 		t.Fatalf("go.mod must require both host and harness; got host=%q harness=%q", host, harnessVersion)
 	}
-	if host < "v0.5.0" && harnessVersion >= "v0.36.0" {
+	if !versionAtLeast(host, "v0.5.0") && versionAtLeast(harnessVersion, "v0.36.0") {
 		t.Errorf("host %s with harness %s: a Host below v0.5.0 strands every create and restore harness now admits", host, harnessVersion)
 	}
-	if host >= "v0.5.0" && harnessVersion < "v0.36.0" {
+	if versionAtLeast(host, "v0.5.0") && !versionAtLeast(harnessVersion, "v0.36.0") {
 		t.Errorf("host %s with harness %s: host v0.5.0 requires the five-kind vocabulary harness v0.36.0 introduced", host, harnessVersion)
 	}
+	// host v0.8.0's obligation: "Pair host v0.8.0 with harness v0.38.0; the
+	// harness adapter requires both of its new capabilities to bind."
+	if versionAtLeast(host, "v0.8.0") && !versionAtLeast(harnessVersion, "v0.38.0") {
+		t.Errorf("host %s with harness %s: host v0.8.0 requires harness v0.38.0's persistence-fault capabilities", host, harnessVersion)
+	}
+}
+
+// versionAtLeast compares two vMAJOR.MINOR.PATCH versions numerically. A
+// lexical comparison would order v0.10.0 below v0.9.0.
+func versionAtLeast(version, floor string) bool {
+	parse := func(v string) [3]int {
+		var out [3]int
+		for i, part := range strings.SplitN(strings.TrimPrefix(v, "v"), ".", 3) {
+			if cut := strings.IndexAny(part, "-+"); cut >= 0 {
+				part = part[:cut]
+			}
+			n, _ := strconv.Atoi(part)
+			out[i] = n
+		}
+		return out
+	}
+	a, b := parse(version), parse(floor)
+	for i := range a {
+		if a[i] != b[i] {
+			return a[i] > b[i]
+		}
+	}
+	return true
 }
 
 // TestCarbonNamesNoReplaceDirective holds the workspace rule at the one place a
