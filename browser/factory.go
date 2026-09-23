@@ -65,7 +65,7 @@ func composeFactory(stores *carbon.ServeStorage, localHost *carbon.ServePooledHo
 			return cfg.Authorizer.AuthorizeSessionList(ctx, principal)
 		}
 	}
-	reader, err := carbon.NewServeSessionReader(stores.ControlStore(), stores.Launcher(), cfg.StorageBindingID, cfg.BindingVersion)
+	reader, err := carbon.NewServeSessionReader(stores.ControlStore(), stores.Launcher(), cfg.DefaultTenant, cfg.StorageBindingID, cfg.BindingVersion)
 	if err != nil {
 		return nil, err
 	}

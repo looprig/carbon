@@ -19,6 +19,7 @@ import (
 type ServeSessionReader struct {
 	control        *sessionstore.Store
 	launcher       *PooledLauncher
+	served         sessionwire.TenantID
 	bindingID      string
 	bindingVersion string
 }
@@ -29,18 +30,22 @@ func (e *ServeSessionReaderConfigError) Error() string {
 	return "carbon: invalid serve session reader " + e.Field
 }
 
-func NewServeSessionReader(control *sessionstore.Store, launcher *PooledLauncher, bindingID, bindingVersion string) (*ServeSessionReader, error) {
+// served is the ONE tenant this deployment serves; the journal resolver refuses
+// every other, so it never opens a tenant backend the local Host does not own.
+func NewServeSessionReader(control *sessionstore.Store, launcher *PooledLauncher, served sessionwire.TenantID, bindingID, bindingVersion string) (*ServeSessionReader, error) {
 	switch {
 	case control == nil:
 		return nil, &ServeSessionReaderConfigError{Field: "control"}
 	case launcher == nil:
 		return nil, &ServeSessionReaderConfigError{Field: "launcher"}
+	case served.Validate() != nil:
+		return nil, &ServeSessionReaderConfigError{Field: "served_tenant"}
 	case bindingID == "":
 		return nil, &ServeSessionReaderConfigError{Field: "binding_id"}
 	case bindingVersion == "":
 		return nil, &ServeSessionReaderConfigError{Field: "binding_version"}
 	}
-	return &ServeSessionReader{control: control, launcher: launcher, bindingID: bindingID, bindingVersion: bindingVersion}, nil
+	return &ServeSessionReader{control: control, launcher: launcher, served: served, bindingID: bindingID, bindingVersion: bindingVersion}, nil
 }
 
 // Factory's bound-session object route requires a separate object resolver.
@@ -119,8 +124,11 @@ func (r *ServeSessionReader) ResolveJournal(_ context.Context, tenant sessionwir
 		parseErr != nil || runtimeID.IsZero() || runtimeID.String() != b.RuntimeSessionID {
 		return nil, &ServeJournalBindingError{TenantID: tenant, Binding: b}
 	}
-	if err := tenant.Validate(); err != nil {
-		return nil, err
+	// Carbon serves one tenant (composeFactory pins every principal to it), and
+	// PooledLauncher would create a backend for any valid tenant it is asked
+	// about: refuse every other tenant here, before any storage is touched.
+	if tenant != r.served {
+		return nil, &ServeJournalBindingError{TenantID: tenant, Binding: b}
 	}
 	return &ServeRuntimeJournal{launcher: r.launcher, tenant: tenant, runtimeID: sessionwire.SessionID(b.RuntimeSessionID)}, nil
 }

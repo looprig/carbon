@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	sessionwire "github.com/looprig/core/sessionwire/v1"
 	"github.com/looprig/sessionstore"
 )
 
@@ -18,13 +19,18 @@ import (
 func TestServeJournalResolverRefusesAnUnservedBinding(t *testing.T) {
 	const runtimeID = "2db05411-d065-4bdc-9d19-a23d1284ffb1"
 	served := sessionstore.SessionBinding{StorageBindingID: "carbon-local-v1", BindingVersion: "v1", RuntimeSessionID: runtimeID, ProtocolMode: sessionstore.ProtocolModeDisposition}
-	reader, err := NewServeSessionReader(&sessionstore.Store{}, &PooledLauncher{}, "carbon-local-v1", "v1")
+	reader, err := NewServeSessionReader(&sessionstore.Store{}, &PooledLauncher{}, "tenant-a", "carbon-local-v1", "v1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	journal, err := reader.ResolveJournal(context.Background(), "tenant-a", served)
 	if err != nil || journal == nil {
 		t.Fatalf("served binding = %v, %v", journal, err)
+	}
+	// Only the one served tenant resolves: PooledLauncher would otherwise open
+	// a backend for any valid tenant it is asked about.
+	if other, err := reader.ResolveJournal(context.Background(), "tenant-b", served); other != nil || !errors.As(err, new(*ServeJournalBindingError)) {
+		t.Fatalf("another tenant = %v, %v; want a binding refusal", other, err)
 	}
 	// The resolved reader is bound to its runtime session and tenant.
 	for _, req := range []sessionstore.ReadPublicJournalRequest{
@@ -68,15 +74,17 @@ func TestServeSessionReaderRejectsMissingDependenciesAndObjects(t *testing.T) {
 		name        string
 		control     *sessionstore.Store
 		launcher    *PooledLauncher
+		tenant      sessionwire.TenantID
 		id, version string
 	}{
-		{"nil control", nil, &PooledLauncher{}, "binding", "v1"},
-		{"nil launcher", &sessionstore.Store{}, nil, "binding", "v1"},
-		{"empty binding ID", &sessionstore.Store{}, &PooledLauncher{}, "", "v1"},
-		{"empty binding version", &sessionstore.Store{}, &PooledLauncher{}, "binding", ""},
+		{"nil control", nil, &PooledLauncher{}, "local", "binding", "v1"},
+		{"nil launcher", &sessionstore.Store{}, nil, "local", "binding", "v1"},
+		{"invalid served tenant", &sessionstore.Store{}, &PooledLauncher{}, "", "binding", "v1"},
+		{"empty binding ID", &sessionstore.Store{}, &PooledLauncher{}, "local", "", "v1"},
+		{"empty binding version", &sessionstore.Store{}, &PooledLauncher{}, "local", "binding", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := NewServeSessionReader(tc.control, tc.launcher, tc.id, tc.version)
+			_, err := NewServeSessionReader(tc.control, tc.launcher, tc.tenant, tc.id, tc.version)
 			var configErr *ServeSessionReaderConfigError
 			if !errors.As(err, &configErr) {
 				t.Fatalf("constructor error = %v", err)
@@ -88,7 +96,7 @@ func TestServeSessionReaderRejectsMissingDependenciesAndObjects(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = storage.Close(context.Background()) }()
-	r, err := NewServeSessionReader(storage.ControlStore(), storage.Launcher(), "binding", "v1")
+	r, err := NewServeSessionReader(storage.ControlStore(), storage.Launcher(), "local", "binding", "v1")
 	if err != nil {
 		t.Fatal(err)
 	}

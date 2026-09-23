@@ -308,7 +308,7 @@ func TestServeFactoryAuthenticatesBootstrapAndProductUI(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer reopened.Close(ctx)
-	reopenedReader, err := carbon.NewServeSessionReader(reopened.ControlStore(), reopened.Launcher(), "carbon-local-v1", "v1")
+	reopenedReader, err := carbon.NewServeSessionReader(reopened.ControlStore(), reopened.Launcher(), "local", "carbon-local-v1", "v1")
 	if err != nil {
 		t.Fatal(err)
 	}

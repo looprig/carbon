@@ -20,7 +20,7 @@ func TestServeSessionReaderReadsBoundHarnessJournal(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = stores.Close(ctx) }()
-	reader, err := NewServeSessionReader(stores.ControlStore(), stores.Launcher(), "carbon-local-v1", "v1")
+	reader, err := NewServeSessionReader(stores.ControlStore(), stores.Launcher(), "tenant-a", "carbon-local-v1", "v1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +100,7 @@ func TestServeSessionReaderReadsBoundHarnessJournal(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = reopened.Close(ctx) }()
-	reopenedReader, err := NewServeSessionReader(reopened.ControlStore(), reopened.Launcher(), "carbon-local-v1", "v1")
+	reopenedReader, err := NewServeSessionReader(reopened.ControlStore(), reopened.Launcher(), "tenant-a", "carbon-local-v1", "v1")
 	if err != nil {
 		t.Fatal(err)
 	}
