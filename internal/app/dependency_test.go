@@ -155,23 +155,23 @@ func TestOrchestrationPinsAreTheReleasedOnes(t *testing.T) {
 			"the ROLLOUT RULE: every ReadGates caller must be on >= v0.12.0 BEFORE any Host publishes a gate; older readers refuse these gate pages",
 		},
 		{
-			"github.com/looprig/harness", "v0.38.0",
-			"host v0.8.x's pair: session.PersistenceFaultReporter and session.ResidencyAbandoner, which Carbon forwards as department.PersistenceFaults so a storage outage releases the session for a successor's restore (five-kind runtimecommand.Kind since v0.36.0; applied-input durability since v0.37.0; relocated workspace restore since v0.37.1). NOT v0.39.0: no released host pairs with it yet",
+			"github.com/looprig/harness", "v0.39.1",
+			"host v0.10.x's pair: public bodies carry no model base_url or physical workspace path (v0.39.1, release audit R5.2 M1); an open gate survives failover (v0.39.0); the persistence-fault capabilities Carbon forwards as department.PersistenceFaults (v0.38.0); five-kind runtimecommand.Kind (v0.36.0)",
 		},
 		{
-			"github.com/looprig/host", "v0.8.2",
-			"a faulted runtime is abandoned and restored by a successor (v0.8.0), a draining Host stops applying commands first (v0.8.1), and a lost residency grant is given up so the session can be placed again (v0.8.2); keeps v0.6.0's unstarted-close contract Carbon's browser lifecycle relies on",
+			"github.com/looprig/host", "v0.10.1",
+			"host.NewPublicJournals projects runtime session and command ids out of every body a browser sees (v0.10.0, hardened v0.10.1; release audit R5.2 H1); gate answers survive failover (v0.9.0); a faulted runtime is abandoned and restored by a successor, a draining Host stops applying commands first, a lost grant is given up (v0.8.x); keeps v0.6.0's unstarted-close contract",
 		},
 		{
-			"github.com/looprig/factory", "v0.9.0",
-			"WithJournalResolver: a Host session's journal (/journal, journal_tip, every live-tail repair) is read from its runtime under the binding's RuntimeSessionID, so viewers are repaired rather than dropped and a reconnecting browser can catch up; New refuses Carbon's composition without it. Keeps v0.7.x's ordered-drain quiescence",
+			"github.com/looprig/factory", "v0.10.0",
+			"WithSessionJournalResolver hands the resolver the public session id so Carbon can return host.NewPublicJournals' projecting reader (release audit R5.2 H1); New refuses Carbon's composition without a journal resolver (v0.9.0); keeps v0.7.x's ordered-drain quiescence",
 		},
 		{
 			"github.com/looprig/wui", "v0.2.0",
 			"the first bundle whose release marker a gating consumer accepts; v0.1.0 has no marker and v0.1.1 declares itself non-release",
 		},
 		{
-			"github.com/looprig/tools", "v0.12.0",
+			"github.com/looprig/tools", "v0.13.0",
 			// THIS ROW'S REASON WAS FALSE and is corrected rather than removed. It
 			// read "the release carrying read_tool_result, which R1.2 registers
 			// whenever a session object reader is bound" — and no released module
@@ -180,7 +180,7 @@ func TestOrchestrationPinsAreTheReleasedOnes(t *testing.T) {
 			// artifact a release is audited from, and a row whose stated reason is
 			// measurably untrue is worse than an unreasoned one, because it is the
 			// reason that gets copied forward. The real reason is the ordinary one.
-			"the current release of Carbon's tool roster (ReadFile, WriteFile, EditFile, Bash, the process tools, WebSearch, Fetch, Task, AskUser, Skill); it ships NO read_tool_result, which is why R1.2 steps 6-7 were struck",
+			"AskUser declares tool.UserInputReplaySafe, so with harness >= v0.39.0 an ask_user gate survives failover and the answer reaches the tool; the release of Carbon's tool roster (ReadFile, WriteFile, EditFile, Bash, the process tools, WebSearch, Fetch, Task, AskUser, Skill); it ships NO read_tool_result, which is why R1.2 steps 6-7 were struck",
 		},
 	} {
 		got := requiredVersion(gomod, row.module)
@@ -223,6 +223,10 @@ func TestHostAndHarnessPinsMoveTogether(t *testing.T) {
 	// harness adapter requires both of its new capabilities to bind."
 	if versionAtLeast(host, "v0.8.0") && !versionAtLeast(harnessVersion, "v0.38.0") {
 		t.Errorf("host %s with harness %s: host v0.8.0 requires harness v0.38.0's persistence-fault capabilities", host, harnessVersion)
+	}
+	// host v0.9.0/v0.10.x pair with harness v0.39.x (gate resume across failover).
+	if versionAtLeast(host, "v0.9.0") && !versionAtLeast(harnessVersion, "v0.39.0") {
+		t.Errorf("host %s with harness %s: host v0.9.0 and later pair with harness v0.39.0", host, harnessVersion)
 	}
 }
 

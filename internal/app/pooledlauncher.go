@@ -53,21 +53,42 @@ type pooledTenantStores struct {
 	durable   *sessionstore.Store
 }
 
-// readPublicJournal shares the tenant's physical backend with Harness. The
-// companion SessionStore reads its legacy envelopes without taking ownership
-// of the provider; closeOwned shuts it down before closing fsstore.
+// readPublicJournal and readRuntimeJournal share the tenant's physical backend
+// with Harness. The companion SessionStore reads its legacy envelopes without
+// taking ownership of the provider; closeOwned shuts it down before closing
+// fsstore.
 func (l *PooledLauncher) readPublicJournal(ctx context.Context, tenant sessionwire.TenantID, req sessionstore.ReadPublicJournalRequest) (sessionwire.JournalPage, error) {
+	var page sessionwire.JournalPage
+	err := l.withTenantJournal(tenant, func(store *sessionstore.Store) (err error) {
+		page, err = store.ReadPublicJournal(ctx, req)
+		return err
+	})
+	return page, err
+}
+
+func (l *PooledLauncher) readRuntimeJournal(ctx context.Context, tenant sessionwire.TenantID, req sessionstore.ReadRuntimeJournalRequest) (sessionstore.RuntimePage, error) {
+	var page sessionstore.RuntimePage
+	err := l.withTenantJournal(tenant, func(store *sessionstore.Store) (err error) {
+		page, err = store.ReadRuntimeJournal(ctx, req)
+		return err
+	})
+	return page, err
+}
+
+// withTenantJournal runs read against the tenant's companion SessionStore
+// while holding the launcher open, so Close cannot shut the store mid-read.
+func (l *PooledLauncher) withTenantJournal(tenant sessionwire.TenantID, read func(*sessionstore.Store) error) error {
 	l.mu.Lock()
 	if l.closed {
 		l.mu.Unlock()
-		return sessionwire.JournalPage{}, &StoreClosedError{}
+		return &StoreClosedError{}
 	}
 	l.active.Add(1)
 	l.mu.Unlock()
 	defer l.active.Done()
 	bundle, err := l.tenantStores(tenant)
 	if err != nil {
-		return sessionwire.JournalPage{}, err
+		return err
 	}
 	bundle.durableMu.Lock()
 	if bundle.durable == nil {
@@ -75,11 +96,12 @@ func (l *PooledLauncher) readPublicJournal(ctx context.Context, tenant sessionwi
 		backend.Blobs = newBoundedBlobs(backend.Blobs)
 		bundle.durable, err = sessionstore.Open(l.closeContext, &backend, sessionstore.WithLegacySingleTenant(tenant))
 	}
+	durable := bundle.durable
 	bundle.durableMu.Unlock()
 	if err != nil {
-		return sessionwire.JournalPage{}, err
+		return err
 	}
-	return bundle.durable.ReadPublicJournal(ctx, req)
+	return read(durable)
 }
 
 const tenantJournalDigestDomain = "looprig/carbon/tenant-journal-root/v1"

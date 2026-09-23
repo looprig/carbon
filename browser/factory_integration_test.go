@@ -332,7 +332,7 @@ func TestServeFactoryAuthenticatesBootstrapAndProductUI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtimeJournal, err := reopenedReader.ResolveJournal(ctx, "local", entry.Record.Binding)
+	runtimeJournal, err := reopenedReader.ResolveJournal(ctx, "local", create.SessionID, entry.Record.Binding)
 	if err != nil {
 		t.Fatal(err)
 	}

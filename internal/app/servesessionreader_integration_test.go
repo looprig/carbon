@@ -5,11 +5,13 @@ package app
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	sessionwire "github.com/looprig/core/sessionwire/v1"
 	"github.com/looprig/harness/pkg/journal"
+	"github.com/looprig/host"
 	"github.com/looprig/sessionstore"
 )
 
@@ -62,7 +64,7 @@ func TestServeSessionReaderReadsBoundHarnessJournal(t *testing.T) {
 	}
 	// Factory reads the catalog under the public id and hands the resolver the
 	// binding; the resolved reader is addressed by the runtime id.
-	journal, err := reader.ResolveJournal(ctx, "tenant-a", entry.Binding)
+	journal, err := reader.ResolveJournal(ctx, "tenant-a", publicID, entry.Binding)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,6 +79,11 @@ func TestServeSessionReaderReadsBoundHarnessJournal(t *testing.T) {
 	if page.NextCursor == "" {
 		t.Fatal("expected continuation cursor")
 	}
+	// PROJECTED (release audit R5.2 H1): the body names the public session id,
+	// never the runtime one the harness journal was written under.
+	if body := string(page.Events[0].Body); strings.Contains(body, runtimeID.String()) || !strings.Contains(body, string(publicID)) {
+		t.Fatalf("resolved journal body is not projected to the public session: %s", body)
+	}
 	last, err := journal.ReadPublicJournal(ctx, sessionstore.ReadPublicJournalRequest{TenantID: "tenant-a", SessionID: runtimeSession, Tail: true, Limit: 1})
 	if err != nil || len(last.Events) != 1 || last.Events[0].EventID != sessionwire.EventID(nextPublic.EventHeader().EventID.String()) {
 		t.Fatalf("tail page = %+v, err %v", last, err)
@@ -84,7 +91,7 @@ func TestServeSessionReaderReadsBoundHarnessJournal(t *testing.T) {
 	// The public id is never a runtime journal address, and the legacy half
 	// refuses a disposition-bound session outright.
 	var bindingErr *ServeJournalBindingError
-	if _, err := journal.ReadPublicJournal(ctx, sessionstore.ReadPublicJournalRequest{TenantID: "tenant-a", SessionID: publicID}); !errors.As(err, &bindingErr) {
+	if _, err := journal.ReadPublicJournal(ctx, sessionstore.ReadPublicJournalRequest{TenantID: "tenant-a", SessionID: publicID}); !errors.Is(err, host.ErrPublicJournalScope) {
 		t.Fatalf("public id through the runtime reader = %v", err)
 	}
 	if _, err := reader.ReadPublicJournal(ctx, sessionstore.ReadPublicJournalRequest{TenantID: "tenant-a", SessionID: publicID}); !errors.As(err, &bindingErr) {
@@ -104,7 +111,7 @@ func TestServeSessionReaderReadsBoundHarnessJournal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reopenedJournal, err := reopenedReader.ResolveJournal(ctx, "tenant-a", entry.Binding)
+	reopenedJournal, err := reopenedReader.ResolveJournal(ctx, "tenant-a", publicID, entry.Binding)
 	if err != nil {
 		t.Fatal(err)
 	}

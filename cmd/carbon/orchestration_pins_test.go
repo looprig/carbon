@@ -37,13 +37,16 @@ var (
 	_ = factory.New
 	_ = factory.WithPendingCommands
 	_ = factory.WithPublicCreates
-	// Factory v0.9: New refuses WithPublicCreates/WithPendingCommands without
-	// a journal resolver, so a Host session's journal is read from its runtime.
-	_ = factory.WithJournalResolver
+	// Factory v0.9/v0.10: New refuses WithPublicCreates/WithPendingCommands
+	// without a journal resolver; v0.10's hands it the public session id, which
+	// Host's projection needs (release audit R5.2 H1).
+	_ = factory.WithSessionJournalResolver
 	_ = identity.ErrUnauthorized
 
 	// Host: the composition and the Department registry R1.2 fills.
 	_ = host.Compose
+	// Host v0.10: projects runtime session and command ids out of /journal.
+	_ = host.NewPublicJournals
 	_ = department.New
 	_ = department.NewRigTarget
 	// Host v0.6: failed composition can dispose a service before Start without

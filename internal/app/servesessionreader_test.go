@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	sessionwire "github.com/looprig/core/sessionwire/v1"
+	"github.com/looprig/host"
 	"github.com/looprig/sessionstore"
 )
 
@@ -23,23 +24,34 @@ func TestServeJournalResolverRefusesAnUnservedBinding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	journal, err := reader.ResolveJournal(context.Background(), "tenant-a", served)
+	journal, err := reader.ResolveJournal(context.Background(), "tenant-a", "public-a", served)
 	if err != nil || journal == nil {
 		t.Fatalf("served binding = %v, %v", journal, err)
 	}
 	// Only the one served tenant resolves: PooledLauncher would otherwise open
 	// a backend for any valid tenant it is asked about.
-	if other, err := reader.ResolveJournal(context.Background(), "tenant-b", served); other != nil || !errors.As(err, new(*ServeJournalBindingError)) {
+	if other, err := reader.ResolveJournal(context.Background(), "tenant-b", "public-a", served); other != nil || !errors.As(err, new(*ServeJournalBindingError)) {
 		t.Fatalf("another tenant = %v, %v; want a binding refusal", other, err)
 	}
-	// The resolved reader is bound to its runtime session and tenant.
+	// The resolved (projecting) reader is bound to its runtime session and
+	// tenant, and so is the raw runtime reader beneath it.
+	raw := &serveRuntimeJournal{launcher: &PooledLauncher{}, tenant: "tenant-a", runtimeID: runtimeID}
 	for _, req := range []sessionstore.ReadPublicJournalRequest{
 		{TenantID: "tenant-a", SessionID: "public-a"},
 		{TenantID: "tenant-b", SessionID: runtimeID},
 	} {
+		if _, err := journal.ReadPublicJournal(context.Background(), req); !errors.Is(err, host.ErrPublicJournalScope) {
+			t.Fatalf("%+v: %v, want host.ErrPublicJournalScope", req, err)
+		}
 		var bindingErr *ServeJournalBindingError
-		if _, err := journal.ReadPublicJournal(context.Background(), req); !errors.As(err, &bindingErr) {
-			t.Fatalf("%+v: %v, want a binding refusal", req, err)
+		if _, err := raw.ReadPublicJournal(context.Background(), req); !errors.As(err, &bindingErr) {
+			t.Fatalf("raw public %+v: %v, want a binding refusal", req, err)
+		}
+		if _, err := raw.ReadRuntimeJournal(context.Background(), sessionstore.ReadRuntimeJournalRequest{TenantID: req.TenantID, SessionID: req.SessionID}); !errors.As(err, &bindingErr) {
+			t.Fatalf("raw runtime %+v: %v, want a binding refusal", req, err)
+		}
+		if strings.Contains(bindingErr.Error(), runtimeID) {
+			t.Fatalf("a refusal names the private runtime session id: %v", bindingErr)
 		}
 	}
 	for _, tc := range []struct {
@@ -56,10 +68,13 @@ func TestServeJournalResolverRefusesAnUnservedBinding(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			b := served
 			tc.change(&b)
-			got, err := reader.ResolveJournal(context.Background(), "tenant-a", b)
+			got, err := reader.ResolveJournal(context.Background(), "tenant-a", "public-a", b)
 			var bindingErr *ServeJournalBindingError
 			if !errors.As(err, &bindingErr) || got != nil {
 				t.Fatalf("resolve = %v, %v; want a binding refusal", got, err)
+			}
+			if b.RuntimeSessionID != "" && strings.Contains(err.Error(), b.RuntimeSessionID) {
+				t.Fatalf("a refusal names the private runtime session id: %v", err)
 			}
 		})
 	}

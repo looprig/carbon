@@ -7,6 +7,7 @@ import (
 
 	sessionwire "github.com/looprig/core/sessionwire/v1"
 	"github.com/looprig/core/uuid"
+	"github.com/looprig/host"
 	"github.com/looprig/sessionstore"
 )
 
@@ -22,6 +23,9 @@ type ServeSessionReader struct {
 	served         sessionwire.TenantID
 	bindingID      string
 	bindingVersion string
+	// journals is the ONE per-process projection cache (host v0.10.0): it keeps
+	// each session's runtime→public command mapping across reads.
+	journals *host.PublicJournals
 }
 
 type ServeSessionReaderConfigError struct{ Field string }
@@ -45,7 +49,8 @@ func NewServeSessionReader(control *sessionstore.Store, launcher *PooledLauncher
 	case bindingVersion == "":
 		return nil, &ServeSessionReaderConfigError{Field: "binding_version"}
 	}
-	return &ServeSessionReader{control: control, launcher: launcher, served: served, bindingID: bindingID, bindingVersion: bindingVersion}, nil
+	return &ServeSessionReader{control: control, launcher: launcher, served: served, bindingID: bindingID, bindingVersion: bindingVersion,
+		journals: host.NewPublicJournals(0)}, nil
 }
 
 // Factory's bound-session object route requires a separate object resolver.
@@ -71,16 +76,16 @@ var ErrServeObjectUnavailable = &ServeObjectUnavailableError{}
 // never a client one.
 type ServeJournalBindingError struct {
 	TenantID  sessionwire.TenantID
-	SessionID sessionwire.SessionID
-	Binding   sessionstore.SessionBinding
+	SessionID sessionwire.SessionID // the PUBLIC session id, when known
 }
 
+// Error never names the binding's runtime session id: it is private, and a
+// composition may surface a resolver's error text.
 func (e *ServeJournalBindingError) Error() string {
 	if e.SessionID != "" {
 		return fmt.Sprintf("carbon: session %q in tenant %q has an unsupported journal binding", e.SessionID, e.TenantID)
 	}
-	return fmt.Sprintf("carbon: runtime session %q in tenant %q has an unsupported journal binding (%q/%q, %s)",
-		e.Binding.RuntimeSessionID, e.TenantID, e.Binding.StorageBindingID, e.Binding.BindingVersion, e.Binding.ProtocolMode)
+	return fmt.Sprintf("carbon: a journal read in tenant %q names a journal this deployment does not serve", e.TenantID)
 }
 
 func (r *ServeSessionReader) ListSessions(ctx context.Context, req sessionstore.ListSessionsRequest) (sessionstore.SessionPage, error) {
@@ -109,42 +114,57 @@ func (r *ServeSessionReader) ReadPublicJournal(_ context.Context, req sessionsto
 	return sessionwire.JournalPage{}, &ServeJournalBindingError{TenantID: req.TenantID, SessionID: req.SessionID}
 }
 
-// ResolveJournal is Carbon's factory.JournalResolver: it answers the harness
-// runtime journal a Host-owned session's binding names, for that tenant.
+// ResolveJournal is Carbon's factory.SessionJournalResolver: it answers the
+// harness runtime journal a Host-owned session's binding names, PROJECTED to
+// public identities (host.PublicJournals, finding W1 / release audit R5.2 H1).
+//
+// A harness public body names the RUNTIME session id on every event and the
+// RUNTIME command id on every command-caused event; both are private. The
+// returned reader rewrites them to the public session id Factory routed the
+// read for and to the public command id the client admitted, byte-identically
+// to what the Host relays on the live tail.
 //
 // Factory has already read the catalog under the PUBLIC session id and
-// rewrites the request to the binding's RuntimeSessionID; it also wraps every
-// cursor to the public session and its binding (j1.), so the reader returned
-// here deals only in raw runtime-journal cursors. A binding this deployment
-// does not serve is REFUSED rather than defaulted, so one deployment's journal
-// is never served under another's configuration.
-func (r *ServeSessionReader) ResolveJournal(_ context.Context, tenant sessionwire.TenantID, b sessionstore.SessionBinding) (*ServeRuntimeJournal, error) {
+// addresses the request to the binding's RuntimeSessionID; it also wraps every
+// cursor to the public session and its binding (j1.). A binding or tenant this
+// deployment does not serve is REFUSED rather than defaulted, so one
+// deployment's journal is never served under another's configuration.
+func (r *ServeSessionReader) ResolveJournal(_ context.Context, tenant sessionwire.TenantID, session sessionwire.SessionID, b sessionstore.SessionBinding) (*host.PublicJournal, error) {
 	runtimeID, parseErr := uuid.Parse(b.RuntimeSessionID)
 	if b.StorageBindingID != r.bindingID || b.BindingVersion != r.bindingVersion || b.ProtocolMode != sessionstore.ProtocolModeDisposition ||
 		parseErr != nil || runtimeID.IsZero() || runtimeID.String() != b.RuntimeSessionID {
-		return nil, &ServeJournalBindingError{TenantID: tenant, Binding: b}
+		return nil, &ServeJournalBindingError{TenantID: tenant, SessionID: session}
 	}
 	// Carbon serves one tenant (composeFactory pins every principal to it), and
 	// PooledLauncher would create a backend for any valid tenant it is asked
 	// about: refuse every other tenant here, before any storage is touched.
 	if tenant != r.served {
-		return nil, &ServeJournalBindingError{TenantID: tenant, Binding: b}
+		return nil, &ServeJournalBindingError{TenantID: tenant, SessionID: session}
 	}
-	return &ServeRuntimeJournal{launcher: r.launcher, tenant: tenant, runtimeID: sessionwire.SessionID(b.RuntimeSessionID)}, nil
+	runtime := &serveRuntimeJournal{launcher: r.launcher, tenant: tenant, runtimeID: sessionwire.SessionID(b.RuntimeSessionID)}
+	return r.journals.Reader(runtime, tenant, session, b)
 }
 
-// ServeRuntimeJournal reads ONE runtime session's harness journal from the
-// tenant backend the pooled Host's harness writes it to. It is bound to that
-// runtime id and refuses a request naming any other session.
-type ServeRuntimeJournal struct {
+// serveRuntimeJournal reads ONE runtime session's harness journal, unprojected,
+// from the tenant backend the pooled Host's harness writes it to. It is bound to
+// that runtime id and refuses a request naming any other session. It is never
+// handed to Factory directly: only through host.PublicJournals.
+type serveRuntimeJournal struct {
 	launcher  *PooledLauncher
 	tenant    sessionwire.TenantID
 	runtimeID sessionwire.SessionID
 }
 
-func (j *ServeRuntimeJournal) ReadPublicJournal(ctx context.Context, req sessionstore.ReadPublicJournalRequest) (sessionwire.JournalPage, error) {
+func (j *serveRuntimeJournal) ReadPublicJournal(ctx context.Context, req sessionstore.ReadPublicJournalRequest) (sessionwire.JournalPage, error) {
 	if req.TenantID != j.tenant || req.SessionID != j.runtimeID {
-		return sessionwire.JournalPage{}, &ServeJournalBindingError{TenantID: req.TenantID, SessionID: req.SessionID}
+		return sessionwire.JournalPage{}, &ServeJournalBindingError{TenantID: req.TenantID}
 	}
 	return j.launcher.readPublicJournal(ctx, j.tenant, req)
+}
+
+func (j *serveRuntimeJournal) ReadRuntimeJournal(ctx context.Context, req sessionstore.ReadRuntimeJournalRequest) (sessionstore.RuntimePage, error) {
+	if req.TenantID != j.tenant || req.SessionID != j.runtimeID {
+		return sessionstore.RuntimePage{}, &ServeJournalBindingError{TenantID: req.TenantID}
+	}
+	return j.launcher.readRuntimeJournal(ctx, j.tenant, req)
 }
