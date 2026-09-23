@@ -260,3 +260,71 @@ func (c *faultInjectingController) CloseAttempt(ctx context.Context, closure run
 }
 
 var errInjectedPersistenceFault = errors.New("carbon test: injected persistence fault")
+
+// TestCarbonRigRefusesASessionMissingEitherPersistenceFaultsHalf is SF3: the
+// all-methods adapter hides absence from Host, so the absence is refused where
+// it can be seen — at launch — and the refused session is released without
+// being ended (an abandon when it has one, otherwise a graceful release; never
+// Shutdown, which would make the conversation terminal).
+func TestCarbonRigRefusesASessionMissingEitherPersistenceFaultsHalf(t *testing.T) {
+	t.Parallel()
+	abandonOnly, releaseOnly := &abandonerOnlyController{}, &releaserOnlyController{}
+	for _, tc := range []struct {
+		name                string
+		controller          session.SessionController
+		reporter, abandoner bool
+		disposed            func() bool
+	}{
+		{name: "neither half", controller: &closerlessController{}},
+		{name: "reporter without abandoner", controller: &reporterOnlyController{faulted: make(chan struct{})}, reporter: true},
+		{name: "abandoner without reporter", controller: abandonOnly, abandoner: true,
+			disposed: func() bool { return abandonOnly.abandons.Load() == 1 }},
+		{name: "releasable but neither half", controller: releaseOnly,
+			disposed: func() bool { return releaseOnly.releases.Load() == 1 }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := &carbonRig{launcher: launcherFunc(func(context.Context, LaunchScope) (session.SessionController, error) {
+				return tc.controller, nil
+			})}
+			got, err := rig.NewSession(context.Background(), department.RigCreateRequest{
+				TenantID: "tenant-a", SessionID: "session-a", AgentID: CarbonAgentID,
+				Placement: sessionwire.HostPlacementPooled, RigSessionID: mustUUIDForTest(t),
+			})
+			if got != nil {
+				t.Fatal("a session lacking a PersistenceFaults half was launched")
+			}
+			var missing *PersistenceFaultsMissingError
+			if !errors.As(err, &missing) || !errors.Is(err, department.ErrNoPersistenceFaults) {
+				t.Fatalf("launch = %v, want *PersistenceFaultsMissingError wrapping department.ErrNoPersistenceFaults", err)
+			}
+			if missing.Reporter != tc.reporter || missing.Abandoner != tc.abandoner {
+				t.Fatalf("refusal names reporter=%t abandoner=%t, want %t/%t", missing.Reporter, missing.Abandoner, tc.reporter, tc.abandoner)
+			}
+			if tc.disposed != nil && !tc.disposed() {
+				t.Fatal("the refused session was not released")
+			}
+		})
+	}
+}
+
+// abandonerOnlyController offers the abandon but no fault signal.
+type abandonerOnlyController struct {
+	session.SessionController
+	abandons atomic.Int32
+}
+
+func (c *abandonerOnlyController) AbandonResidency(context.Context) error {
+	c.abandons.Add(1)
+	return nil
+}
+
+// releaserOnlyController offers only a graceful release.
+type releaserOnlyController struct {
+	session.SessionController
+	releases atomic.Int32
+}
+
+func (c *releaserOnlyController) ReleaseResidency(context.Context) error {
+	c.releases.Add(1)
+	return nil
+}

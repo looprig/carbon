@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/looprig/core/content"
 	sessionwire "github.com/looprig/core/sessionwire/v1"
@@ -330,8 +331,61 @@ func (r *carbonRig) launch(ctx context.Context, scope LaunchScope) (department.R
 		// failure at the launcher that produced it.
 		return nil, department.ErrNoRigSession
 	}
+	if err := requirePersistenceFaults(controller); err != nil {
+		disposeUnsupervisable(controller)
+		return nil, err
+	}
 	return &carbonRuntime{controller: controller, scope: scope}, nil
 }
+
+// PersistenceFaultsMissingError refuses a launched session that lacks either
+// half of harness's durable-health capability.
+//
+// carbonRuntime declares department.PersistenceFaults for every session, so
+// department's wrapper always reports it available and Host cannot see an
+// absence. Without this refusal a session missing a half would silently lose
+// fault supervision, and Host's lost-grant give-up would call an abandon that
+// refuses instead of taking its bounded graceful-release fallback. Refusing at
+// launch turns a harness pin regression into a launch failure instead of a
+// wedge during an outage.
+type PersistenceFaultsMissingError struct {
+	Reporter  bool // the session offers session.PersistenceFaultReporter
+	Abandoner bool // the session offers session.ResidencyAbandoner
+}
+
+func (e *PersistenceFaultsMissingError) Error() string {
+	return fmt.Sprintf("carbon: the launched session lacks harness persistence-fault capabilities (fault reporter=%t, residency abandoner=%t)", e.Reporter, e.Abandoner)
+}
+
+// Unwrap reaches department's sentinel for a runtime that cannot be abandoned.
+func (e *PersistenceFaultsMissingError) Unwrap() error { return department.ErrNoPersistenceFaults }
+
+func requirePersistenceFaults(controller session.SessionController) error {
+	_, reports := controller.(session.PersistenceFaultReporter)
+	_, abandons := controller.(session.ResidencyAbandoner)
+	if reports && abandons {
+		return nil
+	}
+	return &PersistenceFaultsMissingError{Reporter: reports, Abandoner: abandons}
+}
+
+// disposeUnsupervisable releases a session refused at launch WITHOUT ending it:
+// Shutdown would append SessionStopped and make the conversation terminal over
+// a composition fault. A crash-equivalent abandon is preferred; failing that, a
+// bounded nonterminal release. Anything else is left to lease expiry.
+func disposeUnsupervisable(controller session.SessionController) {
+	ctx, cancel := context.WithTimeout(context.Background(), unsupervisableReleaseBound)
+	defer cancel()
+	if abandoner, ok := controller.(session.ResidencyAbandoner); ok {
+		_ = abandoner.AbandonResidency(ctx)
+		return
+	}
+	if releaser, ok := controller.(session.Releaser); ok {
+		_ = releaser.ReleaseResidency(ctx)
+	}
+}
+
+const unsupervisableReleaseBound = 30 * time.Second
 
 // carbonRuntime adapts one launched harness session to Host's department.RigSession
 // and the segregated capabilities Host discovers on it.
