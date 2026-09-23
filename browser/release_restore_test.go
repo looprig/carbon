@@ -179,9 +179,13 @@ func TestReleasedSessionKeepsHistoryWorkspaceAndPathAcrossHostGenerations(t *tes
 	if status, body := request(base, http.MethodPost, "/v1/sessions", create); status != http.StatusCreated {
 		t.Fatalf("create = %d %s", status, body)
 	}
+	// 60 s, not 15: under -race with several packages running, the first
+	// hostlink.attach can exceed its deadline, and Factory's placement sweep
+	// then retries it on its next pass. The create is durable and is placed;
+	// the bound only has to cover a retried placement, not a single attach.
 	select {
 	case <-calls:
-	case <-time.After(15 * time.Second):
+	case <-time.After(60 * time.Second):
 		t.Fatal("create never reached the model")
 	}
 	told := modelVisibleCWD(recorded(0))

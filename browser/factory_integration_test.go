@@ -287,9 +287,19 @@ func TestServeFactoryAuthenticatesBootstrapAndProductUI(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("browser's first input never reached the model")
 	}
-	journal := request("/v1/sessions/browser-session-1/journal", "test-browser-token")
-	if journal.Code != http.StatusOK || !strings.Contains(journal.Body.String(), "reply") {
-		t.Fatalf("public journal = %d %q, want model reply", journal.Code, journal.Body.String())
+	// The model REQUEST arriving does not mean the reply is journaled yet: the
+	// turn commits it afterwards. Poll the journal with a deadline rather than
+	// reading it once.
+	journalDeadline := time.Now().Add(30 * time.Second)
+	for {
+		journal := request("/v1/sessions/browser-session-1/journal", "test-browser-token")
+		if journal.Code == http.StatusOK && strings.Contains(journal.Body.String(), "reply") {
+			break
+		}
+		if time.Now().After(journalDeadline) {
+			t.Fatalf("public journal = %d %q, want model reply", journal.Code, journal.Body.String())
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 	if err := server.Stop(ctx); err != nil {
 		t.Fatal(err)
