@@ -37,6 +37,9 @@ var (
 	_ = factory.New
 	_ = factory.WithPendingCommands
 	_ = factory.WithPublicCreates
+	// Factory v0.9: New refuses WithPublicCreates/WithPendingCommands without
+	// a journal resolver, so a Host session's journal is read from its runtime.
+	_ = factory.WithJournalResolver
 	_ = identity.ErrUnauthorized
 
 	// Host: the composition and the Department registry R1.2 fills.
@@ -53,6 +56,9 @@ var (
 	// without requiring, so nothing else in a build would notice if the
 	// released module removed or re-signed it.
 	_ department.AttemptCloser
+	// Host v0.8: optional, discovered by assertion, and a product runtime MUST
+	// forward it or a storage outage wedges the session (host v0.8.1).
+	_ department.PersistenceFaults
 
 	// WUI: the embedded SPA bundle, injected at the process root.
 	_ = wui.Assets

@@ -247,6 +247,12 @@ var (
 	// — but the whole reason a composer reads that refusal is to find out what to fix.
 	ErrCarbonRuntimeCannotClose = fmt.Errorf("%w: carbon: the launched session offers no recovery closure",
 		department.ErrNoAttemptCloser)
+	// ErrCarbonRuntimeCannotAbandon WRAPS department.ErrNoPersistenceFaults, for
+	// ErrCarbonRuntimeCannotClose's reason: Host reaches this runtime through a
+	// wrapper that declares the method for every runtime, so "cannot abandon"
+	// arrives as a refusal and the sentinel is what names the missing capability.
+	ErrCarbonRuntimeCannotAbandon = fmt.Errorf("%w: carbon: the launched session offers no crash-equivalent release",
+		department.ErrNoPersistenceFaults)
 	ErrCarbonUnknownCommandKind = errors.New("carbon: this product runtime does not apply this command kind")
 	ErrCarbonNoPublications     = errors.New("carbon: the launched session cannot report committed public events")
 )
@@ -342,6 +348,17 @@ type carbonRuntime struct {
 
 var _ department.RigSession = (*carbonRuntime)(nil)
 
+// The two OPTIONAL capabilities Host discovers by type assertion. Each compiles
+// and runs without being forwarded, and each wedges a session when it is not:
+// without AttemptCloser a successor cannot free a stranded attempt (host v0.5.0),
+// and without PersistenceFaults a storage outage leaves a faulted runtime
+// resident and every command behind it pending (host v0.8.0/v0.8.1). These
+// assertions make dropping either a build failure rather than an outage.
+var (
+	_ department.AttemptCloser     = (*carbonRuntime)(nil)
+	_ department.PersistenceFaults = (*carbonRuntime)(nil)
+)
+
 // ID is harness's identity for the launched session.
 func (s *carbonRuntime) ID() uuid.UUID { return s.controller.SessionID() }
 
@@ -393,6 +410,62 @@ func (s *carbonRuntime) LeaseEpoch() (uint64, bool) {
 		return 0, false
 	}
 	return reporter.LeaseEpoch()
+}
+
+// persistenceFaults answers the launched session's durable-health capability as
+// ONE unit: harness v0.38.0's fault reporter and its crash-equivalent release.
+// Half of it is refused as none of it, because a fault Host can observe but not
+// abandon on would only move the wedge, and an abandon with no fault signal is
+// never reached by the supervisor.
+func (s *carbonRuntime) persistenceFaults() (session.PersistenceFaultReporter, session.ResidencyAbandoner, bool) {
+	reporter, reports := s.controller.(session.PersistenceFaultReporter)
+	abandoner, abandons := s.controller.(session.ResidencyAbandoner)
+	if !reports || !abandons {
+		return nil, nil, false
+	}
+	return reporter, abandoner, true
+}
+
+// PersistenceFaulted satisfies department.PersistenceFaults: the channel that
+// closes when harness latches a persistence fault (one failed journal append,
+// e.g. a storage outage). Host treats it closing as lost residency: it halts the
+// command consumer, calls AbandonResidency and releases the session so a
+// successor restores it from the journal.
+//
+// FORWARDED, NOT OPTIONAL FOR A PRODUCT (host v0.8.1). department discovers the
+// capability by assertion, so a wrapper that omitted this method would compile
+// and run, and a storage outage would then leave the session resident with every
+// command behind it pending until its apply deadline. A session that offers no
+// fault signal answers nil, which never fires: it is simply not supervised.
+func (s *carbonRuntime) PersistenceFaulted() <-chan struct{} {
+	reporter, _, ok := s.persistenceFaults()
+	if !ok {
+		return nil
+	}
+	return reporter.PersistenceFaulted()
+}
+
+// PersistenceFault satisfies department.PersistenceFaults: the latched fault,
+// or nil.
+func (s *carbonRuntime) PersistenceFault() error {
+	reporter, _, ok := s.persistenceFaults()
+	if !ok {
+		return nil
+	}
+	return reporter.PersistenceFault()
+}
+
+// AbandonResidency satisfies department.PersistenceFaults: harness's
+// crash-equivalent release. It seals the session's logs, writes nothing (no
+// SessionStopped, so the session stays restorable) and hands the journal lease
+// back. Host calls it for a faulted runtime, a stranded attempt, and (host
+// v0.8.2) a residency grant it has lost.
+func (s *carbonRuntime) AbandonResidency(ctx context.Context) error {
+	_, abandoner, ok := s.persistenceFaults()
+	if !ok {
+		return ErrCarbonRuntimeCannotAbandon
+	}
+	return abandoner.AbandonResidency(ctx)
 }
 
 // SubscribeCommitted satisfies department.PublicationSubscriber: it projects the
