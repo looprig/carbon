@@ -233,8 +233,11 @@ func (c *faultInjectingController) PersistenceFault() error {
 		return nil
 	}
 }
+
+// AbandonResidency counts an abandon only once the real one has returned, so a
+// caller that sees the count also sees the lease hand-back it performed.
 func (c *faultInjectingController) AbandonResidency(ctx context.Context) error {
-	c.abandons.Add(1)
+	defer c.abandons.Add(1)
 	return c.SessionController.(session.ResidencyAbandoner).AbandonResidency(ctx)
 }
 func (c *faultInjectingController) WaitIdle(ctx context.Context) error {
