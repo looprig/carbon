@@ -155,32 +155,32 @@ func TestOrchestrationPinsAreTheReleasedOnes(t *testing.T) {
 			"a KV key and a key beneath it coexist ('@' leaf suffixes), so a session's tool-result object index can be written beside its catalog entry; ONE-WAY: v0.6.0 refuses every pre-v0.6.0 root with ErrLegacyLayout and migrates nothing, which Carbon surfaces as LegacyDataRootError",
 		},
 		{
-			"github.com/looprig/sessionstore", "v0.12.0",
-			"the ROLLOUT RULE: every ReadGates caller must be on >= v0.12.0 BEFORE any Host publishes a gate; older readers refuse these gate pages",
+			"github.com/looprig/sessionstore", "v0.13.1",
+			"the ROLLOUT RULE: every ReadGates caller must be on >= v0.12.0 BEFORE any Host publishes a gate; older readers refuse these gate pages; v0.13.0 lets a stale gate-deadline intent on a disposition session be retired (parked) instead of refused forever; v0.13.1 is the core v0.11.0 / storage v0.7.0 re-pin harness v0.40.2, host v0.10.3 and factory v0.11.1 all require",
 		},
 		{
-			"github.com/looprig/harness", "v0.40.1",
-			"readable tool-result retention: rig.WithToolResultObjects, (*sessionstore.Store).ToolResultObjects and LookupToolResultCapture, and read_tool_result's binding (v0.40.0); Catalog.ListSessions ignores the nested object-metadata keys a capture writes, so the session browser still lists after a capture (v0.40.1); host v0.10.x's pair: public bodies carry no model base_url or physical workspace path (v0.39.1, release audit R5.2 M1); an open gate survives failover (v0.39.0); the persistence-fault capabilities Carbon forwards as department.PersistenceFaults (v0.38.0); five-kind runtimecommand.Kind (v0.36.0)",
+			"github.com/looprig/harness", "v0.40.2",
+			"the re-pin onto sessionstore v0.13.1, inference v0.13.0 and storage v0.7.0 (v0.40.2, no API change); readable tool-result retention: rig.WithToolResultObjects, (*sessionstore.Store).ToolResultObjects and LookupToolResultCapture, and read_tool_result's binding (v0.40.0); Catalog.ListSessions ignores the nested object-metadata keys a capture writes, so the session browser still lists after a capture (v0.40.1); host v0.10.x's pair: public bodies carry no model base_url or physical workspace path (v0.39.1, release audit R5.2 M1); an open gate survives failover (v0.39.0); the persistence-fault capabilities Carbon forwards as department.PersistenceFaults (v0.38.0); five-kind runtimecommand.Kind (v0.36.0)",
 		},
 		{
-			"github.com/looprig/host", "v0.10.2",
-			"harness v0.40.x's pair (v0.10.2); host.NewPublicJournals projects runtime session and command ids out of every body a browser sees (v0.10.0, hardened v0.10.1; release audit R5.2 H1); gate answers survive failover (v0.9.0); a faulted runtime is abandoned and restored by a successor, a draining Host stops applying commands first, a lost grant is given up (v0.8.x); keeps v0.6.0's unstarted-close contract",
+			"github.com/looprig/host", "v0.10.3",
+			"harness v0.40.x's pair (v0.10.2; v0.10.3 adopts harness v0.40.2 and sessionstore v0.13.1); host.NewPublicJournals projects runtime session and command ids out of every body a browser sees (v0.10.0, hardened v0.10.1; release audit R5.2 H1); gate answers survive failover (v0.9.0); a faulted runtime is abandoned and restored by a successor, a draining Host stops applying commands first, a lost grant is given up (v0.8.x); keeps v0.6.0's unstarted-close contract",
 		},
 		{
-			"github.com/looprig/factory", "v0.11.0",
-			"WithSessionObjectStoreResolver addresses a Host session's objects in its runtime scope, and an ObjectPolicy denial answers the absent-object 404 (v0.11.0); WithSessionJournalResolver hands the resolver the public session id so Carbon can return host.NewPublicJournals' projecting reader (release audit R5.2 H1); New refuses Carbon's composition without a journal resolver (v0.9.0); keeps v0.7.x's ordered-drain quiescence",
+			"github.com/looprig/factory", "v0.11.1",
+			"adopts sessionstore v0.13.1 and storage v0.7.0 with its error vocabularies re-derived unchanged (v0.11.1); WithSessionObjectStoreResolver addresses a Host session's objects in its runtime scope, and an ObjectPolicy denial answers the absent-object 404 (v0.11.0); WithSessionJournalResolver hands the resolver the public session id so Carbon can return host.NewPublicJournals' projecting reader (release audit R5.2 H1); New refuses Carbon's composition without a journal resolver (v0.9.0); keeps v0.7.x's ordered-drain quiescence",
 		},
 		{
 			"github.com/looprig/wui", "v0.3.0",
 			"the first bundle that works against a real Factory (REST binding, ClientLink handshake, gate.respond, authoritative journal tip, resume from the committed cursor); every earlier bundle is non-functional there",
 		},
 		{
-			"github.com/looprig/tools", "v0.14.0",
+			"github.com/looprig/tools", "v0.14.1",
 			// This row read "it ships NO read_tool_result, which is why R1.2 steps
 			// 6-7 were struck" until v0.14.0 shipped the tool. Steps 6-7 are now
 			// met: the pooled serve path registers read_tool_result exactly where
 			// it wires tool-result retention (internal/app/toolresults.go).
-			"read_tool_result (tools.ReadToolResultDefinition), registered on the pooled serve path where retention is wired; Bash streams its complete result into the capture sink and declares its capture safety; AskUser declares tool.UserInputReplaySafe (v0.13.0), so an ask_user gate survives failover",
+			"read_tool_result (tools.ReadToolResultDefinition, v0.14.0; v0.14.1 re-pins onto harness v0.40.2), registered on the pooled serve path where retention is wired; Bash streams its complete result into the capture sink and declares its capture safety; AskUser declares tool.UserInputReplaySafe (v0.13.0), so an ask_user gate survives failover",
 		},
 	} {
 		got := requiredVersion(gomod, row.module)
