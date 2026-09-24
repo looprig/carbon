@@ -1,9 +1,53 @@
 # Carbon
 
-Carbon is Looprig's coding agent product. The CLI supports an interactive TUI and
-headless use. Its browser composition uses Factory's public API and ClientLink,
-one local pooled Host, and a shared filesystem SessionStore. The browser path is
-on `main`; check the published Carbon tag before relying on it as a release.
+Carbon is Looprig's coding agent product: one fixed `carbon` agent assembled
+from the Looprig modules (harness runtime, tools, sandbox, model providers, MCP
+and ACP delegation). The `carbon` binary runs it as an interactive TUI (the
+same assembly also has a headless construction path), and `browser` composes it behind Factory's public API and ClientLink
+with one local pooled Host, a shared filesystem SessionStore and the `wui`
+browser bundle. Both paths are released.
+
+## Install
+
+```sh
+make install        # builds bin/carbon and installs it as ~/.looprig/bin/carbon
+```
+
+or `go install github.com/looprig/carbon/cmd/carbon@latest`. Re-run the install
+after pulling or upgrading: a source change has no effect on an installed binary.
+
+Models and any inline provider keys live in the owner-only
+`~/.looprig/carbon/models.json`. Credentials are managed with
+`carbon credentials list`, `carbon login <provider>` and
+`carbon logout credential://provider/name` (see
+[docs/credentials-lifecycle.md](docs/credentials-lifecycle.md)).
+
+## Command line
+
+| Invocation | Effect |
+|---|---|
+| `carbon` | start a new TUI session in the current workspace |
+| `carbon --list` | list resumable sessions and exit |
+| `carbon --resume <uuid>` | resume a session |
+| `--data-dir <dir>` | session store root (default `~/.looprig/carbon/store`) |
+| `--access-profile readonly\|trusted\|unconfined` | session access profile (default `trusted`); `unconfined` also requires `--acknowledge-unconfined` because it runs commands on the host with no OS confinement |
+| `carbon serve [--addr host:port]` | browser serve; the stock binary refuses (see below) |
+
+## Layout
+
+- `cmd/carbon` — the binary: TUI and headless composition root, `serve` entry.
+- `browser` — `browser.Start`/`browser.Config`: Carbon's public Factory surface
+  over a local pooled Host, for an embedding application that supplies
+  credentials and browser policy.
+- `examples/local-browser` — `localbrowser.NewConfig`, a one-process Factory +
+  pooled Host configuration (see its README).
+- `internal/app`, `internal/catalog` — product assembly, model configuration,
+  access profiles, and the one `carbon` agent identity and prompt.
+
+Carbon sits at tier 6. Its direct Looprig dependencies are acp, classifiers,
+core, credentials, factory, foreignloops, fsstore, harness, host, inference,
+llm, mcp, sandbox, secrets, sessionstore, storage, tools, tui and wui, all as
+published modules (no `replace`).
 
 ## Browser composition
 
@@ -125,3 +169,19 @@ dashboard or deployment manifest for them.
 The compatibility `harness/pkg/serve` and `wui.Handler` path remains for other
 published consumers. Carbon's browser runtime uses Factory and `wui.Assets()`;
 its TUI and headless paths do not require a Factory connection.
+
+## Development
+
+The Go baseline is 1.26.8. Verify standalone against the pinned modules:
+
+```sh
+GOWORK=off go test ./...
+make check              # gofmt, vet, staticcheck, gosec, govulncheck, tests, build
+make test-integration   # -tags integration: process, filesystem and durable-storage boundaries
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the placement and security rules.
+
+## License
+
+Apache License 2.0; see [LICENSE](LICENSE).

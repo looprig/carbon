@@ -66,8 +66,9 @@ stopped root as a unit; Carbon has no legacy-to-tenant layout migrator.
 Graceful shutdown must quiesce Factory, let accepted work settle, drain the
 Host, and close storage through `server.Stop`. Check `cfg.EffectiveShutdownPolicy()`
 when assigning a process supervisor's termination budget. A browser reconnect
-can recover missed public events from the durable journal. This example does
-not supply session objects, large-tool-result capture, or cold AskUser resume.
+can recover missed public events from the durable journal. Because it goes
+through `browser.Start`, it inherits browser serve's large-tool-result
+retention and object route; it does not supply cold AskUser resume.
 
 The repository's `go.mod` pins released external Looprig modules and contains
 no local `replace`. Verify with:
