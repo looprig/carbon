@@ -91,7 +91,9 @@ backend (fsstore v0.6.0) changed its on-disk layout and does not migrate: a data
 directory written by an earlier Carbon, whether the TUI/headless store or a
 browser root, is refused at startup with a message naming the directory. Move or
 delete it (pre-v0.6.0 data is not migrated); Carbon creates a fresh one on the
-next start. The change is one-way: an older Carbon cannot read a new directory.
+next start. The change is one-way: an older Carbon does not refuse a new directory, it
+silently misreads it (sees no data and writes old-layout files into it). Never
+point an older Carbon at a new directory.
 
 Back up a stopped, consistent browser data root, including its layout marker,
 control records, tenant journals, and `session-workspaces/` tree. Also back up

@@ -327,8 +327,9 @@ an earlier Carbon (the TUI/headless store, the browser control root, and each
 `tenant-journals/` root) is refused at open with `LegacyDataRootError`, which
 names the directory and says to move or delete it. A refused tenant root is a
 permanent error for that tenant, never retried as transient. Do not roll a data
-directory back to an older Carbon either: fsstore <= v0.5.x cannot read a v0.6.0
-root.
+directory back to an older Carbon either: fsstore <= v0.5.x does not refuse a v0.6.0
+root; it silently misreads it (sees no data, then writes old-layout leaves that
+v0.6.0 will refuse as legacy).
 
 ## Collaboration MessageAgent support
 
