@@ -301,11 +301,34 @@ root, hashed `tenant-journals/` roots, layout marker, and its
 `session-workspaces/` tree together. TUI/headless may use separate workspace
 roots; browser serve has no legacy-layout migrator.
 
-Factory's object resolver deliberately reports unavailable. Carbon has no
-SessionObjectStore, object-serving route, large-tool-result capture wiring, or
-`read_tool_result` tool. Resident gate answers work, but cold AskUser
-continuation does not. Do not infer object serving from SessionStore's legacy
-`PutObject` API or infer durable AskUser continuation from gate projection.
+Browser serve retains large tool output (I2.2). `internal/app/toolresults.go`
+wires `rig.WithToolResultObjects` over each tenant's own harness journal store
+and registers `read_tool_result` in the same value, so the reader exists exactly
+where capture is wired; TUI and headless wire neither. `browser/factory.go`
+composes Factory's object route from `browser/internal/toolresultobjects`: an
+`ObjectPolicy` that grants a tool-result object only on a committed `StepDone`
+in that session's runtime journal (every denial wraps `identity.ErrUnauthorized`
+and answers the absent-object 404; a store fault stays 500), behind a
+per-principal and per-session evidence-scan limiter (a throttled read is 500,
+never 404), plus the session-aware resolver and the D7 check that the 8 MiB
+capture ceiling fits Factory's 64 MiB verification ceiling (composition fails
+otherwise). Known limit (tests gate A3): a Factory that has not cached a capture
+scans at most 65,536 journal records back, so an older capture answers 404
+although it exists. Carbon's Bash runs through a sandbox runner and declares
+itself materialized + high output, which is safe only under harness's finite
+32 MiB materialized maximum; that is why the Department declares
+`CaptureSafetyBoundedMaterialized`. Resident gate answers work, but cold AskUser
+continuation does not; do not infer durable AskUser continuation from gate
+projection.
+
+**Data directories are a one-way break at fsstore v0.6.0.** fsstore v0.6.0
+changed its on-disk layout and migrates nothing: every data directory written by
+an earlier Carbon (the TUI/headless store, the browser control root, and each
+`tenant-journals/` root) is refused at open with `LegacyDataRootError`, which
+names the directory and says to move or delete it. A refused tenant root is a
+permanent error for that tenant, never retried as transient. Do not roll a data
+directory back to an older Carbon either: fsstore <= v0.5.x cannot read a v0.6.0
+root.
 
 ## Collaboration MessageAgent support
 

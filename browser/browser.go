@@ -448,3 +448,9 @@ type LegacyLayoutRefusedError = carbon.ServeLegacyCompatibilityError
 // returned before any tenant journal, workspace or runtime is created; nothing
 // is migrated or adopted, and the TUI/headless path still opens that root.
 type StoreLayoutMismatchError = carbon.ServeStoreLayoutMismatchError
+
+// LegacyDataRootError is Start's refusal of a data directory written before
+// fsstore v0.6.0 (any Carbon before v0.29.0). The layout changed with no
+// migration: the error names the directory, which must be moved or deleted.
+// It matches fsstore.ErrLegacyLayout with errors.Is.
+type LegacyDataRootError = carbon.LegacyDataRootError

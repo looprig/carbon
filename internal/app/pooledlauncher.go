@@ -28,6 +28,7 @@ import (
 type PooledLauncher struct {
 	mu            sync.Mutex
 	dataDir       string
+	spillBase     string
 	cfg           Config
 	options       serveHostConfig
 	tenants       map[sessionwire.TenantID]*pooledTenantStores
@@ -229,8 +230,12 @@ func OpenPooledLauncher(_ context.Context, cfg Config, dataDir string, opts ...S
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return nil, &StoreInitError{Stage: "data-root", Cause: err}
 	}
+	spillBase, err := prepareToolResultSpillBase(dataDir)
+	if err != nil {
+		return nil, err
+	}
 	closeContext, closeCancel := context.WithCancel(context.Background())
-	return &PooledLauncher{dataDir: dataDir, cfg: cfg, options: options, tenants: make(map[sessionwire.TenantID]*pooledTenantStores), live: make(map[uuid.UUID]*pooledSession), reserved: make(map[uuid.UUID]struct{}), closeDone: make(chan struct{}), closeContext: closeContext, closeCancel: closeCancel}, nil
+	return &PooledLauncher{dataDir: dataDir, spillBase: spillBase, cfg: cfg, options: options, tenants: make(map[sessionwire.TenantID]*pooledTenantStores), live: make(map[uuid.UUID]*pooledSession), reserved: make(map[uuid.UUID]struct{}), closeDone: make(chan struct{}), closeContext: closeContext, closeCancel: closeCancel}, nil
 }
 
 var _ SessionLauncher = (*PooledLauncher)(nil)
@@ -290,9 +295,9 @@ func (l *PooledLauncher) tenantStores(tenant sessionwire.TenantID) (*pooledTenan
 	l.mu.Unlock()
 	sum := sha256.Sum256([]byte(tenantJournalDigestDomain + "\x00" + string(tenant)))
 	root := filepath.Join(l.dataDir, "tenant-journals", hex.EncodeToString(sum[:]))
-	fs, err := fsstore.Open(fsstore.Options{Root: root})
+	fs, err := openFSStore("tenant-fsstore", root)
 	if err != nil {
-		bundle.err = &StoreInitError{Stage: "tenant-fsstore", Cause: err}
+		bundle.err = err
 	} else {
 		stores, openErr := openTenantStores(fs.Backend(), tenant)
 		if openErr != nil {
@@ -300,11 +305,18 @@ func (l *PooledLauncher) tenantStores(tenant sessionwire.TenantID) (*pooledTenan
 			bundle.err = openErr
 		} else {
 			stores.resourceStorage = newPersistedResourceStorageProvider(root)
+			// Captures land in THIS tenant's journal store, beside the journal
+			// whose StepDone references them (the evidence Factory's object
+			// policy reads).
+			stores.toolResults = &toolResultRetention{objects: stores.session.ToolResultObjects(), spillBase: l.spillBase}
 			bundle.fs, bundle.stores = fs, stores
 		}
 	}
 	l.mu.Lock()
-	if bundle.err != nil {
+	// An ordinary failure is dropped so the next call reopens. A pre-v0.6.0
+	// root is kept: that refusal is permanent, and retrying it would only
+	// re-scan a root the user must move or delete.
+	if bundle.err != nil && !isLegacyDataRoot(bundle.err) {
 		delete(l.tenants, tenant)
 	}
 	close(bundle.ready)
@@ -413,7 +425,7 @@ func (l *PooledLauncher) Launch(ctx context.Context, scope LaunchScope) (session
 			return fail(&PooledCompatibilityDriftError{Prepared: advertised, Current: current})
 		}
 	}
-	definition, err := carbonDefinition(client, factory(), cfg, access, nil)
+	definition, err := carbonDefinition(client, factory(), cfg, access, bundle.stores.toolResults.toolDefinitions())
 	if err != nil {
 		return fail(err)
 	}
@@ -578,6 +590,9 @@ func (l *PooledLauncher) closeOwned() {
 			if err := bundle.durable.Close(context.Background()); err != nil && first == nil {
 				first = err
 			}
+		}
+		if bundle.fs == nil {
+			continue // a permanently refused (pre-v0.6.0) tenant root opened nothing
 		}
 		if err := bundle.fs.Close(); err != nil && first == nil {
 			first = err

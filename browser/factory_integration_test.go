@@ -262,9 +262,11 @@ func TestServeFactoryAuthenticatesBootstrapAndProductUI(t *testing.T) {
 	if response.Code != http.StatusCreated {
 		t.Fatalf("browser create = %d %q, want 201", response.Code, response.Body.String())
 	}
+	// The object route is composed (I2.2): a reference no committed step names
+	// is the absent-object 404, never a 503 "unavailable".
 	object := request("/v1/sessions/browser-session-1/objects/object-1", "test-browser-token")
-	if object.Code != http.StatusServiceUnavailable {
-		t.Fatalf("unsupported object route = %d %q, want explicit unavailable", object.Code, object.Body.String())
+	if object.Code != http.StatusNotFound {
+		t.Fatalf("unknown object = %d %q, want the absent-object 404", object.Code, object.Body.String())
 	}
 	deadline := time.Now().Add(30 * time.Second)
 	for {

@@ -7,6 +7,7 @@ import (
 
 	sessionwire "github.com/looprig/core/sessionwire/v1"
 	"github.com/looprig/core/uuid"
+	harnessstore "github.com/looprig/harness/pkg/sessionstore"
 	"github.com/looprig/host"
 	"github.com/looprig/sessionstore"
 )
@@ -53,9 +54,10 @@ func NewServeSessionReader(control *sessionstore.Store, launcher *PooledLauncher
 		journals: host.NewPublicJournals(0)}, nil
 }
 
-// Factory's bound-session object route requires a separate object resolver.
-// Carbon has no such product backend yet, so this read plane never exposes
-// control-store objects through the unbound fallback.
+// ServeObjectUnavailableError answers the UNBOUND object fallback. Every Carbon
+// serve session is disposition bound, and its objects are read through the
+// session-aware resolver (RuntimeObjects, composed in browser/factory.go); this
+// read plane never exposes control-store objects.
 type ServeObjectUnavailableError struct{}
 
 func (*ServeObjectUnavailableError) Error() string {
@@ -167,4 +169,87 @@ func (j *serveRuntimeJournal) ReadRuntimeJournal(ctx context.Context, req sessio
 		return sessionstore.RuntimePage{}, &ServeJournalBindingError{TenantID: req.TenantID}
 	}
 	return j.launcher.readRuntimeJournal(ctx, j.tenant, req)
+}
+
+// ServeObjectScopeError refuses an object read the served runtime store does
+// not answer: another tenant, or a kind other than a tool-result capture.
+// Factory answers it 500; it is a composition fault, never a client one. It
+// never names a runtime session id.
+type ServeObjectScopeError struct {
+	TenantID sessionwire.TenantID
+	Kind     sessionstore.ObjectKind
+}
+
+func (e *ServeObjectScopeError) Error() string {
+	return fmt.Sprintf("carbon: an object read in tenant %q of kind %q is outside the served tool-result scope", e.TenantID, e.Kind)
+}
+
+// RuntimeEvidence answers the served tenant's harness runtime store: the SAME
+// store its rigs journal into and retain tool-result objects through, so the
+// object policy's committed-journal evidence (LookupToolResultCapture) and its
+// positive cache are the runtime's own. Every other tenant is refused before
+// any backend is opened.
+func (r *ServeSessionReader) RuntimeEvidence(tenant sessionwire.TenantID) (*harnessstore.Store, bool) {
+	if tenant != r.served {
+		return nil, false
+	}
+	store, err := r.launcher.JournalStoreForTenant(tenant)
+	if err != nil || store == nil {
+		return nil, false
+	}
+	return store, true
+}
+
+// RuntimeObjects answers the served tenant's runtime object reader for
+// Factory's session-aware object resolver. Factory addresses every request to
+// the binding's RuntimeSessionID after the object policy has found committed
+// evidence for the reference in that session's journal.
+func (r *ServeSessionReader) RuntimeObjects(tenant sessionwire.TenantID) (*ServeRuntimeObjects, bool) {
+	if tenant != r.served {
+		return nil, false
+	}
+	return &ServeRuntimeObjects{launcher: r.launcher, tenant: tenant}, true
+}
+
+// ServeRuntimeObjects reads tool-result objects from ONE tenant's harness
+// runtime backend, through the same companion SessionStore the journal reads
+// use (legacy single-tenant layout, bounded blob readers). It refuses any other
+// tenant and any other object kind.
+type ServeRuntimeObjects struct {
+	launcher *PooledLauncher
+	tenant   sessionwire.TenantID
+}
+
+func (o *ServeRuntimeObjects) scope(tenant sessionwire.TenantID, kind sessionstore.ObjectKind) error {
+	if tenant != o.tenant || kind != sessionstore.ObjectKindToolResult {
+		return &ServeObjectScopeError{TenantID: tenant, Kind: kind}
+	}
+	return nil
+}
+
+func (o *ServeRuntimeObjects) GetObjectMetadata(ctx context.Context, req sessionstore.GetObjectMetadataRequest) (sessionwire.ObjectMetadata, error) {
+	if err := o.scope(req.TenantID, req.ExpectedKind); err != nil {
+		return sessionwire.ObjectMetadata{}, err
+	}
+	var metadata sessionwire.ObjectMetadata
+	err := o.launcher.withTenantJournal(o.tenant, func(store *sessionstore.Store) (err error) {
+		metadata, err = store.GetObjectMetadata(ctx, req)
+		return err
+	})
+	return metadata, err
+}
+
+func (o *ServeRuntimeObjects) GetObject(ctx context.Context, req sessionstore.GetObjectRequest) (io.ReadCloser, error) {
+	if err := o.scope(req.TenantID, req.ExpectedKind); err != nil {
+		return nil, err
+	}
+	var stream io.ReadCloser
+	err := o.launcher.withTenantJournal(o.tenant, func(store *sessionstore.Store) (err error) {
+		stream, err = store.GetObject(ctx, req)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return stream, nil
 }

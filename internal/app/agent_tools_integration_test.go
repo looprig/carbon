@@ -534,62 +534,47 @@ func TestAssembledStartAgentACPFailureUsesSafeDetail(t *testing.T) {
 	}
 }
 
-// ---- R1.2 step 7: the capture/truncation roster guard ----------------------
+// ---- R1.2 steps 6-7: the reader is registered exactly where capture is wired ----
 
-// resultReaderToolName is the tool a truncated or captured tool result would tell
-// the model to call in order to read the rest. It is named here as a STRING rather
-// than imported because no released module ships it: see the test below.
-const resultReaderToolName = "read_tool_result"
-
-// TestCarbonAdvertisesNoUnregisteredResultReader is runbook 08 R1.2 step 7 in the
-// only shape that is honest against today's released modules.
+// TestCarbonRegistersTheResultReaderExactlyWhereRetentionIsWired is runbook 08
+// R1.2 steps 6-7, now that tools v0.14.0 ships read_tool_result.
 //
-// Step 7 asks for a roster test proving every model-visible capture/truncation
-// marker names an actually registered `read_tool_result`, and step 6 asks Carbon to
-// register that tool whenever a per-session SessionObjectStore reader is bound.
-// NEITHER IS EXECUTABLE: tools v0.12.0 ships no `read_tool_result` definition, and
-// neither does any other released module. The tool does not exist, so there is
-// nothing to register and no marker that could name it.
-//
-// What IS assertable is the rule step 6 states from the other side — "a composition
-// without object capture does not advertise a broken reader" — and this holds both
-// halves of it: the roster registers no such tool, and no production file in this
-// package so much as names one. The second half is what makes it non-vacuous: the
-// moment somebody writes the marker text without the registration, this fails.
-func TestCarbonAdvertisesNoUnregisteredResultReader(t *testing.T) {
+// A retention marker names read_tool_result only when the loop has the reader
+// bound (harness v0.40.0), and harness refuses to define a loop with the reader
+// and no objects, so the one property Carbon owns is the COUPLING: the reader
+// definition and the capture wiring are produced by one value
+// (toolResultRetention), in one file, and nowhere else. The base roster (TUI and
+// headless) registers neither. The positive end-to-end proof -- the marker names
+// read_tool_result and the model pages the bytes back -- is
+// browser.TestBrowserServesRetainedToolOutputOnlyToItsSession.
+func TestCarbonRegistersTheResultReaderExactlyWhereRetentionIsWired(t *testing.T) {
 	t.Parallel()
 
 	set := mustExecutorSet(t, t.TempDir())
 	for _, def := range carbonToolDefinitions(set, nil, nil) {
-		if def.Name() == resultReaderToolName {
-			t.Fatalf("carbon registers %q; this guard was written for a roster that does not, and must be replaced by the positive test step 7 asks for",
-				resultReaderToolName)
+		if def.Name() == loop.ReadToolResultToolName {
+			t.Fatalf("the base roster registers %q; it has no capture wired", loop.ReadToolResultToolName)
 		}
 	}
-
-	offenders, err := carbonSourceOffenders(resultReaderToolName)
-	if err != nil {
-		t.Fatalf("scan: %v", err)
-	}
-	for _, path := range offenders {
-		t.Errorf("%s names %q, which no Carbon session registers; a composition without object capture must not advertise a reader that is not there",
-			path, resultReaderToolName)
+	for _, call := range []struct{ pkg, name string }{
+		{"rig", "WithToolResultObjects"},
+		{"tools", "ReadToolResultDefinition"},
+	} {
+		offenders, err := carbonCallOffenders(call.pkg, call.name)
+		if err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		if len(offenders) != 1 || filepath.ToSlash(offenders[0]) != "../../internal/app/toolresults.go" {
+			t.Errorf("%s.%s is called from %v, want exactly internal/app/toolresults.go, where the reader and the capture wiring are one value",
+				call.pkg, call.name, offenders)
+		}
 	}
 }
 
-// TestCarbonWiresNoToolResultCapture is the other half of the coupling above, and it
-// is a SOURCE assertion on purpose.
-//
-// The property it holds is an absence, and an absence cannot be observed from a
-// built rig: rig.Define exposes no accessor for the capture wiring, so a test that
-// tried to assert it from a value would have to assert something else instead and
-// would drift from the thing it claims. Scanning for the call is exact.
-//
-// When this test fails, it is NOT a regression. It means Carbon has gained durable
-// tool-result capture, and the correct response is to delete this test and write the
-// positive one step 6 and step 7 describe: register the reader whenever the
-// per-session object store is bound, and prove every truncation marker names it.
-func TestCarbonWiresNoToolResultCapture(t *testing.T) {
+// TestCarbonWiresNoUnreadableToolResultCapture: rig.WithToolResultCapture is the
+// deprecated path whose captures carry a harness-minted identity no store can
+// resolve, so nothing Carbon retains that way could ever be read back.
+func TestCarbonWiresNoUnreadableToolResultCapture(t *testing.T) {
 	t.Parallel()
 
 	offenders, err := carbonCallOffenders("rig", "WithToolResultCapture")
@@ -597,22 +582,8 @@ func TestCarbonWiresNoToolResultCapture(t *testing.T) {
 		t.Fatalf("scan: %v", err)
 	}
 	for _, path := range offenders {
-		t.Errorf("%s wires rig.WithToolResultCapture; Carbon now captures tool results, so it owes a registered %q and the roster test that names it (runbook 08 R1.2 steps 6-7)",
-			path, resultReaderToolName)
+		t.Errorf("%s wires the deprecated rig.WithToolResultCapture, whose captures are unreadable; use rig.WithToolResultObjects", path)
 	}
-}
-
-// carbonSourceOffenders reports every non-test .go file in the MODULE that mentions
-// needle, as a list of module-relative paths.
-//
-// THE SCOPE IS THE MODULE AND NOT THIS PACKAGE, and that is the whole difference
-// between a tripwire and a decoration. An earlier version read os.ReadDir(".") —
-// internal/app alone — and therefore could not see cmd/carbon, which is exactly where
-// R1.3 composes the rig and where rig.WithToolResultCapture would most naturally be
-// wired. A guard that cannot see the place the thing will be written is a guard that
-// stays green through the event it exists to catch.
-func carbonSourceOffenders(needle string) ([]string, error) {
-	return carbonSourceOffendersUnder(carbonModuleRoot(), needle)
 }
 
 // carbonModuleRoot is the ONE place the guards' scan root is written.
@@ -623,8 +594,10 @@ func carbonSourceOffenders(needle string) ([]string, error) {
 func carbonModuleRoot() string { return filepath.Join("..", "..") }
 
 // carbonSourceOffendersUnder is the scanner proper, taking its root so it can be
-// falsified against a tree a test builds. carbonSourceOffenders has no falsifier of
-// its own precisely because its root is fixed; this one does.
+// falsified against a tree a test builds. Its scope is the MODULE and not this
+// package: an earlier version read internal/app alone and so could not see
+// cmd/carbon, and a guard that cannot see where the thing will be written stays
+// green through the event it exists to catch.
 func carbonSourceOffendersUnder(root, needle string) ([]string, error) {
 	var offenders []string
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {

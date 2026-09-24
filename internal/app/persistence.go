@@ -93,6 +93,10 @@ type sessionStores struct {
 	// only a topology with a scoped, process-free tool subset can still
 	// legitimately leave it nil.
 	resourceStorage rig.SessionResourceStorageProvider
+	// toolResults is readable tool-result retention over THIS backend's session
+	// store (toolresults.go). Only the pooled serve path sets it; nil wires
+	// neither capture nor read_tool_result.
+	toolResults *toolResultRetention
 }
 
 // openStores wires the session + workspace facades and the listing catalog over one backend
@@ -383,6 +387,7 @@ func buildRigWithRegistrationAndACP(definition loop.Definition, stores *sessionS
 			options = append(options, rig.WithForeignBuilders(acpChildren.Live, acpChildren.Restored))
 		}
 	}
+	options = append(options, stores.toolResults.rigOptions()...)
 	options = append(options, registration.options()...)
 	options = append(options, permissionReview.options()...)
 	if allowMismatch {
@@ -466,9 +471,9 @@ func (f *SessionStoreFactory) ensureStoresLocked() (*sessionStores, error) {
 	if f.stores != nil {
 		return f.stores, nil
 	}
-	fs, err := fsstore.Open(fsstore.Options{Root: f.dataDir})
+	fs, err := openFSStore("fsstore", f.dataDir)
 	if err != nil {
-		return nil, &StoreInitError{Stage: "fsstore", Cause: err}
+		return nil, err
 	}
 	stores, err := openStores(fs.Backend())
 	if err != nil {

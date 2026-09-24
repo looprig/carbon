@@ -109,9 +109,9 @@ func OpenServeStorage(ctx context.Context, cfg Config, selected ServeStorageConf
 	if layout == ServeStoreLayoutLegacySingleTenant {
 		return nil, &ServeLegacyCompatibilityError{}
 	}
-	fs, err := fsstore.Open(fsstore.Options{Root: selected.DataDir})
+	fs, err := openFSStore("control-fsstore", selected.DataDir)
 	if err != nil {
-		return nil, &StoreInitError{Stage: "control-fsstore", Cause: err}
+		return nil, err
 	}
 	backend := *fs.Backend()
 	backend.Blobs = newBoundedBlobs(backend.Blobs)

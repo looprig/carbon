@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/looprig/carbon/browser/internal/toolresultobjects"
 	carbon "github.com/looprig/carbon/internal/app"
 	sessionwire "github.com/looprig/core/sessionwire/v1"
 	"github.com/looprig/factory"
@@ -104,11 +105,13 @@ func composeFactory(stores *carbon.ServeStorage, localHost *carbon.ServePooledHo
 		factory.WithHostLinkCredential(staticServeHostLinkCredential(cfg.HostLinkToken)),
 		factory.WithServiceIdentity(serviceIdentity), factory.WithReplicaID(cfg.ReplicaID),
 		factory.WithSessionBinding(cfg.StorageBindingID, cfg.BindingVersion),
-		factory.WithObjectStoreResolver(func(context.Context, sessionstore.SessionBinding) (factory.ObjectReader, error) {
-			return nil, carbon.ErrServeObjectUnavailable
-		}),
 		factory.WithUIHandler(wui.Assets()),
 	}
+	objectOptions, err := toolResultObjectOptions(reader, cfg)
+	if err != nil {
+		return nil, err
+	}
+	opts = append(opts, objectOptions...)
 	opts = append(opts, factory.WithUIRoutes(cfg.UIRoutes, cfg.AuthorizeUI))
 	if cfg.ReconcileLimits != (factory.ReconcileLimits{}) {
 		opts = append(opts, factory.WithReconcileLimits(cfg.ReconcileLimits))
@@ -117,6 +120,42 @@ func composeFactory(stores *carbon.ServeStorage, localHost *carbon.ServePooledHo
 		opts = append(opts, factory.WithClientLinkLimits(cfg.ClientLinkLimits))
 	}
 	return factory.New(opts...)
+}
+
+// toolResultObjectOptions composes Factory's object route over the local Host's
+// retained tool output (I2.2): an ObjectPolicy that grants a tool-result
+// object only on committed evidence in that session's runtime journal, behind
+// a per-principal and per-session evidence-scan limiter, and the session-aware
+// resolver that reads the runtime's own store. The runtime's declared capture
+// ceiling is checked against Factory's verification ceiling first (D7): a
+// ceiling Factory could never serve fails composition, not every read.
+func toolResultObjectOptions(reader *carbon.ServeSessionReader, cfg FactoryConfig) ([]factory.Option, error) {
+	return toolresultobjects.FactoryOptions(toolResultObjectConfig(reader, cfg))
+}
+
+// toolResultObjectConfig answers evidence and objects for the served tenant
+// only; the reader refuses every other tenant before any backend is opened.
+func toolResultObjectConfig(reader *carbon.ServeSessionReader, cfg FactoryConfig) toolresultobjects.Config {
+	return toolresultobjects.Config{
+		Binding: toolresultobjects.Binding{StorageBindingID: cfg.StorageBindingID, BindingVersion: cfg.BindingVersion},
+		Evidence: func(tenant sessionwire.TenantID) (toolresultobjects.Evidence, bool) {
+			store, ok := reader.RuntimeEvidence(tenant)
+			if !ok {
+				return nil, false // never a typed-nil Evidence
+			}
+			return store, true
+		},
+		Objects: func(tenant sessionwire.TenantID) (factory.ObjectReader, bool) {
+			objects, ok := reader.RuntimeObjects(tenant)
+			if !ok {
+				return nil, false // never a typed-nil reader
+			}
+			return objects, true
+		},
+		CaptureBytes: carbon.ServeToolResultCaptureBytes(),
+		Limits:       factory.DefaultObjectLimits(),
+		RateLimit:    toolresultobjects.DefaultRateLimit(),
+	}
 }
 
 func validateFactoryConfig(cfg FactoryConfig) error {

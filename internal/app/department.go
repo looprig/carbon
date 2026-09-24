@@ -152,9 +152,9 @@ func carbonCapabilities() department.Capabilities {
 //
 // Step 3 requires every session-dependent binding to stay per-session in pooled mode.
 // PooledLauncher constructs the access evaluator, gate, workspace, process
-// supervisor, credential admission and MCP manager within each Launch. Carbon
-// does not yet capture session objects, so an object prefix will be added only
-// together with its writer and reader.
+// supervisor, credential admission and MCP manager within each Launch. Tool-result
+// objects are scoped without a prefix field: they land in the tenant's own journal
+// backend, under the runtime session id (see the note on ObjectNamespace below).
 //
 // So this type exists to make the per-session context EXPRESSIBLE. A launcher that
 // ignored it and reused one process-wide binding would compile perfectly and would
@@ -180,10 +180,11 @@ type LaunchScope struct {
 	// tenant's objects under one un-namespaced prefix with this struct apparently
 	// saying otherwise.
 	//
-	// Carbon captures no objects at all today (it wires no rig.WithToolResultCapture),
-	// so there is nothing to scope. The field belongs with the code that scopes
-	// something, which is R1.3's per-session-root launcher, and it should be added
-	// there together with its reader.
+	// Carbon now captures tool-result objects (toolresults.go), and still needs no
+	// such field: each capture is written through the tenant's OWN harness journal
+	// store -- a separate backend per tenant (PooledLauncher.tenantStores) -- under the
+	// runtime session id harness supplies, so tenant and session scoping come from
+	// the store and the session, not from a prefix a launcher could forget to apply.
 
 	// RigSessionID is HARNESS'S identity to launch under: the runtime session id the
 	// session's immutable durable binding names, derived by Factory at create time

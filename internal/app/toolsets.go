@@ -189,7 +189,7 @@ func agentPolicyRevision(profile AccessProfile) string {
 // catalog for automatic reuse.
 func bashDefinition(set *sandbox.ExecutorSet, resolver tools.AsyncProcessRunnerResolver) tool.Definition {
 	catalog := productFamilyEligibility()
-	return tool.NewDefinition("Bash", tool.RequiresWorkspace|tool.RequiresProcessServices, func(ctx context.Context, bindings tool.Bindings) ([]tool.InvokableTool, error) {
+	definition := tool.NewDefinition("Bash", tool.RequiresWorkspace|tool.RequiresProcessServices, func(ctx context.Context, bindings tool.Bindings) ([]tool.InvokableTool, error) {
 		if bindings.Workspace == nil {
 			return nil, &WorkspaceRootError{}
 		}
@@ -223,7 +223,39 @@ func bashDefinition(set *sandbox.ExecutorSet, resolver tools.AsyncProcessRunnerR
 		}
 		return []tool.InvokableTool{built}, nil
 	})
+	return captureSafetyDefinition{Definition: definition, declared: runnerBashCaptureSafety(catalog)}
 }
+
+// runnerBashCaptureSafety is what tools itself declares for a Bash configured
+// with an injected runner (tools v0.14.0): materialized + high output, because
+// a tool.CommandRunner returns the whole output as one []byte and the sandbox
+// executor buffers it with no bound of its own. Harness's finite materialized
+// maximum (loop.DefaultMaterializedToolResultBytes) is what makes that safe to
+// place, which is why Carbon's Department declares
+// department.CaptureSafetyBoundedMaterialized. The value is DERIVED from tools'
+// probe rather than restated, so a tools release that changes it moves Carbon's
+// declaration with it. The probe runs nothing.
+func runnerBashCaptureSafety(catalog permission.FamilyEligibility) tool.DeclaredCaptureSafety {
+	probe, err := bash.NewSupervisedFactory(bash.WithRunner(grantedExecutor{}), bash.WithFamilyCatalog(catalog))
+	if err != nil {
+		return tool.DeclaredCaptureSafety{HighOutput: true}
+	}
+	return probe.DeclaredCaptureSafety()
+}
+
+// captureSafetyDefinition adds a tool.CaptureSafetyDeclarer to a definition
+// built with tool.NewDefinition, which declares nothing (and so projects as
+// materialized and NOT high output -- an understatement for Bash).
+type captureSafetyDefinition struct {
+	tool.Definition
+	declared tool.DeclaredCaptureSafety
+}
+
+func (d captureSafetyDefinition) DeclaredCaptureSafety() tool.DeclaredCaptureSafety {
+	return d.declared
+}
+
+var _ tool.CaptureSafetyDeclarer = captureSafetyDefinition{}
 
 // carbonToolDefinitions builds Carbon's complete coding roster: read,
 // mutate, session-supervised Bash, background process companions, web, and

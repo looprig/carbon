@@ -104,7 +104,10 @@ func skillDefinitionFor(loader skill.SkillLoader) tool.Definition {
 }
 
 // carbonDefinition returns Carbon's sole immutable loop definition. extras is
-// a narrow test probe seam; production passes nil.
+// a narrow seam for definitions whose presence depends on the rig's wiring:
+// the pooled launcher passes read_tool_result exactly where it wires
+// tool-result retention (toolresults.go), and tests pass probes. The TUI and
+// headless paths pass nil.
 func carbonDefinition(client inference.Client, model model.Model, cfg Config, access *sessionAccess, extras []tool.Definition) (loop.Definition, error) {
 	contextPolicy, err := newConversationContextPolicy(model, cfg.PrimerCandidates, cfg.DelegateModels)
 	if err != nil {

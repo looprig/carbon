@@ -86,6 +86,13 @@ independent of Factory and can use its own session-store root (default
 `~/.looprig/carbon/store`, overridable with `--data-dir`). Do not point two
 different layouts at the same writable root.
 
+**Upgrading to Carbon v0.29.0 abandons existing data directories.** Its storage
+backend (fsstore v0.6.0) changed its on-disk layout and does not migrate: a data
+directory written by an earlier Carbon, whether the TUI/headless store or a
+browser root, is refused at startup with a message naming the directory. Move or
+delete it (pre-v0.6.0 data is not migrated); Carbon creates a fresh one on the
+next start. The change is one-way: an older Carbon cannot read a new directory.
+
 Back up a stopped, consistent browser data root, including its layout marker,
 control records, tenant journals, and `session-workspaces/` tree. Also back up
 operator-managed Carbon configuration and any separate TUI/headless workspace
@@ -95,10 +102,19 @@ restore a browser session. Allow shutdown to quiesce Factory admission, settle
 accepted work, drain Host residents, and then close storage. If drain is
 incomplete, retain the store and investigate before retrying shutdown.
 
-Carbon currently does not wire a SessionObjectStore, object HTTP serving, or
-large-tool-result capture/`read_tool_result`. Its object route explicitly
-answers unavailable. SessionStore's legacy `PutObject` API is not evidence that
-this product serves session objects. Resident gate responses are supported;
+Browser serve retains large tool output. A tool result larger than the model's
+50 KiB preview is captured in full, up to 8 MiB, as a tool-result object in the
+session's own tenant journal store. The model reads it back with
+`read_tool_result`, and the session's browser reads it through Factory's object
+route (`GET /v1/sessions/{sid}/objects/{oid}` and `/metadata`, 1 MiB Range
+pages). An object is served only when a committed step in that session's
+journal names it; every other reference answers the same 404 as an absent
+object. Evidence lookups are rate limited per principal and per session
+(a throttled read answers 500, never a false 404). Known limit: a Factory
+that has not cached a capture scans at most 65,536 journal records back from
+the tip, so a capture with more records after it answers 404 although it
+exists; the model's own `read_tool_result` is unaffected. The TUI and headless
+paths do not retain tool output. Resident gate responses are supported;
 answering and resuming a **cold AskUser** turn is not implemented. Capacity,
 pending commands, resident wait, reconciliation, and drain need operational
 monitoring at Factory and Host boundaries; this repository supplies no cloud
