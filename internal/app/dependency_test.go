@@ -160,7 +160,7 @@ func TestOrchestrationPinsAreTheReleasedOnes(t *testing.T) {
 		},
 		{
 			"github.com/looprig/harness", "v0.41.0",
-			"Admitted carries the principal and create/input metadata and harness writes stamped or presented journal records; ONE-WAY: after such a journal record exists, never roll Carbon back below harness v0.41.0",
+			"Admitted carries the principal and create/input metadata; ONE-WAY: once a journal holds a stamped or presented record, or metadata from a browser even without stamping or a presenter, never roll Carbon back below harness v0.41.0",
 		},
 		{
 			"github.com/looprig/host", "v0.11.0",
@@ -172,7 +172,7 @@ func TestOrchestrationPinsAreTheReleasedOnes(t *testing.T) {
 		},
 		{
 			"github.com/looprig/wui", "v0.4.0",
-			"the browser bundle can send create/input metadata and display attributed, presented messages; those messages create a one-way journal floor of harness v0.41.0 once written",
+			"the browser bundle can send create/input metadata and display attributed, presented messages; even browser metadata sent without stamping or a presenter creates a one-way journal floor of harness v0.41.0 once written",
 		},
 		{
 			"github.com/looprig/inference", "v0.14.0",
