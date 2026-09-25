@@ -3,7 +3,7 @@ package app
 // This compile-only dependency-surface probe covers both the completed rig
 // migration and Task 34's context/hustle additions. It builds only when the
 // planned core, inference, LLM, harness, and CLI APIs are all present through
-// Carbon's retained local replaces. It carries no test functions because its value
+// Carbon's published module pins. It carries no test functions because its value
 // is that the package cannot compile against a partial dependency rollout.
 
 import (
@@ -143,8 +143,8 @@ func TestOrchestrationPinsAreTheReleasedOnes(t *testing.T) {
 		why     string
 	}{
 		{
-			"github.com/looprig/core", "v0.11.0",
-			"the HostLink connect framing, the capability signal and HostLinkEndpoint's per-tenant derivation all live here; a Factory below it cannot complete a connect",
+			"github.com/looprig/core", "v0.12.0",
+			"defines the principal, metadata and attribution capability contract that Factory, Host and harness carry; a stamped command is not readable by the pre-feature stack",
 		},
 		{
 			"github.com/looprig/storage", "v0.7.0",
@@ -155,24 +155,28 @@ func TestOrchestrationPinsAreTheReleasedOnes(t *testing.T) {
 			"a KV key and a key beneath it coexist ('@' leaf suffixes), so a session's tool-result object index can be written beside its catalog entry; ONE-WAY: v0.6.0 refuses every pre-v0.6.0 root with ErrLegacyLayout and migrates nothing, which Carbon surfaces as LegacyDataRootError",
 		},
 		{
-			"github.com/looprig/sessionstore", "v0.13.1",
-			"the ROLLOUT RULE: every ReadGates caller must be on >= v0.12.0 BEFORE any Host publishes a gate; older readers refuse these gate pages; v0.13.0 lets a stale gate-deadline intent on a disposition session be retired (parked) instead of refused forever; v0.13.1 is the core v0.11.0 / storage v0.7.0 re-pin harness v0.40.2, host v0.10.3 and factory v0.11.1 all require",
+			"github.com/looprig/sessionstore", "v0.14.0",
+			"stores principal and metadata in v3 disposition inbox rows; ONE-WAY: after a v3 row exists, never roll Factory or Host back below sessionstore v0.14.0, whose reader accepts it",
 		},
 		{
-			"github.com/looprig/harness", "v0.40.2",
-			"the re-pin onto sessionstore v0.13.1, inference v0.13.0 and storage v0.7.0 (v0.40.2, no API change); readable tool-result retention: rig.WithToolResultObjects, (*sessionstore.Store).ToolResultObjects and LookupToolResultCapture, and read_tool_result's binding (v0.40.0); Catalog.ListSessions ignores the nested object-metadata keys a capture writes, so the session browser still lists after a capture (v0.40.1); host v0.10.x's pair: public bodies carry no model base_url or physical workspace path (v0.39.1, release audit R5.2 M1); an open gate survives failover (v0.39.0); the persistence-fault capabilities Carbon forwards as department.PersistenceFaults (v0.38.0); five-kind runtimecommand.Kind (v0.36.0)",
+			"github.com/looprig/harness", "v0.41.0",
+			"Admitted carries the principal and create/input metadata and harness writes stamped or presented journal records; ONE-WAY: after such a journal record exists, never roll Carbon back below harness v0.41.0",
 		},
 		{
-			"github.com/looprig/host", "v0.10.3",
-			"harness v0.40.x's pair (v0.10.2; v0.10.3 adopts harness v0.40.2 and sessionstore v0.13.1); host.NewPublicJournals projects runtime session and command ids out of every body a browser sees (v0.10.0, hardened v0.10.1; release audit R5.2 H1); gate answers survive failover (v0.9.0); a faulted runtime is abandoned and restored by a successor, a draining Host stops applying commands first, a lost grant is given up (v0.8.x); keeps v0.6.0's unstarted-close contract",
+			"github.com/looprig/host", "v0.11.0",
+			"RuntimeCommand carries principal and metadata through the strict pre-attempt checks; paired with harness v0.41.0 because a journal containing stamped or presented records cannot be read by older harness",
 		},
 		{
-			"github.com/looprig/factory", "v0.11.1",
-			"adopts sessionstore v0.13.1 and storage v0.7.0 with its error vocabularies re-derived unchanged (v0.11.1); WithSessionObjectStoreResolver addresses a Host session's objects in its runtime scope, and an ObjectPolicy denial answers the absent-object 404 (v0.11.0); WithSessionJournalResolver hands the resolver the public session id so Carbon can return host.NewPublicJournals' projecting reader (release audit R5.2 H1); New refuses Carbon's composition without a journal resolver (v0.9.0); keeps v0.7.x's ordered-drain quiescence",
+			"github.com/looprig/factory", "v0.12.0",
+			"accepts client metadata and can stamp a verified principal with explicit WithPrincipalStamping (not Carbon's default); it refuses an incapable Host before writing a v3 inbox row, whose one-way reader floor is sessionstore v0.14.0",
 		},
 		{
-			"github.com/looprig/wui", "v0.3.0",
-			"the first bundle that works against a real Factory (REST binding, ClientLink handshake, gate.respond, authoritative journal tip, resume from the committed cursor); every earlier bundle is non-functional there",
+			"github.com/looprig/wui", "v0.4.0",
+			"the browser bundle can send create/input metadata and display attributed, presented messages; those messages create a one-way journal floor of harness v0.41.0 once written",
+		},
+		{
+			"github.com/looprig/inference", "v0.14.0",
+			"supports per-call unbounded execution for the harness v0.41.0 presenter/runtime work; the same release set has a one-way harness v0.41.0 floor after attributed or presented journal records are written",
 		},
 		{
 			"github.com/looprig/tools", "v0.14.1",
@@ -227,6 +231,13 @@ func TestHostAndHarnessPinsMoveTogether(t *testing.T) {
 	// host v0.9.0/v0.10.x pair with harness v0.39.x (gate resume across failover).
 	if versionAtLeast(host, "v0.9.0") && !versionAtLeast(harnessVersion, "v0.39.0") {
 		t.Errorf("host %s with harness %s: host v0.9.0 and later pair with harness v0.39.0", host, harnessVersion)
+	}
+	// The principal/metadata seam and its one-way journal reader floor move together.
+	if versionAtLeast(host, "v0.11.0") && !versionAtLeast(harnessVersion, "v0.41.0") {
+		t.Errorf("host %s with harness %s: host v0.11.0 requires harness v0.41.0's attributed command and journal records", host, harnessVersion)
+	}
+	if versionAtLeast(harnessVersion, "v0.41.0") && !versionAtLeast(host, "v0.11.0") {
+		t.Errorf("host %s with harness %s: harness v0.41.0 requires host v0.11.0 to carry principal and metadata into the runtime", host, harnessVersion)
 	}
 }
 

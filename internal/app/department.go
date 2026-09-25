@@ -649,6 +649,8 @@ func (s *carbonRuntime) ApplyCommand(ctx context.Context, cmd department.Runtime
 		RuntimeCommandID: cmd.RuntimeCommandID,
 		LeaseEpoch:       epoch,
 		AttemptID:        runtimecommand.AttemptID(cmd.AttemptID),
+		// COPIED: Admitted is built field by field; an omitted member is dropped in silence.
+		Principal: cmd.Principal,
 	}
 	switch cmd.Kind {
 	case carbonKindCreate:
@@ -657,6 +659,7 @@ func (s *carbonRuntime) ApplyCommand(ctx context.Context, cmd department.Runtime
 			return err
 		}
 		admitted.Kind, admitted.Blocks = runtimecommand.KindCreate, blocks
+		admitted.Metadata = cmd.Metadata
 	case carbonKindRestore:
 		// A restore carries NOTHING. Core's RestoreRequest has no blocks member and
 		// Admitted.Validate refuses a restore carrying any, so forwarding a stray
@@ -668,6 +671,7 @@ func (s *carbonRuntime) ApplyCommand(ctx context.Context, cmd department.Runtime
 			return err
 		}
 		admitted.Kind, admitted.Blocks = runtimecommand.KindInput, blocks
+		admitted.Metadata = cmd.Metadata
 	case carbonKindInterrupt:
 		admitted.Kind = runtimecommand.KindInterrupt
 	case carbonKindGateResponse:

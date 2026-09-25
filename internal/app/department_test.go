@@ -1081,6 +1081,11 @@ func TestApplyCommandForwardsTheAttemptAndTheIdentities(t *testing.T) {
 	t.Parallel()
 
 	const epoch = uint64(9)
+	principal := sessionwire.Principal{
+		Tenant:  sessionwire.TenantID("tenant-a"),
+		Subject: sessionwire.SubjectID("user_alex"),
+		Kind:    sessionwire.PrincipalKindActor,
+	}
 	createBody := mustJSON(t, sessionwire.CreateRequest{
 		CommandEnvelope: sessionwire.CommandEnvelope{Version: sessionwire.CurrentWireVersion, CommandID: "command-1"},
 		SessionID:       sessionwire.SessionID("session-a"),
@@ -1110,12 +1115,13 @@ func TestApplyCommandForwardsTheAttemptAndTheIdentities(t *testing.T) {
 		wantKind   runtimecommand.Kind
 		wantBlocks int
 		wantAnswer bool
+		metadata   sessionwire.MessageMetadata
 	}{
-		{carbonKindCreate, createBody, runtimecommand.KindCreate, 1, false},
-		{carbonKindRestore, nil, runtimecommand.KindRestore, 0, false},
-		{carbonKindInput, inputBody, runtimecommand.KindInput, 1, false},
-		{carbonKindInterrupt, nil, runtimecommand.KindInterrupt, 0, false},
-		{carbonKindGateResponse, gateBody, runtimecommand.KindGateResponse, 0, true},
+		{carbonKindCreate, createBody, runtimecommand.KindCreate, 1, false, sessionwire.MessageMetadata{"space": "family"}},
+		{carbonKindRestore, nil, runtimecommand.KindRestore, 0, false, nil},
+		{carbonKindInput, inputBody, runtimecommand.KindInput, 1, false, sessionwire.MessageMetadata{"space": "family"}},
+		{carbonKindInterrupt, nil, runtimecommand.KindInterrupt, 0, false, nil},
+		{carbonKindGateResponse, gateBody, runtimecommand.KindGateResponse, 0, true, nil},
 	} {
 		t.Run(tc.kind, func(t *testing.T) {
 			t.Parallel()
@@ -1132,6 +1138,8 @@ func TestApplyCommandForwardsTheAttemptAndTheIdentities(t *testing.T) {
 				Kind:             tc.kind,
 				Payload:          tc.payload,
 				AttemptID:        attempt,
+				Principal:        &principal,
+				Metadata:         tc.metadata,
 			}); err != nil {
 				t.Fatalf("ApplyCommand: %v", err)
 			}
@@ -1162,6 +1170,16 @@ func TestApplyCommandForwardsTheAttemptAndTheIdentities(t *testing.T) {
 			}
 			if (got.GateResponse != nil) != tc.wantAnswer {
 				t.Errorf("GateResponse present = %t, want %t", got.GateResponse != nil, tc.wantAnswer)
+			}
+			if got.Principal == nil || *got.Principal != principal {
+				t.Errorf("Principal = %+v, want %+v", got.Principal, principal)
+			}
+			if len(tc.metadata) > 0 {
+				if got.Metadata["space"] != tc.metadata["space"] {
+					t.Errorf("Metadata = %+v, want %+v", got.Metadata, tc.metadata)
+				}
+			} else if got.Metadata != nil {
+				t.Errorf("Metadata = %+v on %q, want nil", got.Metadata, tc.kind)
 			}
 			// The released type's own rule, so a record harness would refuse AFTER the
 			// attempt is durable is caught here instead of there.

@@ -13,23 +13,23 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/looprig/acp v0.3.3
 	github.com/looprig/classifiers v0.2.2
-	github.com/looprig/core v0.11.0
+	github.com/looprig/core v0.12.0
 	github.com/looprig/credentials v0.2.1
-	github.com/looprig/factory v0.11.1
+	github.com/looprig/factory v0.12.0
 	github.com/looprig/foreignloops v0.3.3
 	github.com/looprig/fsstore v0.6.0
-	github.com/looprig/harness v0.40.2
-	github.com/looprig/host v0.10.3
-	github.com/looprig/inference v0.13.0
+	github.com/looprig/harness v0.41.0
+	github.com/looprig/host v0.11.0
+	github.com/looprig/inference v0.14.0
 	github.com/looprig/llm v0.15.0
 	github.com/looprig/mcp v0.7.2
 	github.com/looprig/sandbox v0.9.1
 	github.com/looprig/secrets v0.2.2
-	github.com/looprig/sessionstore v0.13.1
+	github.com/looprig/sessionstore v0.14.0
 	github.com/looprig/storage v0.7.0
 	github.com/looprig/tools v0.14.1
 	github.com/looprig/tui v0.21.1
-	github.com/looprig/wui v0.3.0
+	github.com/looprig/wui v0.4.0
 	golang.org/x/sys v0.47.0
 )
 
