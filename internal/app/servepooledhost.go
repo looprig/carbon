@@ -139,6 +139,7 @@ func OpenServePooledHost(ctx context.Context, stores *ServeStorage, cfg ServePoo
 	opts.InternalEndpoint = endpoint
 	blueprint := host.Composition{
 		Options: opts, Generation: cfg.Generation, Link: cfg.Link, Drain: cfg.Drain,
+		LiveText:             carbonHostLiveTextOptions(),
 		CompatibilityTimeout: cfg.CompatibilityTimeout, WorkPoll: cfg.WorkPoll,
 		Collaborators: host.Collaborators{
 			Backend: stores.controlBackend,
@@ -160,6 +161,10 @@ func OpenServePooledHost(ctx context.Context, stores *ServeStorage, cfg ServePoo
 		return nil, err
 	}
 	return &ServePooledHost{service: service, storageOwner: stores, authToken: cfg.AuthToken, bindingID: cfg.StorageBindingID, listener: listener, server: &http.Server{Handler: service.Routes(), ReadHeaderTimeout: 5 * time.Second}, endpoint: endpoint, compatibility: compatibility, listenerDone: make(chan struct{})}, nil
+}
+
+func carbonHostLiveTextOptions() *host.LiveTextOptions {
+	return &host.LiveTextOptions{IncludeReasoning: true}
 }
 
 // Open already bound the internal listener. Start publishes Host capacity,

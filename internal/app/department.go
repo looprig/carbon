@@ -20,6 +20,7 @@ import (
 	"github.com/looprig/harness/pkg/rig"
 	"github.com/looprig/harness/pkg/runtimecommand"
 	"github.com/looprig/harness/pkg/session"
+	harnesswire "github.com/looprig/harness/pkg/sessionwire"
 	"github.com/looprig/host/department"
 )
 
@@ -410,8 +411,10 @@ var _ department.RigSession = (*carbonRuntime)(nil)
 // resident and every command behind it pending (host v0.8.0/v0.8.1). These
 // assertions make dropping either a build failure rather than an outage.
 var (
-	_ department.AttemptCloser     = (*carbonRuntime)(nil)
-	_ department.PersistenceFaults = (*carbonRuntime)(nil)
+	_ department.AttemptCloser                  = (*carbonRuntime)(nil)
+	_ department.PersistenceFaults              = (*carbonRuntime)(nil)
+	_ department.LivePublicationSubscriber      = (*carbonRuntime)(nil)
+	_ department.ReasoningPublicationSubscriber = (*carbonRuntime)(nil)
 )
 
 // ID is harness's identity for the launched session.
@@ -592,6 +595,112 @@ func (s *carbonRuntime) SubscribeCommitted(ctx context.Context, _ sessionwire.Ev
 			case out <- publication:
 			case <-ctx.Done():
 				return
+			}
+		}
+	}()
+	return out, nil
+}
+
+// SubscribeLivePublic carries committed and transient public events in their
+// original order. The reasoning variant enables public thinking deltas too.
+func (s *carbonRuntime) SubscribeLivePublic(ctx context.Context) (<-chan department.LivePublication, error) {
+	return s.subscribeLivePublic(ctx, false)
+}
+
+func (s *carbonRuntime) SubscribeLivePublicWithReasoning(ctx context.Context) (<-chan department.LivePublication, error) {
+	return s.subscribeLivePublic(ctx, true)
+}
+
+func (s *carbonRuntime) subscribeLivePublic(ctx context.Context, includeReasoning bool) (<-chan department.LivePublication, error) {
+	provider, ok := s.controller.(session.CommittedPublicEventProvider)
+	if !ok {
+		return nil, ErrCarbonNoPublications
+	}
+	if _, ok := provider.CommittedPublicEvents(); !ok {
+		return nil, ErrCarbonNoPublications
+	}
+	subscription, err := s.controller.SubscribeEvents(event.EventFilter{
+		Enduring: event.LoopScope{All: true}, Ephemeral: event.LoopScope{All: true},
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make(chan department.LivePublication)
+	go func() {
+		defer close(out)
+		defer func() { _ = subscription.Close() }()
+		const enduringLimit, transientLimit = 256, 16
+		const maxPreviewBytes = 2048
+		pending := make([]department.LivePublication, 0, enduringLimit+transientLimit)
+		enduring, transient := 0, 0
+		deliveries := subscription.Events()
+		for {
+			var send chan<- department.LivePublication
+			var first department.LivePublication
+			if len(pending) > 0 {
+				send, first = out, pending[0]
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case send <- first:
+				if first.Terminal != nil {
+					return
+				}
+				pending[0] = department.LivePublication{}
+				pending = pending[1:]
+				if first.Enduring != nil {
+					enduring--
+				} else {
+					transient--
+				}
+			case delivery, open := <-deliveries:
+				if !open || delivery.Event == nil {
+					return
+				}
+				if delivery.Event.Class() == event.Enduring {
+					if !delivery.Committed() {
+						pending = append(pending, department.LivePublication{Terminal: fmt.Errorf("carbon: enduring delivery at sequence %d lacks committed public fields", delivery.JournalSeq)})
+						deliveries = nil
+						continue
+					}
+					if enduring == enduringLimit {
+						return
+					}
+					publication := sessionwire.EnduringPublication{
+						TenantID: s.scope.TenantID, SessionID: s.scope.SessionID,
+						EventID: sessionwire.EventID(delivery.EventID), JournalSeq: delivery.JournalSeq,
+						CoveredThrough: delivery.CoveredThrough, Body: json.RawMessage(delivery.PublicBody),
+					}
+					pending = append(pending, department.LivePublication{Enduring: &publication})
+					enduring++
+					continue
+				}
+				delta, ok := delivery.Event.(event.TokenDelta)
+				if !ok {
+					continue
+				}
+				var preview string
+				switch chunk := delta.Chunk.(type) {
+				case *content.TextChunk:
+					if chunk != nil {
+						preview = chunk.Text
+					}
+				case *content.ThinkingChunk:
+					if includeReasoning && chunk != nil {
+						preview = chunk.Thinking
+					}
+				}
+				if preview == "" || len(preview) > maxPreviewBytes || transient == transientLimit {
+					continue
+				}
+				projected, err := harnesswire.Project(s.scope.TenantID, s.scope.SessionID, delta)
+				if err != nil || projected.Class != harnesswire.PublicEphemeral {
+					continue
+				}
+				publication := sessionwire.EphemeralPublication{TenantID: s.scope.TenantID, SessionID: s.scope.SessionID, Body: projected.Body}
+				pending = append(pending, department.LivePublication{Ephemeral: &publication})
+				transient++
 			}
 		}
 	}()
