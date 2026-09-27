@@ -60,7 +60,7 @@ function cloneWithCurrentWorkflow(): string {
   cpSync(join(repository, "internal/browserui/dist"), join(clone, "internal/browserui/dist"), { recursive: true });
   run("git", ["add", "-A", "Makefile", ".gitignore", "web"], clone);
   run("git", ["add", "-f", "--all", "--", "internal/browserui/dist"], clone);
-  run("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "test fixture"], clone);
+  run("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "test fixture"], clone);
   return clone;
 }
 

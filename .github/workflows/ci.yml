@@ -21,10 +21,12 @@ jobs:
           node-version: "24"
           cache: npm
           cache-dependency-path: web/package-lock.json
+      - name: Install SPA dependencies
+        run: npm --prefix web ci
       - name: Install browser dependencies
         run: npm --prefix web exec -- playwright install --with-deps chromium
-      - name: Install, typecheck, and test the SPA
-        run: npm --prefix web ci && npm --prefix web run typecheck && npm --prefix web test
+      - name: Typecheck and test the SPA
+        run: npm --prefix web run typecheck && npm --prefix web test
       - name: Verify committed reproducible bundle
         run: make release-dist && git diff --cached --exit-code -- internal/browserui/dist
 
