@@ -8,9 +8,9 @@ export const DIST_DIR = join(REPOSITORY_ROOT, "internal/browserui/dist");
 
 const readJson = (path) => JSON.parse(readFileSync(path, "utf8"));
 
-// The installed registry packages own their versions. The client contract
-// snapshot comes from client v0.2.0's contract/VERSION and negotiation schema;
-// its client_version ties it to that exact installed package.
+// The installed registry packages own their versions. The checked client contract
+// snapshot mirrors contractInfo from client source until a release exports it;
+// its client_version ties it to the exact installed package.
 export function readBundleInputs(repository = REPOSITORY_ROOT) {
   const web = join(repository, "web");
   const provenance = readJson(join(web, "client-contract.json"));

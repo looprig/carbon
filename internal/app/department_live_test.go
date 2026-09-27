@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -96,6 +97,15 @@ func TestCarbonTextOnlyStreamDropsReasoningAndOversizedDeltas(t *testing.T) {
 	controller.subscription.events <- event.Delivery{Event: event.TokenDelta{Header: header, Chunk: &content.ThinkingChunk{Thinking: "private reasoning"}}}
 	controller.subscription.events <- event.Delivery{Event: event.TokenDelta{Header: header, Chunk: &content.TextChunk{Text: string(bytes.Repeat([]byte("x"), 2049))}}}
 	controller.subscription.events <- event.Delivery{Event: event.TokenDelta{Header: header, Chunk: &content.TextChunk{Text: "visible"}}}
+	deadline := time.After(3 * time.Second)
+	for runtime.DroppedLivePreviews() != 1 {
+		select {
+		case <-deadline:
+			t.Fatal("oversized preview was not counted")
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
 	select {
 	case item := <-stream:
 		if item.Ephemeral == nil || !bytes.Contains(item.Ephemeral.Body, []byte("visible")) || bytes.Contains(item.Ephemeral.Body, []byte("private reasoning")) {
@@ -106,20 +116,65 @@ func TestCarbonTextOnlyStreamDropsReasoningAndOversizedDeltas(t *testing.T) {
 	}
 }
 
-func TestCarbonLiveStreamTerminatesOnMissingCommittedFields(t *testing.T) {
-	controller := &liveTestController{subscription: &liveTestSubscription{events: make(chan event.Delivery, 1)}}
+func TestCarbonLiveStreamCountsBufferDrops(t *testing.T) {
+	controller := &liveTestController{subscription: &liveTestSubscription{events: make(chan event.Delivery, 32)}}
 	runtime := &carbonRuntime{controller: controller, scope: LaunchScope{TenantID: "tenant-a", SessionID: "session-a"}}
-	stream, err := runtime.SubscribeLivePublic(t.Context())
+	_, err := runtime.SubscribeLivePublic(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
-	controller.subscription.events <- event.Delivery{Event: event.TurnStarted{}, JournalSeq: 9}
-	select {
-	case item := <-stream:
-		if item.Terminal == nil || item.Enduring != nil {
-			t.Fatalf("missing committed fields yielded %+v", item)
+	header := event.Header{Coordinates: identity.Coordinates{SessionID: mustUUIDForTest(t), LoopID: mustUUIDForTest(t), TurnID: mustUUIDForTest(t)}}
+	for i := 0; i < 17; i++ {
+		controller.subscription.events <- event.Delivery{Event: event.TokenDelta{Header: header, Chunk: &content.TextChunk{Text: "preview"}}}
+	}
+	deadline := time.After(3 * time.Second)
+	for runtime.DroppedLivePreviews() != 1 {
+		select {
+		case <-deadline:
+			t.Fatalf("buffer drops = %d, want 1", runtime.DroppedLivePreviews())
+		default:
+			time.Sleep(time.Millisecond)
 		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("missing committed fields did not terminate the stream")
+	}
+}
+
+func TestCarbonLiveStreamTerminatesOnMissingCommittedFields(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		delivery event.Delivery
+	}{
+		{"missing public event ID", event.Delivery{Event: event.TurnStarted{}, JournalSeq: 9, PublicBody: json.RawMessage(`{"type":"TurnStarted"}`)}},
+		{"missing committed body", event.Delivery{Event: event.TurnStarted{}, JournalSeq: 9, EventID: "event-9"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			controller := &liveTestController{subscription: &liveTestSubscription{events: make(chan event.Delivery, 2)}}
+			runtime := &carbonRuntime{controller: controller, scope: LaunchScope{TenantID: "tenant-a", SessionID: "session-a"}}
+			stream, err := runtime.SubscribeLivePublic(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			controller.subscription.events <- tc.delivery
+			controller.subscription.events <- event.Delivery{Event: event.TurnStarted{}, JournalSeq: 10, EventID: "event-10", PublicBody: json.RawMessage(`{"type":"TurnStarted"}`)}
+			select {
+			case item := <-stream:
+				if item.Terminal == nil || item.Enduring != nil {
+					t.Fatalf("missing committed fields yielded %+v", item)
+				}
+				var missing *MissingCommittedPublicationError
+				if !errors.As(item.Terminal, &missing) || missing.JournalSeq != 9 {
+					t.Fatalf("terminal error = %v, want missing committed publication at sequence 9", item.Terminal)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("missing committed fields did not terminate the stream")
+			}
+			select {
+			case _, ok := <-stream:
+				if ok {
+					t.Fatal("stream yielded another item after the terminal error")
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("stream remained open after the terminal error")
+			}
+		})
 	}
 }

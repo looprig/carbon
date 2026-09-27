@@ -6,13 +6,13 @@ package browserui
 // COMMITTED under dist/ is what every consumer's //go:embed all:dist serves.
 // That makes the bundle a versioned artefact in its own right: the JavaScript in
 // it speaks a particular sessionwire version, was built against a particular
-// pinned Core, and carries a particular @looprig/protocol build. None of those
+// pinned Core, and carries a particular @looprig/client build. None of those
 // are properties of the Go source beside it, which is why they are read out of
 // the bundle rather than declared as constants here -- a constant would keep
 // saying the right thing while the tree beneath it went stale, which is exactly
 // what wui v0.1.0 shipped (retracted; see go.mod).
 //
-// app/scripts/write-bundle-manifest.mjs writes the file, from the three
+// web/scripts/write-bundle-manifest.mjs writes the file, from the three
 // authorities that own the three values; vite.config.ts's bundleManifestPlugin
 // calls it on every build so the marker is produced by the same step that
 // produces the bundle. This file only reads and validates it.
@@ -26,7 +26,7 @@ import (
 )
 
 // bundleManifestPath is the manifest's path inside assetsFS. It is the
-// BUNDLE_MANIFEST_NAME of app/scripts/write-bundle-manifest.mjs, under
+// BUNDLE_MANIFEST_NAME of web/scripts/write-bundle-manifest.mjs, under
 // assetRoot.
 const bundleManifestPath = assetRoot + "/looprig-bundle.json"
 
@@ -50,15 +50,15 @@ var ErrNoBundleManifest = errors.New("carbon browserui: embedded bundle carries 
 // It is a plain comparable struct of exported fields on purpose: a consumer
 // (Factory's default command) has to be able to construct one to test its own
 // acceptance rule against an old, empty or future marker without needing a
-// second wui build to embed.
+// second browser bundle to embed.
 type Bundle struct {
 	// CoreVersion is the github.com/looprig/core module version whose
 	// sessionwire/v1 schemas the bundle's client was built against. It is the
 	// same string contract/VERSION holds.
 	CoreVersion string `json:"core_version"`
-	// ProtocolVersion is the @looprig/protocol package version in the bundle.
+	// ProtocolVersion is the @looprig/client package version in the bundle.
 	// It is also the version string the Centrifuge connect frame advertises;
-	// app/scripts/write-bundle-manifest.test.ts drives the real handshake and
+	// web/scripts/write-bundle-manifest.test.ts drives the real handshake and
 	// asserts the two agree.
 	ProtocolVersion string `json:"client_version"`
 	ReactVersion    string `json:"react_version"`

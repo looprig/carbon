@@ -93,15 +93,10 @@ func requiredVersion(gomod, module string) string {
 	return match[1]
 }
 
-// TestServeDependenciesArePinned proves carbon names the harness release carrying
-// the attach-or-restore fix (wui design §8.1), the exported tool-result capture
-// default used by Carbon's policy test, and a usable wui release. A harness below
-// v0.30 restores an already-live session by overwriting the registry entry,
-// orphaning every subscriber; and wui v0.1.1 is the first wui whose module zip
-// carries the BUILT SPA bundle — v0.1.0 was tagged from a development tree, ships
-// only the dist/index.html placeholder, and is retracted upstream, so naming it
-// would serve every browser the string "build the app to replace this placeholder"
-// with no downstream repair possible (module zips are source-only).
+// TestServeDependenciesArePinned keeps Carbon on a harness release with the
+// attach-or-restore fix. An older harness can overwrite a live registry entry
+// during restore, orphaning every subscriber. Carbon embeds its own browser
+// bundle, so it must not retain a Go dependency on the former wui module.
 func TestServeDependenciesArePinned(t *testing.T) {
 	t.Parallel()
 

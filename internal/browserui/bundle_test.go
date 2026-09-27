@@ -74,7 +74,7 @@ func TestBundleProtocolVersionReadsEmbeddedManifest(t *testing.T) {
 // U6.0-shipdist it required `marker.Release == (CARBON_BUNDLE_RELEASE == "1")`,
 // an EQUALITY, on the premise that the committed bundle is a development build
 // except during a release run. U6.0-shipdist installed a `make release-dist`
-// bundle as the committed tree, which is what makes wui shippable at all --
+// bundle as the committed tree, which is what makes Carbon's SPA shippable --
 // the module zip is source-only, so whatever is committed under dist/ is what
 // every consumer embeds. Under that premise the equality is not merely weak,
 // it is WRONG in the reverse direction: it makes `GOWORK=off make check` and
@@ -290,7 +290,7 @@ func TestReadBundleManifestRefusesAReleaseClaimOverThePlaceholder(t *testing.T) 
 		t.Errorf("readBundleManifest returned %+v alongside its error", got)
 	}
 	// Distinguishable from the absent-manifest case, which is a different
-	// remedy: one needs a build, the other needs a wui new enough to have one.
+	// remedy: one needs a build, the other needs a bundle new enough to have one.
 	if errors.Is(err, ErrNoBundleManifest) {
 		t.Errorf("a lying release marker reported %v as a missing one", err)
 	}

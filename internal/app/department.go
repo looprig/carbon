@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/looprig/core/content"
@@ -398,9 +399,21 @@ const unsupervisableReleaseBound = 30 * time.Second
 // product knows what it composed, and a refusal that names the missing capability
 // diagnoses better than an *IncapableRuntimeError listing six.
 type carbonRuntime struct {
-	controller session.SessionController
-	scope      LaunchScope
+	controller          session.SessionController
+	scope               LaunchScope
+	droppedLivePreviews atomic.Uint64
 }
+
+// MissingCommittedPublicationError ends a live stream whose enduring delivery
+// cannot be joined to the durable journal.
+type MissingCommittedPublicationError struct{ JournalSeq uint64 }
+
+func (e *MissingCommittedPublicationError) Error() string {
+	return fmt.Sprintf("carbon: enduring delivery at sequence %d lacks committed public fields", e.JournalSeq)
+}
+
+// DroppedLivePreviews reports previews discarded by this runtime's size or queue bounds.
+func (s *carbonRuntime) DroppedLivePreviews() uint64 { return s.droppedLivePreviews.Load() }
 
 var _ department.RigSession = (*carbonRuntime)(nil)
 
@@ -660,7 +673,7 @@ func (s *carbonRuntime) subscribeLivePublic(ctx context.Context, includeReasonin
 				}
 				if delivery.Event.Class() == event.Enduring {
 					if !delivery.Committed() {
-						pending = append(pending, department.LivePublication{Terminal: fmt.Errorf("carbon: enduring delivery at sequence %d lacks committed public fields", delivery.JournalSeq)})
+						pending = append(pending, department.LivePublication{Terminal: &MissingCommittedPublicationError{JournalSeq: delivery.JournalSeq}})
 						deliveries = nil
 						continue
 					}
@@ -691,7 +704,11 @@ func (s *carbonRuntime) subscribeLivePublic(ctx context.Context, includeReasonin
 						preview = chunk.Thinking
 					}
 				}
-				if preview == "" || len(preview) > maxPreviewBytes || transient == transientLimit {
+				if preview == "" {
+					continue
+				}
+				if len(preview) > maxPreviewBytes || transient == transientLimit {
+					s.droppedLivePreviews.Add(1)
 					continue
 				}
 				projected, err := harnesswire.Project(s.scope.TenantID, s.scope.SessionID, delta)
