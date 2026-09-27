@@ -9,6 +9,25 @@ env:
   GO_VERSION: "1.26.8"
 
 jobs:
+  web-bundle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install browser dependencies
+        run: npm --prefix web exec -- playwright install --with-deps chromium
+      - name: Install, typecheck, and test the SPA
+        run: npm --prefix web ci && npm --prefix web run typecheck && npm --prefix web test
+      - name: Verify committed reproducible bundle
+        run: make release-dist && git diff --cached --exit-code -- internal/browserui/dist
+
   # Format, vet, and the cgo-free -trimpath build on Linux (fast fail).
   lint-build:
     runs-on: ubuntu-latest

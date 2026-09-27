@@ -188,7 +188,14 @@ func TestServeFactoryAuthenticatesBootstrapAndProductUI(t *testing.T) {
 		t.Fatalf("UI authorization refusal = %d, handler calls %d", got.Code, uiCalls)
 	}
 	if got := request("/", ""); got.Code != http.StatusOK || !strings.Contains(strings.ToLower(got.Body.String()), "html") {
-		t.Fatalf("official WUI asset shell = %d %q", got.Code, got.Body.String())
+		t.Fatalf("Carbon asset shell = %d %q", got.Code, got.Body.String())
+	}
+	root := request("/", "")
+	if reload := request("/sessions/session-1", ""); reload.Code != http.StatusOK || reload.Body.String() != root.Body.String() {
+		t.Fatalf("SPA reload = %d %q, want Carbon's embedded shell", reload.Code, reload.Body.String())
+	}
+	if api := request("/v1/no-such-route", "test-browser-token"); strings.Contains(strings.ToLower(api.Header().Get("Content-Type")), "text/html") || strings.Contains(api.Body.String(), "<html") {
+		t.Fatalf("missing API route returned the SPA shell: %d %q", api.Code, api.Body.String())
 	}
 	untrusted := httptest.NewRequest(http.MethodGet, "http://localhost:8765/ui/check", nil)
 	untrusted.Header.Set("Authorization", "Bearer test-browser-token")

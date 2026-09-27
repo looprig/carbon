@@ -1,11 +1,20 @@
 # Carbon
 
+## Browser bundle release
+
+`make release-dist` installs npm packages, builds the SPA twice in isolated
+output directories, compares each path, entry type and SHA-256, then stages the
+verified tree under `internal/browserui/dist`. It requires a POSIX release host:
+transactional rollback terminates release-owned children by negative process-group IDs,
+which native Windows cannot provide. `make dist-reset` restores the exact committed
+bundle. A clean checkout builds and serves that bundle without Node.
+
 Carbon is Looprig's coding agent product: one fixed `carbon` agent assembled
 from the Looprig modules (harness runtime, tools, sandbox, model providers, MCP
 and ACP delegation). The `carbon` binary runs it as an interactive TUI (the
 same assembly also has a headless construction path), and `browser` composes it behind Factory's public API and ClientLink
-with one local pooled Host, a shared filesystem SessionStore and the `wui`
-browser bundle. Both paths are released.
+with one local pooled Host, a shared filesystem SessionStore and Carbon's own
+embedded browser bundle. Both paths are released.
 
 ## Install
 
@@ -46,7 +55,7 @@ Models and any inline provider keys live in the owner-only
 
 Carbon sits at tier 6. Its direct Looprig dependencies are acp, classifiers,
 core, credentials, factory, foreignloops, fsstore, harness, host, inference,
-llm, mcp, sandbox, secrets, sessionstore, storage, tools, tui and wui, all as
+llm, mcp, sandbox, secrets, sessionstore, storage, tools and tui, all as
 published modules (no `replace`).
 
 ## Browser composition
@@ -77,7 +86,7 @@ Embedder-supplied `UIRoutes`/`AuthorizeUI` are not tenant-pinned by Carbon;
 an embedder that needs "a foreign tenant is refused everywhere" must pin those
 itself.
 
-Factory ships no UI; Carbon supplies the official `wui.Assets()` bundle through
+Factory ships no UI; Carbon supplies its embedded `internal/browserui.Assets()` bundle through
 Factory's UI seam (`WithUIHandler`). One application-scoped
 ClientLink can view several sessions. REST list, status, and public journal
 reads work from the durable store while a session is cold; opening a session
@@ -166,9 +175,8 @@ pending commands, resident wait, reconciliation, and drain need operational
 monitoring at Factory and Host boundaries; this repository supplies no cloud
 dashboard or deployment manifest for them.
 
-The compatibility `harness/pkg/serve` and `wui.Handler` path remains for other
-published consumers. Carbon's browser runtime uses Factory and `wui.Assets()`;
-its TUI and headless paths do not require a Factory connection.
+Carbon's browser runtime uses Factory and its own embedded SPA. Its TUI and
+headless paths do not require a Factory connection.
 
 ## Development
 

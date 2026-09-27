@@ -1,0 +1,25 @@
+{
+  // The build-tooling half of the project: `vite.config.ts` and its test run in
+  // node, not in the browser, so they are the only files that may see node's
+  // globals and `node:*` builtins.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2023"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "types": ["node"],
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    // `vite.config.ts` imports `scripts/write-bundle-manifest.mjs`, which is
+    // plain JavaScript because it is also a standalone CLI. Without allowJs
+    // that import is an implicit `any` and TS7016 fails the typecheck. The
+    // alternative, a hand-written `.d.mts`, would be a second authority for the
+    // manifest's shape that nothing holds to the first; inferring from the
+    // source keeps one. `checkJs` stays off: the script has its own tests.
+    "allowJs": true
+  },
+  "include": ["vite.config.ts", "vite.config.test.ts"]
+}

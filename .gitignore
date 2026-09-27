@@ -34,3 +34,10 @@ go.work.sum
 
 # Migration review provenance (Codex review outputs) — keep locally, don't commit
 /scripts/migration/codex_review_*
+
+# npm cache and generated browser assets. release-dist force-adds the exact
+# verified bundle; the shell and marker remain visible in a no-Node checkout.
+/web/node_modules/
+/internal/browserui/dist/*
+!/internal/browserui/dist/index.html
+!/internal/browserui/dist/looprig-bundle.json

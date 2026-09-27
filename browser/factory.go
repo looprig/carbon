@@ -8,11 +8,11 @@ import (
 
 	"github.com/looprig/carbon/browser/internal/toolresultobjects"
 	carbon "github.com/looprig/carbon/internal/app"
+	"github.com/looprig/carbon/internal/browserui"
 	sessionwire "github.com/looprig/core/sessionwire/v1"
 	"github.com/looprig/factory"
 	"github.com/looprig/factory/identity"
 	"github.com/looprig/sessionstore"
-	"github.com/looprig/wui"
 )
 
 // ServeFactoryConfig supplies the product-owned authentication and deployment
@@ -105,7 +105,7 @@ func composeFactory(stores *carbon.ServeStorage, localHost *carbon.ServePooledHo
 		factory.WithHostLinkCredential(staticServeHostLinkCredential(cfg.HostLinkToken)),
 		factory.WithServiceIdentity(serviceIdentity), factory.WithReplicaID(cfg.ReplicaID),
 		factory.WithSessionBinding(cfg.StorageBindingID, cfg.BindingVersion),
-		factory.WithUIHandler(wui.Assets()),
+		factory.WithUIHandler(browserui.Assets()),
 	}
 	objectOptions, err := toolResultObjectOptions(reader, cfg)
 	if err != nil {

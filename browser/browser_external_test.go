@@ -216,8 +216,6 @@ func browserFixture(t *testing.T) browser.Config {
 	const tenant = sessionwire.TenantID("local")
 	reconcile := factory.DefaultReconcileLimits()
 	reconcile.Interval = time.Second
-	clientLinks := factory.DefaultClientLinkLimits()
-	clientLinks.DemandReleaseDebounce = time.Second
 	cfg := browser.Config{
 		Runtime: browser.RuntimeConfig{HomeDir: t.TempDir(), AccessProfile: "trusted"},
 		ClientBuilder: func() (inference.Client, func() model.Model, error) {
@@ -235,8 +233,7 @@ func browserFixture(t *testing.T) browser.Config {
 			CompatibilityTimeout: 20 * time.Second, WorkPoll: time.Second},
 		Factory: browser.FactoryConfig{DefaultTenant: tenant, StorageBindingID: "carbon-local-v1", BindingVersion: "v1", HostLinkToken: "host-token",
 			ReplicaID: "browser-test", CookieName: "browser_session", Verifier: verifier{}, Authorizer: factory.TenantAuthorizer{},
-			ReconcileLimits:  reconcile,
-			ClientLinkLimits: clientLinks,
+			ReconcileLimits: reconcile,
 			CSRF: identity.CSRFConfig{SharedKey: bytes.Repeat([]byte{'k'}, identity.MinCSRFSharedKeyBytes), TokenTTL: time.Hour,
 				TrustedOrigins: []string{"http://127.0.0.1"}}},
 		Address: "127.0.0.1:0",
@@ -426,13 +423,6 @@ func TestExternalApplicationCanStartCreateAndStop(t *testing.T) {
 	}
 	buildsBeforeDisconnect := runtimeBuilds.Load()
 	viewer.Close()
-	// Let Factory observe the lost viewer before the offline command. The
-	// configured demand debounce is shorter than a production browser refresh.
-	select {
-	case <-time.After(cfg.Factory.ClientLinkLimits.DemandReleaseDebounce + cfg.Factory.ReconcileLimits.Interval):
-	case <-s.Done():
-		t.Fatal("server stopped while viewer was disconnected")
-	}
 	postInput("browser-input-3")
 	select {
 	case <-modelRequests:

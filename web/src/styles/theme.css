@@ -1,0 +1,62 @@
+@import "tailwindcss";
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/jetbrains-mono";
+
+/* Capstan's design system (capstan/capstan-spec.md §12): dark only, Inter for
+   prose, JetBrains Mono for every machine-authored fact, lime = the loop and
+   blue = the rig — "lime does, blue decides". Lime marks work in motion
+   (running status, tool steps, the send button, New session); blue marks human
+   control (gates, approvals, waiting-on-you, focus rings). Normalising both to
+   one accent is what the rule exists to prevent: an approval rendered lime
+   reads as "go make the LLM do something".
+
+   The palette is tui's, so a session looks the same in the terminal and in the
+   browser. */
+@theme {
+  --color-bg: #101010;
+  --color-sidebar: #17191b;
+  --color-card: #1b1d20;
+  --color-accent: #242527;
+  --color-border: #2b2e32;
+  --color-muted: #8b9096;
+  --color-rig: #a2d2ff; /* blue: decides */
+  --color-loop: #d4f84d; /* lime: does */
+  --color-fail: #ff6b6b;
+  --color-fg: #e7e9ea;
+
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, SFMono-Regular, monospace;
+}
+
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+  body {
+    background-color: var(--color-bg);
+    color: var(--color-fg);
+    font-family: var(--font-sans);
+  }
+}
+
+/* A single 1.6s pulse, used by running status only. Respecting
+   prefers-reduced-motion is part of §12, not an afterthought. */
+@keyframes loop-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@utility animate-loop-pulse {
+  animation: loop-pulse 1.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-loop-pulse {
+    animation: none;
+  }
+}

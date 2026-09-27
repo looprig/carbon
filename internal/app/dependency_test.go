@@ -115,12 +115,8 @@ func TestServeDependenciesArePinned(t *testing.T) {
 		t.Errorf("go.mod requires harness %s; the orchestration lane needs >= v0.36.0", harnessVersion)
 	}
 
-	wui := requiredVersion(gomod, "github.com/looprig/wui")
-	if wui == "" {
-		t.Fatal("go.mod does not require github.com/looprig/wui")
-	}
-	if wui == "v0.1.0" || wui == "v0.1.1" {
-		t.Errorf("go.mod requires wui %s; v0.2.0 is the first bundle a gating consumer accepts", wui)
+	if got := requiredVersion(gomod, "github.com/looprig/wui"); got != "" {
+		t.Errorf("go.mod still requires wui %s", got)
 	}
 }
 
@@ -159,21 +155,18 @@ func TestOrchestrationPinsAreTheReleasedOnes(t *testing.T) {
 			"stores principal and metadata in v3 disposition inbox rows; ONE-WAY: after a v3 row exists, never roll Factory or Host back below sessionstore v0.14.0, whose reader accepts it",
 		},
 		{
-			"github.com/looprig/harness", "v0.41.0",
+			"github.com/looprig/harness", "v0.41.1",
 			"Admitted carries the principal and create/input metadata; ONE-WAY: once a journal holds a stamped or presented record, or metadata from a browser even without stamping or a presenter, never roll Carbon back below harness v0.41.0",
 		},
 		{
-			"github.com/looprig/host", "v0.11.0",
+			"github.com/looprig/host", "v0.13.0",
 			"RuntimeCommand carries principal and metadata through the strict pre-attempt checks; paired with harness v0.41.0 because a journal containing stamped or presented records cannot be read by older harness",
 		},
 		{
-			"github.com/looprig/factory", "v0.12.0",
+			"github.com/looprig/factory", "v0.13.0",
 			"accepts client metadata and can stamp a verified principal with explicit WithPrincipalStamping (not Carbon's default); it refuses an incapable Host before writing a v3 inbox row, whose one-way reader floor is sessionstore v0.14.0",
 		},
-		{
-			"github.com/looprig/wui", "v0.4.0",
-			"the browser bundle can send create/input metadata and display attributed, presented messages; even browser metadata sent without stamping or a presenter creates a one-way journal floor of harness v0.41.0 once written",
-		},
+
 		{
 			"github.com/looprig/inference", "v0.14.0",
 			"supports per-call unbounded execution for the harness v0.41.0 presenter/runtime work; the same release set has a one-way harness v0.41.0 floor after attributed or presented journal records are written",

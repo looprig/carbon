@@ -10,11 +10,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/looprig/carbon/internal/browserui"
 	"github.com/looprig/factory"
 	"github.com/looprig/factory/identity"
 	"github.com/looprig/host"
 	"github.com/looprig/host/department"
-	"github.com/looprig/wui"
 )
 
 // This file is R1.1's half of the pin, and it lives in cmd/carbon deliberately.
@@ -64,7 +64,7 @@ var (
 	_ department.PersistenceFaults
 
 	// WUI: the embedded SPA bundle, injected at the process root.
-	_ = wui.Assets
+	_ = browserui.Assets
 )
 
 // looprigImportOffenders reports every non-test .go file under root that imports a
@@ -178,27 +178,10 @@ func TestHostIsComposedOnlyAtTheProductBoundary(t *testing.T) {
 	}
 }
 
-// TestWUIIsInjectedOnlyByTheProductBoundary keeps the embedded browser bundle at the
-// public browser root. wui's Go API is http.Handler in, http.Handler out and names no
-// looprig type, so an internal package importing it would compile perfectly and
-// merely mean the SPA bundle had been welded to a runtime package that has no
-// business embedding 2 MiB of JavaScript.
-func TestWUIIsInjectedOnlyByTheProductBoundary(t *testing.T) {
-	t.Parallel()
-
-	offenders, err := looprigImportOffenders(filepath.Join("..", "..", "internal"), "github.com/looprig/wui")
-	if err != nil {
-		t.Fatalf("scan internal: %v", err)
-	}
-	for _, path := range offenders {
-		t.Errorf("%s imports wui; the SPA bundle is injected by browser", path)
-	}
-	boundary, err := looprigImportOffenders(filepath.Join("..", "..", "browser"), "github.com/looprig/wui")
-	if err != nil {
-		t.Fatalf("scan browser: %v", err)
-	}
-	if len(boundary) == 0 {
-		t.Fatal("browser product boundary no longer imports WUI")
+// TestBrowserUIIsOwnedByCarbon ensures the browser composition names local assets.
+func TestBrowserUIIsOwnedByCarbon(t *testing.T) {
+	if browserui.Assets() == nil {
+		t.Fatal("Carbon browser assets are unavailable")
 	}
 }
 

@@ -97,3 +97,17 @@ check-vuln:
 check: fmt-check vet check-staticcheck check-gosec check-vuln test build
 
 .PHONY: check check-staticcheck check-gosec check-vuln fmt fmt-check vet test build
+
+# The committed browser bundle is the exact tree //go:embed serves. The release
+# script builds twice into isolated directories, compares path/type/SHA-256,
+# installs atomically enough to roll back, and stages every asset path.
+release-dist:
+	npm ci --prefix web
+	CARBON_BUNDLE_RELEASE=1 node web/scripts/release-dist.mjs npm run build --prefix web -- --outDir {out} --emptyOutDir
+	@echo "OK: reproducible Carbon SPA staged. Commit before release."
+
+dist-reset:
+	git clean -ffdx -- internal/browserui/dist
+	git restore --source=HEAD --staged --worktree -- internal/browserui/dist
+
+.PHONY: release-dist dist-reset
