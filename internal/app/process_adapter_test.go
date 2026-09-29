@@ -395,6 +395,13 @@ func TestProcessAdapterPreparedAccessCarriesGrantedWritePaths(t *testing.T) {
 	adapter := processRunnerAdapter{exec: executor}
 
 	writeTarget := filepath.Join(root, "scoped-write-target.txt")
+	// An exact-path write grant must name an existing regular file: Linux's
+	// Landlock backend cannot represent an exact nonexistent object and
+	// refuses the grant as an unsupported class. This test is about the
+	// WritePaths projection, not creation, so the target exists first.
+	if err := os.WriteFile(writeTarget, nil, 0o600); err != nil {
+		t.Fatalf("create write target: %v", err)
+	}
 	execID := newUUID(t)
 	grant := issueGrant(t, executor, execID.String(), "true", root, "filesystem.write", writeTarget, sandbox.GrantClassFilesystemPathWrite, writeTarget)
 
@@ -681,6 +688,40 @@ func TestProcessAdapterActivitiesChannelClosesBeforeWaitReturns(t *testing.T) {
 
 // --- Step 1: signal mapping and ProcessTerminalReason derivation -----------
 
+// signalUntilTerminal delivers kind and re-delivers it until the process is
+// observed terminal, then returns that terminal result.
+//
+// One delivery is not enough for a cooperative signal sent right after Start.
+// For `sh -c`, dash installs its own SIGINT handler at startup and then
+// execs the command. A SIGINT that lands in that window is recorded by the
+// handler and discarded by the exec, so the command never sees it. This
+// reproduces on Linux under CPU pressure (6 of 150 runs with -race on one
+// CPU) as a 10s Wait timeout. Re-sending is what an interactive user does,
+// and it keeps the assertion on how a signal death is classified, not on
+// the shell's startup timing. Signal is idempotent in the reason it
+// records, and a terminal process ignores it.
+func signalUntilTerminal(t *testing.T, proc tool.Process, kind tool.ProcessSignal) tool.ProcessResult {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if err := proc.Signal(context.Background(), kind); err != nil {
+			t.Fatalf("Signal(%v): %v", kind, err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+		result, err := proc.Wait(ctx)
+		cancel()
+		if err == nil {
+			return result
+		}
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("Wait: %v", err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("process still running 10s after repeated Signal(%v)", kind)
+		}
+	}
+}
+
 func TestProcessAdapterSignalMapsAndDerivesReason(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("signal-death semantics tested here are Unix-specific")
@@ -714,10 +755,7 @@ func TestProcessAdapterSignalMapsAndDerivesReason(t *testing.T) {
 			}
 			defer func() { _ = proc.Close(ctx) }()
 
-			if err := proc.Signal(ctx, tc.kind); err != nil {
-				t.Fatalf("Signal(%v): %v", tc.kind, err)
-			}
-			result := waitProcess(t, proc)
+			result := signalUntilTerminal(t, proc, tc.kind)
 			if result.ExitCode != -1 {
 				t.Fatalf("ExitCode = %d, want -1 (Go's os/exec signal-death convention)", result.ExitCode)
 			}
