@@ -134,12 +134,12 @@ func TestOrchestrationPinsAreTheReleasedOnes(t *testing.T) {
 		why     string
 	}{
 		{
-			"github.com/looprig/core", "v0.12.0",
-			"defines the principal, metadata and attribution capability contract that Factory, Host and harness carry; a stamped command is not readable by the pre-feature stack",
+			"github.com/looprig/core", "v0.13.1",
+			"defines the principal, metadata and attribution capability contract that Factory, Host and harness carry (v0.12.0; a stamped command is not readable by the pre-feature stack) and the hostlink.payload.reference capability (v0.13.0) Factory gates placement of a referenced command body on; v0.13.1 moves grpc to v1.83.2",
 		},
 		{
-			"github.com/looprig/storage", "v0.7.0",
-			"the contract BlobReaderLifecycle is declared in, which sessionstore.Open consults; v0.7.0 makes 'a key and a key extending it with /' a conformance obligation, which the tool-result object index beneath a session's catalog key depends on",
+			"github.com/looprig/storage", "v0.8.0",
+			"the contract BlobReaderLifecycle is declared in, which sessionstore.Open consults; v0.7.0 makes 'a key and a key extending it with /' a conformance obligation, which the tool-result object index beneath a session's catalog key depends on; v0.8.0 adds a/a.<ext> coexistence rows that fsstore v0.6.0 was measured to pass (no Go API change)",
 		},
 		{
 			"github.com/looprig/fsstore", "v0.6.0",
@@ -150,29 +150,29 @@ func TestOrchestrationPinsAreTheReleasedOnes(t *testing.T) {
 			"stores principal and metadata in v3 disposition inbox rows; ONE-WAY: after a v3 row exists, never roll Factory or Host back below sessionstore v0.14.0, whose reader accepts it",
 		},
 		{
-			"github.com/looprig/harness", "v0.41.1",
-			"Admitted carries the principal and create/input metadata; ONE-WAY: once a journal holds a stamped or presented record, or metadata from a browser even without stamping or a presenter, never roll Carbon back below harness v0.41.0",
+			"github.com/looprig/harness", "v0.42.0",
+			"Admitted carries the principal and create/input metadata; v0.42.0 adds tool_use_id/tool_name/elapsed_ms to the ephemeral ToolCallStarted/ToolCallCompleted events the live tool-step previews join to their committed StepDone on (never journaled, not one-way); ONE-WAY: once a journal holds a stamped or presented record, or metadata from a browser even without stamping or a presenter, never roll Carbon back below harness v0.41.0",
 		},
 		{
-			"github.com/looprig/host", "v0.13.0",
-			"RuntimeCommand carries principal and metadata through the strict pre-attempt checks; paired with harness v0.41.0 because a journal containing stamped or presented records cannot be read by older harness",
+			"github.com/looprig/host", "v0.15.0",
+			"RuntimeCommand carries principal and metadata through the strict pre-attempt checks; v0.14.0 applies a command body stored by reference (above 64 KiB) and advertises hostlink.payload.reference, which host.Compose wires unconditionally; v0.15.0 adds LiveTextOptions.IncludeToolSteps and department.LiveOptionsSubscriber, which carbonRuntime implements; paired with harness v0.41.0 because a journal containing stamped or presented records cannot be read by older harness",
 		},
 		{
-			"github.com/looprig/factory", "v0.13.0",
-			"accepts client metadata and can stamp a verified principal with explicit WithPrincipalStamping (not Carbon's default); it refuses an incapable Host before writing a v3 inbox row, whose one-way reader floor is sessionstore v0.14.0",
+			"github.com/looprig/factory", "v0.15.0",
+			"accepts client metadata and can stamp a verified principal with explicit WithPrincipalStamping (not Carbon's default); it refuses an incapable Host before writing a v3 inbox row, whose one-way reader floor is sessionstore v0.14.0; v0.14.0 places a session holding a referenced command body only on a payload-reference-capable Host; v0.15.0 maps identity.RateLimitedError to 429 with Retry-After, which the object-route throttle returns",
 		},
 
 		{
-			"github.com/looprig/inference", "v0.14.0",
+			"github.com/looprig/inference", "v0.14.1",
 			"supports per-call unbounded execution for the harness v0.41.0 presenter/runtime work; the same release set has a one-way harness v0.41.0 floor after attributed or presented journal records are written",
 		},
 		{
-			"github.com/looprig/tools", "v0.14.1",
+			"github.com/looprig/tools", "v0.15.0",
 			// This row read "it ships NO read_tool_result, which is why R1.2 steps
 			// 6-7 were struck" until v0.14.0 shipped the tool. Steps 6-7 are now
 			// met: the pooled serve path registers read_tool_result exactly where
 			// it wires tool-result retention (internal/app/toolresults.go).
-			"read_tool_result (tools.ReadToolResultDefinition, v0.14.0; v0.14.1 re-pins onto harness v0.40.2), registered on the pooled serve path where retention is wired; Bash streams its complete result into the capture sink and declares its capture safety; AskUser declares tool.UserInputReplaySafe (v0.13.0), so an ask_user gate survives failover",
+			"read_tool_result (tools.ReadToolResultDefinition, v0.14.0; v0.14.1 re-pins onto harness v0.40.2; v0.15.0 bounds ProcessOutput to a 32 MiB serialized result), registered on the pooled serve path where retention is wired; Bash streams its complete result into the capture sink and declares its capture safety; AskUser declares tool.UserInputReplaySafe (v0.13.0), so an ask_user gate survives failover",
 		},
 	} {
 		got := requiredVersion(gomod, row.module)
