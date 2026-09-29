@@ -19,11 +19,11 @@ require (
 	github.com/looprig/foreignloops v0.3.4
 	github.com/looprig/fsstore v0.6.0
 	github.com/looprig/harness v0.42.0
-	github.com/looprig/host v0.15.0
+	github.com/looprig/host v0.15.1
 	github.com/looprig/inference v0.14.1
 	github.com/looprig/llm v0.15.1
 	github.com/looprig/mcp v0.7.3
-	github.com/looprig/sandbox v0.9.2
+	github.com/looprig/sandbox v0.9.3
 	github.com/looprig/secrets v0.2.2
 	github.com/looprig/sessionstore v0.14.0
 	github.com/looprig/storage v0.8.0

@@ -154,8 +154,8 @@ func TestOrchestrationPinsAreTheReleasedOnes(t *testing.T) {
 			"Admitted carries the principal and create/input metadata; v0.42.0 adds tool_use_id/tool_name/elapsed_ms to the ephemeral ToolCallStarted/ToolCallCompleted events the live tool-step previews join to their committed StepDone on (never journaled, not one-way); ONE-WAY: once a journal holds a stamped or presented record, or metadata from a browser even without stamping or a presenter, never roll Carbon back below harness v0.41.0",
 		},
 		{
-			"github.com/looprig/host", "v0.15.0",
-			"RuntimeCommand carries principal and metadata through the strict pre-attempt checks; v0.14.0 applies a command body stored by reference (above 64 KiB) and advertises hostlink.payload.reference, which host.Compose wires unconditionally; v0.15.0 adds LiveTextOptions.IncludeToolSteps and department.LiveOptionsSubscriber, which carbonRuntime implements; paired with harness v0.41.0 because a journal containing stamped or presented records cannot be read by older harness",
+			"github.com/looprig/host", "v0.15.1",
+			"RuntimeCommand carries principal and metadata through the strict pre-attempt checks; v0.14.0 applies a command body stored by reference (above 64 KiB) and advertises hostlink.payload.reference, which host.Compose wires unconditionally; v0.15.0 adds LiveTextOptions.IncludeToolSteps and department.LiveOptionsSubscriber, which carbonRuntime implements; v0.15.1 fixes a drain/attach race that could leave a journal lease held after drained; paired with harness v0.41.0 because a journal containing stamped or presented records cannot be read by older harness",
 		},
 		{
 			"github.com/looprig/factory", "v0.15.0",
