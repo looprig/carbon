@@ -165,7 +165,8 @@ route (`GET /v1/sessions/{sid}/objects/{oid}` and `/metadata`, 1 MiB Range
 pages). An object is served only when a committed step in that session's
 journal names it; every other reference answers the same 404 as an absent
 object. Evidence lookups are rate limited per principal and per session
-(a throttled read answers 500, never a false 404). Known limit: a Factory
+(a throttled read answers a retryable 429 with `Retry-After`, never a false
+404). Known limit: a Factory
 that has not cached a capture scans at most 65,536 journal records back from
 the tip, so a capture with more records after it answers 404 although it
 exists; the model's own `read_tool_result` is unaffected. The TUI and headless

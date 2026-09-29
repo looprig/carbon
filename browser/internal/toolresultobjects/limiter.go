@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -25,13 +26,16 @@ import (
 // (bounding what one caller can do across sessions) and the session's
 // (bounding what every caller together can do to one journal).
 //
-// A throttled read is answered with ErrRateLimited, which is deliberately NOT
-// a denial: it does not wrap identity.ErrUnauthorized, so Factory answers it as
-// a policy fault (500) rather than the absent-object 404. Throttling says
-// nothing about whether the object exists, and a 404 would tell a legitimate
-// client its capture is gone.
+// A throttled read is answered with ErrRateLimited joined to Factory's
+// *identity.RateLimitedError, which Factory (>= v0.15.0) answers as a retryable
+// 429 whose Retry-After header is the wait until the refusing bucket next holds
+// a token. It is deliberately NOT a denial: it does not wrap
+// identity.ErrUnauthorized, so it never becomes the absent-object 404.
+// Throttling says nothing about whether the object exists, and a 404 would tell
+// a legitimate client its capture is gone.
 
-// ErrRateLimited reports a throttled evidence lookup. It is not a denial.
+// ErrRateLimited reports a throttled evidence lookup. It is not a denial. A
+// throttle also wraps identity.ErrRateLimited through *identity.RateLimitedError.
 var ErrRateLimited = errors.New("toolresultobjects: object evidence lookups are rate limited; retry later")
 
 // maxRateInterval bounds the refill interval, so a mistyped configuration
@@ -102,14 +106,18 @@ func NewRateLimitedPolicy(next factory.ObjectPolicy, limit RateLimit, now func()
 func (p *RateLimitedPolicy) AuthorizeReference(ctx context.Context, principal identity.Principal, entry sessionstore.CatalogEntry, ref sessionwire.ObjectReference) (sessionstore.ObjectKind, error) {
 	principalKey := "principal\x00" + string(principal.Tenant()) + "\x00" + string(principal.Kind()) + "\x00" + principal.Subject()
 	sessionKey := "session\x00" + string(entry.Record.TenantID) + "\x00" + string(entry.Record.SessionID)
-	if !p.take(principalKey, sessionKey) {
-		return "", fmt.Errorf("%w: session %s", ErrRateLimited, entry.Record.SessionID)
+	if retryAfter, ok := p.take(principalKey, sessionKey); !ok {
+		return "", fmt.Errorf("%w: session %s: %w", ErrRateLimited, entry.Record.SessionID, &identity.RateLimitedError{RetryAfter: retryAfter})
 	}
 	return p.next.AuthorizeReference(ctx, principal, entry, ref)
 }
 
-// take spends one token from every key, or from none of them.
-func (p *RateLimitedPolicy) take(keys ...string) bool {
+// take spends one token from every key, or from none of them. A refusal
+// reports how long until the call could succeed: the latest next-token time
+// among the empty buckets, or, when the key table is full, the time until
+// enough tracked buckets have refilled to be pruned. The wait is at least one
+// nanosecond, so it always reaches Factory as a positive Retry-After.
+func (p *RateLimitedPolicy) take(keys ...string) (time.Duration, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := p.now()
@@ -123,14 +131,18 @@ func (p *RateLimitedPolicy) take(keys ...string) bool {
 	}
 	if len(p.buckets)+missing > p.limit.MaxKeys {
 		p.pruneIdle(now)
-		if len(p.buckets)+missing > p.limit.MaxKeys {
-			return false
+		if excess := len(p.buckets) + missing - p.limit.MaxKeys; excess > 0 {
+			return p.idleWait(now, excess), false
 		}
 	}
+	var wait time.Duration
 	for _, key := range keys {
 		if b, ok := p.buckets[key]; ok && b.tokens < 1 {
-			return false
+			wait = max(wait, p.untilNextToken(b, now))
 		}
+	}
+	if wait > 0 {
+		return wait, false
 	}
 	for _, key := range keys {
 		b, ok := p.buckets[key]
@@ -140,7 +152,29 @@ func (p *RateLimitedPolicy) take(keys ...string) bool {
 		}
 		b.tokens--
 	}
-	return true
+	return 0, true
+}
+
+// untilNextToken is how long an empty bucket waits for its next token, clamped
+// to (0, Interval] so a clock stepped backwards never reports a longer wait.
+func (p *RateLimitedPolicy) untilNextToken(b *bucket, now time.Time) time.Duration {
+	return clampWait(b.last.Add(p.limit.Interval).Sub(now), p.limit.Interval)
+}
+
+// idleWait is how long until excess tracked buckets have refilled to the burst
+// and can be pruned: the excess-th shortest time-to-full.
+func (p *RateLimitedPolicy) idleWait(now time.Time, excess int) time.Duration {
+	waits := make([]time.Duration, 0, len(p.buckets))
+	for _, b := range p.buckets {
+		missing := time.Duration(p.limit.Burst - b.tokens)
+		waits = append(waits, clampWait(b.last.Add(missing*p.limit.Interval).Sub(now), missing*p.limit.Interval))
+	}
+	slices.Sort(waits)
+	return waits[min(excess, len(waits))-1]
+}
+
+func clampWait(wait, ceiling time.Duration) time.Duration {
+	return min(max(wait, time.Nanosecond), max(ceiling, time.Nanosecond))
 }
 
 // refill credits whole intervals since the bucket's last credit, keeping the

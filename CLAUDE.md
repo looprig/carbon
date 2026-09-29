@@ -309,8 +309,9 @@ composes Factory's object route from `browser/internal/toolresultobjects`: an
 `ObjectPolicy` that grants a tool-result object only on a committed `StepDone`
 in that session's runtime journal (every denial wraps `identity.ErrUnauthorized`
 and answers the absent-object 404; a store fault stays 500), behind a
-per-principal and per-session evidence-scan limiter (a throttled read is 500,
-never 404), plus the session-aware resolver and the D7 check that the 8 MiB
+per-principal and per-session evidence-scan limiter (a throttled read returns
+`*identity.RateLimitedError` with the bucket's refill wait, which Factory
+>= v0.15.0 answers as a retryable 429 with `Retry-After`; never 404), plus the session-aware resolver and the D7 check that the 8 MiB
 capture ceiling fits Factory's 64 MiB verification ceiling (composition fails
 otherwise). Known limit (tests gate A3): a Factory that has not cached a capture
 scans at most 65,536 journal records back, so an older capture answers 404

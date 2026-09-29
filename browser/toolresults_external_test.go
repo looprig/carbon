@@ -324,6 +324,35 @@ func TestBrowserServesRetainedToolOutputOnlyToItsSession(t *testing.T) {
 			t.Fatalf("%s = %d %s, want the absent-object 404 %s", name, status, body, absent)
 		}
 	}
+
+	// Forged references past the evidence limiter's burst are THROTTLED, not
+	// denied and not a fault: Factory answers the limiter's
+	// identity.RateLimitedError with a retryable 429 and a Retry-After naming
+	// the bucket's refill (500ms, rounded up to one whole second).
+	throttled := false
+	for range 256 {
+		status, header, body := c.do(http.MethodGet, "/v1/sessions/"+string(big)+"/objects/"+forged, nil, nil)
+		if status == http.StatusNotFound {
+			continue
+		}
+		var answer struct {
+			Error struct {
+				Code      string `json:"code"`
+				Retryable *bool  `json:"retryable"`
+			} `json:"error"`
+		}
+		if status != http.StatusTooManyRequests || json.Unmarshal(body, &answer) != nil || answer.Error.Retryable == nil || !*answer.Error.Retryable || answer.Error.Code != "unavailable" {
+			t.Fatalf("throttled forged read = %d %s, want a retryable 429", status, body)
+		}
+		if got := header.Get("Retry-After"); got != "1" {
+			t.Fatalf("Retry-After = %q, want the refill interval rounded up to 1", got)
+		}
+		throttled = true
+		break
+	}
+	if !throttled {
+		t.Fatal("256 forged reads in a row were never throttled")
+	}
 }
 
 // Start refuses a data directory written before fsstore v0.6.0 with the typed,

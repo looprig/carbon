@@ -80,11 +80,76 @@ func ask(p *RateLimitedPolicy, who identity.Principal, e sessionstore.CatalogEnt
 
 // assertThrottled requires the throttle's own answer: ErrRateLimited, and NOT
 // a denial -- a throttled read is not evidence that the object is absent, so
-// it must never become Factory's absent-object 404.
-func assertThrottled(t *testing.T, kind sessionstore.ObjectKind, err error) {
+// it must never become Factory's absent-object 404. It must carry Factory's
+// identity.RateLimitedError with a positive RetryAfter, which is what turns it
+// into a retryable 429 with a Retry-After header rather than a 500.
+func assertThrottled(t *testing.T, kind sessionstore.ObjectKind, err error) time.Duration {
 	t.Helper()
 	if kind != "" || !errors.Is(err, ErrRateLimited) || errors.Is(err, identity.ErrUnauthorized) {
 		t.Fatalf("AuthorizeReference = (%q, %v), want ErrRateLimited and no denial", kind, err)
+	}
+	var limited *identity.RateLimitedError
+	if !errors.Is(err, identity.ErrRateLimited) || !errors.As(err, &limited) || limited.RetryAfter <= 0 {
+		t.Fatalf("AuthorizeReference = %v, want identity.RateLimitedError with a positive RetryAfter", err)
+	}
+	return limited.RetryAfter
+}
+
+// The throttle names when the bucket that refused it next holds a token, so a
+// client backs off for exactly as long as it must.
+func TestRateLimitedPolicyReportsTheBucketsRetryAfter(t *testing.T) {
+	next := &countingPolicy{}
+	clock := newClock()
+	policy := limited(t, next, RateLimit{Burst: 2, Interval: time.Second, MaxKeys: 64}, clock)
+	alice, bob := subject(t, testTenant, "alice"), subject(t, testTenant, "bob")
+	s1 := sessionEntry(testTenant, "s1")
+	for range 2 {
+		if _, err := ask(policy, alice, s1); err != nil {
+			t.Fatalf("burst call: %v", err)
+		}
+	}
+	clock.Advance(300 * time.Millisecond)
+	kind, err := ask(policy, alice, s1)
+	if got := assertThrottled(t, kind, err); got != 700*time.Millisecond {
+		t.Fatalf("RetryAfter = %s, want the 700ms until the next token", got)
+	}
+	// Bob's own bucket is full; the session's empty one decides the wait.
+	clock.Advance(200 * time.Millisecond)
+	kind, err = ask(policy, bob, s1)
+	if got := assertThrottled(t, kind, err); got != 500*time.Millisecond {
+		t.Fatalf("RetryAfter = %s, want the session bucket's 500ms", got)
+	}
+}
+
+// A full key table names when enough tracked buckets will have refilled to be
+// pruned for the new keys.
+func TestRateLimitedPolicyFullTableRetryAfterIsTheIdleWait(t *testing.T) {
+	next := &countingPolicy{}
+	clock := newClock()
+	policy := limited(t, next, RateLimit{Burst: 2, Interval: time.Second, MaxKeys: 2}, clock)
+	if _, err := ask(policy, subject(t, testTenant, "alice"), sessionEntry(testTenant, "s1")); err != nil {
+		t.Fatalf("first pair: %v", err)
+	}
+	clock.Advance(250 * time.Millisecond)
+	kind, err := ask(policy, subject(t, testTenant, "bob"), sessionEntry(testTenant, "s2"))
+	if got := assertThrottled(t, kind, err); got != 750*time.Millisecond {
+		t.Fatalf("RetryAfter = %s, want the 750ms until both tracked buckets are idle", got)
+	}
+}
+
+// A clock stepped backwards never reports a wait longer than one interval.
+func TestRateLimitedPolicyRetryAfterIsBoundedByTheInterval(t *testing.T) {
+	next := &countingPolicy{}
+	clock := newClock()
+	policy := limited(t, next, RateLimit{Burst: 1, Interval: time.Second, MaxKeys: 64}, clock)
+	who, e := subject(t, testTenant, "alice"), sessionEntry(testTenant, "s1")
+	if _, err := ask(policy, who, e); err != nil {
+		t.Fatalf("first: %v", err)
+	}
+	clock.Advance(-time.Hour)
+	kind, err := ask(policy, who, e)
+	if got := assertThrottled(t, kind, err); got != time.Second {
+		t.Fatalf("RetryAfter = %s, want it clamped to the 1s interval", got)
 	}
 }
 

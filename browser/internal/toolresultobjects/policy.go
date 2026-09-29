@@ -29,7 +29,8 @@
 // (>= v0.11.0) answers with the SAME 404 body as an absent object. A store
 // FAULT is not a refusal: it stays an ordinary error (500), because answering
 // "absent" during an outage would tell a client its capture is gone. A
-// throttled read (ErrRateLimited) is not a refusal either, for the same reason.
+// throttled read (ErrRateLimited, a retryable 429) is not a refusal either, for
+// the same reason.
 //
 // # A known false absence (I2.2 tests gate A3)
 //
