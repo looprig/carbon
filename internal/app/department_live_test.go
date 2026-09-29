@@ -14,14 +14,118 @@ import (
 	"github.com/looprig/harness/pkg/identity"
 	"github.com/looprig/harness/pkg/session"
 	"github.com/looprig/host"
+	"github.com/looprig/host/department"
 )
 
-func TestCarbonHostEnablesTextAndReasoningPreviews(t *testing.T) {
+func TestCarbonHostEnablesTextReasoningAndToolStepPreviews(t *testing.T) {
 	options := carbonHostLiveTextOptions()
-	if options == nil || !options.IncludeReasoning {
-		t.Fatalf("Carbon Host live options = %+v, want text with reasoning", options)
+	if options == nil || !options.IncludeReasoning || !options.IncludeToolSteps {
+		t.Fatalf("Carbon Host live options = %+v, want text with reasoning and tool steps", options)
 	}
 	var _ *host.LiveTextOptions = options
+}
+
+// toolStepDeliveries are one tool call's two ephemeral events, as harness
+// v0.42.0 emits them: joined to the committed StepDone by tool_use_id.
+func toolStepDeliveries(t *testing.T) (event.Delivery, event.Delivery) {
+	t.Helper()
+	header := event.Header{Coordinates: identity.Coordinates{SessionID: mustUUIDForTest(t), LoopID: mustUUIDForTest(t), TurnID: mustUUIDForTest(t), StepID: mustUUIDForTest(t)}}
+	execution := mustUUIDForTest(t)
+	started := event.ToolCallStarted{Header: header, ToolExecutionID: execution, ToolUseID: "toolu_live", ToolName: "Bash", Summary: "ls -la"}
+	completed := event.ToolCallCompleted{Header: header, ToolExecutionID: execution, ToolUseID: "toolu_live", ToolName: "Bash", ElapsedMillis: 42, ResultPreview: "total 0"}
+	return event.Delivery{Event: started}, event.Delivery{Event: completed}
+}
+
+func nextLiveBody(t *testing.T, stream <-chan department.LivePublication) []byte {
+	t.Helper()
+	select {
+	case item, ok := <-stream:
+		if !ok {
+			t.Fatal("live stream closed")
+		}
+		if item.Ephemeral != nil {
+			return item.Ephemeral.Body
+		}
+		if item.Enduring != nil {
+			return item.Enduring.Body
+		}
+		t.Fatalf("live stream yielded %+v", item)
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for a live publication")
+	}
+	return nil
+}
+
+func TestCarbonLiveOptionsForwardToolSteps(t *testing.T) {
+	controller := &liveTestController{subscription: &liveTestSubscription{events: make(chan event.Delivery, 4)}}
+	runtime := &carbonRuntime{controller: controller, scope: LaunchScope{TenantID: "tenant-a", SessionID: "session-a"}}
+	var subscriber department.LiveOptionsSubscriber = runtime
+	stream, err := subscriber.SubscribeLivePublicWith(t.Context(), department.LiveOptions{IncludeToolSteps: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, completed := toolStepDeliveries(t)
+	controller.subscription.events <- started
+	controller.subscription.events <- completed
+	for _, want := range [][]string{
+		{`"type":"ToolCallStarted"`, `"tool_use_id":"toolu_live"`, `"tool_name":"Bash"`, `"summary":"ls -la"`},
+		{`"type":"ToolCallCompleted"`, `"tool_use_id":"toolu_live"`, `"tool_name":"Bash"`, `"elapsed_ms":42`, `"result_preview":"total 0"`},
+	} {
+		body := nextLiveBody(t, stream)
+		for _, member := range want {
+			if !json.Valid(body) || !bytes.Contains(body, []byte(member)) {
+				t.Fatalf("tool step body = %s, want %s", body, member)
+			}
+		}
+	}
+	if got := runtime.DroppedLivePreviews(); got != 0 {
+		t.Fatalf("dropped previews = %d, want 0", got)
+	}
+}
+
+// Without IncludeToolSteps a tool event crosses nothing (and is not a drop:
+// it was never asked for), and reasoning follows its own option.
+func TestCarbonLiveOptionsOmitUnrequestedClasses(t *testing.T) {
+	controller := &liveTestController{subscription: &liveTestSubscription{events: make(chan event.Delivery, 8)}}
+	runtime := &carbonRuntime{controller: controller, scope: LaunchScope{TenantID: "tenant-a", SessionID: "session-a"}}
+	stream, err := runtime.SubscribeLivePublicWith(t.Context(), department.LiveOptions{IncludeReasoning: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, completed := toolStepDeliveries(t)
+	header := event.Header{Coordinates: identity.Coordinates{SessionID: mustUUIDForTest(t), LoopID: mustUUIDForTest(t), TurnID: mustUUIDForTest(t)}}
+	controller.subscription.events <- started
+	controller.subscription.events <- completed
+	controller.subscription.events <- event.Delivery{Event: event.TokenDelta{Header: header, Chunk: &content.ThinkingChunk{Thinking: "reason"}}}
+	controller.subscription.events <- event.Delivery{Event: event.TokenDelta{Header: header, Chunk: &content.TextChunk{Text: "visible"}}}
+	for _, want := range []string{"reason", "visible"} {
+		if body := nextLiveBody(t, stream); !bytes.Contains(body, []byte(want)) || bytes.Contains(body, []byte("ToolCall")) {
+			t.Fatalf("live body = %s, want %q and no tool step", body, want)
+		}
+	}
+	if got := runtime.DroppedLivePreviews(); got != 0 {
+		t.Fatalf("dropped previews = %d, want 0", got)
+	}
+}
+
+// A tool event the projection refuses (no step id) is counted as a drop, not
+// forwarded.
+func TestCarbonLiveOptionsCountUnprojectableToolSteps(t *testing.T) {
+	controller := &liveTestController{subscription: &liveTestSubscription{events: make(chan event.Delivery, 4)}}
+	runtime := &carbonRuntime{controller: controller, scope: LaunchScope{TenantID: "tenant-a", SessionID: "session-a"}}
+	stream, err := runtime.SubscribeLivePublicWith(t.Context(), department.LiveOptions{IncludeToolSteps: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	header := event.Header{Coordinates: identity.Coordinates{SessionID: mustUUIDForTest(t), LoopID: mustUUIDForTest(t), TurnID: mustUUIDForTest(t)}}
+	controller.subscription.events <- event.Delivery{Event: event.ToolCallStarted{Header: header, ToolExecutionID: mustUUIDForTest(t), ToolName: "Bash"}}
+	controller.subscription.events <- event.Delivery{Event: event.TokenDelta{Header: header, Chunk: &content.TextChunk{Text: "after"}}}
+	if body := nextLiveBody(t, stream); !bytes.Contains(body, []byte("after")) {
+		t.Fatalf("live body = %s, want the text after the refused tool step", body)
+	}
+	if got := runtime.DroppedLivePreviews(); got != 1 {
+		t.Fatalf("dropped previews = %d, want the unprojectable tool step counted", got)
+	}
 }
 
 type liveTestSubscription struct{ events chan event.Delivery }

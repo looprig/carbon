@@ -163,8 +163,13 @@ func OpenServePooledHost(ctx context.Context, stores *ServeStorage, cfg ServePoo
 	return &ServePooledHost{service: service, storageOwner: stores, authToken: cfg.AuthToken, bindingID: cfg.StorageBindingID, listener: listener, server: &http.Server{Handler: service.Routes(), ReadHeaderTimeout: 5 * time.Second}, endpoint: endpoint, compatibility: compatibility, listenerDone: make(chan struct{})}, nil
 }
 
+// carbonHostLiveTextOptions streams text, visible reasoning and tool steps to
+// every viewer of a session. Tool steps carry the tool's redacted audit summary
+// and a result preview of at most 2 KiB: the same content the committed step
+// shows moments later. All three share Host's default LiveText budget, and
+// Factory must be >= v0.12.1 (the classed livetail mailbox).
 func carbonHostLiveTextOptions() *host.LiveTextOptions {
-	return &host.LiveTextOptions{IncludeReasoning: true}
+	return &host.LiveTextOptions{IncludeReasoning: true, IncludeToolSteps: true}
 }
 
 // Open already bound the internal listener. Start publishes Host capacity,

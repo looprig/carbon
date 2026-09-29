@@ -428,6 +428,7 @@ var (
 	_ department.PersistenceFaults              = (*carbonRuntime)(nil)
 	_ department.LivePublicationSubscriber      = (*carbonRuntime)(nil)
 	_ department.ReasoningPublicationSubscriber = (*carbonRuntime)(nil)
+	_ department.LiveOptionsSubscriber          = (*carbonRuntime)(nil)
 )
 
 // ID is harness's identity for the launched session.
@@ -616,15 +617,24 @@ func (s *carbonRuntime) SubscribeCommitted(ctx context.Context, _ sessionwire.Ev
 
 // SubscribeLivePublic carries committed and transient public events in their
 // original order. The reasoning variant enables public thinking deltas too.
+// Both delegate to SubscribeLivePublicWith, which Host (>= v0.15.0) prefers.
 func (s *carbonRuntime) SubscribeLivePublic(ctx context.Context) (<-chan department.LivePublication, error) {
-	return s.subscribeLivePublic(ctx, false)
+	return s.SubscribeLivePublicWith(ctx, department.LiveOptions{})
 }
 
 func (s *carbonRuntime) SubscribeLivePublicWithReasoning(ctx context.Context) (<-chan department.LivePublication, error) {
-	return s.subscribeLivePublic(ctx, true)
+	return s.SubscribeLivePublicWith(ctx, department.LiveOptions{IncludeReasoning: true})
 }
 
-func (s *carbonRuntime) subscribeLivePublic(ctx context.Context, includeReasoning bool) (<-chan department.LivePublication, error) {
+// SubscribeLivePublicWith satisfies department.LiveOptionsSubscriber. Text
+// deltas always cross; IncludeReasoning adds visible thinking deltas, and
+// IncludeToolSteps adds harness's public projection of ToolCallStarted and
+// ToolCallCompleted -- the tool's redacted audit summary (never raw
+// arguments), tool_use_id, tool_name, is_error, elapsed_ms and a result
+// preview capped by harness at 2 KiB. Host fits each tool frame under its
+// frame cap, so no size bound is applied here; a tool step the projection
+// refuses, or one that finds the transient queue full, is counted as a drop.
+func (s *carbonRuntime) SubscribeLivePublicWith(ctx context.Context, options department.LiveOptions) (<-chan department.LivePublication, error) {
 	provider, ok := s.controller.(session.CommittedPublicEventProvider)
 	if !ok {
 		return nil, ErrCarbonNoPublications
@@ -689,30 +699,46 @@ func (s *carbonRuntime) subscribeLivePublic(ctx context.Context, includeReasonin
 					enduring++
 					continue
 				}
-				delta, ok := delivery.Event.(event.TokenDelta)
-				if !ok {
+				var projectable event.Event
+				toolStep := false
+				switch value := delivery.Event.(type) {
+				case event.TokenDelta:
+					var preview string
+					switch chunk := value.Chunk.(type) {
+					case *content.TextChunk:
+						if chunk != nil {
+							preview = chunk.Text
+						}
+					case *content.ThinkingChunk:
+						if options.IncludeReasoning && chunk != nil {
+							preview = chunk.Thinking
+						}
+					}
+					if preview == "" {
+						continue
+					}
+					if len(preview) > maxPreviewBytes {
+						s.droppedLivePreviews.Add(1)
+						continue
+					}
+					projectable = value
+				case event.ToolCallStarted, event.ToolCallCompleted:
+					if !options.IncludeToolSteps {
+						continue
+					}
+					projectable, toolStep = value, true
+				default:
 					continue
 				}
-				var preview string
-				switch chunk := delta.Chunk.(type) {
-				case *content.TextChunk:
-					if chunk != nil {
-						preview = chunk.Text
-					}
-				case *content.ThinkingChunk:
-					if includeReasoning && chunk != nil {
-						preview = chunk.Thinking
-					}
-				}
-				if preview == "" {
-					continue
-				}
-				if len(preview) > maxPreviewBytes || transient == transientLimit {
+				if transient == transientLimit {
 					s.droppedLivePreviews.Add(1)
 					continue
 				}
-				projected, err := harnesswire.Project(s.scope.TenantID, s.scope.SessionID, delta)
+				projected, err := harnesswire.Project(s.scope.TenantID, s.scope.SessionID, projectable)
 				if err != nil || projected.Class != harnesswire.PublicEphemeral {
+					if toolStep {
+						s.droppedLivePreviews.Add(1)
+					}
 					continue
 				}
 				publication := sessionwire.EphemeralPublication{TenantID: s.scope.TenantID, SessionID: s.scope.SessionID, Body: projected.Body}
