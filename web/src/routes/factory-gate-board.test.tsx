@@ -216,6 +216,7 @@ function view(overrides: Partial<UseFactorySessionViewResult> = {}): UseFactoryS
     events: [],
     liveText: [],
     liveReasoning: [],
+    liveToolSteps: [],
     coveredThrough: 12,
     error: null,
     earlierState: "idle",

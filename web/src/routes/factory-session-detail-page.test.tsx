@@ -1,7 +1,7 @@
 import { page, userEvent } from "vitest/browser";
 import { expect, test, vi } from "vitest";
 import { render } from "vitest-browser-react";
-import type { FactoryReads } from "@looprig/client";
+import type { FactoryLiveToolStep, FactoryReads } from "@looprig/client";
 import type { UseFactorySessionViewResult } from "@looprig/react";
 import { FactorySessionDetailPage, type FactoryDetailComposer, type FactoryDetailGate } from "./factory-session-detail-page";
 
@@ -23,6 +23,46 @@ test("shows transient text and reasoning, then leaves one durable message", asyn
   await expect.element(page.getByTestId("factory-event-1")).toHaveTextContent("Final answer");
   await expect.element(page.getByTestId("factory-live-text")).not.toBeInTheDocument();
   await expect.element(page.getByTestId("factory-live-reasoning")).not.toBeInTheDocument();
+});
+
+function toolStep(overrides: Partial<FactoryLiveToolStep> = {}): FactoryLiveToolStep {
+  return {
+    phase: "started", loopId: "loop-1", turnId: "turn-1", stepId: "step-1",
+    toolExecutionId: "execution-1", toolUseId: "toolu_1", toolName: "Bash",
+    summary: "ls -la", isError: false, resultPreview: "",
+    ...overrides,
+  };
+}
+
+test("shows a live tool step running, then completed, then leaves only the committed step", async () => {
+  const preview = { loopId: "loop-1", turnId: "turn-1", text: "Let me look" };
+  const { rerender } = await render(<FactorySessionDetailPage sid="session-1" view={view({
+    events: [], liveText: [preview], liveToolSteps: [toolStep()],
+  })} reads={inertReads} gates={[]} />);
+  const line = page.getByTestId("tool-step-line");
+  await expect.element(line).toHaveTextContent("Bash · ls -la");
+  await expect.element(page.getByTestId("factory-live-tool")).toHaveAttribute("data-preview-key", "tool:execution-1");
+  await expect.element(page.getByRole("img", { name: "running" })).toBeInTheDocument();
+  // Nothing to expand while it runs.
+  await expect.element(page.getByTestId("tool-step-toggle")).not.toBeInTheDocument();
+  // Within the turn the tool step follows the text written before the call.
+  const order = [...document.querySelectorAll("[data-testid=factory-live-text], [data-testid=factory-live-tool]")].map((node) => node.getAttribute("data-testid"));
+  expect(order).toStrictEqual(["factory-live-text", "factory-live-tool"]);
+
+  await rerender(<FactorySessionDetailPage sid="session-1" view={view({
+    events: [], liveText: [preview], liveToolSteps: [toolStep({ phase: "completed", isError: true, resultPreview: "permission denied" })],
+  })} reads={inertReads} gates={[]} />);
+  await expect.element(page.getByTestId("tool-step-status")).toHaveTextContent("failed");
+  await userEvent.click(page.getByTestId("tool-step-toggle"));
+  await expect.element(page.getByTestId("tool-step-output")).toHaveTextContent("permission denied");
+
+  await rerender(<FactorySessionDetailPage sid="session-1" view={view({
+    events: [{ event_id: "event-1", journal_seq: 1, body: { type: "StepDone", loop_id: "loop-1", turn_id: "turn-1" } }],
+    liveText: [], liveToolSteps: [],
+  })} reads={inertReads} gates={[]} />);
+  await expect.element(page.getByTestId("factory-event-1")).toBeInTheDocument();
+  await expect.element(page.getByTestId("factory-live-tool")).not.toBeInTheDocument();
+  expect(document.querySelectorAll("[data-testid=tool-step-line]")).toHaveLength(0);
 });
 
 test("shows who sent a message, interrupted, and answered a gate", async () => {
@@ -71,6 +111,7 @@ function view(overrides: Partial<UseFactorySessionViewResult> = {}): UseFactoryS
     gates: { journal_tip: 2, open_gate_count: 0, gates: [] },
     liveText: [],
     liveReasoning: [],
+    liveToolSteps: [],
     events: [
       { event_id: "event-1", journal_seq: 1, body: { type: "TurnStarted" } },
       { event_id: "event-2", journal_seq: 2, body: { type: "SessionIdle" } },

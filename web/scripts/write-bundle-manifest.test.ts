@@ -10,7 +10,7 @@ function temp(): string { const dir = mkdtempSync(join(tmpdir(), "carbon-bundle-
 afterEach(() => { for (const dir of temporary.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 
 test("reads exact installed client and React versions with the client contract snapshot", () => {
-  expect(readBundleInputs(repository)).toEqual({ clientVersion: "0.2.0", reactVersion: "0.2.0", coreVersion: "v0.12.0", sessionwireVersion: 1 });
+  expect(readBundleInputs(repository)).toEqual({ clientVersion: "0.3.0", reactVersion: "0.3.0", coreVersion: "v0.12.0", sessionwireVersion: 1 });
 });
 
 test("refuses a contract snapshot for another installed client", () => {
@@ -27,7 +27,7 @@ test("writes a release marker with all version claims", () => {
   const out = temp();
   writeBundleManifest(out, { repository, release: true });
   expect(JSON.parse(readFileSync(join(out, BUNDLE_MANIFEST_NAME), "utf8"))).toEqual({
-    client_version: "0.2.0", core_version: "v0.12.0", react_version: "0.2.0", release: true, sessionwire_version: 1,
+    client_version: "0.3.0", core_version: "v0.12.0", react_version: "0.3.0", release: true, sessionwire_version: 1,
   });
 });
 

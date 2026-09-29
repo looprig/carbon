@@ -163,8 +163,8 @@ describe("bundle manifest plugin", () => {
     runPlugin(out, {});
     expect(writtenManifest(out)).toEqual({
       core_version: "v0.12.0",
-      client_version: "0.2.0",
-      react_version: "0.2.0",
+      client_version: "0.3.0",
+      react_version: "0.3.0",
       release: false,
       sessionwire_version: 1,
     });

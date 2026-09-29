@@ -319,3 +319,53 @@ test("a capture at exactly the ceiling is admitted and reaches the object plane"
   // before it — which is the whole point: it was not refused by the ceiling.
   await expect.poll(() => plane.objectRequests.map((request) => request.kind)).toStrictEqual(["metadata"]);
 });
+
+test("a live tool step renders running before its StepDone and leaves only the committed step after it", async () => {
+  // Host (IncludeToolSteps) forwards harness's public ToolCallStarted and
+  // ToolCallCompleted inside ordinary ephemeral publications. The page shows
+  // the call as a running tool row at once; the committed StepDone whose
+  // tool_use block carries the same id replaces it in the same render.
+  const LOOP = "66666666-6666-6666-6666-666666666666";
+  const TURN = "77777777-7777-7777-7777-777777777777";
+  const STEP = "88888888-8888-8888-8888-888888888888";
+  const EXECUTION = "99999999-9999-9999-9999-999999999999";
+  const toolFrame = (body: Record<string, unknown>) => ({
+    type: "ephemeral_publication" as const, tenant_id: "tenant-1", session_id: SID,
+    body: {
+      v: 1, session_id: SID, loop_id: LOOP, turn_id: TURN, step_id: STEP,
+      event_id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", created_at: "2026-09-29T12:00:00Z",
+      tool_execution_id: EXECUTION, tool_use_id: "toolu_live", tool_name: "Bash", ...body,
+    },
+  });
+  const plane = new FactoryPlane();
+  plane.setPage(SID, 1, [1]);
+  const app = compose(plane);
+  render(<RouterProvider router={app.router} />);
+  await expect.element(page.getByTestId("factory-event-1")).toBeInTheDocument();
+  const live = await link(app);
+  await expect.poll(() => live.open.length).toBe(1);
+  const subscription = live.open[0]!;
+  await expect.element(page.getByTestId("detail-live-state")).toHaveTextContent("live");
+
+  subscription.deliver(toolFrame({ type: "ToolCallStarted", summary: "go test ./..." }));
+  await expect.element(page.getByTestId("factory-live-tool")).toBeInTheDocument();
+  await expect.element(page.getByTestId("tool-step-summary")).toHaveTextContent("Bash · go test ./...");
+  await expect.element(page.getByRole("img", { name: "running" })).toBeInTheDocument();
+
+  subscription.deliver(toolFrame({ type: "ToolCallCompleted", elapsed_ms: 12, result_preview: "ok  pkg 0.1s" }));
+  await expect.element(page.getByTestId("tool-step-toggle")).toBeInTheDocument();
+  await expect.element(page.getByRole("img", { name: "ok" })).toBeInTheDocument();
+
+  subscription.deliver({
+    type: "enduring_publication", tenant_id: "tenant-1", session_id: SID,
+    event_id: "event-2", journal_seq: 2, covered_through: 2,
+    body: {
+      type: "StepDone", loop_id: LOOP, turn_id: TURN, step_id: STEP,
+      messages: [{ role: "ai", blocks: [{ type: "tool_use", ID: "toolu_live", Name: "Bash", Input: {} }] }],
+    },
+  });
+  await expect.element(page.getByTestId("factory-event-2")).toBeInTheDocument();
+  await expect.element(page.getByTestId("factory-live-tool")).not.toBeInTheDocument();
+  expect(document.querySelectorAll("[data-testid=tool-step-line]")).toHaveLength(0);
+  expect(rendered()).toStrictEqual([1, 2]);
+});

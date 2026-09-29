@@ -4,8 +4,10 @@ import {
   eventPrincipal,
   principalLabel,
   livePreviewKey,
+  liveToolRows,
   placeLivePreviews,
   toolResultCaptures,
+  type FactoryLivePreview,
   type FactoryReads,
   type FactorySessionStatus,
   type GateApprovalAction,
@@ -13,6 +15,7 @@ import {
   type ToolResultCaptureSummary,
 } from "@looprig/client";
 import type { UseFactorySessionViewResult } from "@looprig/react";
+import { ToolCallStep } from "../components/transcript/tool-call-step";
 import { ToolCaptureViewer } from "../components/transcript/tool-capture-viewer";
 import { Composer } from "../components/composer";
 import { causeCommandId, type SentInput } from "../lib/own-commands";
@@ -116,7 +119,18 @@ function previewAnchor(body: unknown): { loopId: string; turnId: string } {
   };
 }
 
-function LivePreview({ preview }: { preview: { kind: "text" | "reasoning"; loopId: string; turnId: string; text: string } }): React.JSX.Element {
+/**
+ * One transient preview. A live tool step (Host's IncludeToolSteps) renders as
+ * the same tool row a committed step does: running until its Completed frame
+ * lands, then ok/failed with its bounded result preview. The committed
+ * StepDone replaces it; the preview is never history.
+ */
+function LivePreview({ preview }: { preview: FactoryLivePreview }): React.JSX.Element {
+  if (preview.kind === "tool") {
+    return <div data-testid="factory-live-tool" data-preview-key={livePreviewKey(preview)} className="mb-2">
+      <ToolCallStep row={preview.row} />
+    </div>;
+  }
   return <article
     data-testid={preview.kind === "text" ? "factory-live-text" : "factory-live-reasoning"}
     data-preview-key={livePreviewKey(preview)}
@@ -142,7 +156,10 @@ export function FactorySessionDetailPage({ sid, view, reads, gates, onGateRespon
     );
   }
 
-  const previews = placeLivePreviews(view.events.map((event) => previewAnchor(event.body)), 0, view.events.length, view.liveText, view.liveReasoning);
+  const previews = placeLivePreviews(
+    view.events.map((event) => previewAnchor(event.body)), 0, view.events.length,
+    view.liveText, view.liveReasoning, liveToolRows(view.liveToolSteps),
+  );
 
   return (
     <main className="flex h-dvh flex-col">
