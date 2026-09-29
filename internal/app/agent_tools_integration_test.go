@@ -274,12 +274,30 @@ func TestAgentToolsNativeACPSchemaUsesConfiguredModelEfforts(t *testing.T) {
 		if err := json.Unmarshal(start.Schema, &schema); err != nil {
 			return nil, fmt.Errorf("decode StartAgent schema: %w", err)
 		}
-		efforts, ok := findNativeModelEfforts(schema, "native-model")
+		// harness v0.42.1 publishes a flat schema: model and effort carry the
+		// union of values any agent accepts, and the per-model efforts are
+		// listed in the tool description and enforced when the call is prepared.
+		root, ok := schema.(map[string]any)
 		if !ok {
-			return nil, fmt.Errorf("StartAgent schema omitted native model effort branch: %s", start.Schema)
+			return nil, fmt.Errorf("StartAgent schema is not an object: %s", start.Schema)
 		}
-		if !slices.Equal(efforts, []string{"medium", "high"}) {
-			return nil, fmt.Errorf("native model efforts = %v, want [medium high]", efforts)
+		for _, combinator := range []string{"oneOf", "anyOf", "allOf", "not"} {
+			if _, present := root[combinator]; present {
+				return nil, fmt.Errorf("StartAgent schema has a root %s: %s", combinator, start.Schema)
+			}
+		}
+		models := schemaPropertyEnum(root, "model")
+		if !slices.Contains(models, "native-model") {
+			return nil, fmt.Errorf("StartAgent model enum = %v, want it to offer native-model", models)
+		}
+		efforts := schemaPropertyEnum(root, "effort")
+		for _, want := range []string{"medium", "high"} {
+			if !slices.Contains(efforts, want) {
+				return nil, fmt.Errorf("StartAgent effort enum = %v, want it to offer %s", efforts, want)
+			}
+		}
+		if !strings.Contains(start.Description, "native-model") {
+			return nil, fmt.Errorf("StartAgent description does not list native-model: %s", start.Description)
 		}
 		return finalText("schema verified"), nil
 	}
@@ -337,47 +355,17 @@ func TestAgentToolsNativeACPSchemaUsesFriendlyNativeAliases(t *testing.T) {
 	}
 }
 
-func findNativeModelEfforts(value any, alias string) ([]string, bool) {
-	object, ok := value.(map[string]any)
-	if !ok {
-		if list, ok := value.([]any); ok {
-			for _, item := range list {
-				if efforts, found := findNativeModelEfforts(item, alias); found {
-					return efforts, true
-				}
-			}
-		}
-		return nil, false
-	}
-	if properties, ok := object["properties"].(map[string]any); ok {
-		modelProperty, modelOK := properties["model"].(map[string]any)
-		effortProperty, effortOK := properties["effort"].(map[string]any)
-		modelMatches := modelProperty["const"] == alias
-		if values, ok := modelProperty["enum"].([]any); ok && len(values) == 1 && values[0] == alias {
-			modelMatches = true
-		}
-		if modelOK && effortOK && modelMatches {
-			values, ok := effortProperty["enum"].([]any)
-			if !ok {
-				return nil, false
-			}
-			efforts := make([]string, 0, len(values))
-			for _, value := range values {
-				text, ok := value.(string)
-				if !ok {
-					return nil, false
-				}
-				efforts = append(efforts, text)
-			}
-			return efforts, true
+func schemaPropertyEnum(root map[string]any, name string) []string {
+	properties, _ := root["properties"].(map[string]any)
+	property, _ := properties[name].(map[string]any)
+	values, _ := property["enum"].([]any)
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if text, ok := value.(string); ok {
+			out = append(out, text)
 		}
 	}
-	for _, child := range object {
-		if efforts, found := findNativeModelEfforts(child, alias); found {
-			return efforts, true
-		}
-	}
-	return nil, false
+	return out
 }
 
 func TestAssembledStartAgentPlainPayloadUsesLoopRigNativeDefault(t *testing.T) {
