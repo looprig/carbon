@@ -1,5 +1,12 @@
 // Package browser composes Carbon's public Factory surface over its local Host.
 // Credentials and browser authentication remain the embedding application's job.
+//
+// The embedding application's main must call sandbox.Init
+// (github.com/looprig/sandbox) as its very first statement. Start builds
+// sandboxed command executors, and on Linux the sandbox refuses to construct
+// one without a prior Init, so Start fails with sandbox's ErrInitNotCalled
+// message. Init is a no-op on other platforms. A test binary that calls Start
+// needs the same call as the first statement of its TestMain.
 package browser
 
 import (

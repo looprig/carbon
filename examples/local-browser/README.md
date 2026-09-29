@@ -14,6 +14,13 @@ least `identity.MinCSRFSharedKeyBytes`. Load secrets from your local secret
 provider at startup. This repository supplies no browser login. The stock
 `carbon serve` command refuses browser startup because it has no verifier.
 
+The application's `main` must call `sandbox.Init()` (from
+`github.com/looprig/sandbox`) as its very first statement, before any flag
+parsing or goroutines. `browser.Start` builds sandboxed command executors, and on
+Linux they refuse to construct without it (`sandbox: Init() was not called`).
+It is a no-op elsewhere. A test binary that calls `browser.Start` needs the same
+call first in its `TestMain` (see `main_test.go`).
+
 Inside an application that has already constructed those dependencies:
 
 ```go
