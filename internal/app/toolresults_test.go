@@ -255,13 +255,13 @@ func TestServeRuntimeObjectsAndEvidenceAreServedTenantOnly(t *testing.T) {
 	if objects, ok := reader.RuntimeObjects("other"); ok || objects != nil {
 		t.Fatalf("RuntimeObjects(other) = (%v, %v), want a refusal", objects, ok)
 	}
-	if evidence, ok := reader.RuntimeEvidence("other"); ok || evidence != nil {
-		t.Fatalf("RuntimeEvidence(other) = (%v, %v), want a refusal", evidence, ok)
+	if evidence, ok, err := reader.RuntimeEvidence("other"); ok || evidence != nil || err != nil {
+		t.Fatalf("RuntimeEvidence(other) = (%v, %v, %v), want a refusal", evidence, ok, err)
 	}
-	evidence, ok := reader.RuntimeEvidence("local")
+	evidence, ok, evidenceErr := reader.RuntimeEvidence("local")
 	journal, err := launcher.JournalStoreForTenant("local")
-	if !ok || err != nil || evidence != journal {
-		t.Fatalf("RuntimeEvidence(local) = (%p, %v), want the rig's own journal store %p (%v)", evidence, ok, journal, err)
+	if !ok || evidenceErr != nil || err != nil || evidence != journal {
+		t.Fatalf("RuntimeEvidence(local) = (%p, %v, %v), want the rig's own journal store %p (%v)", evidence, ok, evidenceErr, journal, err)
 	}
 	objects, ok := reader.RuntimeObjects("local")
 	if !ok || objects == nil {

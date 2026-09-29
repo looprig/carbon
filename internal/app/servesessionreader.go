@@ -188,16 +188,20 @@ func (e *ServeObjectScopeError) Error() string {
 // store its rigs journal into and retain tool-result objects through, so the
 // object policy's committed-journal evidence (LookupToolResultCapture) and its
 // positive cache are the runtime's own. Every other tenant is refused before
-// any backend is opened.
-func (r *ServeSessionReader) RuntimeEvidence(tenant sessionwire.TenantID) (*harnessstore.Store, bool) {
+// any backend is opened; a served tenant's store-open fault is returned as an
+// error so the object route does not mistake it for an absent capture.
+func (r *ServeSessionReader) RuntimeEvidence(tenant sessionwire.TenantID) (*harnessstore.Store, bool, error) {
 	if tenant != r.served {
-		return nil, false
+		return nil, false, nil
 	}
 	store, err := r.launcher.JournalStoreForTenant(tenant)
-	if err != nil || store == nil {
-		return nil, false
+	if err != nil {
+		return nil, false, err
 	}
-	return store, true
+	if store == nil {
+		return nil, false, fmt.Errorf("carbon: runtime evidence store unavailable")
+	}
+	return store, true, nil
 }
 
 // RuntimeObjects answers the served tenant's runtime object reader for

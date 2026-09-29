@@ -2,10 +2,15 @@ package browser
 
 import (
 	"context"
+	"errors"
 	"testing"
 
+	"github.com/looprig/carbon/browser/internal/toolresultobjects"
 	carbon "github.com/looprig/carbon/internal/app"
+	sessionwire "github.com/looprig/core/sessionwire/v1"
+	"github.com/looprig/core/uuid"
 	"github.com/looprig/factory"
+	"github.com/looprig/factory/identity"
 	"github.com/looprig/sessionstore"
 )
 
@@ -48,5 +53,42 @@ func TestToolResultObjectConfigServesTheServedTenantOnly(t *testing.T) {
 	}
 	if _, err := toolResultObjectOptions(reader, FactoryConfig{StorageBindingID: "carbon-local-v1", BindingVersion: "v1"}); err != nil {
 		t.Fatalf("toolResultObjectOptions: %v", err)
+	}
+}
+
+func TestToolResultEvidenceDistinguishesAbsentCaptureFromStoreFault(t *testing.T) {
+	ctx := context.Background()
+	launcher, err := carbon.OpenPooledLauncher(ctx, carbon.Config{HomeDir: t.TempDir()}, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = launcher.Close(ctx) })
+	reader, err := carbon.NewServeSessionReader(&sessionstore.Store{}, launcher, "local", "carbon-local-v1", "v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := toolResultObjectConfig(reader, FactoryConfig{StorageBindingID: "carbon-local-v1", BindingVersion: "v1"})
+	policy, err := toolresultobjects.NewPolicy(cfg.Binding, cfg.Evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal, err := identity.NewPrincipal("local", "user", identity.KindActor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := uuid.MustParse("5f0c2f5e-8d0a-4c55-9d7b-3c1a0e4b2a11")
+	entry := sessionstore.CatalogEntry{Record: sessionstore.CatalogRecord{
+		TenantID: "local", SessionID: "public-session",
+		Binding: sessionstore.SessionBinding{StorageBindingID: cfg.Binding.StorageBindingID, BindingVersion: cfg.Binding.BindingVersion, RuntimeSessionID: runtime.String()},
+	}}
+	ref := sessionwire.ObjectReference{ObjectID: "v1:tool-result:1:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}
+	if _, err := policy.AuthorizeReference(ctx, principal, entry, ref); !errors.Is(err, identity.ErrUnauthorized) || !errors.Is(err, toolresultobjects.ErrNoEvidence) {
+		t.Fatalf("absent capture = %v, want absent-object refusal (404)", err)
+	}
+	if err := launcher.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := policy.AuthorizeReference(ctx, principal, entry, ref); err == nil || errors.Is(err, identity.ErrUnauthorized) {
+		t.Fatalf("store fault = %v, want internal error (500), not absent-object refusal", err)
 	}
 }

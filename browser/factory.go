@@ -10,8 +10,10 @@ import (
 	carbon "github.com/looprig/carbon/internal/app"
 	"github.com/looprig/carbon/internal/browserui"
 	sessionwire "github.com/looprig/core/sessionwire/v1"
+	"github.com/looprig/core/uuid"
 	"github.com/looprig/factory"
 	"github.com/looprig/factory/identity"
+	"github.com/looprig/harness/pkg/event"
 	"github.com/looprig/sessionstore"
 )
 
@@ -139,7 +141,10 @@ func toolResultObjectConfig(reader *carbon.ServeSessionReader, cfg FactoryConfig
 	return toolresultobjects.Config{
 		Binding: toolresultobjects.Binding{StorageBindingID: cfg.StorageBindingID, BindingVersion: cfg.BindingVersion},
 		Evidence: func(tenant sessionwire.TenantID) (toolresultobjects.Evidence, bool) {
-			store, ok := reader.RuntimeEvidence(tenant)
+			store, ok, err := reader.RuntimeEvidence(tenant)
+			if err != nil {
+				return faultingEvidence{err: err}, true
+			}
 			if !ok {
 				return nil, false // never a typed-nil Evidence
 			}
@@ -156,6 +161,14 @@ func toolResultObjectConfig(reader *carbon.ServeSessionReader, cfg FactoryConfig
 		Limits:       factory.DefaultObjectLimits(),
 		RateLimit:    toolresultobjects.DefaultRateLimit(),
 	}
+}
+
+// faultingEvidence carries a tenant-store open failure through the policy's
+// evidence interface, where ordinary errors become Factory's internal error.
+type faultingEvidence struct{ err error }
+
+func (e faultingEvidence) LookupToolResultCapture(context.Context, uuid.UUID, sessionwire.ObjectReference) (event.ToolResultCapture, bool, error) {
+	return event.ToolResultCapture{}, false, e.err
 }
 
 func validateFactoryConfig(cfg FactoryConfig) error {

@@ -191,6 +191,68 @@ func TestBoundedBlobsRoundTripsThroughEOF(t *testing.T) {
 	}
 }
 
+type readFailureBlobs struct {
+	storage.Blobs
+	readErr error
+}
+
+func (b readFailureBlobs) Get(context.Context, string) (io.ReadCloser, error) {
+	return io.NopCloser(&readFailureReader{err: b.readErr}), nil
+}
+
+type readFailureReader struct {
+	err  error
+	sent bool
+}
+
+func (r *readFailureReader) Read(p []byte) (int, error) {
+	if !r.sent {
+		r.sent = true
+		return copy(p, "partial blob"), nil
+	}
+	return 0, r.err
+}
+
+func TestBoundedBlobsPropagatesProviderReadError(t *testing.T) {
+	t.Parallel()
+	providerErr := errors.New("provider read failed")
+	bounded := newBoundedBlobs(readFailureBlobs{readErr: providerErr})
+	rc, err := bounded.Get(context.Background(), "blobs/broken")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	defer rc.Close()
+	data, err := io.ReadAll(rc)
+	if string(data) != "partial blob" || !errors.Is(err, providerErr) {
+		t.Fatalf("ReadAll = (%q, %v), want partial bytes and provider error", data, err)
+	}
+}
+
+type getFailureBlobs struct {
+	storage.Blobs
+	err error
+}
+
+func (b getFailureBlobs) Get(context.Context, string) (io.ReadCloser, error) {
+	return nil, b.err
+}
+
+func TestBoundedBlobsReportsGetErrorEagerly(t *testing.T) {
+	t.Parallel()
+	providerErr := errors.New("provider get failed")
+	rc, err := newBoundedBlobs(getFailureBlobs{err: providerErr}).Get(context.Background(), "blobs/missing")
+	if rc != nil || !errors.Is(err, providerErr) {
+		t.Fatalf("Get = (%v, %v), want nil reader and provider error", rc, err)
+	}
+}
+
+func TestBoundedBlobsDeclaresOneSecondCloseBound(t *testing.T) {
+	t.Parallel()
+	if got := newBoundedBlobs(readFailureBlobs{}).BlobReaderCloseBound(); got != time.Second {
+		t.Fatalf("BlobReaderCloseBound = %v, want 1s", got)
+	}
+}
+
 // A wrapper must not narrow what it wraps: harness's PersistencePaths type-asserts
 // storage.PathReporter on the Blobs field, so losing it would silently drop the blob root
 // from carbon's reported persistence paths.
