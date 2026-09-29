@@ -1,7 +1,7 @@
 {
-  "client_version": "0.2.0",
+  "client_version": "0.3.0",
   "core_version": "v0.12.0",
-  "react_version": "0.2.0",
+  "react_version": "0.3.0",
   "release": true,
   "sessionwire_version": 1
 }

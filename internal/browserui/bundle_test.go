@@ -44,8 +44,8 @@ func TestBundleProtocolVersionReadsEmbeddedManifest(t *testing.T) {
 	if got.CoreVersion != "v0.12.0" {
 		t.Errorf("BundleProtocolVersion().CoreVersion = %q, want %q", got.CoreVersion, "v0.12.0")
 	}
-	if got.ProtocolVersion != "0.2.0" {
-		t.Errorf("BundleProtocolVersion().ProtocolVersion = %q, want %q", got.ProtocolVersion, "0.2.0")
+	if got.ProtocolVersion != "0.3.0" {
+		t.Errorf("BundleProtocolVersion().ProtocolVersion = %q, want %q", got.ProtocolVersion, "0.3.0")
 	}
 	if !got.Release {
 		t.Errorf("BundleProtocolVersion().Release = false, want true: the committed bundle is the shipped release artefact (task U6.0-shipdist); run `make dist-reset` if a development build overwrote it")
