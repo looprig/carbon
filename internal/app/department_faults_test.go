@@ -3,14 +3,14 @@ package app
 import (
 	"context"
 	"errors"
-	"sync"
+	"slices"
 	"sync/atomic"
 	"testing"
 
 	sessionwire "github.com/looprig/core/sessionwire/v1"
-	"github.com/looprig/harness/pkg/runtimecommand"
 	"github.com/looprig/harness/pkg/session"
 	"github.com/looprig/host/department"
+	"github.com/looprig/host/harnessruntime"
 )
 
 // ---- host v0.8.0/v0.8.1: department.PersistenceFaults is forwarded ----------
@@ -102,100 +102,105 @@ func TestCarbonRuntimeForwardsPersistenceFaultsFromARealSession(t *testing.T) {
 	}
 }
 
-// TestCarbonRuntimeForwardsTheFaultSignalAndTheAbandon pins what is forwarded,
-// against a controller that records: the SAME channel, the latched fault, and
-// the abandon call with its context.
+// TestCarbonRuntimeForwardsTheFaultSignalAndTheAbandon pins what is forwarded
+// through Carbon's target: the SAME channel the session answers, the latched
+// fault, and the abandon reaching the session.
 func TestCarbonRuntimeForwardsTheFaultSignalAndTheAbandon(t *testing.T) {
 	t.Parallel()
-	controller := newFaultingController()
-	runtime := &carbonRuntime{controller: controller}
-
-	if runtime.PersistenceFaulted() != controller.faulted {
+	ctx := context.Background()
+	fixture := newRealRigFixture(t)
+	var probe *probeController
+	target := mustCarbonTargetOver(t, fixture.wrappedLauncher(func(real session.SessionController) session.SessionController {
+		probe = newProbe(real)
+		probe.faulted = make(chan struct{})
+		return probe
+	}), CarbonCompatibilityID(fixture.cfg))
+	runtime, err := target.Create(ctx, department.CreateRequest{
+		TenantID: "tenant-a", SessionID: "session-a", AgentID: CarbonAgentID,
+		Placement: sessionwire.HostPlacementDedicated, RigSessionID: mustUUIDForTest(t),
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	faults := forwardedFaults(t, runtime)
+	if faults.PersistenceFaulted() != probe.PersistenceFaulted() {
 		t.Fatal("PersistenceFaulted did not forward the session's own channel")
 	}
-	cause := errors.New("journal append failed")
-	controller.latch(cause)
+	probe.inject()
 	select {
-	case <-runtime.PersistenceFaulted():
+	case <-faults.PersistenceFaulted():
 	default:
 		t.Fatal("the forwarded fault channel did not close when the session latched")
 	}
-	if got := runtime.PersistenceFault(); !errors.Is(got, cause) {
+	if got := faults.PersistenceFault(); !errors.Is(got, errInjectedPersistenceFault) {
 		t.Fatalf("PersistenceFault = %v, want the latched cause", got)
 	}
-	if err := runtime.AbandonResidency(context.Background()); err != nil {
+	if err := faults.AbandonResidency(ctx); err != nil {
 		t.Fatalf("AbandonResidency: %v", err)
 	}
-	if controller.abandons.Load() != 1 {
-		t.Fatalf("AbandonResidency reached the session %d times, want 1", controller.abandons.Load())
+	if probe.abandons.Load() != 1 {
+		t.Fatalf("AbandonResidency reached the session %d times, want 1", probe.abandons.Load())
 	}
 }
 
-// TestARuntimeWithoutPersistenceFaultsIsUnsupervisedAndRefusesToAbandon covers
-// a session that offers the capability only in part, or not at all. It is never
-// supervised (a nil channel never fires) and an abandon is REFUSED with an error
-// that reaches department's sentinel, rather than silently succeeding: a
-// runtime that claimed to have abandoned while still holding its lease would
-// let a successor race it.
-func TestARuntimeWithoutPersistenceFaultsIsUnsupervisedAndRefusesToAbandon(t *testing.T) {
+// TestCarbonTargetRefusesASessionMissingEitherPersistenceFaultsHalf is SF3,
+// now enforced by harnessruntime at bind: a session lacking either half of
+// harness's durable-health capability is refused at launch, where the absence
+// can be seen, rather than silently unsupervised — and the refused session is
+// given back without being ended (a nonterminal release when it has one,
+// otherwise a crash-equivalent abandon; never Shutdown, which would make the
+// conversation terminal).
+func TestCarbonTargetRefusesASessionMissingEitherPersistenceFaultsHalf(t *testing.T) {
 	t.Parallel()
+	abandonOnly, releaseOnly := &abandonerOnlyController{}, &releaserOnlyController{}
 	for _, tc := range []struct {
 		name       string
 		controller session.SessionController
+		missing    []string
+		disposed   func() bool
 	}{
-		{"neither half", &closerlessController{}},
-		{"reporter without abandoner", &reporterOnlyController{faulted: make(chan struct{})}},
+		{name: "neither half", controller: &closerlessController{},
+			missing: []string{"session.PersistenceFaultReporter", "session.ResidencyAbandoner"}},
+		{name: "reporter without abandoner", controller: &reporterOnlyController{faulted: make(chan struct{})},
+			missing: []string{"session.ResidencyAbandoner"}},
+		{name: "abandoner without reporter", controller: abandonOnly,
+			missing:  []string{"session.PersistenceFaultReporter"},
+			disposed: func() bool { return abandonOnly.abandons.Load() == 1 }},
+		{name: "releasable but neither half", controller: releaseOnly,
+			missing:  []string{"session.PersistenceFaultReporter", "session.ResidencyAbandoner"},
+			disposed: func() bool { return releaseOnly.releases.Load() == 1 }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			runtime := &carbonRuntime{controller: tc.controller}
-			if runtime.PersistenceFaulted() != nil {
-				t.Fatal("PersistenceFaulted answered a channel for a session that cannot be abandoned")
+			target := mustCarbonTargetOver(t, launcherFunc(func(context.Context, LaunchScope) (session.SessionController, error) {
+				return tc.controller, nil
+			}), department.CompatibilityID("test-build"))
+			got, err := target.Create(context.Background(), department.CreateRequest{
+				TenantID: "tenant-a", SessionID: "session-a", AgentID: CarbonAgentID,
+				Placement: sessionwire.HostPlacementDedicated, RigSessionID: mustUUIDForTest(t),
+			})
+			if got != nil {
+				t.Fatal("a session lacking a PersistenceFaults half was launched")
 			}
-			if err := runtime.PersistenceFault(); err != nil {
-				t.Fatalf("PersistenceFault = %v, want nil", err)
+			var incapable *harnessruntime.IncapableSessionError
+			if !errors.As(err, &incapable) {
+				t.Fatalf("launch = %v, want *harnessruntime.IncapableSessionError", err)
 			}
-			err := runtime.AbandonResidency(context.Background())
-			if !errors.Is(err, ErrCarbonRuntimeCannotAbandon) || !errors.Is(err, department.ErrNoPersistenceFaults) {
-				t.Fatalf("AbandonResidency = %v, want ErrCarbonRuntimeCannotAbandon wrapping department.ErrNoPersistenceFaults", err)
+			for _, want := range tc.missing {
+				if !slices.Contains(incapable.Missing, want) {
+					t.Errorf("refusal names %v, want it to include %q", incapable.Missing, want)
+				}
+			}
+			if tc.disposed != nil && !tc.disposed() {
+				t.Fatal("the refused session was not released")
 			}
 		})
 	}
 }
 
-// faultingController is a session stand-in whose persistence fault a test
-// latches by hand.
-type faultingController struct {
-	session.SessionController
-	faulted  chan struct{}
-	once     sync.Once
-	mu       sync.Mutex
-	cause    error
-	abandons atomic.Int32
-}
-
-func newFaultingController() *faultingController {
-	return &faultingController{faulted: make(chan struct{})}
-}
-
-func (c *faultingController) latch(cause error) {
-	c.once.Do(func() {
-		c.mu.Lock()
-		c.cause = cause
-		c.mu.Unlock()
-		close(c.faulted)
-	})
-}
-
-func (c *faultingController) PersistenceFaulted() <-chan struct{} { return c.faulted }
-func (c *faultingController) PersistenceFault() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.cause
-}
-func (c *faultingController) AbandonResidency(context.Context) error {
-	c.abandons.Add(1)
-	return nil
-}
+// closerlessController is a session.SessionController stand-in that offers no
+// segregated capability at all. It is a DISTINCT TYPE rather than a flag on a
+// fake, because Go method sets are not conditional.
+type closerlessController struct{ session.SessionController }
 
 // reporterOnlyController offers the fault signal but no abandon.
 type reporterOnlyController struct {
@@ -205,110 +210,6 @@ type reporterOnlyController struct {
 
 func (c *reporterOnlyController) PersistenceFaulted() <-chan struct{} { return c.faulted }
 func (c *reporterOnlyController) PersistenceFault() error             { return nil }
-
-// faultInjectingController wraps a REAL launched harness session and replaces
-// only its fault SIGNAL with one a test controls; every other capability,
-// AbandonResidency included, is the real session's. It lets a test drive Host's
-// fault supervision without a real storage outage while proving Host's response
-// reaches harness.
-type faultInjectingController struct {
-	session.SessionController
-	injected chan struct{}
-	once     sync.Once
-	abandons atomic.Int32
-}
-
-func newFaultInjectingController(real session.SessionController) *faultInjectingController {
-	return &faultInjectingController{SessionController: real, injected: make(chan struct{})}
-}
-
-func (c *faultInjectingController) inject() { c.once.Do(func() { close(c.injected) }) }
-
-func (c *faultInjectingController) PersistenceFaulted() <-chan struct{} { return c.injected }
-func (c *faultInjectingController) PersistenceFault() error {
-	select {
-	case <-c.injected:
-		return errInjectedPersistenceFault
-	default:
-		return nil
-	}
-}
-
-// AbandonResidency counts an abandon only once the real one has returned, so a
-// caller that sees the count also sees the lease hand-back it performed.
-func (c *faultInjectingController) AbandonResidency(ctx context.Context) error {
-	defer c.abandons.Add(1)
-	return c.SessionController.(session.ResidencyAbandoner).AbandonResidency(ctx)
-}
-func (c *faultInjectingController) WaitIdle(ctx context.Context) error {
-	return c.SessionController.(session.IdleWaiter).WaitIdle(ctx)
-}
-func (c *faultInjectingController) Done() <-chan struct{} {
-	return c.SessionController.(session.Liveness).Done()
-}
-func (c *faultInjectingController) ReleaseResidency(ctx context.Context) error {
-	return c.SessionController.(session.Releaser).ReleaseResidency(ctx)
-}
-func (c *faultInjectingController) LeaseEpoch() (uint64, bool) {
-	return c.SessionController.(session.LeaseEpochReporter).LeaseEpoch()
-}
-func (c *faultInjectingController) CommittedPublicEvents() (session.CommittedPublicEventSource, bool) {
-	return c.SessionController.(session.CommittedPublicEventProvider).CommittedPublicEvents()
-}
-func (c *faultInjectingController) ApplyRuntimeCommand(ctx context.Context, admitted runtimecommand.Admitted) (runtimecommand.Disposition, error) {
-	return c.SessionController.(runtimecommand.Applier).ApplyRuntimeCommand(ctx, admitted)
-}
-func (c *faultInjectingController) CloseAttempt(ctx context.Context, closure runtimecommand.Closure) (runtimecommand.ClosureResult, error) {
-	return c.SessionController.(runtimecommand.AttemptCloser).CloseAttempt(ctx, closure)
-}
-
-var errInjectedPersistenceFault = errors.New("carbon test: injected persistence fault")
-
-// TestCarbonRigRefusesASessionMissingEitherPersistenceFaultsHalf is SF3: the
-// all-methods adapter hides absence from Host, so the absence is refused where
-// it can be seen — at launch — and the refused session is released without
-// being ended (an abandon when it has one, otherwise a graceful release; never
-// Shutdown, which would make the conversation terminal).
-func TestCarbonRigRefusesASessionMissingEitherPersistenceFaultsHalf(t *testing.T) {
-	t.Parallel()
-	abandonOnly, releaseOnly := &abandonerOnlyController{}, &releaserOnlyController{}
-	for _, tc := range []struct {
-		name                string
-		controller          session.SessionController
-		reporter, abandoner bool
-		disposed            func() bool
-	}{
-		{name: "neither half", controller: &closerlessController{}},
-		{name: "reporter without abandoner", controller: &reporterOnlyController{faulted: make(chan struct{})}, reporter: true},
-		{name: "abandoner without reporter", controller: abandonOnly, abandoner: true,
-			disposed: func() bool { return abandonOnly.abandons.Load() == 1 }},
-		{name: "releasable but neither half", controller: releaseOnly,
-			disposed: func() bool { return releaseOnly.releases.Load() == 1 }},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			rig := &carbonRig{launcher: launcherFunc(func(context.Context, LaunchScope) (session.SessionController, error) {
-				return tc.controller, nil
-			})}
-			got, err := rig.NewSession(context.Background(), department.RigCreateRequest{
-				TenantID: "tenant-a", SessionID: "session-a", AgentID: CarbonAgentID,
-				Placement: sessionwire.HostPlacementPooled, RigSessionID: mustUUIDForTest(t),
-			})
-			if got != nil {
-				t.Fatal("a session lacking a PersistenceFaults half was launched")
-			}
-			var missing *PersistenceFaultsMissingError
-			if !errors.As(err, &missing) || !errors.Is(err, department.ErrNoPersistenceFaults) {
-				t.Fatalf("launch = %v, want *PersistenceFaultsMissingError wrapping department.ErrNoPersistenceFaults", err)
-			}
-			if missing.Reporter != tc.reporter || missing.Abandoner != tc.abandoner {
-				t.Fatalf("refusal names reporter=%t abandoner=%t, want %t/%t", missing.Reporter, missing.Abandoner, tc.reporter, tc.abandoner)
-			}
-			if tc.disposed != nil && !tc.disposed() {
-				t.Fatal("the refused session was not released")
-			}
-		})
-	}
-}
 
 // abandonerOnlyController offers the abandon but no fault signal.
 type abandonerOnlyController struct {

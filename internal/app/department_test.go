@@ -17,6 +17,7 @@ import (
 	"github.com/looprig/harness/pkg/runtimecommand"
 	"github.com/looprig/harness/pkg/session"
 	"github.com/looprig/host/department"
+	"github.com/looprig/host/harnessruntime"
 )
 
 // ---- fixtures --------------------------------------------------------------
@@ -94,6 +95,19 @@ func (f *realRigFixture) launcher() SessionLauncher {
 		f.launched = append(f.launched, controller)
 		f.mu.Unlock()
 		return controller, nil
+	})
+}
+
+// wrappedLauncher is launcher() with every launched controller passed through
+// wrap before Carbon's target sees it; the REAL controller is what is recorded.
+func (f *realRigFixture) wrappedLauncher(wrap func(session.SessionController) session.SessionController) SessionLauncher {
+	inner := f.launcher()
+	return launcherFunc(func(ctx context.Context, scope LaunchScope) (session.SessionController, error) {
+		controller, err := inner.Launch(ctx, scope)
+		if err != nil {
+			return nil, err
+		}
+		return wrap(controller), nil
 	})
 }
 
@@ -363,12 +377,9 @@ func TestCarbonTargetRefusesALaunchUnderTheWrongIdentity(t *testing.T) {
 		// Mints its own id, which is the mistake.
 		return fixture.rig.NewSession(ctx)
 	})
-	target, err := department.NewRigTarget(&carbonRig{launcher: ignoring}, CarbonCompatibilityID(fixture.cfg), carbonCapabilities())
-	if err != nil {
-		t.Fatalf("NewRigTarget: %v", err)
-	}
+	target := mustCarbonTargetOver(t, ignoring, CarbonCompatibilityID(fixture.cfg))
 
-	_, err = target.Create(ctx, department.CreateRequest{
+	_, err := target.Create(ctx, department.CreateRequest{
 		TenantID:     sessionwire.TenantID("tenant-a"),
 		SessionID:    sessionwire.SessionID("session-a"),
 		AgentID:      CarbonAgentID,
@@ -446,7 +457,14 @@ func TestCarbonTargetRestoresAndRefusesAnIncompatibleRuntime(t *testing.T) {
 // mustCarbonTarget builds the Carbon launch target over a fixture's rig.
 func mustCarbonTarget(t *testing.T, fixture *realRigFixture) department.LaunchTarget {
 	t.Helper()
-	dept, err := NewCarbonDepartment(fixture.launcher(), CarbonCompatibilityID(fixture.cfg))
+	return mustCarbonTargetOver(t, fixture.launcher(), CarbonCompatibilityID(fixture.cfg))
+}
+
+// mustCarbonTargetOver builds the Carbon launch target, through the production
+// NewCarbonDepartment, over any launcher.
+func mustCarbonTargetOver(t *testing.T, launcher SessionLauncher, compatibility department.CompatibilityID) department.LaunchTarget {
+	t.Helper()
+	dept, err := NewCarbonDepartment(launcher, compatibility)
 	if err != nil {
 		t.Fatalf("NewCarbonDepartment: %v", err)
 	}
@@ -604,7 +622,7 @@ func TestASuccessorClosesAPredecessorsStrandedAttempt(t *testing.T) {
 	}
 	successorController := fixture.lastLaunched(t)
 
-	if err := closer.CloseAttempt(ctx, strandedCommand, strandedRuntimeCommand, carbonKindInput, strandedAttempt, predecessorEpoch); err != nil {
+	if err := closer.CloseAttempt(ctx, strandedCommand, strandedRuntimeCommand, "input", strandedAttempt, predecessorEpoch); err != nil {
 		t.Fatalf("CloseAttempt: %v", err)
 	}
 
@@ -646,7 +664,7 @@ func TestASuccessorClosesAPredecessorsStrandedAttempt(t *testing.T) {
 	// A REDELIVERED recovery is not a second tombstone. Host may re-offer the
 	// closure after a crash between the write and the acknowledgement, and a second
 	// refusal here would put the session right back where it started.
-	if err := closer.CloseAttempt(ctx, strandedCommand, strandedRuntimeCommand, carbonKindInput, strandedAttempt, predecessorEpoch); err != nil {
+	if err := closer.CloseAttempt(ctx, strandedCommand, strandedRuntimeCommand, "input", strandedAttempt, predecessorEpoch); err != nil {
 		t.Fatalf("CloseAttempt (redelivered): %v, want the original closure replayed", err)
 	}
 
@@ -656,7 +674,7 @@ func TestASuccessorClosesAPredecessorsStrandedAttempt(t *testing.T) {
 	// assertion above, measured against the real dependency instead of a double: the
 	// two together are what make "the adapter reports what harness decided" a fact.
 	err = closer.CloseAttempt(ctx, sessionwire.CommandID("command-not-earlier"), mustUUIDForTest(t),
-		carbonKindInput, "attempt-not-earlier", successorEpoch)
+		"input", "attempt-not-earlier", successorEpoch)
 	if err == nil {
 		t.Fatal("a closure at the runtime's OWN grant was reported successful; host would settle the record with no tombstone written")
 	}
@@ -666,64 +684,73 @@ func TestASuccessorClosesAPredecessorsStrandedAttempt(t *testing.T) {
 	}
 }
 
-// TestARuntimeWithNoCloserRefusesRatherThanConcluding is the falsifier for the case
-// above. A composition whose session cannot write a closure must REFUSE, naming the
-// missing capability — never decide the command's fate without the evidence a
-// closure would have produced.
+// TestCarbonTargetRefusesASessionThatCannotCloseAnAttempt is the falsifier for
+// the case above, moved to where harnessruntime now makes it: at LAUNCH.
 //
-// The refusal is also what makes the capability's absence diagnosable at all. Host's
-// own adapter answers department.ErrNoAttemptCloser for a runtime that offers none;
-// this adapter always offers the METHOD (it is a product, and it knows what it
-// composed), so the distinction moves into the error, exactly as department's own
-// sentinel doc describes for the same reason.
-func TestARuntimeWithNoCloserRefusesRatherThanConcluding(t *testing.T) {
+// Carbon's target declares department.Recovery.AttemptCloser, and a session
+// whose runtime-command applier cannot write a recovery closure would make that
+// declaration false — a successor on it could never free a stranded attempt,
+// and that session's whole command stream would block behind it. So the target
+// refuses such a session before Host ever sees it, naming the capability, and
+// gives the session back.
+func TestCarbonTargetRefusesASessionThatCannotCloseAnAttempt(t *testing.T) {
 	t.Parallel()
+	ctx := context.Background()
 
-	runtime := &carbonRuntime{controller: &closerlessController{}}
-	err := runtime.CloseAttempt(context.Background(),
-		sessionwire.CommandID("command-1"), mustUUIDForTest(t), carbonKindInput, "attempt-1", 1)
-	if !errors.Is(err, ErrCarbonRuntimeCannotClose) {
-		t.Fatalf("CloseAttempt on a closerless runtime = %v, want ErrCarbonRuntimeCannotClose", err)
+	fixture := newRealRigFixture(t)
+	var probe *probeController
+	target := mustCarbonTargetOver(t, fixture.wrappedLauncher(func(real session.SessionController) session.SessionController {
+		probe = newProbe(real)
+		return closerlessProbe{probe}
+	}), CarbonCompatibilityID(fixture.cfg))
+	runtime, err := target.Create(ctx, department.CreateRequest{
+		TenantID: "tenant-a", SessionID: "session-a", AgentID: CarbonAgentID,
+		Placement: sessionwire.HostPlacementDedicated, RigSessionID: mustUUIDForTest(t),
+	})
+	if runtime != nil {
+		t.Fatal("a session that cannot close a stranded attempt was launched under a target declaring AttemptCloser")
 	}
-	// AND IT MUST REACH HOST'S "no closer" ARM. host's disposition applier branches
-	// on department.ErrNoAttemptCloser and has a case written for exactly this
-	// composition shape — a composed runtime that declares the method for every
-	// runtime, so an absent closer arrives as a refusal rather than a failed type
-	// assertion. An unwrapped sentinel falls into the default arm and surfaces as
-	// RefusalStore, "ambiguous durable-store failure", which sends a composer to read
-	// the store for a composition problem.
-	if !errors.Is(err, department.ErrNoAttemptCloser) {
-		t.Fatalf("CloseAttempt on a closerless runtime = %v, which does not wrap department.ErrNoAttemptCloser; host will report it as an ambiguous store failure", err)
+	var incapable *harnessruntime.IncapableSessionError
+	if !errors.As(err, &incapable) || !strings.Contains(strings.Join(incapable.Missing, ","), "runtimecommand.AttemptCloser") {
+		t.Fatalf("Create = %v, want *harnessruntime.IncapableSessionError naming runtimecommand.AttemptCloser", err)
+	}
+	if _, held := probe.LeaseEpoch(); held {
+		t.Fatal("the refused session still holds its journal lease; no successor could hydrate it")
 	}
 }
 
-// closerlessController is a session.SessionController stand-in that offers neither
-// the applier nor the closer. It is a DISTINCT TYPE rather than a flag on a fake,
-// because Go method sets are not conditional: a single struct with a nil func field
-// would satisfy every assertion and the discovery would never be exercised.
-type closerlessController struct{ session.SessionController }
-
-// recordingCloserController offers a closure that RECORDS what it was handed and
-// answers from a script.
-//
-// It is PERMISSIVE by default, and that is what makes it useful. harness's own closer
-// validates and fences, so against a real session a malformed or misdirected closure
-// errs either way and a test asserting only "an error happened" cannot tell which
-// layer refused — nor can it see what the adapter actually forwarded, since
-// department.AttemptCloser returns only an error. Here the runtime accepts
-// everything, so what is recorded IS what the adapter built.
-type recordingCloserController struct {
-	session.SessionController
-	calls    []runtimecommand.Closure
-	failWith error
+// closeProbeTarget launches one real session through Carbon's target with a
+// probe whose closer records and answers from the test instead of harness.
+func closeProbeTarget(t *testing.T, configure func(*probeController)) (department.Runtime, *probeController) {
+	t.Helper()
+	fixture := newRealRigFixture(t)
+	var probe *probeController
+	target := mustCarbonTargetOver(t, fixture.wrappedLauncher(func(real session.SessionController) session.SessionController {
+		probe = newProbe(real)
+		probe.stubClose = true
+		if configure != nil {
+			configure(probe)
+		}
+		return probe
+	}), CarbonCompatibilityID(fixture.cfg))
+	runtime, err := target.Create(context.Background(), department.CreateRequest{
+		TenantID: "tenant-a", SessionID: "session-a", AgentID: CarbonAgentID,
+		Placement: sessionwire.HostPlacementDedicated, RigSessionID: mustUUIDForTest(t),
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	t.Cleanup(func() { _ = runtime.ReleaseResidency(context.Background()) })
+	return runtime, probe
 }
 
-func (c *recordingCloserController) CloseAttempt(_ context.Context, closure runtimecommand.Closure) (runtimecommand.ClosureResult, error) {
-	c.calls = append(c.calls, closure)
-	if c.failWith != nil {
-		return runtimecommand.ClosureResult{}, c.failWith
+func mustCloser(t *testing.T, runtime department.Runtime) department.AttemptCloser {
+	t.Helper()
+	closer, ok := runtime.(department.AttemptCloser)
+	if !ok {
+		t.Fatal("the adapted runtime is not a department.AttemptCloser")
 	}
-	return runtimecommand.ClosureResult{Appended: true, Sequence: uint64(len(c.calls))}, nil
+	return closer
 }
 
 // TestCloseAttemptForwardsTheCallersIdentities proves the tombstone is about the
@@ -740,21 +767,19 @@ func (c *recordingCloserController) CloseAttempt(_ context.Context, closure runt
 func TestCloseAttemptForwardsTheCallersIdentities(t *testing.T) {
 	t.Parallel()
 
-	controller := &recordingCloserController{}
-	runtime := &carbonRuntime{controller: controller}
-
+	runtime, probe := closeProbeTarget(t, nil)
 	command := sessionwire.CommandID("command-forwarded-1")
 	runtimeCommand := mustUUIDForTest(t)
 	const attempt = "attempt-forwarded-1"
 	const attemptEpoch = uint64(7)
 
-	if err := runtime.CloseAttempt(context.Background(), command, runtimeCommand, carbonKindGateResponse, attempt, attemptEpoch); err != nil {
+	if err := mustCloser(t, runtime).CloseAttempt(context.Background(), command, runtimeCommand, "gate_response", attempt, attemptEpoch); err != nil {
 		t.Fatalf("CloseAttempt: %v", err)
 	}
-	if len(controller.calls) != 1 {
-		t.Fatalf("the runtime's closer saw %d closures, want exactly 1", len(controller.calls))
+	calls := probe.recordedClosures()
+	if len(calls) != 1 {
+		t.Fatalf("the runtime's closer saw %d closures, want exactly 1", len(calls))
 	}
-	got := controller.calls[0]
 	want := runtimecommand.Closure{
 		CommandID:           runtimecommand.CommandID(command),
 		RuntimeCommandID:    runtimeCommand,
@@ -762,29 +787,28 @@ func TestCloseAttemptForwardsTheCallersIdentities(t *testing.T) {
 		AttemptID:           runtimecommand.AttemptID(attempt),
 		AttemptJournalEpoch: attemptEpoch,
 	}
-	if got != want {
-		t.Errorf("the forwarded closure is %+v, want %+v", got, want)
+	if calls[0] != want {
+		t.Errorf("the forwarded closure is %+v, want %+v", calls[0], want)
 	}
 }
 
 // TestCloseAttemptPropagatesTheRuntimesRefusal is the assertion host's applier
-// depends on and the suite previously did not make.
+// depends on.
 //
 // host reads a nil error from this method as "the tombstone is durable" and settles
 // the record. So an adapter that discarded harness's refusal would make Host settle a
 // command with NOTHING written — and the row that matters most is ErrEnduringEffect,
 // where the predecessor's effect COMMITTED and only its evidence is missing. Settling
-// `not_applied` there durably denies work the user actually received, and it is the
-// one error in this protocol that can never be recovered from.
-//
-// Each row asserts the error arrives UNWRAPPED ENOUGH to branch on, because host
-// branches on the type, not on a message.
+// `not_applied` there durably denies work the user actually received. harnessruntime
+// also joins department.ErrEnduringEffect to that row, which is the arm Host branches
+// on (the hand-written Carbon adapter did not).
 func TestCloseAttemptPropagatesTheRuntimesRefusal(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range []struct {
-		name string
-		err  error
+		name     string
+		err      error
+		enduring bool
 	}{
 		{
 			"an enduring effect: the predecessor's work committed and only its evidence is missing",
@@ -794,6 +818,7 @@ func TestCloseAttemptPropagatesTheRuntimesRefusal(t *testing.T) {
 				RuntimeCommandID: mustUUIDForTest(t),
 				EffectSeq:        4,
 			},
+			true,
 		},
 		{
 			"a grant that is not strictly later",
@@ -803,42 +828,36 @@ func TestCloseAttemptPropagatesTheRuntimesRefusal(t *testing.T) {
 				Current:             2,
 				Held:                true,
 			},
+			false,
 		},
 		{
 			"an unreadable journal",
 			errors.New("runtimecommand: the journal could not be fully read"),
+			false,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			controller := &recordingCloserController{failWith: tc.err}
-			runtime := &carbonRuntime{controller: controller}
-
-			err := runtime.CloseAttempt(context.Background(),
-				sessionwire.CommandID("command-1"), mustUUIDForTest(t), carbonKindInput, "attempt-1", 1)
+			runtime, _ := closeProbeTarget(t, func(p *probeController) { p.closeErr = tc.err })
+			err := mustCloser(t, runtime).CloseAttempt(context.Background(),
+				sessionwire.CommandID("command-1"), mustUUIDForTest(t), "input", "attempt-1", 1)
 			if err == nil {
 				t.Fatal("the refusal was reported as success; host would settle the record with no tombstone written")
 			}
 			if !errors.Is(err, tc.err) {
 				t.Errorf("CloseAttempt = %v, want the runtime's own refusal carried through", err)
 			}
+			if got := errors.Is(err, department.ErrEnduringEffect); got != tc.enduring {
+				t.Errorf("errors.Is(err, department.ErrEnduringEffect) = %t, want %t", got, tc.enduring)
+			}
 		})
 	}
 }
 
-// TestCloseAttemptValidatesBeforeTouchingTheRuntime is the falsifier for the
-// adapter's own Closure.Validate call, and it needs a permissive runtime to make.
-//
-// A tombstone is the one record that must never be written on a caller's say-so, and
-// an adapter that forwarded an unvalidated closure would be relying on a guard in
-// another module to hold a rule this one states. Here the runtime would ACCEPT every
-// row, so only the adapter's own check can produce the refusal — and the assertion
-// that the closer was NOT CALLED is what makes that specific.
-//
-// The unknown-kind row is here rather than against a real session for exactly this
-// reason. Against a real session it passed on harness's EPOCH fence (author grant 1
-// against attempt epoch 1), not on the kind check it claimed to test: a vacuous row
-// that would have stayed green with the kind forwarding removed.
+// TestCloseAttemptValidatesBeforeTouchingTheRuntime proves a malformed closure
+// is refused before the runtime's closer is called. The runtime here would ACCEPT
+// every row, so only the adapter's own Closure.Validate can produce the refusal —
+// and the assertion that the closer was NOT CALLED is what makes that specific.
 func TestCloseAttemptValidatesBeforeTouchingTheRuntime(t *testing.T) {
 	t.Parallel()
 
@@ -847,39 +866,59 @@ func TestCloseAttemptValidatesBeforeTouchingTheRuntime(t *testing.T) {
 		kind    string
 		attempt string
 	}{
-		{"no attempt id", carbonKindInput, ""},
+		{"no attempt id", "input", ""},
 		{"a kind neither vocabulary has ever held", "carbon_no_such_kind", "attempt-1"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			controller := &recordingCloserController{}
-			runtime := &carbonRuntime{controller: controller}
-
-			if err := runtime.CloseAttempt(context.Background(),
+			runtime, probe := closeProbeTarget(t, nil)
+			if err := mustCloser(t, runtime).CloseAttempt(context.Background(),
 				sessionwire.CommandID("command-1"), mustUUIDForTest(t), tc.kind, tc.attempt, 1); err == nil {
 				t.Fatal("the closure was accepted; it could tombstone the wrong command")
 			}
-			if len(controller.calls) != 0 {
-				t.Errorf("the runtime's closer was called %d times for a malformed closure, want 0: the adapter must refuse before the runtime is touched", len(controller.calls))
+			if calls := probe.recordedClosures(); len(calls) != 0 {
+				t.Errorf("the runtime's closer was called %d times for a malformed closure, want 0", len(calls))
 			}
 		})
 	}
 
-	controller := &recordingCloserController{}
-	runtime := &carbonRuntime{controller: controller}
-	if err := runtime.CloseAttempt(context.Background(),
-		sessionwire.CommandID("command-1"), mustUUIDForTest(t), carbonKindInput, "attempt-1", 1); err != nil {
+	runtime, probe := closeProbeTarget(t, nil)
+	if err := mustCloser(t, runtime).CloseAttempt(context.Background(),
+		sessionwire.CommandID("command-1"), mustUUIDForTest(t), "input", "attempt-1", 1); err != nil {
 		t.Fatalf("a well-formed closure was refused: %v", err)
 	}
-	if len(controller.calls) != 1 {
-		t.Errorf("the runtime's closer was called %d times for a well-formed closure, want 1", len(controller.calls))
+	if calls := probe.recordedClosures(); len(calls) != 1 {
+		t.Errorf("the runtime's closer was called %d times for a well-formed closure, want 1", len(calls))
 	}
 }
 
 // ---- the command vocabulary -------------------------------------------------
 
-// TestCarbonAppliesEveryAdmittedKindAndRefusesAnUnknownOne covers the five-kind
-// vocabulary and the one arm that must fail closed.
+// applyProbeTarget launches one real session through Carbon's target with a
+// probe that records every admitted command and does not reach harness, so
+// what the adapter BUILT is observable even for a record harness would refuse.
+func applyProbeTarget(t *testing.T) (department.Runtime, *probeController) {
+	t.Helper()
+	fixture := newRealRigFixture(t)
+	var probe *probeController
+	target := mustCarbonTargetOver(t, fixture.wrappedLauncher(func(real session.SessionController) session.SessionController {
+		probe = newProbe(real)
+		probe.stubApply = true
+		return probe
+	}), CarbonCompatibilityID(fixture.cfg))
+	runtime, err := target.Create(context.Background(), department.CreateRequest{
+		TenantID: "tenant-a", SessionID: "session-a", AgentID: CarbonAgentID,
+		Placement: sessionwire.HostPlacementDedicated, RigSessionID: mustUUIDForTest(t),
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	t.Cleanup(func() { _ = runtime.ReleaseResidency(context.Background()) })
+	return runtime, probe
+}
+
+// TestCarbonDecodesEveryAdmittedKindsBody covers the body decode behind each
+// kind, through Carbon's target.
 //
 // A create's first message is the row worth reading twice. harness makes Blocks
 // OPTIONAL for a create so an idle create can still settle, which means an
@@ -889,38 +928,49 @@ func TestCloseAttemptValidatesBeforeTouchingTheRuntime(t *testing.T) {
 // perfectly correct. So the create arm asserts the BLOCKS, not the acceptance.
 func TestCarbonDecodesEveryAdmittedKindsBody(t *testing.T) {
 	t.Parallel()
+	runtime, probe := applyProbeTarget(t)
+	apply := func(command sessionwire.CommandID, kind string, payload []byte) error {
+		return runtime.ApplyCommand(context.Background(), department.RuntimeCommand{
+			CommandID: command, RuntimeCommandID: mustUUIDForTest(t), Kind: kind, Payload: payload, AttemptID: "attempt-" + string(command),
+		})
+	}
 
 	// The fixture is a CreateRequest Core's own strict decoder accepts, envelope
-	// and all. A hand-rolled object shaped like one would prove nothing: this is
-	// exactly the body Factory canonically encodes, and the adapter's whole job is
-	// to read THAT.
-	created, err := carbonCreateBlocks(mustJSON(t, sessionwire.CreateRequest{
-		CommandEnvelope: sessionwire.CommandEnvelope{Version: sessionwire.CurrentWireVersion, CommandID: "command-1"},
+	// and all: exactly the body Factory canonically encodes.
+	if err := apply("create-multi", "create", mustJSON(t, sessionwire.CreateRequest{
+		CommandEnvelope: sessionwire.CommandEnvelope{Version: sessionwire.CurrentWireVersion, CommandID: "create-multi"},
 		SessionID:       sessionwire.SessionID("session-a"),
 		AgentID:         CarbonAgentID,
 		Blocks:          mustBlocksJSON(t, `[{"Type":"text","Text":"first"},{"Type":"text","Text":"second"}]`),
-	}))
-	if err != nil {
-		t.Fatalf("carbonCreateBlocks: %v", err)
+	})); err != nil {
+		t.Fatalf("a create carrying a first message was refused: %v", err)
 	}
-	if len(created) != 2 {
-		t.Fatalf("a create's first message decoded to %d blocks, want 2: a product that concatenated or dropped one satisfies every substring check while losing exactly what a multi-block message is for", len(created))
-	}
-
-	bare, err := carbonCreateBlocks(nil)
-	if err != nil {
+	// A bare create is a CreateRequest with no blocks: Factory always stores the
+	// canonical request. (An EMPTY body is refused since harnessruntime; the
+	// hand-written adapter read one as a bare create, a body no Factory writes.)
+	if err := apply("create-bare", "create", mustJSON(t, sessionwire.CreateRequest{
+		CommandEnvelope: sessionwire.CommandEnvelope{Version: sessionwire.CurrentWireVersion, CommandID: "create-bare"},
+		SessionID:       sessionwire.SessionID("session-a"),
+		AgentID:         CarbonAgentID,
+	})); err != nil {
 		t.Fatalf("a bare create was refused (%v); refusing one wedges every session created with no opening message", err)
 	}
-	if len(bare) != 0 {
-		t.Errorf("a bare create carried %d blocks, want none", len(bare))
-	}
-
-	if _, err := carbonCreateBlocks([]byte(`{"blocks": not json}`)); err == nil {
+	if err := apply("create-bad", "create", []byte(`{"blocks": not json}`)); err == nil {
 		t.Error("a create body Core cannot read was accepted; it would apply as an empty turn and settle applied with the user's words gone")
 	}
-
-	if _, err := carbonInputBlocks(nil); err == nil {
+	if err := apply("input-empty", "input", nil); err == nil {
 		t.Error("an empty input body was accepted; harness requires blocks for an input")
+	}
+
+	admitted := probe.recordedAdmitted()
+	if len(admitted) != 2 {
+		t.Fatalf("the applier saw %d admitted records, want 2 (the two well-formed creates); a refused body must never reach harness", len(admitted))
+	}
+	if n := len(admitted[0].Blocks); n != 2 {
+		t.Errorf("a create's first message decoded to %d blocks, want 2: a product that concatenated or dropped one satisfies every substring check while losing exactly what a multi-block message is for", n)
+	}
+	if n := len(admitted[1].Blocks); n != 0 {
+		t.Errorf("a bare create carried %d blocks, want none", n)
 	}
 }
 
@@ -933,33 +983,25 @@ func TestCarbonDecodesEveryAdmittedKindsBody(t *testing.T) {
 func TestCarbonRefusesAnUnknownKindBeforeAnyDurableWrite(t *testing.T) {
 	t.Parallel()
 
-	fixture := newRealRigFixture(t)
-	target := mustCarbonTarget(t, fixture)
-	runtime, err := target.Create(context.Background(), department.CreateRequest{
-		TenantID:     sessionwire.TenantID("tenant-a"),
-		SessionID:    sessionwire.SessionID("session-a"),
-		AgentID:      CarbonAgentID,
-		Placement:    sessionwire.HostPlacementDedicated,
-		RigSessionID: mustUUIDForTest(t),
-	})
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	t.Cleanup(func() { _ = runtime.ReleaseResidency(context.Background()) })
-
-	err = runtime.ApplyCommand(context.Background(), department.RuntimeCommand{
+	runtime, probe := applyProbeTarget(t)
+	err := runtime.ApplyCommand(context.Background(), department.RuntimeCommand{
 		CommandID:        sessionwire.CommandID("command-1"),
 		RuntimeCommandID: mustUUIDForTest(t),
 		Kind:             "carbon_no_such_kind",
 		AttemptID:        "attempt-1",
 	})
-	if !errors.Is(err, ErrCarbonUnknownCommandKind) {
-		t.Fatalf("ApplyCommand with an unknown kind = %v, want ErrCarbonUnknownCommandKind", err)
+	var unsupported *harnessruntime.UnsupportedCommandError
+	if !errors.As(err, &unsupported) {
+		t.Fatalf("ApplyCommand with an unknown kind = %v, want *harnessruntime.UnsupportedCommandError", err)
+	}
+	if n := len(probe.recordedAdmitted()); n != 0 {
+		t.Fatalf("the unknown kind reached the runtime's applier (%d records)", n)
 	}
 }
 
-// TestCarbonCommandVocabularyIsTheReleasedOne pins the five kinds against harness's
-// own vocabulary, so this product cannot drift from the set Factory admits.
+// TestCarbonCommandVocabularyIsTheReleasedOne pins the five kinds Factory admits
+// against harness's own vocabulary, so this product cannot drift from the set
+// Factory admits.
 //
 // It also pins the falsifier's kind: the string this package uses as an example of
 // an unknown kind must be in NEITHER vocabulary. "restore" was an unknown kind until
@@ -969,11 +1011,7 @@ func TestCarbonRefusesAnUnknownKindBeforeAnyDurableWrite(t *testing.T) {
 func TestCarbonCommandVocabularyIsTheReleasedOne(t *testing.T) {
 	t.Parallel()
 
-	kinds := carbonCommandKinds()
-	if len(kinds) != 5 {
-		t.Fatalf("carbonCommandKinds() names %d kinds, want 5", len(kinds))
-	}
-	for _, kind := range kinds {
+	for _, kind := range []string{"create", "restore", "input", "interrupt", "gate_response"} {
 		if !runtimecommand.Kind(kind).Valid() {
 			t.Errorf("%q is not a kind harness names; this product would refuse a command Factory admits", kind)
 		}
@@ -1016,11 +1054,12 @@ func TestCarbonRefusesACommandWhenItHoldsNoLease(t *testing.T) {
 	err = runtime.ApplyCommand(context.Background(), department.RuntimeCommand{
 		CommandID:        sessionwire.CommandID("command-1"),
 		RuntimeCommandID: mustUUIDForTest(t),
-		Kind:             carbonKindInterrupt,
+		Kind:             "interrupt",
 		AttemptID:        "attempt-1",
 	})
-	if !errors.Is(err, ErrCarbonRuntimeNoLease) {
-		t.Fatalf("ApplyCommand under a released lease = %v, want ErrCarbonRuntimeNoLease", err)
+	var unsupported *harnessruntime.UnsupportedCommandError
+	if !errors.As(err, &unsupported) || !strings.Contains(unsupported.Reason, "lease") {
+		t.Fatalf("ApplyCommand under a released lease = %v, want *harnessruntime.UnsupportedCommandError naming the lease", err)
 	}
 }
 
@@ -1043,28 +1082,6 @@ func mustBlocksJSON(t *testing.T, raw string) json.RawMessage {
 
 // ---- what ApplyCommand actually hands harness -------------------------------
 
-// recordingApplierController records every Admitted record the adapter builds and
-// accepts all of them.
-//
-// It reports a held lease at a distinctive epoch so the forwarded LeaseEpoch can be
-// told apart from a zero or a constant. It is permissive for the same reason
-// recordingCloserController is: harness validates, so against a real session a
-// mis-built Admitted errs either way — and what the adapter FORWARDED never crosses
-// the department seam at all, because ApplyCommand returns only an error.
-type recordingApplierController struct {
-	session.SessionController
-	epoch    uint64
-	held     bool
-	admitted []runtimecommand.Admitted
-}
-
-func (c *recordingApplierController) LeaseEpoch() (uint64, bool) { return c.epoch, c.held }
-
-func (c *recordingApplierController) ApplyRuntimeCommand(_ context.Context, admitted runtimecommand.Admitted) (runtimecommand.Disposition, error) {
-	c.admitted = append(c.admitted, admitted)
-	return runtimecommand.Disposition{CommandID: admitted.CommandID, RuntimeCommandID: admitted.RuntimeCommandID}, nil
-}
-
 // TestApplyCommandForwardsTheAttemptAndTheIdentities is the ApplyCommand counterpart
 // of the closure identity test, and the AttemptID row is the one with teeth.
 //
@@ -1075,37 +1092,41 @@ func (c *recordingApplierController) ApplyRuntimeCommand(_ context.Context, admi
 // disposition frame would lose the attempt identity SILENTLY. The store settles from
 // that frame, and evidence about one attempt is not evidence about another.
 //
+// Principal crosses on every kind and Metadata on create and input: Admitted is
+// built field by field, and an omitted member is dropped in silence.
+//
 // The record is also validated on the RELEASED type's own rule, so a shape harness
 // would refuse after the attempt is already durable is caught here instead.
 func TestApplyCommandForwardsTheAttemptAndTheIdentities(t *testing.T) {
 	t.Parallel()
 
-	const epoch = uint64(9)
 	principal := sessionwire.Principal{
 		Tenant:  sessionwire.TenantID("tenant-a"),
 		Subject: sessionwire.SubjectID("user_alex"),
 		Kind:    sessionwire.PrincipalKindActor,
 	}
+	envelope := func(kind string) sessionwire.CommandEnvelope {
+		return sessionwire.CommandEnvelope{Version: sessionwire.CurrentWireVersion, CommandID: sessionwire.CommandID("command-" + kind)}
+	}
 	createBody := mustJSON(t, sessionwire.CreateRequest{
-		CommandEnvelope: sessionwire.CommandEnvelope{Version: sessionwire.CurrentWireVersion, CommandID: "command-1"},
+		CommandEnvelope: envelope("create"),
 		SessionID:       sessionwire.SessionID("session-a"),
 		AgentID:         CarbonAgentID,
 		Blocks:          mustBlocksJSON(t, `[{"Type":"text","Text":"first"}]`),
 	})
 	inputBody := mustJSON(t, sessionwire.InputRequest{
-		CommandEnvelope: sessionwire.CommandEnvelope{Version: sessionwire.CurrentWireVersion, CommandID: "command-1"},
+		CommandEnvelope: envelope("input"),
 		SessionID:       sessionwire.SessionID("session-a"),
 		Blocks:          mustBlocksJSON(t, `[{"Type":"text","Text":"more"}]`),
 	})
 	gateBody := mustJSON(t, sessionwire.GateResponseRequest{
-		CommandEnvelope: sessionwire.CommandEnvelope{Version: sessionwire.CurrentWireVersion, CommandID: "command-1"},
+		CommandEnvelope: envelope("gate_response"),
 		SessionID:       sessionwire.SessionID("session-a"),
 		GateID:          sessionwire.GateID(mustUUIDForTest(t).String()),
 		Action:          "approve",
 		Values:          map[string]json.RawMessage{},
 		// Core requires EXACTLY ONE optimistic-open version, so an answer cannot be
-		// applied to a different incarnation of the same gate id. A fixture omitting
-		// both is refused, which is the decode arm working.
+		// applied to a different incarnation of the same gate id.
 		ExpectedOpenJournalSeq: 3,
 	})
 
@@ -1117,16 +1138,19 @@ func TestApplyCommandForwardsTheAttemptAndTheIdentities(t *testing.T) {
 		wantAnswer bool
 		metadata   sessionwire.MessageMetadata
 	}{
-		{carbonKindCreate, createBody, runtimecommand.KindCreate, 1, false, sessionwire.MessageMetadata{"space": "family"}},
-		{carbonKindRestore, nil, runtimecommand.KindRestore, 0, false, nil},
-		{carbonKindInput, inputBody, runtimecommand.KindInput, 1, false, sessionwire.MessageMetadata{"space": "family"}},
-		{carbonKindInterrupt, nil, runtimecommand.KindInterrupt, 0, false, nil},
-		{carbonKindGateResponse, gateBody, runtimecommand.KindGateResponse, 0, true, nil},
+		{"create", createBody, runtimecommand.KindCreate, 1, false, sessionwire.MessageMetadata{"space": "family"}},
+		{"restore", nil, runtimecommand.KindRestore, 0, false, nil},
+		{"input", inputBody, runtimecommand.KindInput, 1, false, sessionwire.MessageMetadata{"space": "family"}},
+		{"interrupt", nil, runtimecommand.KindInterrupt, 0, false, nil},
+		{"gate_response", gateBody, runtimecommand.KindGateResponse, 0, true, nil},
 	} {
 		t.Run(tc.kind, func(t *testing.T) {
 			t.Parallel()
-			controller := &recordingApplierController{epoch: epoch, held: true}
-			runtime := &carbonRuntime{controller: controller}
+			runtime, probe := applyProbeTarget(t)
+			epoch, held := runtime.LeaseEpoch()
+			if !held || epoch == 0 {
+				t.Fatalf("the runtime holds no journal grant (%d, %t)", epoch, held)
+			}
 
 			command := sessionwire.CommandID("command-" + tc.kind)
 			runtimeCommand := mustUUIDForTest(t)
@@ -1143,10 +1167,11 @@ func TestApplyCommandForwardsTheAttemptAndTheIdentities(t *testing.T) {
 			}); err != nil {
 				t.Fatalf("ApplyCommand: %v", err)
 			}
-			if len(controller.admitted) != 1 {
-				t.Fatalf("the applier saw %d admitted records, want exactly 1", len(controller.admitted))
+			admitted := probe.recordedAdmitted()
+			if len(admitted) != 1 {
+				t.Fatalf("the applier saw %d admitted records, want exactly 1", len(admitted))
 			}
-			got := controller.admitted[0]
+			got := admitted[0]
 
 			if got.AttemptID != runtimecommand.AttemptID(attempt) {
 				t.Errorf("AttemptID = %q, want %q: the disposition frame the store settles from would name the wrong attempt, or none",
@@ -1181,8 +1206,6 @@ func TestApplyCommandForwardsTheAttemptAndTheIdentities(t *testing.T) {
 			} else if got.Metadata != nil {
 				t.Errorf("Metadata = %+v on %q, want nil", got.Metadata, tc.kind)
 			}
-			// The released type's own rule, so a record harness would refuse AFTER the
-			// attempt is durable is caught here instead of there.
 			if err := got.Validate(); err != nil {
 				t.Errorf("the admitted record harness was handed does not validate: %v", err)
 			}
@@ -1242,7 +1265,7 @@ func TestSubscribeCommittedCarriesTheCommittedBytes(t *testing.T) {
 	if err := runtime.ApplyCommand(ctx, department.RuntimeCommand{
 		CommandID:        sessionwire.CommandID("command-input-1"),
 		RuntimeCommandID: mustUUIDForTest(t),
-		Kind:             carbonKindInput,
+		Kind:             "input",
 		AttemptID:        "attempt-input-1",
 		Payload: mustJSON(t, sessionwire.InputRequest{
 			CommandEnvelope: sessionwire.CommandEnvelope{Version: sessionwire.CurrentWireVersion, CommandID: "command-input-1"},
@@ -1326,18 +1349,35 @@ func TestSubscribeCommittedCarriesTheCommittedBytes(t *testing.T) {
 	}
 }
 
-// TestSubscribeCommittedRefusesASessionThatCannotReportCommittedBytes holds the
-// two-result capability's whole point.
+// TestCarbonTargetRefusesASessionThatCannotReportCommittedBytes holds the
+// two-result capability's whole point, now at LAUNCH.
 //
 // A consumer must learn it is not one of those sessions BEFORE it starts persisting
-// cursors, not after. A projection that served a re-rendered approximation instead
-// would let a consumer join a durable tail to a live stream that disagrees with it.
-func TestSubscribeCommittedRefusesASessionThatCannotReportCommittedBytes(t *testing.T) {
+// cursors, not after. harnessruntime refuses such a session at bind, so Host never
+// publishes a residency route a client could attach a cursor to; Carbon's
+// hand-written adapter refused only at the first subscription.
+func TestCarbonTargetRefusesASessionThatCannotReportCommittedBytes(t *testing.T) {
 	t.Parallel()
 
-	runtime := &carbonRuntime{controller: &closerlessController{}}
-	if _, err := runtime.SubscribeCommitted(context.Background(), sessionwire.EventID("")); !errors.Is(err, ErrCarbonNoPublications) {
-		t.Fatalf("SubscribeCommitted on a session with no committed stream = %v, want ErrCarbonNoPublications", err)
+	fixture := newRealRigFixture(t)
+	var probe *probeController
+	target := mustCarbonTargetOver(t, fixture.wrappedLauncher(func(real session.SessionController) session.SessionController {
+		probe = newProbe(real)
+		return uncommittedProbe{probe}
+	}), CarbonCompatibilityID(fixture.cfg))
+	runtime, err := target.Create(context.Background(), department.CreateRequest{
+		TenantID: "tenant-a", SessionID: "session-a", AgentID: CarbonAgentID,
+		Placement: sessionwire.HostPlacementDedicated, RigSessionID: mustUUIDForTest(t),
+	})
+	if runtime != nil {
+		t.Fatal("a session with no committed stream was launched")
+	}
+	var incapable *harnessruntime.IncapableSessionError
+	if !errors.As(err, &incapable) || !strings.Contains(strings.Join(incapable.Missing, ","), "committed public events") {
+		t.Fatalf("Create = %v, want *harnessruntime.IncapableSessionError naming committed public events", err)
+	}
+	if _, held := probe.LeaseEpoch(); held {
+		t.Fatal("the refused session still holds its journal lease")
 	}
 }
 

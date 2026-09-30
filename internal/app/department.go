@@ -4,25 +4,18 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
 	"strconv"
 	"strings"
-	"sync/atomic"
-	"time"
 
-	"github.com/looprig/core/content"
 	sessionwire "github.com/looprig/core/sessionwire/v1"
 	"github.com/looprig/core/uuid"
-	"github.com/looprig/harness/pkg/event"
-	"github.com/looprig/harness/pkg/gate"
 	"github.com/looprig/harness/pkg/rig"
-	"github.com/looprig/harness/pkg/runtimecommand"
 	"github.com/looprig/harness/pkg/session"
-	harnesswire "github.com/looprig/harness/pkg/sessionwire"
 	"github.com/looprig/host/department"
+	"github.com/looprig/host/harnessruntime"
 )
 
 // department.go adapts the ONE Carbon product identity into a Host launch target.
@@ -35,12 +28,13 @@ import (
 // Carbon session, not separately placeable agents.
 //
 // The seam is deliberately narrow in one specific way. Host's department package
-// declares WHAT it requires of a runtime in Host's own sessionwire identities; this
-// file is where a harness session.SessionController is made to satisfy that. The
-// two identity spaces are independent — harness identifies a session with a
-// core/uuid.UUID and Host with an opaque sessionwire string — so nothing here casts
-// one into the other, and RigSessionID is carried beside the Host identities rather
-// than derived from them.
+// declares WHAT it requires of a runtime in Host's own sessionwire identities, and
+// Host's published github.com/looprig/host/harnessruntime makes a harness
+// session.SessionController satisfy it; this file only supplies the Carbon launch
+// behind that adapter. The two identity spaces are independent — harness
+// identifies a session with a core/uuid.UUID and Host with an opaque sessionwire
+// string — so nothing here casts one into the other, and RigSessionID is carried
+// beside the Host identities rather than derived from them.
 
 // CarbonAgentID is THE Carbon product identity on the wire, and it is a constant
 // rather than configuration.
@@ -146,8 +140,10 @@ func carbonCapabilities() department.Capabilities {
 		AdmissionWeight:    1,
 		CaptureSafety:      department.CaptureSafetyBoundedMaterialized,
 		// host v0.16.0 refuses, under its default durable profile, a target that
-		// does not declare both; every harness session Carbon launches offers
-		// both, and department verifies the declaration at each launch.
+		// does not declare both. harnessruntime.Target forces them on and holds
+		// them true at every bind (a session whose applier cannot close an
+		// attempt, or whose fault channel is nil, is refused and released); they
+		// are stated here so the capability set reads whole.
 		Recovery: department.Recovery{AttemptCloser: true, PersistenceFaults: true},
 	}
 }
@@ -225,8 +221,8 @@ type SessionLauncher interface {
 	// Launch builds and starts one session under scope, returning harness's own
 	// controller UNWRAPPED.
 	//
-	// The controller is returned unwrapped on purpose. Host discovers six segregated
-	// capabilities by type assertion and harness's live registry evicts a dead
+	// The controller is returned unwrapped on purpose. harnessruntime discovers the
+	// segregated capabilities by type assertion and harness's live registry evicts a dead
 	// session by watching an optional Done() channel on the value it was handed; a
 	// wrapper that forgot to forward either would silently opt the session out of a
 	// capability or out of eviction, and both failures are invisible until the day
@@ -234,761 +230,26 @@ type SessionLauncher interface {
 	Launch(context.Context, LaunchScope) (session.SessionController, error)
 }
 
-// The refusals this adapter makes on its own behalf. Each one names a capability
-// the launched controller did not offer, rather than a generic failure, because the
-// diagnosis for each is different: a missing Applier is a composition that wired no
-// persistence, a missing lease is a session whose grant was lost or released, and a
-// missing closer is a runtime that cannot free a stranded predecessor.
-var (
-	ErrCarbonRuntimeCannotApply = errors.New("carbon: the launched session cannot apply an admitted runtime command")
-	ErrCarbonRuntimeNoLease     = errors.New("carbon: the launched session reports no held journal lease")
-	// ErrCarbonRuntimeCannotClose WRAPS department.ErrNoAttemptCloser, and the wrap
-	// is the whole value of the error.
-	//
-	// host's disposition applier branches on that sentinel and has an arm written for
-	// exactly this composition shape — a composed runtime reaches it through a wrapper
-	// that declares the method for every runtime, so "no closer" arrives as a REFUSAL
-	// rather than as a failed type assertion. Without the wrap this lands in the
-	// default arm and surfaces as RefusalStore, "ambiguous durable-store failure",
-	// which sends an operator to look at the store for a composition problem. Both
-	// outcomes block the command, so this is a diagnosis fix and not a correctness one
-	// — but the whole reason a composer reads that refusal is to find out what to fix.
-	ErrCarbonRuntimeCannotClose = fmt.Errorf("%w: carbon: the launched session offers no recovery closure",
-		department.ErrNoAttemptCloser)
-	// ErrCarbonRuntimeCannotAbandon WRAPS department.ErrNoPersistenceFaults, for
-	// ErrCarbonRuntimeCannotClose's reason: Host reaches this runtime through a
-	// wrapper that declares the method for every runtime, so "cannot abandon"
-	// arrives as a refusal and the sentinel is what names the missing capability.
-	ErrCarbonRuntimeCannotAbandon = fmt.Errorf("%w: carbon: the launched session offers no crash-equivalent release",
-		department.ErrNoPersistenceFaults)
-	ErrCarbonUnknownCommandKind = errors.New("carbon: this product runtime does not apply this command kind")
-	ErrCarbonNoPublications     = errors.New("carbon: the launched session cannot report committed public events")
-)
-
-// The five admitted command kinds, restated because neither Factory nor Host
-// exports them.
-//
-// THEY ARE FIVE, NOT THREE, as of harness v0.36.0. Nothing in this repository may
-// use "restore" or "gate_response" as an example of an unknown kind: both were
-// unknown once and both are now named, and a fixture built on either went green the
-// day the vocabulary widened while whatever it guarded was live.
-const (
-	carbonKindCreate       = "create"
-	carbonKindRestore      = "restore"
-	carbonKindInput        = "input"
-	carbonKindInterrupt    = "interrupt"
-	carbonKindGateResponse = "gate_response"
-)
-
-// carbonCommandKinds is the vocabulary as one value so a test can iterate it
-// rather than restate it.
-func carbonCommandKinds() []string {
-	return []string{carbonKindCreate, carbonKindRestore, carbonKindInput, carbonKindInterrupt, carbonKindGateResponse}
-}
-
-// carbonRig is the product's department.Rig: it turns Host's two launch requests
-// into one session-scoped Carbon runtime each.
-type carbonRig struct {
-	launcher SessionLauncher
-}
-
-var _ department.Rig = (*carbonRig)(nil)
-
-// NewSession satisfies department.Rig for a create, LAUNCHING UNDER THE REQUESTED
-// IDENTITY. See LaunchScope.RigSessionID for why that is not cosmetic.
-func (r *carbonRig) NewSession(ctx context.Context, req department.RigCreateRequest) (department.RigSession, error) {
-	return r.launch(ctx, LaunchScope{
-		TenantID:      req.TenantID,
-		SessionID:     req.SessionID,
-		AgentID:       req.AgentID,
-		Placement:     req.Placement,
-		WorkspaceRoot: req.WorkspaceRoot,
-		RigSessionID:  req.RigSessionID,
-	})
-}
-
-// RestoreSession satisfies department.Rig for a relaunch over durable state. Host
-// supplies harness's identity separately from the request because the two identity
-// spaces are independent and a restore that does not carry it has nothing to
-// restore FROM.
-func (r *carbonRig) RestoreSession(ctx context.Context, id uuid.UUID, req department.RigRestoreRequest) (department.RigSession, error) {
-	return r.launch(ctx, LaunchScope{
-		TenantID:      req.TenantID,
-		SessionID:     req.SessionID,
-		AgentID:       req.AgentID,
-		Placement:     req.Placement,
-		WorkspaceRoot: req.WorkspaceRoot,
-		RigSessionID:  id,
-		Restore:       true,
-	})
-}
-
-func (r *carbonRig) launch(ctx context.Context, scope LaunchScope) (department.RigSession, error) {
-	if r.launcher == nil {
-		return nil, errors.New("carbon: no session launcher is configured for the Carbon launch target")
-	}
-	controller, err := r.launcher.Launch(ctx, scope)
-	if err != nil {
-		return nil, err
-	}
-	if controller == nil {
-		// department reports a nil session as ErrNoRigSession, but only when the
-		// interface value itself is nil; a typed nil controller would pass its
-		// check and panic at the first capability call. Refusing here keeps the
-		// failure at the launcher that produced it.
-		return nil, department.ErrNoRigSession
-	}
-	if err := requirePersistenceFaults(controller); err != nil {
-		disposeUnsupervisable(controller)
-		return nil, err
-	}
-	return &carbonRuntime{controller: controller, scope: scope}, nil
-}
-
-// PersistenceFaultsMissingError refuses a launched session that lacks either
-// half of harness's durable-health capability.
-//
-// carbonRuntime declares department.PersistenceFaults for every session, so
-// department's wrapper always reports it available and Host cannot see an
-// absence. Without this refusal a session missing a half would silently lose
-// fault supervision, and Host's lost-grant give-up would call an abandon that
-// refuses instead of taking its bounded graceful-release fallback. Refusing at
-// launch turns a harness pin regression into a launch failure instead of a
-// wedge during an outage.
-type PersistenceFaultsMissingError struct {
-	Reporter  bool // the session offers session.PersistenceFaultReporter
-	Abandoner bool // the session offers session.ResidencyAbandoner
-}
-
-func (e *PersistenceFaultsMissingError) Error() string {
-	return fmt.Sprintf("carbon: the launched session lacks harness persistence-fault capabilities (fault reporter=%t, residency abandoner=%t)", e.Reporter, e.Abandoner)
-}
-
-// Unwrap reaches department's sentinel for a runtime that cannot be abandoned.
-func (e *PersistenceFaultsMissingError) Unwrap() error { return department.ErrNoPersistenceFaults }
-
-func requirePersistenceFaults(controller session.SessionController) error {
-	_, reports := controller.(session.PersistenceFaultReporter)
-	_, abandons := controller.(session.ResidencyAbandoner)
-	if reports && abandons {
-		return nil
-	}
-	return &PersistenceFaultsMissingError{Reporter: reports, Abandoner: abandons}
-}
-
-// disposeUnsupervisable releases a session refused at launch WITHOUT ending it:
-// Shutdown would append SessionStopped and make the conversation terminal over
-// a composition fault. A crash-equivalent abandon is preferred; failing that, a
-// bounded nonterminal release. Anything else is left to lease expiry.
-func disposeUnsupervisable(controller session.SessionController) {
-	ctx, cancel := context.WithTimeout(context.Background(), unsupervisableReleaseBound)
-	defer cancel()
-	if abandoner, ok := controller.(session.ResidencyAbandoner); ok {
-		_ = abandoner.AbandonResidency(ctx)
-		return
-	}
-	if releaser, ok := controller.(session.Releaser); ok {
-		_ = releaser.ReleaseResidency(ctx)
-	}
-}
-
-const unsupervisableReleaseBound = 30 * time.Second
-
-// carbonRuntime adapts one launched harness session to Host's department.RigSession
-// and the segregated capabilities Host discovers on it.
-//
-// EVERY CAPABILITY IS A METHOD ON THIS TYPE, which means department's own discovery
-// always succeeds and the refusal moves from the assertion into the method. That is
-// the right shape for a PRODUCT adapter and the wrong one for a test double: a
-// product knows what it composed, and a refusal that names the missing capability
-// diagnoses better than an *IncapableRuntimeError listing six.
-type carbonRuntime struct {
-	controller          session.SessionController
-	scope               LaunchScope
-	droppedLivePreviews atomic.Uint64
-}
-
-// MissingCommittedPublicationError ends a live stream whose enduring delivery
-// cannot be joined to the durable journal.
-type MissingCommittedPublicationError struct{ JournalSeq uint64 }
-
-func (e *MissingCommittedPublicationError) Error() string {
-	return fmt.Sprintf("carbon: enduring delivery at sequence %d lacks committed public fields", e.JournalSeq)
-}
-
-// DroppedLivePreviews reports previews discarded by this runtime's size or queue bounds.
-func (s *carbonRuntime) DroppedLivePreviews() uint64 { return s.droppedLivePreviews.Load() }
-
-var _ department.RigSession = (*carbonRuntime)(nil)
-
-// The two OPTIONAL capabilities Host discovers by type assertion. Each compiles
-// and runs without being forwarded, and each wedges a session when it is not:
-// without AttemptCloser a successor cannot free a stranded attempt (host v0.5.0),
-// and without PersistenceFaults a storage outage leaves a faulted runtime
-// resident and every command behind it pending (host v0.8.0/v0.8.1). These
-// assertions make dropping either a build failure rather than an outage.
-var (
-	_ department.AttemptCloser                  = (*carbonRuntime)(nil)
-	_ department.PersistenceFaults              = (*carbonRuntime)(nil)
-	_ department.LivePublicationSubscriber      = (*carbonRuntime)(nil)
-	_ department.ReasoningPublicationSubscriber = (*carbonRuntime)(nil)
-	_ department.LiveOptionsSubscriber          = (*carbonRuntime)(nil)
-)
-
-// ID is harness's identity for the launched session.
-func (s *carbonRuntime) ID() uuid.UUID { return s.controller.SessionID() }
-
-// WaitIdle satisfies department.IdleWaiter.
-func (s *carbonRuntime) WaitIdle(ctx context.Context) error {
-	waiter, ok := s.controller.(session.IdleWaiter)
-	if !ok {
-		return fmt.Errorf("carbon: the launched session cannot report idleness")
-	}
-	return waiter.WaitIdle(ctx)
-}
-
-// Done satisfies department.Liveness. A session that reports no liveness channel is
-// given a CLOSED one rather than nil: a nil channel blocks forever, so every drain
-// supervisor selecting on it would wait for the life of the process, whereas a
-// closed channel reports "this runtime has stopped answering", which is the honest
-// answer about a session that cannot say.
-func (s *carbonRuntime) Done() <-chan struct{} {
-	live, ok := s.controller.(session.Liveness)
-	if !ok {
-		closed := make(chan struct{})
-		close(closed)
-		return closed
-	}
-	return live.Done()
-}
-
-// ReleaseResidency satisfies department.Releaser. It is NONTERMINAL: the session
-// remains resumable and no SessionStopped is appended.
-func (s *carbonRuntime) ReleaseResidency(ctx context.Context) error {
-	releaser, ok := s.controller.(session.Releaser)
-	if !ok {
-		return fmt.Errorf("carbon: the launched session cannot release residency without ending the conversation")
-	}
-	return releaser.ReleaseResidency(ctx)
-}
-
-// LeaseEpoch satisfies department.LeaseEpochReporter.
-//
-// THE TWO RESULTS ARE THE CONTRACT and this forwards both. A released or lost lease
-// reports (0,false), and a caller must branch on held: no pinned provider zeroes a
-// released lease's epoch, so reading the number alone hands back a live-looking dead
-// value. This is the RUNTIME's journal grant and must never be answered from Host's
-// residency grant — they are different counters over different namespaces that
-// merely both start at 1.
-func (s *carbonRuntime) LeaseEpoch() (uint64, bool) {
-	reporter, ok := s.controller.(session.LeaseEpochReporter)
-	if !ok {
-		return 0, false
-	}
-	return reporter.LeaseEpoch()
-}
-
-// persistenceFaults answers the launched session's durable-health capability as
-// ONE unit: harness v0.38.0's fault reporter and its crash-equivalent release.
-// Half of it is refused as none of it, because a fault Host can observe but not
-// abandon on would only move the wedge, and an abandon with no fault signal is
-// never reached by the supervisor.
-func (s *carbonRuntime) persistenceFaults() (session.PersistenceFaultReporter, session.ResidencyAbandoner, bool) {
-	reporter, reports := s.controller.(session.PersistenceFaultReporter)
-	abandoner, abandons := s.controller.(session.ResidencyAbandoner)
-	if !reports || !abandons {
-		return nil, nil, false
-	}
-	return reporter, abandoner, true
-}
-
-// PersistenceFaulted satisfies department.PersistenceFaults: the channel that
-// closes when harness latches a persistence fault (one failed journal append,
-// e.g. a storage outage). Host treats it closing as lost residency: it halts the
-// command consumer, calls AbandonResidency and releases the session so a
-// successor restores it from the journal.
-//
-// FORWARDED, NOT OPTIONAL FOR A PRODUCT (host v0.8.1). department discovers the
-// capability by assertion, so a wrapper that omitted this method would compile
-// and run, and a storage outage would then leave the session resident with every
-// command behind it pending until its apply deadline. A session that offers no
-// fault signal answers nil, which never fires: it is simply not supervised.
-func (s *carbonRuntime) PersistenceFaulted() <-chan struct{} {
-	reporter, _, ok := s.persistenceFaults()
-	if !ok {
-		return nil
-	}
-	return reporter.PersistenceFaulted()
-}
-
-// PersistenceFault satisfies department.PersistenceFaults: the latched fault,
-// or nil.
-func (s *carbonRuntime) PersistenceFault() error {
-	reporter, _, ok := s.persistenceFaults()
-	if !ok {
-		return nil
-	}
-	return reporter.PersistenceFault()
-}
-
-// AbandonResidency satisfies department.PersistenceFaults: harness's
-// crash-equivalent release. It seals the session's logs, writes nothing (no
-// SessionStopped, so the session stays restorable) and hands the journal lease
-// back. Host calls it for a faulted runtime, a stranded attempt, and (host
-// v0.8.2) a residency grant it has lost.
-func (s *carbonRuntime) AbandonResidency(ctx context.Context) error {
-	_, abandoner, ok := s.persistenceFaults()
-	if !ok {
-		return ErrCarbonRuntimeCannotAbandon
-	}
-	return abandoner.AbandonResidency(ctx)
-}
-
-// SubscribeCommitted satisfies department.PublicationSubscriber: it projects the
-// session's own committed public events onto the wire record Host relays.
-//
-// THE PROJECTION IS A CARRY, NOT A RE-RENDER. Every delivery on harness's committed
-// stream carries the exact canonical public body the durable append stored, the
-// public EventID it committed under, and a CoveredThrough watermark equal to that
-// append's sequence. Re-projecting the runtime event here would let a consumer
-// joining a durable tail to this live stream render two different bodies for one
-// event, which is the failure the committed stream exists to prevent.
-//
-// # What `after` does and does not do
-//
-// A live subscription begins at the moment it is made, so every publication it
-// yields is necessarily at or after any event the caller has already seen. It does
-// NOT replay the gap between `after` and the subscription: that gap is filled by
-// the consumer's own bounded journal read, which is exactly the join
-// sessionwire.EnduringPublication documents ("the durable identity and sequence let
-// a consumer join this fast path with a bounded journal read after reconnect or
-// overflow"). Positioning a LIVE stream on an opaque historical EventID would need
-// an ordering the id does not carry; inventing one here would be a guess dressed as
-// a resume.
-//
-// A session whose persistence cannot report committed bytes is REFUSED rather than
-// served a re-projected approximation. That is the two-result capability's whole
-// point: a consumer must learn it is not one of those sessions before it starts
-// persisting cursors, not after.
-func (s *carbonRuntime) SubscribeCommitted(ctx context.Context, _ sessionwire.EventID) (<-chan sessionwire.EnduringPublication, error) {
-	provider, ok := s.controller.(session.CommittedPublicEventProvider)
-	if !ok {
-		return nil, ErrCarbonNoPublications
-	}
-	source, ok := provider.CommittedPublicEvents()
-	if !ok {
-		return nil, ErrCarbonNoPublications
-	}
-	// Enduring events from EVERY loop. A ZERO filter selects no loop at all: an
-	// EventFilter is DECLARED INTEREST evaluated before the send, so an empty one is
-	// not "everything" — it is "nothing", and a gate opened inside a delegate would
-	// never be published.
-	subscription, err := source.SubscribeCommittedPublicEvents(event.EventFilter{
-		Enduring: event.LoopScope{All: true},
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	out := make(chan sessionwire.EnduringPublication)
-	go func() {
-		defer close(out)
-		defer func() { _ = subscription.Close() }()
-		for delivery := range subscription.Events() {
-			// A delivery with no committed public body is not a publication. It is
-			// dropped rather than forwarded with an empty Body, because an empty
-			// body is a record a consumer would render as a real event.
-			if delivery.EventID == "" || len(delivery.PublicBody) == 0 {
-				continue
-			}
-			publication := sessionwire.EnduringPublication{
-				TenantID:       s.scope.TenantID,
-				SessionID:      s.scope.SessionID,
-				EventID:        sessionwire.EventID(delivery.EventID),
-				JournalSeq:     delivery.JournalSeq,
-				CoveredThrough: delivery.CoveredThrough,
-				Body:           json.RawMessage(delivery.PublicBody),
-			}
-			select {
-			case out <- publication:
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-	return out, nil
-}
-
-// SubscribeLivePublic carries committed and transient public events in their
-// original order. The reasoning variant enables public thinking deltas too.
-// Both delegate to SubscribeLivePublicWith, which Host (>= v0.15.0) prefers.
-func (s *carbonRuntime) SubscribeLivePublic(ctx context.Context) (<-chan department.LivePublication, error) {
-	return s.SubscribeLivePublicWith(ctx, department.LiveOptions{})
-}
-
-func (s *carbonRuntime) SubscribeLivePublicWithReasoning(ctx context.Context) (<-chan department.LivePublication, error) {
-	return s.SubscribeLivePublicWith(ctx, department.LiveOptions{IncludeReasoning: true})
-}
-
-// SubscribeLivePublicWith satisfies department.LiveOptionsSubscriber. Text
-// deltas always cross; IncludeReasoning adds visible thinking deltas, and
-// IncludeToolSteps adds harness's public projection of ToolCallStarted and
-// ToolCallCompleted -- the tool's redacted audit summary (never raw
-// arguments), tool_use_id, tool_name, is_error, elapsed_ms and a result
-// preview capped by harness at 2 KiB. Host fits each tool frame under its
-// frame cap, so no size bound is applied here; a tool step the projection
-// refuses, or one that finds the transient queue full, is counted as a drop.
-func (s *carbonRuntime) SubscribeLivePublicWith(ctx context.Context, options department.LiveOptions) (<-chan department.LivePublication, error) {
-	provider, ok := s.controller.(session.CommittedPublicEventProvider)
-	if !ok {
-		return nil, ErrCarbonNoPublications
-	}
-	if _, ok := provider.CommittedPublicEvents(); !ok {
-		return nil, ErrCarbonNoPublications
-	}
-	subscription, err := s.controller.SubscribeEvents(event.EventFilter{
-		Enduring: event.LoopScope{All: true}, Ephemeral: event.LoopScope{All: true},
-	})
-	if err != nil {
-		return nil, err
-	}
-	out := make(chan department.LivePublication)
-	go func() {
-		defer close(out)
-		defer func() { _ = subscription.Close() }()
-		const enduringLimit, transientLimit = 256, 16
-		const maxPreviewBytes = 2048
-		pending := make([]department.LivePublication, 0, enduringLimit+transientLimit)
-		enduring, transient := 0, 0
-		deliveries := subscription.Events()
-		for {
-			var send chan<- department.LivePublication
-			var first department.LivePublication
-			if len(pending) > 0 {
-				send, first = out, pending[0]
-			}
-			select {
-			case <-ctx.Done():
-				return
-			case send <- first:
-				if first.Terminal != nil {
-					return
-				}
-				pending[0] = department.LivePublication{}
-				pending = pending[1:]
-				if first.Enduring != nil {
-					enduring--
-				} else {
-					transient--
-				}
-			case delivery, open := <-deliveries:
-				if !open || delivery.Event == nil {
-					return
-				}
-				if delivery.Event.Class() == event.Enduring {
-					if !delivery.Committed() {
-						pending = append(pending, department.LivePublication{Terminal: &MissingCommittedPublicationError{JournalSeq: delivery.JournalSeq}})
-						deliveries = nil
-						continue
-					}
-					if enduring == enduringLimit {
-						return
-					}
-					publication := sessionwire.EnduringPublication{
-						TenantID: s.scope.TenantID, SessionID: s.scope.SessionID,
-						EventID: sessionwire.EventID(delivery.EventID), JournalSeq: delivery.JournalSeq,
-						CoveredThrough: delivery.CoveredThrough, Body: json.RawMessage(delivery.PublicBody),
-					}
-					pending = append(pending, department.LivePublication{Enduring: &publication})
-					enduring++
-					continue
-				}
-				var projectable event.Event
-				toolStep := false
-				switch value := delivery.Event.(type) {
-				case event.TokenDelta:
-					var preview string
-					switch chunk := value.Chunk.(type) {
-					case *content.TextChunk:
-						if chunk != nil {
-							preview = chunk.Text
-						}
-					case *content.ThinkingChunk:
-						if options.IncludeReasoning && chunk != nil {
-							preview = chunk.Thinking
-						}
-					}
-					if preview == "" {
-						continue
-					}
-					if len(preview) > maxPreviewBytes {
-						s.droppedLivePreviews.Add(1)
-						continue
-					}
-					projectable = value
-				case event.ToolCallStarted, event.ToolCallCompleted:
-					if !options.IncludeToolSteps {
-						continue
-					}
-					projectable, toolStep = value, true
-				default:
-					continue
-				}
-				if transient == transientLimit {
-					s.droppedLivePreviews.Add(1)
-					continue
-				}
-				projected, err := harnesswire.Project(s.scope.TenantID, s.scope.SessionID, projectable)
-				if err != nil || projected.Class != harnesswire.PublicEphemeral {
-					if toolStep {
-						s.droppedLivePreviews.Add(1)
-					}
-					continue
-				}
-				publication := sessionwire.EphemeralPublication{TenantID: s.scope.TenantID, SessionID: s.scope.SessionID, Body: projected.Body}
-				pending = append(pending, department.LivePublication{Ephemeral: &publication})
-				transient++
-			}
-		}
-	}()
-	return out, nil
-}
-
-// ApplyCommand satisfies department.CommandApplier for ALL FIVE admitted kinds,
-// through harness's own runtime-command seam.
-//
-// # Why every kind goes through the applier and none is vouched for
-//
-// runtimecommand.Applier writes the durable application prefix and the kind's
-// disposition frame, and that frame is the ONLY evidence the store settles from. A
-// product that short-circuited any kind — applied it some other way and let
-// something else report success — would settle a command the agent never received.
-// That has happened twice in this system's history: once when every kind was vouched
-// for and a gate response settled `applied` while the gate stayed open, and once
-// when only create and restore were, and a user's first message dropped in silence
-// with the record looking perfectly settled.
-//
-// # The decode is BY KIND, with Core's own records
-//
-// A create's stored body is a Core CreateRequest and an input's is an InputRequest:
-// Factory canonically encodes the whole request, so the two are different shapes
-// carrying the same blocks. Decoding with Core's decoder and handing the blocks to
-// content.UnmarshalBlocks is what makes a MULTI-BLOCK and a NON-TEXT first message
-// cross faithfully. A decoder that scraped text members out of arbitrary JSON would
-// accept a body of the wrong kind without noticing AND drop an image, and neither
-// loss is visible at the store.
-//
-// # A bare create is not an error
-//
-// harness makes Blocks OPTIONAL for a create precisely so a session created with no
-// opening message can still settle. Refusing one here would wedge every such
-// session; carrying nothing for a create that HAS a first message is the defect this
-// whole path exists to prevent, which is why an undecodable body is an error rather
-// than an empty turn.
-func (s *carbonRuntime) ApplyCommand(ctx context.Context, cmd department.RuntimeCommand) error {
-	applier, ok := s.controller.(runtimecommand.Applier)
-	if !ok {
-		return ErrCarbonRuntimeCannotApply
-	}
-	epoch, held := s.LeaseEpoch()
-	if !held {
-		// REFUSED BEFORE THE APPLY, not applied under a guessed epoch. harness
-		// checks the admitted record's LeaseEpoch for EQUALITY against the lease
-		// the runtime holds, so a zero would be refused there anyway — but it would
-		// be refused as a malformed record rather than as a lost lease, which sends
-		// an operator looking for the wrong failure.
-		return ErrCarbonRuntimeNoLease
-	}
-
-	admitted := runtimecommand.Admitted{
-		CommandID:        runtimecommand.CommandID(cmd.CommandID),
-		RuntimeCommandID: cmd.RuntimeCommandID,
-		LeaseEpoch:       epoch,
-		AttemptID:        runtimecommand.AttemptID(cmd.AttemptID),
-		// COPIED: Admitted is built field by field; an omitted member is dropped in silence.
-		Principal: cmd.Principal,
-	}
-	switch cmd.Kind {
-	case carbonKindCreate:
-		blocks, err := carbonCreateBlocks(cmd.Payload)
-		if err != nil {
-			return err
-		}
-		admitted.Kind, admitted.Blocks = runtimecommand.KindCreate, blocks
-		admitted.Metadata = cmd.Metadata
-	case carbonKindRestore:
-		// A restore carries NOTHING. Core's RestoreRequest has no blocks member and
-		// Admitted.Validate refuses a restore carrying any, so forwarding a stray
-		// payload would be refused after the attempt is already durable.
-		admitted.Kind = runtimecommand.KindRestore
-	case carbonKindInput:
-		blocks, err := carbonInputBlocks(cmd.Payload)
-		if err != nil {
-			return err
-		}
-		admitted.Kind, admitted.Blocks = runtimecommand.KindInput, blocks
-		admitted.Metadata = cmd.Metadata
-	case carbonKindInterrupt:
-		admitted.Kind = runtimecommand.KindInterrupt
-	case carbonKindGateResponse:
-		answer, err := carbonGateAnswer(cmd)
-		if err != nil {
-			return err
-		}
-		admitted.Kind, admitted.GateResponse = runtimecommand.KindGateResponse, answer
-	default:
-		// A kind a newer Factory admits and this build does not know. It is REFUSED
-		// rather than guessed at, and the refusal happens BEFORE any durable write,
-		// so the record is left for a Host that understands it. Guessing is exactly
-		// what dropped a create's first message for a whole release.
-		return fmt.Errorf("%w: %q", ErrCarbonUnknownCommandKind, cmd.Kind)
-	}
-
-	_, err := applier.ApplyRuntimeCommand(ctx, admitted)
-	return err
-}
-
-// CloseAttempt satisfies department.AttemptCloser: the capability a SUCCESSOR needs
-// to free a session a predecessor stranded.
-//
-// # THIS IS NOT OPTIONAL FOR A PRODUCT, AND IT IS NOT A MIGRATION CAPABILITY
-//
-// Host asks the RUNTIME for the recovery closure, because only the runtime's journal
-// can say whether a predecessor's attempt left an effect. A runtime that offers none
-// is refused department.ErrNoAttemptCloser; the applier turns that into a blocked
-// pass; the consumer BREAKS the pass and advances no cursor; the deadline sweep
-// SKIPS an attempt-bearing record, so nothing expires it. The cost is not "liveness
-// on one command" — it is that session's WHOLE COMMAND STREAM, permanently, until a
-// composition that can close the attempt takes the session.
-//
-// The trigger is any failover with an attempt in flight: `close` fires whenever the
-// record's attempt grant is older than the runtime's own. A pod eviction or a crash
-// on an all-current fleet reaches it. Host's own reference implementation of this is
-// in an INTERNAL package, so every external composer has to write it, and the
-// discovery rate for a silently-optional capability is zero — which is why it is
-// written out here at length rather than assumed.
-//
-// # Nothing is decided here
-//
-// The author grant is deliberately NOT a parameter: harness stamps it from the live
-// lease this successor holds, because a caller-supplied author epoch would be a
-// caller-authored proof and a tombstone is the one thing that must never be one.
-// harness refuses the closure outright if its grant is not strictly later than the
-// attempt's, or if the journal holds ANY enduring event caused by that runtime
-// command — a tombstone over a committed effect is the one error this protocol
-// cannot recover from.
-func (s *carbonRuntime) CloseAttempt(
-	ctx context.Context,
-	command sessionwire.CommandID,
-	runtimeCommand uuid.UUID,
-	kind string,
-	attempt string,
-	attemptJournalEpoch uint64,
-) error {
-	closer, ok := s.controller.(runtimecommand.AttemptCloser)
-	if !ok {
-		return ErrCarbonRuntimeCannotClose
-	}
-	closure := runtimecommand.Closure{
-		CommandID:           runtimecommand.CommandID(command),
-		RuntimeCommandID:    runtimeCommand,
-		Kind:                runtimecommand.Kind(kind),
-		AttemptID:           runtimecommand.AttemptID(attempt),
-		AttemptJournalEpoch: attemptJournalEpoch,
-	}
-	// VALIDATED ON THE RELEASED TYPE'S OWN RULE rather than a restatement of it. A
-	// closure that cannot name an attempt is one that could tombstone the wrong
-	// command, and Closure.Validate tracks Kind.Valid rather than holding a narrower
-	// set — a kind a predecessor can apply but a closure refuses is a command no
-	// successor can ever close.
-	if err := closure.Validate(); err != nil {
-		return err
-	}
-	_, err := closer.CloseAttempt(ctx, closure)
-	return err
-}
-
-// carbonCreateBlocks reads a create's stored body — Core's CreateRequest — and
-// returns its first message as content blocks.
-//
-// An EMPTY payload is a bare create: no blocks, no error. Anything else Core refuses
-// is an error, because a body this product cannot read must not be silently applied
-// as an empty turn — that is the exact shape of the defect host v0.5.0 exists to
-// close, and it settles `applied` with the user's words gone.
-func carbonCreateBlocks(payload []byte) ([]content.Block, error) {
-	if len(payload) == 0 {
-		return nil, nil
-	}
-	var request sessionwire.CreateRequest
-	if err := json.Unmarshal(payload, &request); err != nil {
-		return nil, fmt.Errorf("carbon: the create body is not a Core CreateRequest: %w", err)
-	}
-	return carbonBlocks(request.Blocks)
-}
-
-// carbonInputBlocks reads an input's stored body — Core's InputRequest.
-//
-// Unlike a create, harness REQUIRES blocks for an input and refuses one carrying
-// none, so this arm cannot fail open the way the create arm structurally can.
-func carbonInputBlocks(payload []byte) ([]content.Block, error) {
-	if len(payload) == 0 {
-		return nil, errors.New("carbon: the input body is empty")
-	}
-	var request sessionwire.InputRequest
-	if err := json.Unmarshal(payload, &request); err != nil {
-		return nil, fmt.Errorf("carbon: the input body is not a Core InputRequest: %w", err)
-	}
-	return carbonBlocks(request.Blocks)
-}
-
-// carbonBlocks decodes a Core request's blocks member with CORE'S OWN decoder, which
-// is what makes a multi-block and a non-text message cross faithfully.
-func carbonBlocks(raw json.RawMessage) ([]content.Block, error) {
-	if len(raw) == 0 {
-		return nil, nil
-	}
-	blocks, err := content.UnmarshalBlocks(raw)
-	if err != nil {
-		return nil, fmt.Errorf("carbon: the body's blocks are not Core content blocks: %w", err)
-	}
-	return blocks, nil
-}
-
-// carbonGateAnswer reads Core's gate-response record out of an admitted command's
-// body and builds harness's answer from it.
-//
-// THE SOURCE IS ASSERTED HERE AND IS NOT TAKEN FROM THE BODY. Core's record carries
-// no source, a Host sets it, and harness refuses a source a caller may not assert.
-// Everything else about the answer — whether the gate is open, whether the action is
-// one of its controls, whether the values satisfy its schema — is the session's to
-// decide, and this pre-empts none of it.
-func carbonGateAnswer(cmd department.RuntimeCommand) (*gate.GateResponse, error) {
-	if len(cmd.Payload) == 0 {
-		// A gate response whose body was offloaded to an object reference cannot be
-		// answered here: Host does not dereference a PayloadRef and this adapter has
-		// no object read of its own. It is refused rather than applied empty, which
-		// would resolve the gate with no answer.
-		return nil, fmt.Errorf("carbon: the gate response %s carries no inline body", cmd.CommandID)
-	}
-	var request sessionwire.GateResponseRequest
-	if err := json.Unmarshal(cmd.Payload, &request); err != nil {
-		return nil, fmt.Errorf("carbon: the gate response %s is not a Core record: %w", cmd.CommandID, err)
-	}
-	gateID, err := uuid.Parse(string(request.GateID))
-	if err != nil {
-		return nil, fmt.Errorf("carbon: the gate response %s names %q, which is not a gate identity: %w",
-			cmd.CommandID, request.GateID, err)
-	}
-	return &gate.GateResponse{
-		GateID: gate.ID(gateID),
-		Action: request.Action,
-		Values: request.Values,
-		Source: gate.ResponseSource{Kind: gate.ResponseFromUser},
-	}, nil
-}
-
 // NewCarbonDepartment builds the immutable registry a Host serves: ONE agent, the
-// Carbon product, launched by launcher.
+// Carbon product, launched by launcher through Host's published harness adapter.
+//
+// # The adapter is Host's, not Carbon's
+//
+// Everything between a launched harness session and Host's department seam —
+// the six required capabilities, the recovery pair (AttemptCloser and
+// PersistenceFaults, required at bind and declared on the target), the live
+// subscription with text, reasoning and tool-step previews and its drop count
+// (EphemeralDrops), the per-kind body decode with create re-presentation, the
+// gate_response decode, the principal and metadata copy, the refusal of an
+// unresolved PayloadRef, and the launch under the binding's RigSessionID — is
+// github.com/looprig/host/harnessruntime. Carbon hand-wrote that adapter until
+// host v0.16.0 published it; a hand copy re-derives every optional capability
+// unaided, and forgetting one compiles and fails only on recovery.
+//
+// What stays Carbon's is the per-launch assembly behind SessionLauncher: the
+// session-scoped rig, access policy, gate, MCP, credentials, workspace root, the
+// tenant's own harness journal store and its tool-result capture. harnessruntime
+// reaches it through RigsFunc, one Launcher per launch (launchScope).
 //
 // The compatibility identity is the caller's because it is derived from the resolved
 // session Config — the access revision, the MCP revision and the model catalogue
@@ -996,14 +257,7 @@ func carbonGateAnswer(cmd department.RuntimeCommand) (*gate.GateResponse, error)
 // Department built before they are resolved would advertise a runtime identity no
 // session it launches actually has.
 func NewCarbonDepartment(launcher SessionLauncher, compatibility department.CompatibilityID) (*department.Department, error) {
-	if launcher == nil {
-		return nil, errors.New("carbon: a Carbon launch target needs a session launcher")
-	}
-	capabilities := carbonCapabilities()
-	if capable, ok := launcher.(interface{ SupportsPooled() bool }); ok {
-		capabilities.SupportsPooled = capable.SupportsPooled()
-	}
-	target, err := department.NewRigTarget(&carbonRig{launcher: launcher}, compatibility, capabilities)
+	target, err := newCarbonTarget(launcher, compatibility)
 	if err != nil {
 		return nil, err
 	}
@@ -1011,7 +265,100 @@ func NewCarbonDepartment(launcher SessionLauncher, compatibility department.Comp
 	// map-shaped constructor could never see a duplicate registration, because
 	// duplicate computed keys silently last-wins. One registration is Carbon's
 	// whole Department by design.
-	return department.New([]department.Registration{{AgentID: CarbonAgentID, Target: target}})
+	return department.New([]department.Registration{harnessruntime.Registration(CarbonAgentID, target)})
+}
+
+// newCarbonTarget is the one Carbon launch target: harnessruntime.Target over
+// launcher, with Carbon's capabilities. Target forces Recovery on and holds it
+// true at every bind, so host.Compose's durable profile admits it.
+func newCarbonTarget(launcher SessionLauncher, compatibility department.CompatibilityID) (department.LaunchTarget, error) {
+	if launcher == nil {
+		return nil, errors.New("carbon: a Carbon launch target needs a session launcher")
+	}
+	capabilities := carbonCapabilities()
+	if capable, ok := launcher.(interface{ SupportsPooled() bool }); ok {
+		capabilities.SupportsPooled = capable.SupportsPooled()
+	}
+	return harnessruntime.Target(carbonRigs(launcher), compatibility, capabilities)
+}
+
+// carbonRigs resolves every launch, create and restore alike, to a launchScope
+// over launcher: the per-launch assembly (workspace, tenant journal store, MCP,
+// credentials) happens inside the launcher, which is why this is RigsFunc and
+// not SharedRig or RigPerTenant.
+func carbonRigs(launcher SessionLauncher) harnessruntime.Rigs {
+	return harnessruntime.RigsFunc(
+		func(_ context.Context, req department.RigCreateRequest) (harnessruntime.Launcher, error) {
+			return launchScope{launcher: launcher, scope: LaunchScope{
+				TenantID:      req.TenantID,
+				SessionID:     req.SessionID,
+				AgentID:       req.AgentID,
+				Placement:     req.Placement,
+				WorkspaceRoot: req.WorkspaceRoot,
+				RigSessionID:  req.RigSessionID,
+			}}, nil
+		},
+		// Host supplies harness's identity separately from the request because the
+		// two identity spaces are independent and a restore that does not carry it
+		// has nothing to restore FROM.
+		func(_ context.Context, id uuid.UUID, req department.RigRestoreRequest) (harnessruntime.Launcher, error) {
+			return launchScope{launcher: launcher, scope: LaunchScope{
+				TenantID:      req.TenantID,
+				SessionID:     req.SessionID,
+				AgentID:       req.AgentID,
+				Placement:     req.Placement,
+				WorkspaceRoot: req.WorkspaceRoot,
+				RigSessionID:  id,
+				Restore:       true,
+			}}, nil
+		},
+	)
+}
+
+// launchScope is the harnessruntime.Launcher for ONE launch: it runs the
+// product's SessionLauncher under the scope Host's request named.
+//
+// The launcher assembles and launches in one step, so the rig options
+// harnessruntime hands NewSession are not applied here; they are derived from
+// the same RigSessionID the scope carries, by the same rule
+// carbonRigSessionOptions applies inside the launcher (rig.WithSessionID for a
+// non-zero id, nothing for zero). The count is checked so the two derivations
+// cannot silently disagree if harnessruntime ever passes another option.
+type launchScope struct {
+	launcher SessionLauncher
+	scope    LaunchScope
+}
+
+var _ harnessruntime.Launcher = launchScope{}
+
+// LaunchOptionsMismatchError refuses a launch whose rig options, or restore
+// identity, differ from what the launch's scope would apply.
+type LaunchOptionsMismatchError struct {
+	Reason string
+}
+
+func (e *LaunchOptionsMismatchError) Error() string {
+	return "carbon: the launch request disagrees with its scope: " + e.Reason
+}
+
+func (l launchScope) NewSession(ctx context.Context, options ...rig.SessionOption) (session.SessionController, error) {
+	if l.scope.Restore {
+		return nil, &LaunchOptionsMismatchError{Reason: "a restore scope was asked for a new session"}
+	}
+	if want := len(carbonRigSessionOptions(l.scope)); len(options) != want {
+		return nil, &LaunchOptionsMismatchError{Reason: fmt.Sprintf("%d rig session options, the scope applies %d", len(options), want)}
+	}
+	return l.launcher.Launch(ctx, l.scope)
+}
+
+func (l launchScope) RestoreSession(ctx context.Context, id uuid.UUID) (session.SessionController, error) {
+	if !l.scope.Restore {
+		return nil, &LaunchOptionsMismatchError{Reason: "a create scope was asked to restore"}
+	}
+	if id != l.scope.RigSessionID {
+		return nil, &LaunchOptionsMismatchError{Reason: fmt.Sprintf("restore of %s, the scope names %s", id, l.scope.RigSessionID)}
+	}
+	return l.launcher.Launch(ctx, l.scope)
 }
 
 // carbonRigSessionOptions is the harness option list a launcher must apply for a

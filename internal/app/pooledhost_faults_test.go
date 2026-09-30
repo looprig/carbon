@@ -12,6 +12,7 @@ import (
 	"github.com/looprig/harness/pkg/session"
 	"github.com/looprig/host"
 	"github.com/looprig/host/department"
+	"github.com/looprig/host/harnessruntime"
 	"github.com/looprig/inference"
 	"github.com/looprig/sessionstore"
 	"github.com/looprig/storage/memstore"
@@ -47,14 +48,15 @@ func TestRealPooledHostAbandonsAFaultedCarbonRuntime(t *testing.T) {
 
 	var (
 		mu       sync.Mutex
-		launched []*faultInjectingController
+		launched []*probeController
 	)
 	injecting := pooledLauncherFunc(func(ctx context.Context, scope LaunchScope) (session.SessionController, error) {
 		controller, err := pooled.Launch(ctx, scope)
 		if err != nil {
 			return nil, err
 		}
-		wrapped := newFaultInjectingController(controller)
+		wrapped := newProbe(controller)
+		wrapped.faulted = make(chan struct{})
 		mu.Lock()
 		launched = append(launched, wrapped)
 		mu.Unlock()
@@ -105,7 +107,7 @@ func TestRealPooledHostAbandonsAFaultedCarbonRuntime(t *testing.T) {
 		Collaborators: host.Collaborators{Backend: backend,
 			JournalStores: map[host.EvidenceKey]sessionstore.DispositionEvidenceReader{{TenantID: tenant, StorageBindingID: "carbon-test"}: journal},
 			Registrar: host.RegistrarFunc(func(context.Context) ([]department.Registration, error) {
-				return []department.Registration{{AgentID: CarbonAgentID, Target: target}}, nil
+				return []department.Registration{harnessruntime.Registration(CarbonAgentID, target)}, nil
 			}),
 			Checkpointer: pooledHostCheckpointer{}, Auth: pooledHostAuth{}, Workspaces: pooled,
 			NamespaceLayout: func(tenant sessionwire.TenantID, sid sessionwire.SessionID) string {

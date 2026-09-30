@@ -15,6 +15,7 @@ import (
 	sessionwire "github.com/looprig/core/sessionwire/v1"
 	"github.com/looprig/host"
 	"github.com/looprig/host/department"
+	"github.com/looprig/host/harnessruntime"
 	"github.com/looprig/sessionstore"
 )
 
@@ -147,7 +148,7 @@ func OpenServePooledHost(ctx context.Context, stores *ServeStorage, cfg ServePoo
 				{TenantID: stores.defaultTenant, StorageBindingID: cfg.StorageBindingID}: stores.defaultJournal,
 			},
 			Registrar: host.RegistrarFunc(func(context.Context) ([]department.Registration, error) {
-				return []department.Registration{{AgentID: CarbonAgentID, Target: target}}, nil
+				return []department.Registration{harnessruntime.Registration(CarbonAgentID, target)}, nil
 			}),
 			Checkpointer:    stores.launcher,
 			Auth:            serveHostAuth{tenant: stores.defaultTenant, token: cfg.AuthToken},
