@@ -150,12 +150,12 @@ func TestOrchestrationPinsAreTheReleasedOnes(t *testing.T) {
 			"stores principal and metadata in v3 disposition inbox rows; ONE-WAY: after a v3 row exists, never roll Factory or Host back below sessionstore v0.14.0, whose reader accepts it",
 		},
 		{
-			"github.com/looprig/harness", "v0.44.0",
-			"Admitted carries the principal and create/input metadata; v0.42.0 adds tool_use_id/tool_name/elapsed_ms to the ephemeral ToolCallStarted/ToolCallCompleted events the live tool-step previews join to their committed StepDone on (never journaled, not one-way); v0.42.1 publishes flat, portable agent tool schemas (StartAgent no longer uses a top-level oneOf that llama.cpp grammars skip and Anthropic rejects); v0.43.0/v0.44.0 add loop.WithReadOnlyAccess/WithWorkspaceAccess (additive, unused by Carbon) and are the harness host v0.16.0 pins; ONE-WAY: once a journal holds a stamped or presented record, or metadata from a browser even without stamping or a presenter, never roll Carbon back below harness v0.41.0",
+			"github.com/looprig/harness", "v0.45.0",
+			"Admitted carries the principal and create/input metadata; v0.42.0 adds tool_use_id/tool_name/elapsed_ms to the ephemeral ToolCallStarted/ToolCallCompleted events the live tool-step previews join to their committed StepDone on (never journaled, not one-way); v0.42.1 publishes flat, portable agent tool schemas (StartAgent no longer uses a top-level oneOf that llama.cpp grammars skip and Anthropic rejects); v0.43.0/v0.44.0 add loop.WithReadOnlyAccess/WithWorkspaceAccess (additive, unused by Carbon); v0.45.0 returns *session.LeaseReleaseError from Shutdown/ReleaseResidency/AbandonResidency instead of swallowing a failed lease release (host v0.17.0 maps it to residency-still-held), and is the harness host v0.17.0 pins; ONE-WAY: once a journal holds a stamped or presented record, or metadata from a browser even without stamping or a presenter, never roll Carbon back below harness v0.41.0",
 		},
 		{
-			"github.com/looprig/host", "v0.16.0",
-			"RuntimeCommand carries principal and metadata through the strict pre-attempt checks; v0.14.0 applies a command body stored by reference (above 64 KiB) and advertises hostlink.payload.reference, which host.Compose wires unconditionally; v0.15.0 adds LiveTextOptions.IncludeToolSteps and department.LiveOptionsSubscriber; v0.16.0 publishes harnessruntime, the adapter Carbon's target is now built with (replacing its hand-written carbonRuntime), and refuses under the default RuntimeProfileDurable any target that does not declare Recovery{AttemptCloser, PersistenceFaults}, which harnessruntime.Target declares and verifies at every bind; v0.15.1 fixes a drain/attach race that could leave a journal lease held after drained; paired with harness v0.41.0 because a journal containing stamped or presented records cannot be read by older harness",
+			"github.com/looprig/host", "v0.17.0",
+			"RuntimeCommand carries principal and metadata through the strict pre-attempt checks; v0.14.0 applies a command body stored by reference (above 64 KiB) and advertises hostlink.payload.reference, which host.Compose wires unconditionally; v0.15.0 adds LiveTextOptions.IncludeToolSteps and department.LiveOptionsSubscriber; v0.16.0 publishes harnessruntime, the adapter Carbon's target is now built with (replacing its hand-written carbonRuntime), and refuses under the default RuntimeProfileDurable any target that does not declare Recovery{AttemptCloser, PersistenceFaults}, which harnessruntime.Target declares and verifies at every bind; v0.17.0 abandons a gate-waiting runtime crash-equivalently on drain and reports DrainReport.Abandoned/Parked, and Carbon treats any Parked session as an incomplete drain (the runtime still holds its lease), keeping the provider open; v0.15.1 fixes a drain/attach race that could leave a journal lease held after drained; paired with harness v0.41.0 because a journal containing stamped or presented records cannot be read by older harness",
 		},
 		{
 			"github.com/looprig/factory", "v0.15.0",
@@ -231,6 +231,10 @@ func TestHostAndHarnessPinsMoveTogether(t *testing.T) {
 	// launch target is that adapter, so the pair moves together.
 	if versionAtLeast(host, "v0.16.0") && !versionAtLeast(harnessVersion, "v0.44.0") {
 		t.Errorf("host %s with harness %s: host v0.16.0's harnessruntime pins harness v0.44.0", host, harnessVersion)
+	}
+	// host v0.17.0 maps harness v0.45.0's LeaseReleaseError to residency-still-held.
+	if versionAtLeast(host, "v0.17.0") && !versionAtLeast(harnessVersion, "v0.45.0") {
+		t.Errorf("host %s with harness %s: host v0.17.0 requires harness v0.45.0's LeaseReleaseError", host, harnessVersion)
 	}
 }
 

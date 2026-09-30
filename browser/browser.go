@@ -86,12 +86,17 @@ type Server struct {
 	hostListenerError func() error
 }
 
-// DrainIncompleteError means Host reported failures after Stop returned.
-// Ownership remains with Server; the backing provider is not closed.
+// DrainIncompleteError means Host reported failures, or parked sessions, after
+// Stop returned. Ownership remains with Server; the backing provider is not
+// closed.
+//
+// A PARKED session (host >= v0.17.0) is a runtime that refused its release and
+// could not be abandoned: it keeps running and holds its journal lease until
+// the process exits, so it is a leak and its provider must stay open.
 type DrainIncompleteError struct{ Report host.DrainReport }
 
 func (e *DrainIncompleteError) Error() string {
-	return fmt.Sprintf("carbon: Host drain incomplete (%d failures)", len(e.Report.Failures))
+	return fmt.Sprintf("carbon: Host drain incomplete (%d failures, %d parked)", len(e.Report.Failures), len(e.Report.Parked))
 }
 
 // QuiesceIncompleteError means Factory's admission join did not complete
@@ -375,7 +380,7 @@ func (s *Server) cleanup(attempt *stopAttempt) {
 			stop = s.host.Stop
 		}
 		report, err = stop(context.Background())
-		if err == nil && len(report.Failures) != 0 {
+		if err == nil && (len(report.Failures) != 0 || len(report.Parked) != 0) {
 			err = &DrainIncompleteError{Report: report}
 		}
 		if err == nil {

@@ -137,6 +137,29 @@ func TestServePooledHostRetriesFailedDrainPublicationBeforeClosingListener(t *te
 	}
 }
 
+// A parked session (host >= v0.17.0) still runs under its journal lease, so a
+// report naming one is not a clean drain: the listener and backend stay alive.
+func TestServePooledHostKeepsListenerWhenASessionIsParked(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	h := &ServePooledHost{listener: listener, server: &http.Server{}, startSucceeded: true,
+		stopService: func(context.Context) (host.DrainReport, error) {
+			return host.DrainReport{Parked: []host.DrainSession{{TenantID: "local", SessionID: "gated"}}}, nil
+		}}
+	report, err := h.Stop(context.Background())
+	if err != nil || len(report.Parked) != 1 {
+		t.Fatalf("Stop = (%+v, %v), want the parked report", report, err)
+	}
+	conn, err := net.DialTimeout("tcp", listener.Addr().String(), time.Second)
+	if err != nil {
+		t.Fatalf("listener closed although a session is parked: %v", err)
+	}
+	conn.Close()
+}
+
 func TestServePooledHostRetriesRealDrainPublicationFailure(t *testing.T) {
 	ctx := context.Background()
 	stores, err := OpenServeStorage(ctx, Config{HomeDir: t.TempDir()}, ServeStorageConfig{DataDir: t.TempDir(), DefaultTenant: "local"},

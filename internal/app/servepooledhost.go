@@ -226,7 +226,9 @@ func (h *ServePooledHost) ListenerError() error {
 // Stop drains Host while HostLink remains reachable, then closes the listener.
 // A caller deadline ends only that caller's wait: shutdown continues, and the
 // owner must call Stop again and await completion before ServeStorage.Close.
-// The caller must inspect DrainReport.Failures before reporting a clean drain.
+// The caller must inspect DrainReport.Failures and DrainReport.Parked before
+// reporting a clean drain: a parked session (host >= v0.17.0) still runs and
+// holds its journal lease.
 func (h *ServePooledHost) Stop(ctx context.Context) (host.DrainReport, error) {
 	if h == nil {
 		return host.DrainReport{}, nil
@@ -272,8 +274,9 @@ func (h *ServePooledHost) stopOwned(shutdownCtx context.Context, cancel context.
 	}
 	// A publication error is an incomplete Host Stop; keep the listener and
 	// borrowed backend alive for a later retry. A nonempty report may also
-	// retain residency or an open store and is never clean drain evidence.
-	if err != nil || len(report.Failures) != 0 {
+	// retain residency or an open store and is never clean drain evidence; a
+	// parked session is a runtime still writing under its lease.
+	if err != nil || len(report.Failures) != 0 || len(report.Parked) != 0 {
 		h.stateMu.Lock()
 		attempt.report, attempt.err = report, err
 		h.stopAttempt = nil

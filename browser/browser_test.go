@@ -223,6 +223,25 @@ func TestDrainFailuresRetainStorageOwner(t *testing.T) {
 	}
 }
 
+// host v0.17.0: a Parked session's runtime refused its release and could not be
+// abandoned, so it keeps running and holds its journal lease. That is a leak the
+// embedder must see, and the provider it writes through must stay open, even when
+// the report carries no Failures.
+func TestParkedSessionsRetainStorageOwner(t *testing.T) {
+	closed := false
+	s := &Server{done: make(chan struct{}), stopHost: func(context.Context) (host.DrainReport, error) {
+		return host.DrainReport{Parked: []host.DrainSession{{TenantID: "local", SessionID: "gated"}}}, nil
+	}, closeStorage: func(context.Context) error { closed = true; return nil }}
+	err := s.Stop(context.Background())
+	var incomplete *DrainIncompleteError
+	if !errors.As(err, &incomplete) || closed {
+		t.Fatalf("Stop = %v, provider closed = %t", err, closed)
+	}
+	if !strings.Contains(err.Error(), "1 parked") {
+		t.Errorf("Stop = %v, want the parked count named", err)
+	}
+}
+
 func TestUnexpectedServeFailureStillTerminatesOwner(t *testing.T) {
 	want := errors.New("serve failed")
 	s := &Server{serveDone: make(chan error, 1), done: make(chan struct{})}
