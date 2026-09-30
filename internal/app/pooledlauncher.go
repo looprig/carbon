@@ -19,6 +19,7 @@ import (
 	"github.com/looprig/host/department"
 	"github.com/looprig/inference"
 	"github.com/looprig/sessionstore"
+	"github.com/looprig/storage"
 )
 
 // PooledLauncher constructs a separate Carbon rig, access policy, gate, process
@@ -93,9 +94,11 @@ func (l *PooledLauncher) withTenantJournal(tenant sessionwire.TenantID, read fun
 	}
 	bundle.durableMu.Lock()
 	if bundle.durable == nil {
-		backend := *bundle.fs.Backend()
-		backend.Blobs = newBoundedBlobs(backend.Blobs)
-		bundle.durable, err = sessionstore.Open(l.closeContext, &backend, sessionstore.WithLegacySingleTenant(tenant))
+		var backend *storage.Composite
+		backend, err = bundle.fs.Backend().WithBoundedBlobReaders()
+		if err == nil {
+			bundle.durable, err = sessionstore.Open(l.closeContext, backend, sessionstore.WithLegacySingleTenant(tenant))
+		}
 	}
 	durable := bundle.durable
 	bundle.durableMu.Unlock()

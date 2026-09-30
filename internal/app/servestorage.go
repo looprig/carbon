@@ -113,8 +113,11 @@ func OpenServeStorage(ctx context.Context, cfg Config, selected ServeStorageConf
 	if err != nil {
 		return nil, err
 	}
-	backend := *fs.Backend()
-	backend.Blobs = newBoundedBlobs(backend.Blobs)
+	backend, err := fs.Backend().WithBoundedBlobReaders()
+	if err != nil {
+		_ = fs.Close()
+		return nil, err
+	}
 	// No legacy option: SessionStore's unmarked default is tenant-v1, and its
 	// persisted marker comparison refuses a historical legacy root.
 	if err := ctx.Err(); err != nil {
@@ -125,7 +128,7 @@ func OpenServeStorage(ctx context.Context, cfg Config, selected ServeStorageConf
 	// startup context also governs Serve's run loop and is cancelled to begin
 	// shutdown, when this control store must still answer pending-command reads.
 	// ServeStorage owns the store and closes it after Host and Factory stop.
-	control, err := sessionstore.Open(context.WithoutCancel(ctx), &backend)
+	control, err := sessionstore.Open(context.WithoutCancel(ctx), backend)
 	if err != nil {
 		_ = fs.Close()
 		var marker *sessionstore.KeyspaceError
@@ -156,7 +159,7 @@ func OpenServeStorage(ctx context.Context, cfg Config, selected ServeStorageConf
 		_ = closeServeStorageResources(launcher, control, fs.Close)
 		return nil, err
 	}
-	return &ServeStorage{controlFS: fs, controlBackend: &backend, control: control, launcher: launcher, defaultJournal: journal, defaultTenant: selected.DefaultTenant, closeProvider: fs.Close, closeDone: make(chan struct{})}, nil
+	return &ServeStorage{controlFS: fs, controlBackend: backend, control: control, launcher: launcher, defaultJournal: journal, defaultTenant: selected.DefaultTenant, closeProvider: fs.Close, closeDone: make(chan struct{})}, nil
 }
 
 // The provider must outlive SessionStore's background shutdown. In particular,

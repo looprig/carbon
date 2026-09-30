@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +15,24 @@ import (
 	"github.com/looprig/storage/memstore"
 	"github.com/looprig/storage/storetest"
 )
+
+// Carbon backs every SessionStore it opens with an fsstore root adapted by
+// storage.WithBoundedBlobReaders (storage v0.9.0), which replaced Carbon's private
+// wrapper of the same design. The adapter is storage's and is tested there; these
+// cases hold the properties CARBON's deployment relies on, over the fsstore Blobs it
+// actually adapts: the bound is real while a provider read is stuck, a complete
+// stream still ends in io.EOF, truncation never passes for completion, and the blob
+// root stays in carbon's reported persistence paths.
+
+// boundedFor adapts b the way Carbon's composition roots do.
+func boundedFor(t *testing.T, b storage.Blobs) storage.BlobReaderLifecycle {
+	t.Helper()
+	bounded, err := storage.WithBoundedBlobReaders(b)
+	if err != nil {
+		t.Fatalf("storage.WithBoundedBlobReaders: %v", err)
+	}
+	return bounded
+}
 
 // The shared suite is the contract check. It exercises concurrency but, as its own doc
 // notes, cannot create genuinely blocked provider I/O — that is what
@@ -26,27 +45,8 @@ func TestBoundedBlobsConformance(t *testing.T) {
 			t.Fatalf("fsstore.Open: %v", err)
 		}
 		t.Cleanup(func() { _ = fs.Close() })
-		return newBoundedBlobs(fs.Backend().Blobs)
+		return boundedFor(t, fs.Backend().Blobs)
 	})
-}
-
-// A provider that already conforms must be handed back untouched, so a conforming
-// backend pays neither the extra copy nor the pump goroutine.
-func TestNewBoundedBlobsPassesThroughConformingProvider(t *testing.T) {
-	t.Parallel()
-	fs, err := fsstore.Open(fsstore.Options{Root: t.TempDir()})
-	if err != nil {
-		t.Fatalf("fsstore.Open: %v", err)
-	}
-	t.Cleanup(func() { _ = fs.Close() })
-
-	wrapped := newBoundedBlobs(fs.Backend().Blobs)
-	if _, isWrapper := wrapped.(*boundedBlobs); !isWrapper {
-		t.Fatal("precondition: fsstore Blobs was expected to need wrapping")
-	}
-	if again := newBoundedBlobs(wrapped); again != wrapped {
-		t.Errorf("re-wrapping an already-conforming provider returned %T, want the same value", again)
-	}
 }
 
 // blockingBlobs is a Blobs provider whose Get reader parks in Read until released — the
@@ -101,7 +101,7 @@ func TestBoundedBlobsCloseIsBoundedWhileProviderReadIsBlocked(t *testing.T) {
 	release := make(chan struct{})
 	readDone := make(chan struct{})
 	provider := &blockingBlobs{Blobs: fs.Backend().Blobs, release: release, readDone: readDone}
-	bounded := newBoundedBlobs(provider)
+	bounded := boundedFor(t, provider)
 
 	rc, err := bounded.Get(context.Background(), "blobs/stuck")
 	if err != nil {
@@ -141,8 +141,9 @@ func TestBoundedBlobsCloseIsBoundedWhileProviderReadIsBlocked(t *testing.T) {
 		if err == nil || errors.Is(err, io.EOF) {
 			t.Errorf("blocked Read terminated with %v, want a non-EOF error", err)
 		}
-		if !errors.Is(err, errBlobReaderClosed) {
-			t.Errorf("blocked Read error = %v, want errBlobReaderClosed", err)
+		var closedErr *storage.BlobReaderClosedError
+		if !errors.As(err, &closedErr) {
+			t.Errorf("blocked Read error = %v, want *storage.BlobReaderClosedError", err)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("blocked Read did not terminate after Close returned")
@@ -168,7 +169,7 @@ func TestBoundedBlobsRoundTripsThroughEOF(t *testing.T) {
 		t.Fatalf("fsstore.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = fs.Close() })
-	bounded := newBoundedBlobs(fs.Backend().Blobs)
+	bounded := boundedFor(t, fs.Backend().Blobs)
 
 	payload := bytes.Repeat([]byte("carbon blob payload "), 5000)
 	ctx := context.Background()
@@ -216,7 +217,7 @@ func (r *readFailureReader) Read(p []byte) (int, error) {
 func TestBoundedBlobsPropagatesProviderReadError(t *testing.T) {
 	t.Parallel()
 	providerErr := errors.New("provider read failed")
-	bounded := newBoundedBlobs(readFailureBlobs{readErr: providerErr})
+	bounded := boundedFor(t, readFailureBlobs{readErr: providerErr})
 	rc, err := bounded.Get(context.Background(), "blobs/broken")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
@@ -228,28 +229,50 @@ func TestBoundedBlobsPropagatesProviderReadError(t *testing.T) {
 	}
 }
 
-type getFailureBlobs struct {
-	storage.Blobs
-	err error
-}
-
-func (b getFailureBlobs) Get(context.Context, string) (io.ReadCloser, error) {
-	return nil, b.err
-}
-
-func TestBoundedBlobsReportsGetErrorEagerly(t *testing.T) {
+// The bound sessionstore.Open reads is storage's declared ceiling for the adapter,
+// not a number Carbon chooses; it was Carbon's own 1s before storage published it.
+func TestBoundedBlobsDeclareStoragesCloseBound(t *testing.T) {
 	t.Parallel()
-	providerErr := errors.New("provider get failed")
-	rc, err := newBoundedBlobs(getFailureBlobs{err: providerErr}).Get(context.Background(), "blobs/missing")
-	if rc != nil || !errors.Is(err, providerErr) {
-		t.Fatalf("Get = (%v, %v), want nil reader and provider error", rc, err)
+	if got := boundedFor(t, readFailureBlobs{}).BlobReaderCloseBound(); got != storage.BoundedBlobReaderCloseBound {
+		t.Fatalf("BlobReaderCloseBound = %v, want storage.BoundedBlobReaderCloseBound (%v)", got, storage.BoundedBlobReaderCloseBound)
+	}
+	if storage.BoundedBlobReaderCloseBound > time.Second {
+		t.Errorf("storage.BoundedBlobReaderCloseBound = %v; Carbon's wrapper promised 1s and nothing here was re-measured against a looser bound", storage.BoundedBlobReaderCloseBound)
 	}
 }
 
-func TestBoundedBlobsDeclaresOneSecondCloseBound(t *testing.T) {
+// closeFailureBlobs serves a complete stream whose reader then fails to Close.
+type closeFailureBlobs struct {
+	storage.Blobs
+	closeErr error
+}
+
+func (b closeFailureBlobs) Get(context.Context, string) (io.ReadCloser, error) {
+	return closeFailureReader{Reader: strings.NewReader("complete blob"), err: b.closeErr}, nil
+}
+
+type closeFailureReader struct {
+	io.Reader
+	err error
+}
+
+func (r closeFailureReader) Close() error { return r.err }
+
+// BEHAVIOUR CHANGE with storage's adapter: a provider reader whose Close fails after
+// a complete read now fails the stream (the error is delivered in place of io.EOF).
+// Carbon's private wrapper dropped that error and reported a clean EOF, so a stream
+// whose release failed passed for complete.
+func TestBoundedBlobsSurfaceACloseErrorAfterACompleteRead(t *testing.T) {
 	t.Parallel()
-	if got := newBoundedBlobs(readFailureBlobs{}).BlobReaderCloseBound(); got != time.Second {
-		t.Fatalf("BlobReaderCloseBound = %v, want 1s", got)
+	closeErr := errors.New("provider close failed")
+	rc, err := boundedFor(t, closeFailureBlobs{closeErr: closeErr}).Get(context.Background(), "blobs/close-fails")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	defer rc.Close()
+	data, err := io.ReadAll(rc)
+	if string(data) != "complete blob" || !errors.Is(err, closeErr) {
+		t.Fatalf("ReadAll = (%q, %v), want every byte and then the provider's Close error, not io.EOF", data, err)
 	}
 }
 
@@ -269,7 +292,7 @@ func TestBoundedBlobsForwardsPathReporter(t *testing.T) {
 	if !ok {
 		t.Skip("fsstore Blobs no longer reports paths; nothing to forward")
 	}
-	bounded := newBoundedBlobs(fs.Backend().Blobs)
+	bounded := boundedFor(t, fs.Backend().Blobs)
 	reporter, ok := bounded.(storage.PathReporter)
 	if !ok {
 		t.Fatal("wrapped Blobs no longer implements storage.PathReporter")
@@ -285,47 +308,13 @@ func TestBoundedBlobsForwardsPathReporter(t *testing.T) {
 	}
 }
 
-// Delete and List must reach the wrapped provider unchanged.
-func TestBoundedBlobsDelegatesDeleteAndList(t *testing.T) {
-	t.Parallel()
-	fs, err := fsstore.Open(fsstore.Options{Root: t.TempDir()})
-	if err != nil {
-		t.Fatalf("fsstore.Open: %v", err)
-	}
-	t.Cleanup(func() { _ = fs.Close() })
-	bounded := newBoundedBlobs(fs.Backend().Blobs)
-
-	ctx := context.Background()
-	for _, key := range []string{"blobs/a", "blobs/b"} {
-		if err := bounded.Put(ctx, key, bytes.NewReader([]byte(key))); err != nil {
-			t.Fatalf("Put(%q): %v", key, err)
-		}
-	}
-	keys, err := bounded.List(ctx, "blobs/")
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
-	if len(keys) != 2 {
-		t.Fatalf("List returned %v, want 2 keys", keys)
-	}
-	if err := bounded.Delete(ctx, "blobs/a"); err != nil {
-		t.Fatalf("Delete: %v", err)
-	}
-	keys, err = bounded.List(ctx, "blobs/")
-	if err != nil {
-		t.Fatalf("List after Delete: %v", err)
-	}
-	if len(keys) != 1 || keys[0] != "blobs/b" {
-		t.Errorf("List after Delete = %v, want [blobs/b]", keys)
-	}
-}
-
-// A missing Blobs provider must keep sessionstore's typed "missing Blobs" diagnosis
-// rather than being wrapped into a value that passes the nil check and panics later.
+// A missing Blobs provider must be reported as missing rather than wrapped into a
+// value that passes the nil check and panics later. storage's adapter names it with
+// *storage.IncompleteCompositeError, where sessionstore.Open used to.
 func TestOpenStoresReportsMissingBlobsRatherThanWrappingNil(t *testing.T) {
 	t.Parallel()
-	if got := newBoundedBlobs(nil); got != nil {
-		t.Fatalf("newBoundedBlobs(nil) = %#v, want nil", got)
+	if got, err := storage.WithBoundedBlobReaders(nil); got != nil || err == nil {
+		t.Fatalf("storage.WithBoundedBlobReaders(nil) = (%#v, %v), want a refusal", got, err)
 	}
 
 	base := memstore.New()
@@ -334,7 +323,8 @@ func TestOpenStoresReportsMissingBlobsRatherThanWrappingNil(t *testing.T) {
 	if err == nil {
 		t.Fatal("openStores() with no Blobs provider succeeded, want a typed backend error")
 	}
-	if !strings.Contains(err.Error(), "missing Blobs") {
-		t.Errorf("openStores() error = %v, want it to name the missing Blobs component", err)
+	var incomplete *storage.IncompleteCompositeError
+	if !errors.As(err, &incomplete) || !slices.Contains(incomplete.Missing, "Blobs") {
+		t.Errorf("openStores() error = %v, want *storage.IncompleteCompositeError naming Blobs", err)
 	}
 }

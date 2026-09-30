@@ -41,12 +41,14 @@ func TestServePooledHostTimedStopWaitsForHostStoreCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	backend := *fs.Backend()
-	backend.Blobs = newBoundedBlobs(backend.Blobs)
+	backend, err := fs.Backend().WithBoundedBlobReaders()
+	if err != nil {
+		t.Fatal(err)
+	}
 	held := &heldControlCloser{entered: make(chan struct{}), release: make(chan struct{})}
 	var releaseOnce sync.Once
 	t.Cleanup(func() { releaseOnce.Do(func() { close(held.release) }); _ = fs.Close() })
-	hostStore, err := sessionstore.Open(ctx, &backend, sessionstore.WithProviderOwnership(held))
+	hostStore, err := sessionstore.Open(ctx, backend, sessionstore.WithProviderOwnership(held))
 	if err != nil {
 		t.Fatal(err)
 	}

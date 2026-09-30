@@ -201,12 +201,14 @@ func TestServeStorageCancelledCloseKeepsProviderUntilControlCompletes(t *testing
 	if err := s.control.Close(ctx); err != nil {
 		t.Fatal(err)
 	}
-	backend := *s.controlFS.Backend()
-	backend.Blobs = newBoundedBlobs(backend.Blobs)
+	backend, err := s.controlFS.Backend().WithBoundedBlobReaders()
+	if err != nil {
+		t.Fatal(err)
+	}
 	held := &heldControlCloser{entered: make(chan struct{}), release: make(chan struct{})}
 	var releaseOnce sync.Once
 	t.Cleanup(func() { releaseOnce.Do(func() { close(held.release) }) })
-	s.control, err = sessionstore.Open(ctx, &backend, sessionstore.WithProviderOwnership(held))
+	s.control, err = sessionstore.Open(ctx, backend, sessionstore.WithProviderOwnership(held))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,12 +258,14 @@ func TestServeStorageFailedInitWaitsForControlBeforeProviderClose(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	backend := *fs.Backend()
-	backend.Blobs = newBoundedBlobs(backend.Blobs)
+	backend, err := fs.Backend().WithBoundedBlobReaders()
+	if err != nil {
+		t.Fatal(err)
+	}
 	held := &heldControlCloser{entered: make(chan struct{}), release: make(chan struct{})}
 	var releaseOnce sync.Once
 	t.Cleanup(func() { releaseOnce.Do(func() { close(held.release) }) })
-	control, err := sessionstore.Open(ctx, &backend, sessionstore.WithProviderOwnership(held))
+	control, err := sessionstore.Open(ctx, backend, sessionstore.WithProviderOwnership(held))
 	if err != nil {
 		t.Fatal(err)
 	}

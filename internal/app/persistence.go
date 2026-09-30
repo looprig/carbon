@@ -104,14 +104,19 @@ type sessionStores struct {
 // with a replayer so a missing listing entry can be repaired by folding the ledger.
 //
 // The Blobs primitive is adapted to storage.BlobReaderLifecycle, which sessionstore.Open
-// requires and fsstore deliberately does not provide (see boundedBlobs). The adaptation
-// happens HERE, at the single seam every backend passes through, rather than at each
-// fsstore.Open call site — a future third backend cannot forget it, and the headless
-// memstore path already conforms so newBoundedBlobs returns it untouched.
+// requires and fsstore deliberately does not provide, with storage's explicit opt-in
+// (*storage.Composite).WithBoundedBlobReaders (storage v0.9.0). It replaced Carbon's
+// private wrapper of the same design: Close closes a pipe instead of waiting on the
+// provider, so a stuck provider Read is ABANDONED (one goroutine and file descriptor
+// may outlive Close) rather than cancelled. That trade is sound only for a local
+// directory the process owns, which is every fsstore root Carbon opens. Unlike the
+// private wrapper, a provider Close error after a complete read now fails the stream
+// instead of being dropped. The adaptation happens HERE, at the single seam every backend passes through, rather than
+// at each fsstore.Open call site — a future third backend cannot forget it, and the
+// headless memstore path already conforms so it passes through untouched.
 //
-// The composite is copied before its Blobs field is replaced: the caller owns the
-// original (fsstore returns its own *storage.Composite from Backend()), and mutating it
-// in place would reach back into the provider's state.
+// WithBoundedBlobReaders returns a copy: the caller owns the original composite
+// (fsstore returns its own *storage.Composite from Backend()), and it is never mutated.
 func openStores(backend *storage.Composite) (*sessionStores, error) {
 	return openStoresWithOptions(backend)
 }
@@ -124,9 +129,10 @@ func openStoresWithOptions(backend *storage.Composite, options ...sessionstore.O
 	if backend == nil {
 		return nil, &StoreInitError{Stage: "sessionstore", Cause: errors.New("nil storage composite")}
 	}
-	adapted := *backend
-	adapted.Blobs = newBoundedBlobs(backend.Blobs)
-	backend = &adapted
+	backend, err := backend.WithBoundedBlobReaders()
+	if err != nil {
+		return nil, &StoreInitError{Stage: "sessionstore", Cause: err}
+	}
 
 	sessionStore, err := sessionstore.Open(backend, options...)
 	if err != nil {
