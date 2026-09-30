@@ -138,8 +138,8 @@ func TestOrchestrationPinsAreTheReleasedOnes(t *testing.T) {
 			"defines the principal, metadata and attribution capability contract that Factory, Host and harness carry (v0.12.0; a stamped command is not readable by the pre-feature stack) and the hostlink.payload.reference capability (v0.13.0) Factory gates placement of a referenced command body on; v0.13.1 moves grpc to v1.83.2",
 		},
 		{
-			"github.com/looprig/storage", "v0.8.0",
-			"the contract BlobReaderLifecycle is declared in, which sessionstore.Open consults; v0.7.0 makes 'a key and a key extending it with /' a conformance obligation, which the tool-result object index beneath a session's catalog key depends on; v0.8.0 adds a/a.<ext> coexistence rows that fsstore v0.6.0 was measured to pass (no Go API change)",
+			"github.com/looprig/storage", "v0.9.0",
+			"the contract BlobReaderLifecycle is declared in, which sessionstore.Open consults, and (v0.9.0) Composite.WithBoundedBlobReaders, the opt-in adapter that lets fsstore Blobs back a SessionStore (it replaced Carbon's private boundedBlobs; a Close error after a complete read now surfaces); v0.7.0 makes 'a key and a key extending it with /' a conformance obligation, which the tool-result object index beneath a session's catalog key depends on; v0.8.0 adds a/a.<ext> coexistence rows that fsstore v0.6.0 was measured to pass (no Go API change)",
 		},
 		{
 			"github.com/looprig/fsstore", "v0.6.0",
@@ -150,12 +150,12 @@ func TestOrchestrationPinsAreTheReleasedOnes(t *testing.T) {
 			"stores principal and metadata in v3 disposition inbox rows; ONE-WAY: after a v3 row exists, never roll Factory or Host back below sessionstore v0.14.0, whose reader accepts it",
 		},
 		{
-			"github.com/looprig/harness", "v0.42.1",
-			"Admitted carries the principal and create/input metadata; v0.42.0 adds tool_use_id/tool_name/elapsed_ms to the ephemeral ToolCallStarted/ToolCallCompleted events the live tool-step previews join to their committed StepDone on (never journaled, not one-way); v0.42.1 publishes flat, portable agent tool schemas (StartAgent no longer uses a top-level oneOf that llama.cpp grammars skip and Anthropic rejects); ONE-WAY: once a journal holds a stamped or presented record, or metadata from a browser even without stamping or a presenter, never roll Carbon back below harness v0.41.0",
+			"github.com/looprig/harness", "v0.44.0",
+			"Admitted carries the principal and create/input metadata; v0.42.0 adds tool_use_id/tool_name/elapsed_ms to the ephemeral ToolCallStarted/ToolCallCompleted events the live tool-step previews join to their committed StepDone on (never journaled, not one-way); v0.42.1 publishes flat, portable agent tool schemas (StartAgent no longer uses a top-level oneOf that llama.cpp grammars skip and Anthropic rejects); v0.43.0/v0.44.0 add loop.WithReadOnlyAccess/WithWorkspaceAccess (additive, unused by Carbon) and are the harness host v0.16.0 pins; ONE-WAY: once a journal holds a stamped or presented record, or metadata from a browser even without stamping or a presenter, never roll Carbon back below harness v0.41.0",
 		},
 		{
-			"github.com/looprig/host", "v0.15.1",
-			"RuntimeCommand carries principal and metadata through the strict pre-attempt checks; v0.14.0 applies a command body stored by reference (above 64 KiB) and advertises hostlink.payload.reference, which host.Compose wires unconditionally; v0.15.0 adds LiveTextOptions.IncludeToolSteps and department.LiveOptionsSubscriber, which carbonRuntime implements; v0.15.1 fixes a drain/attach race that could leave a journal lease held after drained; paired with harness v0.41.0 because a journal containing stamped or presented records cannot be read by older harness",
+			"github.com/looprig/host", "v0.16.0",
+			"RuntimeCommand carries principal and metadata through the strict pre-attempt checks; v0.14.0 applies a command body stored by reference (above 64 KiB) and advertises hostlink.payload.reference, which host.Compose wires unconditionally; v0.15.0 adds LiveTextOptions.IncludeToolSteps and department.LiveOptionsSubscriber; v0.16.0 publishes harnessruntime, the adapter Carbon's target is now built with (replacing its hand-written carbonRuntime), and refuses under the default RuntimeProfileDurable any target that does not declare Recovery{AttemptCloser, PersistenceFaults}, which harnessruntime.Target declares and verifies at every bind; v0.15.1 fixes a drain/attach race that could leave a journal lease held after drained; paired with harness v0.41.0 because a journal containing stamped or presented records cannot be read by older harness",
 		},
 		{
 			"github.com/looprig/factory", "v0.15.0",
@@ -163,16 +163,16 @@ func TestOrchestrationPinsAreTheReleasedOnes(t *testing.T) {
 		},
 
 		{
-			"github.com/looprig/inference", "v0.14.1",
-			"supports per-call unbounded execution for the harness v0.41.0 presenter/runtime work; the same release set has a one-way harness v0.41.0 floor after attributed or presented journal records are written",
+			"github.com/looprig/inference", "v0.15.0",
+			"supports per-call unbounded execution for the harness v0.41.0 presenter/runtime work (v0.15.0 adds the additive inferencetest package); the same release set has a one-way harness v0.41.0 floor after attributed or presented journal records are written",
 		},
 		{
-			"github.com/looprig/tools", "v0.15.0",
+			"github.com/looprig/tools", "v0.15.1",
 			// This row read "it ships NO read_tool_result, which is why R1.2 steps
 			// 6-7 were struck" until v0.14.0 shipped the tool. Steps 6-7 are now
 			// met: the pooled serve path registers read_tool_result exactly where
 			// it wires tool-result retention (internal/app/toolresults.go).
-			"read_tool_result (tools.ReadToolResultDefinition, v0.14.0; v0.14.1 re-pins onto harness v0.40.2; v0.15.0 bounds ProcessOutput to a 32 MiB serialized result), registered on the pooled serve path where retention is wired; Bash streams its complete result into the capture sink and declares its capture safety; AskUser declares tool.UserInputReplaySafe (v0.13.0), so an ask_user gate survives failover",
+			"read_tool_result (tools.ReadToolResultDefinition, v0.14.0; v0.14.1 re-pins onto harness v0.40.2; v0.15.0 bounds ProcessOutput to a 32 MiB serialized result; v0.15.1 is pin-only onto harness v0.43.0/storage v0.9.0), registered on the pooled serve path where retention is wired; Bash streams its complete result into the capture sink and declares its capture safety; AskUser declares tool.UserInputReplaySafe (v0.13.0), so an ask_user gate survives failover",
 		},
 	} {
 		got := requiredVersion(gomod, row.module)
@@ -226,6 +226,11 @@ func TestHostAndHarnessPinsMoveTogether(t *testing.T) {
 	}
 	if versionAtLeast(harnessVersion, "v0.41.0") && !versionAtLeast(host, "v0.11.0") {
 		t.Errorf("host %s with harness %s: harness v0.41.0 requires host v0.11.0 to carry principal and metadata into the runtime", host, harnessVersion)
+	}
+	// host v0.16.0's harnessruntime is built against harness v0.44.0; Carbon's
+	// launch target is that adapter, so the pair moves together.
+	if versionAtLeast(host, "v0.16.0") && !versionAtLeast(harnessVersion, "v0.44.0") {
+		t.Errorf("host %s with harness %s: host v0.16.0's harnessruntime pins harness v0.44.0", host, harnessVersion)
 	}
 }
 

@@ -145,6 +145,10 @@ func carbonCapabilities() department.Capabilities {
 		RequiresCheckpoint: false,
 		AdmissionWeight:    1,
 		CaptureSafety:      department.CaptureSafetyBoundedMaterialized,
+		// host v0.16.0 refuses, under its default durable profile, a target that
+		// does not declare both; every harness session Carbon launches offers
+		// both, and department verifies the declaration at each launch.
+		Recovery: department.Recovery{AttemptCloser: true, PersistenceFaults: true},
 	}
 }
 
