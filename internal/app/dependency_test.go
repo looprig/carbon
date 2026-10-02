@@ -163,8 +163,8 @@ func TestOrchestrationPinsAreTheReleasedOnes(t *testing.T) {
 		},
 
 		{
-			"github.com/looprig/inference", "v0.15.0",
-			"supports per-call unbounded execution for the harness v0.41.0 presenter/runtime work (v0.15.0 adds the additive inferencetest package); the same release set has a one-way harness v0.41.0 floor after attributed or presented journal records are written",
+			"github.com/looprig/inference", "v0.15.1",
+			"supports per-call unbounded execution for the harness v0.41.0 presenter/runtime work (v0.15.0 adds the additive inferencetest package; v0.15.1 retains OpenAI ChatGPT-plan error codes); the same release set has a one-way harness v0.41.0 floor after attributed or presented journal records are written",
 		},
 		{
 			"github.com/looprig/tools", "v0.15.1",

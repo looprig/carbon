@@ -155,8 +155,8 @@ github.com/looprig/classifiers v0.2.3 h1:KRLauNJPNBYbiSxyMbrF6V2yseycn+7U+UtjPxz
 github.com/looprig/classifiers v0.2.3/go.mod h1:618c4zE+P1GtM2u90PG2ynqMMNNpS2rGIUwmcTrvc2U=
 github.com/looprig/core v0.13.1 h1:tOkzcw+8ynM6CkHqnxgE6AWwCKMhQslN8tDNefTkydU=
 github.com/looprig/core v0.13.1/go.mod h1:YifqPBIXw2MH9RniqX/u8+KLWkdukKk9/2g2l3o4MVU=
-github.com/looprig/credentials v0.2.1 h1:C3g+fgBgfocv82WGpPk5Goj0idU31EARYXKaOEconTk=
-github.com/looprig/credentials v0.2.1/go.mod h1:8T6fGYOI4+erw6dZt8ghxQZHuo4CwKwD1CS1y9qrVj4=
+github.com/looprig/credentials v0.3.0 h1:TUCcdpyb+06boaNbpipzsOU7GSpwsxsOuSxOqof29ms=
+github.com/looprig/credentials v0.3.0/go.mod h1:8T6fGYOI4+erw6dZt8ghxQZHuo4CwKwD1CS1y9qrVj4=
 github.com/looprig/factory v0.15.0 h1:laAywqH1zpZVDXqWDnJ9MgaCa53H83yEQLna7uX8aVg=
 github.com/looprig/factory v0.15.0/go.mod h1:jkGjre0AUTJiUtm0L+MsDCJluStZVz6aBfds/rAoJtU=
 github.com/looprig/foreignloops v0.3.4 h1:ticxhtfBmFZFdvKJldRSE0qOR77KcIRgQ3Mo/XmlHDU=
@@ -167,10 +167,10 @@ github.com/looprig/harness v0.45.0 h1:w8WenAfwv+r2elZ9j5GWbYIMBXQREsuf90BtRBB88s
 github.com/looprig/harness v0.45.0/go.mod h1:EctlxfTEkoZO6MiQi0UiYFqhDPNoxFM1zlPBpDPhgAo=
 github.com/looprig/host v0.17.0 h1:C83Srvc0L+JjRn8YgKZDCKqcjgxO4eG1dig1ZLiV38g=
 github.com/looprig/host v0.17.0/go.mod h1:avfzATbf8VJxbbCLVg7U2ObHiQndN/vu6jhKJlcujDc=
-github.com/looprig/inference v0.15.0 h1:s0sMnjwvwsfJUsOze2lNguPwQCI41QZHiPTBh4p06TM=
-github.com/looprig/inference v0.15.0/go.mod h1:XpZ5IbETJxxA3TWYRLwHW0N0o015AK9LClWo8XnzKlw=
-github.com/looprig/llm v0.15.1 h1:/eem2rjBhavlyQKiMhGSzDvmmYCx56TQbby1YMBTreY=
-github.com/looprig/llm v0.15.1/go.mod h1:7v9LJq8x6kjEvqiW+0PnDNDmj+EWvLDLuH7hLbYlcXs=
+github.com/looprig/inference v0.15.1 h1:VWaDlj875eSzgvaTWj+kt+H8msNs6LXCSTxArIBNJy4=
+github.com/looprig/inference v0.15.1/go.mod h1:XpZ5IbETJxxA3TWYRLwHW0N0o015AK9LClWo8XnzKlw=
+github.com/looprig/llm v0.16.0 h1:aXocBhkBX/mYRqyK4fPEMHDor9qqFyyBlkMCSWwKCDs=
+github.com/looprig/llm v0.16.0/go.mod h1:8LuPWNTw2mQG2+r5hqUjcdaGwDVyN3kc+ZXpo45yNiI=
 github.com/looprig/mcp v0.7.3 h1:H9qtAD+WcQIR6wFGXmPmehWwKCXmkc9mUgiVEpJbQiI=
 github.com/looprig/mcp v0.7.3/go.mod h1:1CT7h7hPyUecUhHkRb0stADQWFwS2bNZx0eUG21JqPc=
 github.com/looprig/sandbox v0.9.3 h1:owoxX9Di+wNqunMwBK5F1onsRL+bCmzvWj9LUcNDA6k=

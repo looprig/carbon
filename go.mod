@@ -14,14 +14,14 @@ require (
 	github.com/looprig/acp v0.3.4
 	github.com/looprig/classifiers v0.2.3
 	github.com/looprig/core v0.13.1
-	github.com/looprig/credentials v0.2.1
+	github.com/looprig/credentials v0.3.0
 	github.com/looprig/factory v0.15.0
 	github.com/looprig/foreignloops v0.3.4
 	github.com/looprig/fsstore v0.6.0
 	github.com/looprig/harness v0.45.0
 	github.com/looprig/host v0.17.0
-	github.com/looprig/inference v0.15.0
-	github.com/looprig/llm v0.15.1
+	github.com/looprig/inference v0.15.1
+	github.com/looprig/llm v0.16.0
 	github.com/looprig/mcp v0.7.3
 	github.com/looprig/sandbox v0.9.3
 	github.com/looprig/secrets v0.2.2
