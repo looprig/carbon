@@ -302,7 +302,17 @@ func (r *credentialRuntime) logoutSubscription(ctx context.Context, record crede
 				revokeErr = openaisubscription.Revoke(ctx, r.httpClient, state)
 			}
 		}
-		return (credentials.StatePublisher{Catalog: r.catalog, Store: r.store, Namespace: r.namespace}).Delete(ctx, record)
+		// Local deletion must not inherit the revocation's cancellation or
+		// deadline: an unconfirmed revocation still clears local tokens
+		// (OpenAI sign-out guidance), and the caller's context may have ended
+		// during the network round trip. The host lock is still held here.
+		deleteCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), subscriptionLocalDeleteTimeout)
+		defer cancel()
+		return (credentials.StatePublisher{Catalog: r.catalog, Store: r.store, Namespace: r.namespace}).Delete(deleteCtx, record)
 	})
 	return revokeErr, deleteErr
 }
+
+// subscriptionLocalDeleteTimeout bounds logout's local catalog and state
+// deletion independently of the remote revocation that precedes it.
+const subscriptionLocalDeleteTimeout = 10 * time.Second

@@ -294,3 +294,43 @@ func TestProductionModelLoaderComposesSubscriptionCredential(t *testing.T) {
 		}
 	}
 }
+
+// A deadline or cancellation that ends remote revocation must not leave the
+// local tokens loadable: OpenAI's sign-out guidance is to clear local tokens
+// even when revocation is not confirmed.
+func TestCarbonSubscriptionLogoutDeletesLocallyWhenRevocationIsCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r, err := newCredentialRuntime(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	var registration openaisubscription.Registration
+	if err := loginSubscription(ctx, r, "", func(ctx context.Context, o openaisubscription.LoginOptions) (refresh.State, openaisubscription.Registration, error) {
+		state, account := fixtureSubscription(t, o.HostID)
+		registration = account
+		return state, account, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ref, _ := credentials.ParseReference("credential://openai-subscription/" + registration.AccountName())
+	r.httpClient = &http.Client{Transport: subscriptionRoundTrip(func(req *http.Request) (*http.Response, error) {
+		if req.URL.String() == openaisubscription.DiscoveryURL {
+			return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{"issuer":"https://auth.openai.com","revocation_endpoint":"https://auth.openai.com/api/accounts/oauth/revoke"}`))}, nil
+		}
+		cancel()
+		return nil, req.Context().Err()
+	})}
+	outcome, _ := r.logout(ctx, ref)
+	if !outcome.LocalDeleted || outcome.RemoteRevoked || !outcome.RemoteRevocationError {
+		t.Fatalf("wrong logout outcome: %+v", outcome)
+	}
+	if _, err := r.catalog.Get(context.Background(), ref); !errors.Is(err, credentials.ErrCatalogNotFound) {
+		t.Fatalf("catalog record survived a canceled revocation: %v", err)
+	}
+	stateRef, _ := secrets.NewReference("local", "credentials/openai-subscription/"+ref.Name())
+	if _, err := r.store.Resolve(context.Background(), stateRef); !errors.Is(err, secrets.ErrNotFound) {
+		t.Fatalf("tokens survived a canceled revocation: %v", err)
+	}
+}
