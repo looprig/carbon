@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -58,6 +59,7 @@ type cliFlags struct {
 	credentialList   bool
 	credentialLogin  string
 	credentialLogout string
+	credentialModels string
 	resume           uuid.UUID
 	dataDir          string
 	// accessProfile is the session-fixed product access profile, validated at this
@@ -111,6 +113,7 @@ func parseFlags(args []string) (cliFlags, error) {
 		credentialList        = fs.Bool("credentials-list", false, "list configured credentials and exit")
 		credentialListAlias   = fs.Bool("list-credentials", false, "list configured credentials and exit")
 		credentialListAlias2  = fs.Bool("credential-list", false, "list configured credentials and exit")
+		credentialModels      = fs.String("credential-models", "", "list models for a subscription credential reference")
 		credentialLogin       = fs.String("login", "", "explicitly start credential login for a provider")
 		credentialLoginAlias  = fs.String("credential-login", "", "explicitly start credential login for a provider")
 		credentialLogout      = fs.String("logout", "", "explicitly log out credential://provider/name")
@@ -157,7 +160,7 @@ func parseFlags(args []string) (cliFlags, error) {
 	}
 	out := cliFlags{
 		list: *list, credentialList: *credentialList || *credentialListAlias || *credentialListAlias2,
-		credentialLogin: login, credentialLogout: logout,
+		credentialLogin: login, credentialLogout: logout, credentialModels: strings.TrimSpace(*credentialModels),
 		dataDir: strings.TrimSpace(*dataDir), accessProfile: profile, acknowledgeUnconfined: *ackUnconfined,
 		serve: *serve, serveAddr: strings.TrimSpace(*serveAddr),
 	}
@@ -209,9 +212,11 @@ func parseFlags(args []string) (cliFlags, error) {
 	if out.serve && !out.resume.IsZero() {
 		return cliFlags{}, &FlagParseError{Reason: "serve cannot be combined with --resume"}
 	}
-	var credentialLoginGiven, credentialLogoutGiven, credentialListGiven bool
+	var credentialLoginGiven, credentialLogoutGiven, credentialListGiven, credentialModelsGiven bool
 	fs.Visit(func(f *flag.Flag) {
 		switch f.Name {
+		case "credential-models":
+			credentialModelsGiven = true
 		case "login", "credential-login":
 			credentialLoginGiven = true
 		case "logout", "credential-logout":
@@ -220,13 +225,16 @@ func parseFlags(args []string) (cliFlags, error) {
 			credentialListGiven = true
 		}
 	})
+	if credentialModelsGiven && out.credentialModels == "" {
+		return cliFlags{}, &FlagParseError{Reason: "--credential-models requires a credential reference"}
+	}
 	if credentialLoginGiven && out.credentialLogin == "" {
 		return cliFlags{}, &FlagParseError{Reason: "--login requires a provider"}
 	}
 	if credentialLogoutGiven && out.credentialLogout == "" {
 		return cliFlags{}, &FlagParseError{Reason: "--logout requires a credential reference"}
 	}
-	if (credentialListGiven || out.credentialList || out.credentialLogin != "" || out.credentialLogout != "") && !out.resume.IsZero() {
+	if (credentialListGiven || out.credentialList || out.credentialLogin != "" || out.credentialLogout != "" || out.credentialModels != "") && !out.resume.IsZero() {
 		return cliFlags{}, &FlagParseError{Reason: "credential commands cannot be combined with --resume"}
 	}
 	commands := 0
@@ -240,6 +248,9 @@ func parseFlags(args []string) (cliFlags, error) {
 		commands++
 	}
 	if out.credentialLogin != "" {
+		commands++
+	}
+	if out.credentialModels != "" {
 		commands++
 	}
 	if out.credentialLogout != "" {
@@ -276,9 +287,14 @@ func normalizeSubcommandArgs(args []string) ([]string, string) {
 		return args, ""
 	}
 	if len(args) < 2 {
-		return nil, "credential command requires list, login, or logout"
+		return nil, "credential command requires list, models, login, or logout"
 	}
 	switch args[1] {
+	case "models":
+		if len(args) < 3 || strings.TrimSpace(args[2]) == "" {
+			return nil, "credential models requires a credential reference"
+		}
+		return append([]string{"--credential-models", args[2]}, args[3:]...), ""
 	case "list":
 		return append([]string{"--credentials-list"}, args[2:]...), ""
 	case "login":
@@ -463,6 +479,18 @@ func runWithBrowserConfig(ctx context.Context, args []string, browser browserSta
 	// Credential commands are explicit, short-lived catalog operations. They
 	// do not construct a session store or start the TUI, and login is gated by
 	// the provider registration policy before any browser/network path exists.
+	if flags.credentialModels != "" {
+		models, err := carbon.ListCredentialModels(ctx, cfg, flags.credentialModels)
+		if err != nil {
+			fmt.Fprintln(errOut, "credentials models:", err)
+			return exitFailed
+		}
+		if err := json.NewEncoder(out).Encode(models); err != nil {
+			fmt.Fprintln(errOut, "credentials models: output failed")
+			return exitFailed
+		}
+		return exitOK
+	}
 	if flags.credentialList {
 		summaries, err := carbon.ListCredentials(ctx, cfg)
 		if err != nil {
@@ -480,7 +508,7 @@ func runWithBrowserConfig(ctx context.Context, args []string, browser browserSta
 			fmt.Fprintln(errOut, "credentials login:", err)
 			return exitFailed
 		}
-		fmt.Fprintln(out, "credential login complete")
+		fmt.Fprintln(out, "credential login complete; use carbon credentials list to select its reference")
 		return exitOK
 	}
 	if flags.credentialLogout != "" {

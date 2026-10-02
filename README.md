@@ -30,6 +30,9 @@ Models and any inline provider keys live in the owner-only
 `carbon credentials list`, `carbon login <provider>` and
 `carbon logout credential://provider/name` (see
 [docs/credentials-lifecycle.md](docs/credentials-lifecycle.md)).
+For ChatGPT plan access, use the separate `openai-subscription` provider and
+`carbon login openai-subscription`; the credential guide covers model discovery
+and configuration.
 
 ## Command line
 

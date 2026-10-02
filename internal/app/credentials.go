@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -20,6 +21,7 @@ import (
 	"github.com/looprig/credentials"
 	credentialcatalog "github.com/looprig/credentials/catalog"
 	"github.com/looprig/credentials/httpauth"
+	"github.com/looprig/credentials/refresh"
 	"github.com/looprig/inference"
 	"github.com/looprig/inference/auth"
 	model "github.com/looprig/inference/model"
@@ -28,6 +30,7 @@ import (
 	"github.com/looprig/llm/auto"
 	anthropicsubscription "github.com/looprig/llm/providers/anthropic/subscription"
 	openaisubscription "github.com/looprig/llm/providers/openai/subscription"
+	subscriptionprovider "github.com/looprig/llm/providers/openaisubscription"
 	"github.com/looprig/secrets"
 	secretslocal "github.com/looprig/secrets/local"
 )
@@ -323,10 +326,13 @@ func (l apiKeyLease) Format(state fmt.State, _ rune) {
 type credentialRuntime struct {
 	mu sync.Mutex
 
-	store     *secretslocal.Store
-	catalog   *credentialcatalog.Local
-	namespace secrets.Namespace
-	builder   credentials.Builder
+	store       *secretslocal.Store
+	catalog     *credentialcatalog.Local
+	namespace   secrets.Namespace
+	builder     credentials.Builder
+	coordinator *refresh.FileCoordinator
+	httpClient  *http.Client
+	home        string
 
 	sources      map[credentials.Reference]credentials.Source
 	refs         map[credentials.Reference]struct{}
@@ -507,6 +513,7 @@ func newCredentialRuntime(home string) (*credentialRuntime, error) {
 		store:     secretStore,
 		catalog:   catalog,
 		namespace: namespace,
+		home:      canonical,
 		sources:   make(map[credentials.Reference]credentials.Source),
 		refs:      make(map[credentials.Reference]struct{}),
 		active:    make(map[credentials.Reference]int),
@@ -531,6 +538,7 @@ func newCredentialRuntime(home string) (*credentialRuntime, error) {
 		Store:          secretStore,
 		StateNamespace: namespace,
 		Providers:      credentials.NewProviderFactories(nil),
+		StateSharing:   credentials.SharingHost,
 	}
 	return runtime, nil
 }
@@ -574,8 +582,17 @@ func (r *credentialRuntime) sourceFor(ctx context.Context, selected model.Model,
 	}
 
 	builder := r.builder
+	factory := credentials.SourceFactory(newAPIKeySource)
+	if expected.Provider == string(llm.ProviderOpenAISubscription) {
+		if err := r.ensureSubscriptionCoordinatorLocked(); err != nil {
+			return nil, err
+		}
+		builder.RefreshLocks = r.coordinator
+		factory = subscriptionprovider.NewSource
+	}
+	builder.HTTPClient = r.httpClient
 	builder.Providers = credentials.NewProviderFactories(map[credentials.DescriptorBinding]credentials.SourceFactory{
-		credentials.DescriptorBindingOf(expected): newAPIKeySource,
+		credentials.DescriptorBindingOf(expected): factory,
 	})
 	source, err := builder.Build(ctx, ref)
 	if err != nil {
@@ -790,6 +807,11 @@ func (r *credentialRuntime) Close() error {
 			first = err
 		}
 	}
+	if r.coordinator != nil {
+		if err := r.coordinator.Close(); err != nil && first == nil {
+			first = err
+		}
+	}
 	if catalog != nil {
 		if err := catalog.Close(); err != nil && first == nil {
 			first = err
@@ -916,6 +938,13 @@ func (r *credentialRuntime) logout(ctx context.Context, ref credentials.Referenc
 	if source != nil {
 		_ = source.Close()
 	}
+	if record.Descriptor.Provider == string(llm.ProviderOpenAISubscription) {
+		outcome.RemoteRevocationAttempted = true
+		revokeErr, deleteErr := r.logoutSubscription(ctx, record)
+		outcome.RemoteRevoked = revokeErr == nil
+		outcome.RemoteRevocationError = revokeErr != nil
+		return credentialLogoutDeleteOutcome(outcome, deleteErr)
+	}
 
 	// StatePublisher re-reads the current catalog record, validates the state
 	// namespace, resolves its current version, removes the catalog entry, and
@@ -1005,10 +1034,9 @@ func ListCredentials(ctx context.Context, cfg Config) ([]CredentialSummary, erro
 	return runtime.list(ctx)
 }
 
-// LoginCredential is deliberately explicit and fail-closed. The current
-// OpenAI and Anthropic subscription gates are checked before any URL/browser
-// or network operation; both gates currently return their typed unsupported
-// errors, so no browser is opened.
+// LoginCredential explicitly starts browser OAuth for openai-subscription.
+// A subscription credential reference reauthorizes its saved registration.
+// Other provider names retain their existing unsupported login behavior.
 func LoginCredential(ctx context.Context, cfg Config, provider string) error {
 	if ctx == nil {
 		return credentials.ErrNilContext
@@ -1017,7 +1045,7 @@ func LoginCredential(ctx context.Context, cfg Config, provider string) error {
 	if err != nil {
 		return err
 	}
-	lease, _, err := acquireCredentialRuntime(home)
+	lease, runtime, err := acquireCredentialRuntime(home)
 	if err != nil {
 		return err
 	}
@@ -1027,11 +1055,16 @@ func LoginCredential(ctx context.Context, cfg Config, provider string) error {
 		return credentials.NewCanceledError(err)
 	}
 	switch provider {
+	case "openai-subscription":
+		return loginSubscription(ctx, runtime, "", subscriptionprovider.Login)
 	case "openai":
 		return openaisubscription.OpenAIRegistration().Require()
 	case "anthropic":
 		return anthropicsubscription.AnthropicRegistration().Require()
 	default:
+		if strings.HasPrefix(provider, "credential://openai-subscription/") {
+			return loginSubscription(ctx, runtime, provider, subscriptionprovider.Login)
+		}
 		return &CredentialUnsupportedError{Provider: provider, Operation: "login"}
 	}
 }
