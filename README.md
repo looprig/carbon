@@ -182,6 +182,19 @@ dashboard or deployment manifest for them.
 Carbon's browser runtime uses Factory and its own embedded SPA. Its TUI and
 headless paths do not require a Factory connection.
 
+Carbon v0.34.1 is a dependency-only patch: sessionstore v0.15.0 enables
+large-event catch-up; factory v0.16.0 and host v0.18.0 bring Centrifuge
+v0.39.3 and shutdown unbind tolerance. The companion pins are harness
+v0.45.1 and centrifuge-go v0.12.1. The embedded browser bundle is unchanged.
+Upgrade separately deployed Factory/public readers to sessionstore v0.15.0
+or later before serving offloaded public bodies above 512 KiB (supported up
+to 16 MiB); older readers fail the entire page. Deploy factory v0.16.0 before
+relying on large-event catch-up. This patch adds no durable-format change
+or new one-way compatibility floor. Existing one-way reader floors remain:
+never roll Factory or Host below sessionstore v0.14.0 after v3 inbox rows
+exist, or Carbon below harness v0.41.0 after attributed, presented, or
+browser-metadata journal records exist.
+
 ## Development
 
 The Go baseline is 1.26.8. Verify standalone against the pinned modules:

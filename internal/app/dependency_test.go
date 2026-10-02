@@ -134,6 +134,10 @@ func TestOrchestrationPinsAreTheReleasedOnes(t *testing.T) {
 		why     string
 	}{
 		{
+			"github.com/centrifugal/centrifuge-go", "v0.12.1",
+			"the client pin paired with Factory v0.16.0 and Host v0.18.0's Centrifuge v0.39.3 upgrade",
+		},
+		{
 			"github.com/looprig/core", "v0.13.1",
 			"defines the principal, metadata and attribution capability contract that Factory, Host and harness carry (v0.12.0; a stamped command is not readable by the pre-feature stack) and the hostlink.payload.reference capability (v0.13.0) Factory gates placement of a referenced command body on; v0.13.1 moves grpc to v1.83.2",
 		},
@@ -146,20 +150,20 @@ func TestOrchestrationPinsAreTheReleasedOnes(t *testing.T) {
 			"a KV key and a key beneath it coexist ('@' leaf suffixes), so a session's tool-result object index can be written beside its catalog entry; ONE-WAY: v0.6.0 refuses every pre-v0.6.0 root with ErrLegacyLayout and migrates nothing, which Carbon surfaces as LegacyDataRootError",
 		},
 		{
-			"github.com/looprig/sessionstore", "v0.14.0",
-			"stores principal and metadata in v3 disposition inbox rows; ONE-WAY: after a v3 row exists, never roll Factory or Host back below sessionstore v0.14.0, whose reader accepts it",
+			"github.com/looprig/sessionstore", "v0.15.0",
+			"v0.15.0 permits large-event catch-up up to 16 MiB; upgrade separately deployed public readers first because older readers fail the page above 512 KiB; stores principal and metadata in v3 disposition inbox rows; ONE-WAY: after a v3 row exists, never roll Factory or Host back below sessionstore v0.14.0, whose reader accepts it",
 		},
 		{
-			"github.com/looprig/harness", "v0.45.0",
-			"Admitted carries the principal and create/input metadata; v0.42.0 adds tool_use_id/tool_name/elapsed_ms to the ephemeral ToolCallStarted/ToolCallCompleted events the live tool-step previews join to their committed StepDone on (never journaled, not one-way); v0.42.1 publishes flat, portable agent tool schemas (StartAgent no longer uses a top-level oneOf that llama.cpp grammars skip and Anthropic rejects); v0.43.0/v0.44.0 add loop.WithReadOnlyAccess/WithWorkspaceAccess (additive, unused by Carbon); v0.45.0 returns *session.LeaseReleaseError from Shutdown/ReleaseResidency/AbandonResidency instead of swallowing a failed lease release (host v0.17.0 maps it to residency-still-held), and is the harness host v0.17.0 pins; ONE-WAY: once a journal holds a stamped or presented record, or metadata from a browser even without stamping or a presenter, never roll Carbon back below harness v0.41.0",
+			"github.com/looprig/harness", "v0.45.1",
+			"v0.45.1 pins sessionstore v0.15.0 so public readers accept offloaded bodies above 512 KiB, up to 16 MiB; Admitted carries the principal and create/input metadata; v0.42.0 adds tool_use_id/tool_name/elapsed_ms to the ephemeral ToolCallStarted/ToolCallCompleted events the live tool-step previews join to their committed StepDone on (never journaled, not one-way); v0.42.1 publishes flat, portable agent tool schemas (StartAgent no longer uses a top-level oneOf that llama.cpp grammars skip and Anthropic rejects); v0.43.0/v0.44.0 add loop.WithReadOnlyAccess/WithWorkspaceAccess (additive, unused by Carbon); v0.45.0 returns *session.LeaseReleaseError from Shutdown/ReleaseResidency/AbandonResidency instead of swallowing a failed lease release (host v0.17.0 maps it to residency-still-held), and is the harness host v0.17.0 pins; ONE-WAY: once a journal holds a stamped or presented record, or metadata from a browser even without stamping or a presenter, never roll Carbon back below harness v0.41.0",
 		},
 		{
-			"github.com/looprig/host", "v0.17.0",
-			"RuntimeCommand carries principal and metadata through the strict pre-attempt checks; v0.14.0 applies a command body stored by reference (above 64 KiB) and advertises hostlink.payload.reference, which host.Compose wires unconditionally; v0.15.0 adds LiveTextOptions.IncludeToolSteps and department.LiveOptionsSubscriber; v0.16.0 publishes harnessruntime, the adapter Carbon's target is now built with (replacing its hand-written carbonRuntime), and refuses under the default RuntimeProfileDurable any target that does not declare Recovery{AttemptCloser, PersistenceFaults}, which harnessruntime.Target declares and verifies at every bind; v0.17.0 abandons a gate-waiting runtime crash-equivalently on drain and reports DrainReport.Abandoned/Parked, and Carbon treats any Parked session as an incomplete drain (the runtime still holds its lease), keeping the provider open; v0.15.1 fixes a drain/attach race that could leave a journal lease held after drained; paired with harness v0.41.0 because a journal containing stamped or presented records cannot be read by older harness",
+			"github.com/looprig/host", "v0.18.0",
+			"v0.18.0 upgrades Centrifuge to v0.39.3 and pins sessionstore v0.15.0 for large-event public journal reads; RuntimeCommand carries principal and metadata through the strict pre-attempt checks; v0.14.0 applies a command body stored by reference (above 64 KiB) and advertises hostlink.payload.reference, which host.Compose wires unconditionally; v0.15.0 adds LiveTextOptions.IncludeToolSteps and department.LiveOptionsSubscriber; v0.16.0 publishes harnessruntime, the adapter Carbon's target is now built with (replacing its hand-written carbonRuntime), and refuses under the default RuntimeProfileDurable any target that does not declare Recovery{AttemptCloser, PersistenceFaults}, which harnessruntime.Target declares and verifies at every bind; v0.17.0 abandons a gate-waiting runtime crash-equivalently on drain and reports DrainReport.Abandoned/Parked, and Carbon treats any Parked session as an incomplete drain (the runtime still holds its lease), keeping the provider open; v0.15.1 fixes a drain/attach race that could leave a journal lease held after drained; paired with harness v0.41.0 because a journal containing stamped or presented records cannot be read by older harness",
 		},
 		{
-			"github.com/looprig/factory", "v0.15.0",
-			"accepts client metadata and can stamp a verified principal with explicit WithPrincipalStamping (not Carbon's default); it refuses an incapable Host before writing a v3 inbox row, whose one-way reader floor is sessionstore v0.14.0; v0.14.0 places a session holding a referenced command body only on a payload-reference-capable Host; v0.15.0 maps identity.RateLimitedError to 429 with Retry-After, which the object-route throttle returns",
+			"github.com/looprig/factory", "v0.16.0",
+			"v0.16.0 upgrades Centrifuge to v0.39.3 and pairs with Host v0.18.0 for shutdown unbind tolerance; accepts client metadata and can stamp a verified principal with explicit WithPrincipalStamping (not Carbon's default); it refuses an incapable Host before writing a v3 inbox row, whose one-way reader floor is sessionstore v0.14.0; v0.14.0 places a session holding a referenced command body only on a payload-reference-capable Host; v0.15.0 maps identity.RateLimitedError to 429 with Retry-After, which the object-route throttle returns",
 		},
 
 		{
